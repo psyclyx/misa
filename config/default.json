@@ -1,6 +1,9 @@
 {
-  "extensions": ["config/extensions/inspect.lua"],
+  "extensions": ["provider.fake", "agent"],
   "config": {
-    "message": "misa is running"
+    "agent": { "provider": "fake" },
+    "providers": {
+      "fake": { "responses": ["misa is running\n"] }
+    }
   }
 }

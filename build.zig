@@ -9,6 +9,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const standard_extensions = b.createModule(.{
+        .root_source_file = b.path("src/standard_extensions/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const lua_runtime = b.createModule(.{
         .root_source_file = b.path("src/lua_runtime/root.zig"),
         .target = target,
@@ -24,19 +29,39 @@ pub fn build(b: *std.Build) void {
     });
     main_module.addImport("misa_config", config);
     main_module.addImport("misa_lua_runtime", lua_runtime);
+    main_module.addImport("misa_standard_extensions", standard_extensions);
 
     const exe = b.addExecutable(.{ .name = "misa", .root_module = main_module });
     b.installArtifact(exe);
+    b.installDirectory(.{
+        .source_dir = b.path("extensions"),
+        .install_dir = .{ .custom = "share/misa" },
+        .install_subdir = "extensions",
+    });
 
     const run = b.addRunArtifact(exe);
+    run.setEnvironmentVariable("MISA_EXTENSION_DIR", b.pathFromRoot("extensions"));
     if (b.args) |args| run.addArgs(args);
     b.step("run", "Run misa").dependOn(&run.step);
 
-    const unit = b.addTest(.{ .root_module = config });
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&b.addRunArtifact(unit).step);
+    const config_unit = b.addTest(.{ .root_module = config });
+    const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
+    const test_step = b.step("test", "Run unit and integration tests");
+    test_step.dependOn(&b.addRunArtifact(config_unit).step);
+    test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
 
     const integration = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/integration.sh") });
     integration.addFileArg(exe.getEmittedBin());
+    integration.setEnvironmentVariable("MISA_EXTENSION_DIR", b.pathFromRoot("extensions"));
     test_step.dependOn(&integration.step);
+
+    // Exercise the actual install layout with source-tree overrides absent.
+    const installed_smoke = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/installed-layout.sh") });
+    installed_smoke.addArg(b.getInstallPath(.bin, "misa"));
+    installed_smoke.step.dependOn(b.getInstallStep());
+    test_step.dependOn(&installed_smoke.step);
+
+    // Nix is intentionally opt-in rather than part of normal package checks.
+    const nix_eval = b.addSystemCommand(&.{ "nix-instantiate", "--eval", "--strict", b.pathFromRoot("tests/nix-eval.nix") });
+    b.step("test-nix", "Evaluate Nix API tests").dependOn(&nix_eval.step);
 }

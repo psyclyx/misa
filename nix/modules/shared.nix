@@ -8,6 +8,8 @@
 let
   cfg = config.programs.misa;
   mkMisa = pkgs.callPackage ../mk-misa.nix { misa = cfg.package; };
+  standardExtensions = import ../standard-extensions.nix;
+  standardIds = builtins.attrValues standardExtensions;
   configured = mkMisa {
     inherit (cfg) extensions config;
     package = cfg.package;
@@ -23,9 +25,9 @@ in
       description = "Unwrapped misa package to configure; no overlay is required.";
     };
     extensions = lib.mkOption {
-      type = lib.types.listOf lib.types.path;
+      type = lib.types.listOf (lib.types.either (lib.types.enum standardIds) lib.types.path);
       default = [ ];
-      description = "Ordered Lua extension script paths.";
+      description = "Ordered standard extension IDs and custom Lua extension path values.";
     };
     config = lib.mkOption {
       type = lib.types.json;

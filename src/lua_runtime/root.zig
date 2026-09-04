@@ -9,11 +9,15 @@ const c = @cImport({
 const bootstrap =
     \\local handlers = {}
     \\misa = {}
+    \\misa.json_null = {}
     \\function misa.register(name, handler)
     \\  assert(type(name) == 'string', 'handler name must be a string')
     \\  assert(type(handler) == 'function', 'handler must be a function')
     \\  local list = handlers[name] or {}; handlers[name] = list
     \\  list[#list + 1] = handler
+    \\end
+    \\function misa.handler_count(name)
+    \\  return #(handlers[name] or {})
     \\end
     \\function misa.call(name, ...)
     \\  local results = { n = 0 }
@@ -24,6 +28,10 @@ const bootstrap =
     \\  return results
     \\end
 ;
+
+/// Maximum number of JSON array/object levels converted into Lua tables.
+/// Bounding this recursion also bounds native and Lua stack growth.
+pub const max_json_nesting_depth: usize = 128;
 
 const Extension = struct {
     ref: c_int,
@@ -38,7 +46,12 @@ pub const Runtime = struct {
     error_buffer: [1024]u8 = undefined,
     error_len: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, config_json: []const u8, argv: anytype) !Runtime {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        config_json: []const u8,
+        config_value: std.json.Value,
+        argv: anytype,
+    ) !Runtime {
         const state = c.luaL_newstate() orelse return error.LuaInitializationFailed;
         var runtime: Runtime = .{ .state = state, .allocator = allocator };
         errdefer runtime.deinit();
@@ -49,7 +62,7 @@ pub const Runtime = struct {
             return error.LuaInitializationFailed;
         }
         runtime.assertStack(0);
-        runtime.setContext(config_json, argv);
+        try runtime.setContext(config_json, config_value, argv);
         return runtime;
     }
 
@@ -61,6 +74,10 @@ pub const Runtime = struct {
 
     pub fn loadExtension(self: *Runtime, path: []const u8) !void {
         self.assertStack(0);
+        if (std.mem.indexOfScalar(u8, path, 0) != null) {
+            self.setError("extension path contains NUL", .{});
+            return error.ExtensionLoadFailed;
+        }
         const path_z = self.allocator.dupeZ(u8, path) catch {
             self.setError("out of memory while loading {s}", .{path});
             return error.ExtensionLoadFailed;
@@ -110,21 +127,88 @@ pub const Runtime = struct {
         return self.error_buffer[0..self.error_len];
     }
 
-    fn setContext(self: *Runtime, config_json: []const u8, argv: anytype) void {
+    fn setContext(self: *Runtime, config_json: []const u8, config_value: std.json.Value, argv: anytype) !void {
         self.assertStack(0);
-        c.lua_createtable(self.state, 0, 3);
+        errdefer {
+            c.lua_settop(self.state, 0);
+            self.assertStack(0);
+        }
+        try self.ensureStack(2);
+        c.lua_createtable(self.state, 0, 4);
         _ = c.lua_pushlstring(self.state, config_json.ptr, config_json.len);
         c.lua_setfield(self.state, -2, "config_json");
+        try self.pushJson(config_value, 0);
+        c.lua_setfield(self.state, -2, "config");
+        try self.ensureStack(2);
         c.lua_createtable(self.state, @intCast(argv.len), 0);
         for (argv, 0..) |arg, i| {
+            try self.ensureStack(1);
             _ = c.lua_pushstring(self.state, arg.ptr);
             c.lua_rawseti(self.state, -2, @intCast(i + 1));
         }
         c.lua_setfield(self.state, -2, "argv");
+        try self.ensureStack(1);
         c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
         c.lua_setfield(self.state, -2, "misa");
         self.context_ref = c.luaL_ref(self.state, c.LUA_REGISTRYINDEX);
         self.assertStack(0);
+    }
+
+    /// Push exactly one Lua value. JSON null is represented by the stable
+    /// `misa.json_null` singleton so it survives inside arrays and objects.
+    /// On failure, restore the stack to its entry height.
+    fn pushJson(self: *Runtime, value: std.json.Value, depth: usize) !void {
+        const before = c.lua_gettop(self.state);
+        errdefer {
+            c.lua_settop(self.state, before);
+            std.debug.assert(c.lua_gettop(self.state) == before);
+        }
+        if (depth > max_json_nesting_depth) {
+            self.setError("config nesting exceeds maximum depth of {d}", .{max_json_nesting_depth});
+            return error.ConfigNestingTooDeep;
+        }
+        try self.ensureStack(2);
+        switch (value) {
+            .null => {
+                c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+                c.lua_getfield(self.state, -1, "json_null");
+                c.lua_remove(self.state, -2);
+            },
+            .bool => |boolean| c.lua_pushboolean(self.state, @intFromBool(boolean)),
+            .integer => |integer| c.lua_pushnumber(self.state, @floatFromInt(integer)),
+            .float => |float| c.lua_pushnumber(self.state, float),
+            .number_string => |number| c.lua_pushnumber(
+                self.state,
+                std.fmt.parseFloat(f64, number) catch unreachable,
+            ),
+            .string => |string| _ = c.lua_pushlstring(self.state, string.ptr, string.len),
+            .array => |array| {
+                c.lua_createtable(self.state, @intCast(array.items.len), 0);
+                for (array.items, 0..) |item, index| {
+                    try self.ensureStack(1);
+                    try self.pushJson(item, depth + 1);
+                    c.lua_rawseti(self.state, -2, @intCast(index + 1));
+                }
+            },
+            .object => |object| {
+                c.lua_createtable(self.state, 0, @intCast(object.count()));
+                var iterator = object.iterator();
+                while (iterator.next()) |entry| {
+                    try self.ensureStack(2);
+                    _ = c.lua_pushlstring(self.state, entry.key_ptr.*.ptr, entry.key_ptr.*.len);
+                    try self.pushJson(entry.value_ptr.*, depth + 1);
+                    c.lua_rawset(self.state, -3);
+                }
+            },
+        }
+        std.debug.assert(c.lua_gettop(self.state) == before + 1);
+    }
+
+    fn ensureStack(self: *Runtime, extra: c_int) !void {
+        if (c.lua_checkstack(self.state, extra) == 0) {
+            self.setError("Lua stack exhausted while decoding config", .{});
+            return error.LuaStackExhausted;
+        }
     }
 
     fn callPhase(self: *Runtime, phase: [*:0]const u8) !void {

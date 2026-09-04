@@ -24,6 +24,7 @@ in
   default = packages.misa;
   shell = finalPkgs.callPackage ./nix/shell.nix { };
   lib = misaLib;
+  standardExtensions = misaLib.standardExtensions;
 
   nixosModules = {
     misa = nixosModule;

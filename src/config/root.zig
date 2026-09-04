@@ -6,10 +6,13 @@ pub const Config = struct {
     parsed: std.json.Parsed(std.json.Value),
     extensions: []const std.json.Value,
     config_json: []u8,
+    config_value: std.json.Value,
+    owns_config_value: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.config_json);
+        if (self.owns_config_value) self.config_value.object.deinit(self.allocator);
         self.parsed.deinit();
     }
 
@@ -30,13 +33,24 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Config {
         .array => |array| array.items,
         else => return error.ExtensionsMustBeArray,
     } else &.{};
-    for (extensions) |extension| if (extension != .string) return error.ExtensionMustBeString;
+    for (extensions) |extension| {
+        if (extension != .string) return error.ExtensionMustBeString;
+        if (std.mem.indexOfScalar(u8, extension.string, 0) != null)
+            return error.ExtensionContainsNul;
+    }
 
-    const config_json = if (root.get("config")) |config_value|
-        try std.json.Stringify.valueAlloc(allocator, config_value, .{})
-    else
-        try allocator.dupe(u8, "{}");
-    return .{ .parsed = parsed, .extensions = extensions, .config_json = config_json, .allocator = allocator };
+    const has_config = root.get("config") != null;
+    var config_value: std.json.Value = root.get("config") orelse .{ .object = .{} };
+    errdefer if (!has_config) config_value.object.deinit(allocator);
+    const config_json = try std.json.Stringify.valueAlloc(allocator, config_value, .{});
+    return .{
+        .parsed = parsed,
+        .extensions = extensions,
+        .config_json = config_json,
+        .config_value = config_value,
+        .owns_config_value = !has_config,
+        .allocator = allocator,
+    };
 }
 
 test "preserves extension order and serializes free-form config" {
@@ -69,4 +83,5 @@ test "rejects malformed harness shape" {
     try std.testing.expectError(error.ConfigMustBeObject, parse(std.testing.allocator, "[]"));
     try std.testing.expectError(error.ExtensionsMustBeArray, parse(std.testing.allocator, "{\"extensions\":{}}"));
     try std.testing.expectError(error.ExtensionMustBeString, parse(std.testing.allocator, "{\"extensions\":[1],\"config\":null}"));
+    try std.testing.expectError(error.ExtensionContainsNul, parse(std.testing.allocator, "{\"extensions\":[\"bad\\u0000path.lua\"]}"));
 }

@@ -1,0 +1,68 @@
+let
+  npins = import ../npins;
+  pkgs = import npins.nixpkgs { };
+  project = import ../default.nix { inherit pkgs; };
+  inherit (project) lib;
+  standard = lib.standardExtensions;
+  custom = ../extensions/agent.lua;
+  defaults = lib.mkMisa { };
+  configured = lib.mkMisa {
+    extensions = with standard; [
+      agent
+      custom
+      providerCommand
+    ];
+  };
+  serializedCustom = builtins.elemAt configured.configData.extensions 1;
+  invalid = builtins.tryEval (
+    builtins.deepSeq (lib.mkMisa { extensions = [ "provider.unknown" ]; }).configData true
+  );
+  moduleEval = pkgs.lib.evalModules {
+    specialArgs = { inherit pkgs; };
+    modules = [
+      {
+        options.home.packages = pkgs.lib.mkOption {
+          type = pkgs.lib.types.listOf pkgs.lib.types.package;
+          default = [ ];
+        };
+      }
+      project.homeManagerModules.misa
+      {
+        programs.misa.extensions = [
+          "agent"
+          custom
+          "provider.fake"
+        ];
+      }
+    ];
+  };
+in
+assert
+  standard == {
+    agent = "agent";
+    providerFake = "provider.fake";
+    providerCommand = "provider.command";
+  };
+assert
+  defaults.configData == {
+    extensions = [ ];
+    config = { };
+  };
+assert builtins.elemAt configured.configData.extensions 0 == "agent";
+assert builtins.elemAt configured.configData.extensions 2 == "provider.command";
+# Do not pin the content hash: verify path interpolation performed store
+# coercion and retained dependency context for writeText's closure.
+assert pkgs.lib.hasPrefix "${builtins.storeDir}/" serializedCustom;
+assert pkgs.lib.hasSuffix "-agent.lua" serializedCustom;
+assert builtins.getContext serializedCustom != { };
+assert invalid.success == false;
+assert
+  moduleEval.config.programs.misa.extensions == [
+    "agent"
+    custom
+    "provider.fake"
+  ];
+assert builtins.pathExists ../extensions/agent.lua;
+assert builtins.pathExists ../extensions/provider/fake.lua;
+assert builtins.pathExists ../extensions/provider/command.lua;
+true
