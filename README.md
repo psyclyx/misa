@@ -99,8 +99,10 @@ output strips styles.
 
 ## Terminal architecture and limitations
 
-`src/session/root.zig` owns a non-reentrant FIFO event loop. Lua owns canonical
-application state. A transaction is fully validated, then its pending semantic
+`src/session/root.zig` owns a non-reentrant FIFO event loop and parses effects
+once into a closed native union; `src/session/process.zig` owns direct process
+execution and captured-output normalization. Lua owns canonical application
+state. A transaction is fully validated, then its pending semantic
 view is successfully presented, then Lua policy state is committed, and only
 then are the prevalidated effects executed. Policy changes are rollback-safe
 through validation and presentation. A native side-effect or I/O failure after

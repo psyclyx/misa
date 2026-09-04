@@ -205,7 +205,7 @@ pub const Runtime = struct {
         c.lua_setfield(self.state, -2, "config");
         c.lua_createtable(self.state, @intCast(argv.len), 0);
         for (argv, 0..) |arg, index| {
-            _ = c.lua_pushstring(self.state, arg.ptr);
+            _ = c.lua_pushlstring(self.state, arg.ptr, arg.len);
             c.lua_rawseti(self.state, -2, @intCast(index + 1));
         }
         c.lua_setfield(self.state, -2, "argv");

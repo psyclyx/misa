@@ -2,6 +2,41 @@
 const std = @import("std");
 const lua = @import("misa_lua_runtime");
 const terminal_module = @import("misa_terminal");
+const process = @import("process.zig");
+
+const NativeEffect = union(enum) {
+    dispatch: std.json.Value,
+    terminal_read,
+    view_commit: std.json.Value,
+    app_quit,
+    process_run: process.Spec,
+
+    fn parse(value: std.json.Value) !NativeEffect {
+        const object = switch (value) {
+            .object => |item| item,
+            else => return error.InvalidEffect,
+        };
+        const kind = nonEmptyStringField(object, "type") orelse return error.InvalidEffect;
+        if (std.mem.eql(u8, kind, "dispatch")) {
+            const event = object.get("event") orelse return error.InvalidEffect;
+            const event_object = switch (event) {
+                .object => |item| item,
+                else => return error.InvalidEffect,
+            };
+            _ = nonEmptyStringField(event_object, "type") orelse return error.InvalidEffect;
+            return .{ .dispatch = event };
+        }
+        if (std.mem.eql(u8, kind, "terminal/read")) return .terminal_read;
+        if (std.mem.eql(u8, kind, "view/commit")) {
+            const lines = object.get("lines") orelse return error.InvalidEffect;
+            try terminal_module.validateLines(lines);
+            return .{ .view_commit = lines };
+        }
+        if (std.mem.eql(u8, kind, "app/quit")) return .app_quit;
+        if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
+        return error.UnknownNativeEffect;
+    }
+};
 
 pub const Session = struct {
     allocator: std.mem.Allocator,
@@ -36,16 +71,17 @@ pub const Session = struct {
             var transaction = self.runtime.dispatch(event) catch return error.LuaTransactionFailed;
             defer transaction.deinit();
             const view = transaction.view;
-            const effects = transaction.effects;
+            var effects: std.ArrayList(NativeEffect) = .empty;
+            defer effects.deinit(self.allocator);
+            for (transaction.effects) |effect| try effects.append(self.allocator, try .parse(effect));
             // Validate everything, then make the pending semantic view visible
             // before committing policy state. Validation/presentation failures
             // leave canonical Lua db unchanged. After commit, effect I/O is
             // fatal on failure and cannot in general be rolled back.
             if (view != .null) try self.terminal.validatePresentation(view);
-            for (effects) |effect| try validateEffect(effect);
             if (view != .null) try self.terminal.present(view);
             try self.runtime.commitTransaction();
-            for (effects) |effect| try self.execute(effect);
+            for (effects.items) |effect| try self.execute(effect);
             self.compactQueue();
             // A read request is level-triggered. Drain already-decoded events
             // before blocking again so a single read containing a whole line
@@ -67,26 +103,18 @@ pub const Session = struct {
         self.queue_head = 0;
     }
 
-    fn execute(self: *Session, value: std.json.Value) !void {
-        const object = switch (value) {
-            .object => |o| o,
-            else => return error.InvalidEffect,
-        };
-        const kind = stringField(object, "type") orelse return error.InvalidEffect;
-        if (std.mem.eql(u8, kind, "dispatch")) {
-            const event = object.get("event") orelse return error.InvalidEffect;
-            const json = try std.json.Stringify.valueAlloc(self.allocator, event, .{});
-            defer self.allocator.free(json);
-            try self.enqueue(json);
-        } else if (std.mem.eql(u8, kind, "terminal/read")) {
-            self.read_requested = true;
-        } else if (std.mem.eql(u8, kind, "view/commit")) {
-            try self.terminal.commit(object.get("lines") orelse return error.InvalidEffect);
-        } else if (std.mem.eql(u8, kind, "app/quit")) {
-            self.quit = true;
-        } else if (std.mem.eql(u8, kind, "process/run")) {
-            try self.runProcess(object);
-        } else return error.UnknownNativeEffect;
+    fn execute(self: *Session, effect: NativeEffect) !void {
+        switch (effect) {
+            .dispatch => |event| {
+                const json = try std.json.Stringify.valueAlloc(self.allocator, event, .{});
+                defer self.allocator.free(json);
+                try self.enqueue(json);
+            },
+            .terminal_read => self.read_requested = true,
+            .view_commit => |lines| try self.terminal.commit(lines),
+            .app_quit => self.quit = true,
+            .process_run => |spec| try self.runProcess(spec),
+        }
     }
 
     fn readTerminal(self: *Session) !void {
@@ -101,44 +129,17 @@ pub const Session = struct {
         if (events.items.len == 0) self.read_requested = true;
     }
 
-    fn runProcess(self: *Session, object: std.json.ObjectMap) !void {
-        if (object.get("stdin") != null) return error.UnsupportedProcessStdin;
-        const values = switch (object.get("argv") orelse return error.InvalidEffect) {
-            .array => |a| a.items,
-            else => return error.InvalidEffect,
-        };
-        if (values.len == 0) return error.InvalidEffect;
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(self.allocator);
-        for (values) |value| {
-            const arg = switch (value) {
-                .string => |s| s,
-                else => return error.InvalidEffect,
-            };
-            if (arg.len == 0 or std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidEffect;
-            try argv.append(self.allocator, arg);
-        }
-        const completion = stringField(object, "completion") orelse return error.InvalidEffect;
-        const id = stringField(object, "id") orelse return error.InvalidEffect;
-        const result = std.process.run(self.allocator, self.io, .{ .argv = argv.items, .stdout_limit = .limited(1024 * 1024), .stderr_limit = .limited(1024 * 1024) }) catch |err| {
-            const event = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = completion, .id = id, .ok = false, .stdout = "", .stderr = @errorName(err), .status = @as(i32, -1) }, .{});
-            defer self.allocator.free(event);
-            try self.enqueue(event);
-            return;
-        };
-        defer self.allocator.free(result.stdout);
-        defer self.allocator.free(result.stderr);
-        const status: i32 = switch (result.term) {
-            .exited => |code| code,
-            .signal => |sig| -@as(i32, @intCast(@intFromEnum(sig))),
-            .stopped => |sig| -@as(i32, @intCast(@intFromEnum(sig))),
-            .unknown => |code| @intCast(code),
-        };
-        const stdout = try sanitizeProcessOutput(self.allocator, result.stdout, 1024 * 1024);
-        defer self.allocator.free(stdout);
-        const stderr = try sanitizeProcessOutput(self.allocator, result.stderr, 1024 * 1024);
-        defer self.allocator.free(stderr);
-        const event = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = completion, .id = id, .ok = status == 0, .stdout = stdout, .stderr = stderr, .status = status }, .{});
+    fn runProcess(self: *Session, spec: process.Spec) !void {
+        const result = try process.run(self.allocator, self.io, spec);
+        defer result.deinit(self.allocator);
+        const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .type = spec.completion,
+            .id = spec.id,
+            .ok = result.status == 0,
+            .stdout = result.stdout,
+            .stderr = result.stderr,
+            .status = result.status,
+        }, .{});
         defer self.allocator.free(event);
         try self.enqueue(event);
     }
@@ -161,126 +162,20 @@ pub const Session = struct {
     }
 };
 pub fn validateEffect(value: std.json.Value) !void {
-    const object = switch (value) {
-        .object => |o| o,
-        else => return error.InvalidEffect,
-    };
-    const kind = nonEmptyStringField(object, "type") orelse return error.InvalidEffect;
-    if (std.mem.eql(u8, kind, "dispatch")) {
-        const event = switch (object.get("event") orelse return error.InvalidEffect) {
-            .object => |o| o,
-            else => return error.InvalidEffect,
-        };
-        _ = nonEmptyStringField(event, "type") orelse return error.InvalidEffect;
-    } else if (std.mem.eql(u8, kind, "terminal/read") or std.mem.eql(u8, kind, "app/quit")) {
-        return;
-    } else if (std.mem.eql(u8, kind, "view/commit")) {
-        try terminal_module.validateLines(object.get("lines") orelse return error.InvalidEffect);
-    } else if (std.mem.eql(u8, kind, "process/run")) {
-        if (object.get("stdin") != null) return error.UnsupportedProcessStdin;
-        const argv = switch (object.get("argv") orelse return error.InvalidEffect) {
-            .array => |a| a.items,
-            else => return error.InvalidEffect,
-        };
-        if (argv.len == 0) return error.InvalidEffect;
-        for (argv) |arg| switch (arg) {
-            .string => |string| if (string.len == 0 or std.mem.indexOfScalar(u8, string, 0) != null) return error.InvalidEffect,
-            else => return error.InvalidEffect,
-        };
-        _ = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect;
-        _ = nonEmptyStringField(object, "id") orelse return error.InvalidEffect;
-    } else return error.UnknownNativeEffect;
+    _ = try NativeEffect.parse(value);
 }
 
-/// Make captured process bytes safe for JSON and later terminal presentation.
-pub fn sanitizeProcessOutput(allocator: std.mem.Allocator, input: []const u8, limit: usize) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    var i: usize = 0;
-    while (i < input.len and out.items.len < limit) {
-        const byte = input[i];
-        if (byte == 0x1b) {
-            i += 1;
-            if (i < input.len and input[i] == '[') {
-                i += 1;
-                while (i < input.len) : (i += 1) if (input[i] >= 0x40 and input[i] <= 0x7e) {
-                    i += 1;
-                    break;
-                };
-            } else if (i < input.len and input[i] == ']') {
-                i += 1;
-                while (i < input.len) {
-                    if (input[i] == 7) {
-                        i += 1;
-                        break;
-                    }
-                    if (input[i] == 0x1b and i + 1 < input.len and input[i + 1] == '\\') {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            } else if (i < input.len) i += 1;
-            continue;
-        }
-        if (byte == '\r') {
-            if (out.items.len < limit) try out.append(allocator, '\n');
-            i += 1;
-            if (i < input.len and input[i] == '\n') i += 1;
-            continue;
-        }
-        if (byte == '\n') {
-            try out.append(allocator, byte);
-            i += 1;
-            continue;
-        }
-        if (byte == '\t') {
-            try out.append(allocator, ' ');
-            i += 1;
-            continue;
-        }
-        if (byte < 0x20 or byte == 0x7f) {
-            i += 1;
-            continue;
-        }
-        const len = std.unicode.utf8ByteSequenceLength(byte) catch {
-            if (out.items.len + 3 <= limit) try out.appendSlice(allocator, "\xef\xbf\xbd");
-            i += 1;
-            continue;
-        };
-        if (i + len > input.len) {
-            if (out.items.len + 3 <= limit) try out.appendSlice(allocator, "\xef\xbf\xbd");
-            break;
-        }
-        const cp = std.unicode.utf8Decode(input[i .. i + len]) catch {
-            if (out.items.len + 3 <= limit) try out.appendSlice(allocator, "\xef\xbf\xbd");
-            i += 1;
-            continue;
-        };
-        if (cp >= 0x80 and cp <= 0x9f) {
-            i += len;
-            continue;
-        }
-        if (out.items.len + len > limit) break;
-        try out.appendSlice(allocator, input[i .. i + len]);
-        i += len;
-    }
-    return out.toOwnedSlice(allocator);
+fn inputJson(allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{ .type = "terminal/input", .kind = kind }, .{});
 }
 
-fn inputJson(a: std.mem.Allocator, kind: []const u8) ![]u8 {
-    return std.json.Stringify.valueAlloc(a, .{ .type = "terminal/input", .kind = kind }, .{});
-}
 fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
-    const value = stringField(object, name) orelse return null;
-    return if (value.len != 0 and std.mem.indexOfScalar(u8, value, 0) == null) value else null;
-}
-fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
-    return switch (value) {
-        .string => |s| s,
-        else => null,
+    const string = switch (value) {
+        .string => |item| item,
+        else => return null,
     };
+    return if (string.len != 0 and std.mem.indexOfScalar(u8, string, 0) == null) string else null;
 }
 
 test "effect validation covers the whole native contract" {
@@ -293,12 +188,4 @@ test "effect validation covers the whole native contract" {
     var bad_view = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"view/commit\",\"lines\":[{\"spans\":[{\"text\":\"bad\\n\"}]}]}", .{});
     defer bad_view.deinit();
     try std.testing.expectError(error.InvalidView, validateEffect(bad_view.value));
-}
-
-test "process output sanitizer removes terminal controls and repairs utf8" {
-    const clean = try sanitizeProcessOutput(std.testing.allocator, "ok\tred\x1b[31m!\x1b[0m\r\n\x00\xc2\x85\xff!", 1024);
-    defer std.testing.allocator.free(clean);
-    try std.testing.expectEqualStrings("ok red!\n�!", clean);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(clean));
-    try std.testing.expect(std.mem.indexOfScalar(u8, clean, 0x1b) == null);
 }

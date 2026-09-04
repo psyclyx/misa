@@ -15,6 +15,8 @@ assert(type(package) == "table" and package.loadlib == nil and type(require) == 
 assert(type(load) == "function" and type(loadstring) == "function" and type(loadfile) == "function" and type(dofile) == "function")
 assert(ffi == nil and jit == nil)
 local ok = pcall(require, "ffi"); assert(not ok)
+package.preload["misa.test.module"] = function() return {answer=42} end
+assert(require("misa.test.module").answer == 42)
 return {setup=function(context)
   assert(context.config.missing == misa.json_null)
   misa.reg_event("app/start", function() return {fx={{type="app/quit"}}} end)
