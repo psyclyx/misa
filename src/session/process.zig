@@ -1,10 +1,13 @@
 //! Direct-argv process execution and captured-output normalization.
 const std = @import("std");
 
+pub const StdoutFormat = enum { text, json_lines };
+
 pub const Spec = struct {
     argv: []const std.json.Value,
     completion: []const u8,
     id: []const u8,
+    stdout_format: StdoutFormat,
 
     pub fn parse(object: std.json.ObjectMap) !Spec {
         if (object.get("stdin") != null) return error.UnsupportedProcessStdin;
@@ -13,14 +16,19 @@ pub const Spec = struct {
             else => return error.InvalidEffect,
         };
         if (argv.len == 0) return error.InvalidEffect;
-        for (argv) |arg| switch (arg) {
-            .string => |string| if (string.len == 0 or std.mem.indexOfScalar(u8, string, 0) != null) return error.InvalidEffect,
+        for (argv, 0..) |arg, index| switch (arg) {
+            .string => |string| if ((index == 0 and string.len == 0) or std.mem.indexOfScalar(u8, string, 0) != null) return error.InvalidEffect,
             else => return error.InvalidEffect,
         };
+        const format = if (object.get("stdout_format")) |value| switch (value) {
+            .string => |string| string,
+            else => return error.InvalidEffect,
+        } else "text";
         return .{
             .argv = argv,
             .completion = nonEmptyString(object, "completion") orelse return error.InvalidEffect,
             .id = nonEmptyString(object, "id") orelse return error.InvalidEffect,
+            .stdout_format = if (std.mem.eql(u8, format, "text")) .text else if (std.mem.eql(u8, format, "json_lines")) .json_lines else return error.InvalidEffect,
         };
     }
 };
@@ -146,12 +154,16 @@ pub fn sanitizeOutput(allocator: std.mem.Allocator, input: []const u8, limit: us
     return out.toOwnedSlice(allocator);
 }
 
-fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+fn optionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
-    const string = switch (value) {
+    return switch (value) {
         .string => |item| item,
-        else => return null,
+        else => null,
     };
+}
+
+fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const string = optionalString(object, name) orelse return null;
     return if (string.len != 0 and std.mem.indexOfScalar(u8, string, 0) == null) string else null;
 }
 

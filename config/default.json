@@ -1,7 +1,7 @@
 {
-  "extensions": ["provider.fake", "agent", "ui"],
+  "extensions": ["provider.fake", "models", "agent", "ui"],
   "config": {
-    "agent": { "provider": "fake" },
+    "models": { "default": "fake/default" },
     "ui": { "plain_prompt": true },
     "providers": {
       "fake": { "responses": ["misa is running\n"] }

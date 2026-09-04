@@ -1,4 +1,14 @@
--- Command provider translates policy effects to a direct-argv native process.
+-- Command provider for tests and user-supplied model adapters.
+local function latest_prompt(messages)
+  local message = messages[#messages]
+  assert(message and message.role == "user", "command provider requires a final user message")
+  local parts = {}
+  for _, block in ipairs(message.content) do if block.type == "text" then parts[#parts + 1] = block.text end end
+  local prompt = table.concat(parts, "\n")
+  assert(prompt ~= "", "command prompt must be nonempty")
+  return prompt
+end
+
 return {
   setup = function(context)
     local providers = type(context.config) == "table" and context.config.providers or nil
@@ -11,18 +21,21 @@ return {
       assert(not configured[i]:find("\0", 1, true), "command argv must not contain NUL")
       argv[i] = configured[i]
     end
+    misa.reg_model({ id = "command/default", provider = "command", model = "default", label = "Command" })
     misa.reg_fx("provider.command", function(effect)
-      assert(type(effect.prompt) == "string" and effect.prompt ~= "", "command prompt must be a nonempty string")
       assert(type(effect.id) == "string" and effect.id ~= "", "command id must be a nonempty string")
       local direct = {}; for i = 1, #argv do direct[i] = argv[i] end
-      direct[#direct + 1] = effect.prompt
+      direct[#direct + 1] = latest_prompt(effect.messages)
       return { type = "process/run", argv = direct, id = effect.id, completion = "provider/command-complete" }
     end)
-    misa.reg_event("provider/command-complete", function(db, event)
+    misa.reg_event("provider/command-complete", function(_, event)
       assert(type(event.id) == "string" and event.id ~= "", "command completion id must be nonempty")
       local next_event
-      if event.ok then next_event = { type = "agent/result", id = event.id, text = event.stdout }
-      else next_event = { type = "agent/error", id = event.id, message = event.stderr ~= "" and event.stderr or ("command exited " .. tostring(event.status)) } end
+      if event.ok then
+        next_event = { type = "agent/result", id = event.id, content = { { type = "text", text = event.stdout } } }
+      else
+        next_event = { type = "agent/error", id = event.id, message = event.stderr ~= "" and event.stderr or ("command exited " .. tostring(event.status)) }
+      end
       return { fx = { { type = "dispatch", event = next_event } } }
     end)
   end,

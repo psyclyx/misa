@@ -5,14 +5,15 @@ system LuaJIT. The TUI uses only the Zig standard library. LuaJIT is the sole
 non-stdlib application dependency.
 
 No extensions are enabled implicitly: `{}` is valid and produces no output.
-The shipped extensions are `provider.fake`, `provider.command`, `agent`, and
-`ui`. Select them, in setup order, through the one `extensions` list:
+The shipped extensions are `models`, `agent`, `ui`, `provider.fake`,
+`provider.command`, and `provider.claude`. Select them through the one ordered
+`extensions` list:
 
 ```json
 {
-  "extensions": ["provider.fake", "agent", "ui"],
+  "extensions": ["provider.fake", "models", "agent", "ui"],
   "config": {
-    "agent": { "provider": "fake" },
+    "models": { "default": "fake/default" },
     "providers": { "fake": { "responses": ["hello\n"] } }
   }
 }
@@ -57,6 +58,10 @@ phase. Setup may register:
 - `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
   or an ordered array of native effects.
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
+- `misa.reg_model(model)`: adds a provider-owned catalogue entry.
+- `misa.reg_tool(tool)`: adds a semantic tool schema and its effect type.
+  `misa.models()`, `misa.model(id)`, `misa.tools()`, and `misa.tool(name)` expose
+  the sealed registries to policy extensions.
 
 Registrations are sealed after setup. Recursive dispatch is unavailable. Each
 transaction takes one bounded working copy of `db`, then commits it only after
@@ -77,7 +82,9 @@ Unknown native effects fail the session. `process/run` invokes direct argv,
 never a shell, captures stdout and stderr with 1 MiB bounds, and never inherits
 the terminal output. Captured tabs are normalized to spaces and malformed UTF-8
 is repaired before completion events are dispatched. Completion events include
-`ok`, `status`, `stdout`, `stderr`, and `id`.
+`ok`, `status`, `stdout`, `stderr`, and `id`. With
+`stdout_format="json_lines"`, successful output is decoded into an ordered
+`records` array instead of being returned as an opaque string.
 
 A view is modest semantic data:
 
@@ -141,14 +148,15 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 
 ## Standard extensions
 
-`agent` stores prompt/status/response/error under `db.agent` and performs one
-completion (no tool loop). `provider.fake` keeps its state under
-`db.providers.fake`; UI editor state lives under `db.ui`.
-`provider.command` translates to direct-argv `process/run`. `ui` owns a
-multiline UTF-8 editor with a byte cursor, insertion, backspace, and left/right
-movement, plus semantic projection. It commits the final result to scrollback
-and quits. Explicit argv works in plain/non-TTY mode; an interactive invocation
-accepts one submission.
+`models` owns selection state and an inline `/model` picker; providers own the
+catalogue entries. `agent` owns normalized conversation history, repeated user
+turns, provider correlation, parallel tool-result collection, and automatic
+continuation after tools. `provider.fake` keeps its state under
+`db.providers.fake`; `provider.command` adapts user executables.
+`provider.claude` invokes Claude Code's stream-JSON process protocol and reuses
+Claude's existing Pro/Max credentials without copying them into Misa. `ui` owns
+the multiline UTF-8 editor and semantic projection. Interactive sessions return
+to the editor after each response; explicit argv remains a single headless turn.
 
 ## Nix
 
@@ -158,9 +166,9 @@ accepts one submission.
 ```nix
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
-  extensions = with p.lib.standardExtensions; [ providerFake agent ui ];
+  extensions = with p.lib.standardExtensions; [ providerFake models agent ui ];
   config = {
-    agent.provider = "fake";
+    models.default = "fake/default";
     providers.fake.responses = [ "done\n" ];
   };
 }

@@ -38,6 +38,12 @@ local function editor(db)
   return ui
 end
 
+local function assistant_text(blocks)
+  local parts = {}
+  for _, block in ipairs(blocks or {}) do if block.type == "text" then parts[#parts + 1] = block.text end end
+  return table.concat(parts, "")
+end
+
 local function editor_position(text, cursor)
   local prefix = text:sub(1, cursor)
   local row, line_start = 1, 0
@@ -77,7 +83,8 @@ return {
       elseif event.kind == "enter" and ui.text ~= "" then
         local prompt = ui.text
         ui.text, ui.cursor = "", 0
-        return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = prompt } } } }
+        local next_event = prompt == "/model" and { type = "model/open" } or { type = "agent/submit", prompt = prompt }
+        return { db = db, fx = { { type = "dispatch", event = next_event } } }
       elseif event.kind == "ctrl_c" or event.kind == "eof" then
         return { db = db, fx = { { type = "app/quit" } } }
       end
@@ -95,12 +102,14 @@ return {
       after = function(tx)
         if not tx.ui_accepts_completion then return tx end
         local agent, event = tx.db.agent, tx.event
-        if event.type == "agent/result" and agent.status == "done" and agent.accepted_request_id == event.id then
-          tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(event.text, "assistant") }
-          tx.fx[#tx.fx + 1] = { type = "app/quit" }
-        elseif event.type == "agent/error" and agent.status == "error" and agent.accepted_request_id == event.id then
+        if event.type == "agent/result" and agent.accepted_request_id == event.id then
+          local text = assistant_text(event.content)
+          if text ~= "" then tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(text, "assistant") } end
+        elseif event.type == "agent/error" and agent.accepted_request_id == event.id then
           tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(tostring(event.message), "error") }
-          tx.fx[#tx.fx + 1] = { type = "app/quit" }
+        end
+        if agent.status == "ready" then
+          tx.fx[#tx.fx + 1] = agent.exit_after_response and { type = "app/quit" } or { type = "terminal/read" }
         end
         return tx
       end,
@@ -110,9 +119,22 @@ return {
       local ui = db.ui or { text = "", cursor = 0 }
       local agent = db.agent or {}
       local lines = {}
+      local model_state = db.models or {}
+      if model_state.picker then
+        for i, model in ipairs(misa.models()) do
+          local marker = i == model_state.index and "> " or "  "
+          lines[#lines + 1] = { spans = {
+            { text = marker, style = i == model_state.index and "accent" or "plain" },
+            { text = model.label or model.id, style = model.id == model_state.selected and "bold" or "plain" },
+            { text = "  " .. model.id, style = "dim" },
+          } }
+        end
+        return { lines = lines, cursor = nil }
+      end
       if agent.status == "working" then lines[#lines + 1] = { spans = { { text = "working…", style = "dim" } } } end
+      if agent.status == "tools" then lines[#lines + 1] = { spans = { { text = "running tools…", style = "dim" } } } end
       local cursor = nil
-      if agent.status ~= "done" and agent.status ~= "error" then
+      if agent.status == "ready" or agent.status == nil then
         local editor_lines = lines_for(ui.text, "user", true)
         table.insert(editor_lines[1].spans, 1, { text = "> ", style = "accent" })
         local editor_row, byte = editor_position(ui.text, ui.cursor)

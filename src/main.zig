@@ -66,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
         const resolved = standard_extensions.resolve(allocator, configured, extension_dir) catch |err| switch (err) {
             error.UnknownStandardExtension => {
                 std.debug.print(
-                    "misa: invalid config '{s}': unknown standard extension ID '{s}' (expected agent, provider.fake, provider.command, or ui; use a path containing '/' or ending in .lua for a custom extension)\n",
+                    "misa: invalid config '{s}': unknown standard extension ID '{s}' (expected agent, models, provider.fake, provider.command, provider.claude, or ui; use a path containing '/' or ending in .lua for a custom extension)\n",
                     .{ path, configured },
                 );
                 std.process.exit(2);

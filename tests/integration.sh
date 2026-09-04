@@ -53,7 +53,7 @@ printf '{"extensions":["%s"],"config":{"nested":{"value":7}}}' "$work/contracts.
 [ "$(MISA_CONFIG="$work/contracts.json" "$MISA_BIN" original)" = 'before,first:derived:ordered,second,after,before' ]
 
 cat >"$work/fake.json" <<'EOF'
-{"extensions":["provider.fake","agent","ui"],"config":{"agent":{"provider":"fake"},"providers":{"fake":{"responses":["fake response\n"]}}}}
+{"extensions":["provider.fake","models","agent","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["fake response\n"]}}}}
 EOF
 [ "$(MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello world)" = 'fake response' ]
 MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello >"$work/exact-output"
@@ -62,7 +62,7 @@ cmp "$work/expected-output" "$work/exact-output"
 
 # Completion does not depend on ui being registered after agent/provider.
 cat >"$work/ui-first.json" <<'EOF'
-{"extensions":["ui","agent","provider.fake"],"config":{"agent":{"provider":"fake"},"providers":{"fake":{"responses":["ui first"]}}}}
+{"extensions":["ui","agent","models","provider.fake"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["ui first"]}}}}
 EOF
 [ "$(MISA_CONFIG="$work/ui-first.json" "$MISA_BIN" hello)" = 'ui first' ]
 
@@ -74,7 +74,7 @@ for prompt do :; done
 printf '%s\n' "$prompt"
 SH
 chmod +x "$work/echo-prompt"
-printf '{"extensions":["provider.command","agent","ui"],"config":{"agent":{"provider":"command"},"providers":{"command":{"argv":["%s"]}}}}' "$work/echo-prompt" >"$work/editor.json"
+printf '{"extensions":["provider.command","models","agent","ui"],"config":{"models":{"default":"command/default"},"providers":{"command":{"argv":["%s"]}}}}' "$work/echo-prompt" >"$work/editor.json"
 printf 'ac\033[Db\033[D\033[Cd\n' | MISA_CONFIG="$work/editor.json" "$MISA_BIN" >"$work/editor-output"
 printf 'abdc\n' >"$work/expected-editor-output"
 cmp "$work/expected-editor-output" "$work/editor-output"
@@ -97,11 +97,25 @@ printf 'result\t%s:\377\n' "$2"
 SH
 chmod +x "$work/provider"
 cat >"$work/command.json" <<EOF
-{"extensions":["provider.command","agent","ui"],"config":{"agent":{"provider":"command"},"providers":{"command":{"argv":["$work/provider","fixed;word"]}}}}
+{"extensions":["provider.command","models","agent","ui"],"config":{"models":{"default":"command/default"},"providers":{"command":{"argv":["$work/provider","fixed;word"]}}}}
 EOF
 (cd "$work" && MISA_CONFIG="$work/command.json" "$MISA_BIN" '$(touch SHOULD_NOT_EXIST);' "it's" literal >"$work/command-output" && [ ! -e SHOULD_NOT_EXIST ])
 printf 'result $(touch SHOULD_NOT_EXIST); it'"'"'s literal:�\n' >"$work/expected-command-output"
 cmp "$work/expected-command-output" "$work/command-output"
+
+# Claude provider speaks the CLI's stream-json protocol, including the empty
+# --tools argument, without requiring the Agent SDK package or copying auth.
+cat >"$work/claude" <<'SH'
+#!/bin/sh
+saw_empty=false
+for arg do [ -z "$arg" ] && saw_empty=true; done
+[ "$saw_empty" = true ] || exit 30
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"test"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"claude result","session_id":"test"}'
+SH
+chmod +x "$work/claude"
+printf '{"extensions":["provider.claude","models","agent","ui"],"config":{"models":{"default":"claude/sonnet"},"providers":{"claude":{"executable":"%s"}}}}' "$work/claude" >"$work/claude.json"
+[ "$(MISA_CONFIG="$work/claude.json" "$MISA_BIN" hello)" = 'claude result' ]
 
 # Config and argv remain available in base cofx; plain output contains no ANSI.
 cat >"$work/context.lua" <<'LUA'

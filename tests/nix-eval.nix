@@ -40,8 +40,10 @@ in
 assert
   standard == {
     agent = "agent";
+    models = "models";
     providerFake = "provider.fake";
     providerCommand = "provider.command";
+    providerClaude = "provider.claude";
     ui = "ui";
   };
 assert
@@ -64,8 +66,10 @@ assert
     "provider.fake"
   ];
 assert builtins.pathExists ../extensions/agent.lua;
+assert builtins.pathExists ../extensions/models.lua;
 assert builtins.pathExists ../extensions/provider/fake.lua;
 assert builtins.pathExists ../extensions/provider/command.lua;
+assert builtins.pathExists ../extensions/provider/claude.lua;
 assert builtins.pathExists ../extensions/ui.lua;
 # Instantiate both the package and configured wrapper without recursively
 # building either from this evaluation-only test.

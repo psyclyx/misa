@@ -7,14 +7,15 @@ return {
     assert(type(responses) == "table", "config.providers.fake.responses must be an array of strings")
     for i = 1, #responses do assert(type(responses[i]) == "string", "fake responses must be strings") end
 
+    misa.reg_model({ id = "fake/default", provider = "fake", model = "default", label = "Fake" })
+
     misa.reg_fx("provider.fake", function(effect)
-      assert(type(effect.prompt) == "string" and effect.prompt ~= "", "fake prompt must be a nonempty string")
+      assert(type(effect.messages) == "table" and #effect.messages > 0, "fake messages must be nonempty")
       assert(type(effect.id) == "string" and effect.id ~= "", "fake id must be a nonempty string")
-      return { type = "dispatch", event = { type = "provider/fake", id = effect.id, prompt = effect.prompt } }
+      return { type = "dispatch", event = { type = "provider/fake", id = effect.id } }
     end)
 
     misa.reg_event("provider/fake", function(db, event)
-      assert(type(event.prompt) == "string" and event.prompt ~= "", "fake prompt must be a nonempty string")
       assert(type(event.id) == "string" and event.id ~= "", "fake id must be a nonempty string")
       db.providers = db.providers or {}
       local state = db.providers.fake or { next_response = 1 }
@@ -24,7 +25,7 @@ return {
       if type(text) ~= "string" then
         return { db = db, fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = "fake responses exhausted" } } } }
       end
-      return { db = db, fx = { { type = "dispatch", event = { type = "agent/result", id = event.id, text = text } } } }
+      return { db = db, fx = { { type = "dispatch", event = { type = "agent/result", id = event.id, content = { { type = "text", text = text } } } } } }
     end)
   end,
 }

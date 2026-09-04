@@ -136,16 +136,31 @@ pub const Session = struct {
     fn runProcess(self: *Session, spec: process.Spec) !void {
         const result = try process.run(self.allocator, self.io, spec);
         defer result.deinit(self.allocator);
-        const event = try std.json.Stringify.valueAlloc(self.allocator, .{
-            .type = spec.completion,
-            .id = spec.id,
-            .ok = result.status == 0,
-            .stdout = result.stdout,
-            .stderr = result.stderr,
-            .status = result.status,
-        }, .{});
-        defer self.allocator.free(event);
-        try self.enqueue(event);
+        if (spec.stdout_format == .json_lines and result.status == 0) {
+            var records = try parseJsonLines(self.allocator, result.stdout);
+            defer records.deinit();
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion,
+                .id = spec.id,
+                .ok = true,
+                .records = records.value,
+                .stderr = result.stderr,
+                .status = result.status,
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+        } else {
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion,
+                .id = spec.id,
+                .ok = result.status == 0,
+                .stdout = result.stdout,
+                .stderr = result.stderr,
+                .status = result.status,
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+        }
     }
 
     fn enqueueInput(self: *Session, event: terminal_module.Event) !void {
@@ -165,6 +180,23 @@ pub const Session = struct {
         try self.enqueue(json);
     }
 };
+fn parseJsonLines(allocator: std.mem.Allocator, source: []const u8) !std.json.Parsed(std.json.Value) {
+    var document: std.ArrayList(u8) = .empty;
+    defer document.deinit(allocator);
+    try document.append(allocator, '[');
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    var first = true;
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        if (!first) try document.append(allocator, ',');
+        first = false;
+        try document.appendSlice(allocator, line);
+    }
+    try document.append(allocator, ']');
+    return std.json.parseFromSlice(std.json.Value, allocator, document.items, .{ .allocate = .alloc_always });
+}
+
 fn inputJson(allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, .{ .type = "terminal/input", .kind = kind }, .{});
 }
@@ -176,6 +208,13 @@ fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8
         else => return null,
     };
     return if (string.len != 0 and std.mem.indexOfScalar(u8, string, 0) == null) string else null;
+}
+
+test "JSON lines become one owned array" {
+    var parsed = try parseJsonLines(std.testing.allocator, "{\"type\":\"start\"}\n\n{\"type\":\"result\",\"text\":\"ok\"}\n");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.array.items.len);
+    try std.testing.expectEqualStrings("ok", parsed.value.array.items[1].object.get("text").?.string);
 }
 
 test "effect validation covers the whole native contract" {

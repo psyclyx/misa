@@ -2,6 +2,7 @@
 local traceback = debug.traceback
 local events, interceptors, interceptor_ids = {}, {}, {}
 local cofx_fns, cofx_order, fx_fns = {}, {}, {}
+local models, model_by_id, tools, tool_by_name = {}, {}, {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
 
@@ -48,6 +49,34 @@ function misa.reg_view(fn)
   assert(type(fn) == "function" and view == nil, "view already registered")
   view = fn
 end
+
+function misa.reg_model(model)
+  open()
+  assert(type(model) == "table" and type(model.id) == "string" and model.id ~= "", "model.id must be a nonempty string")
+  assert(type(model.provider) == "string" and model.provider ~= "", "model.provider must be a nonempty string")
+  assert(type(model.model) == "string" and model.model ~= "", "model.model must be a nonempty string")
+  assert(model.label == nil or type(model.label) == "string", "model.label must be a string")
+  assert(model_by_id[model.id] == nil, "duplicate model")
+  model_by_id[model.id] = model
+  models[#models + 1] = model
+end
+
+function misa.models() return models end
+function misa.model(id) return model_by_id[id] end
+
+function misa.reg_tool(tool)
+  open()
+  assert(type(tool) == "table" and type(tool.name) == "string" and tool.name ~= "", "tool.name must be a nonempty string")
+  assert(type(tool.description) == "string", "tool.description must be a string")
+  assert(type(tool.input_schema) == "table", "tool.input_schema must be a table")
+  assert(type(tool.effect) == "string" and tool.effect ~= "", "tool.effect must be a nonempty string")
+  assert(tool_by_name[tool.name] == nil, "duplicate tool")
+  tool_by_name[tool.name] = tool
+  tools[#tools + 1] = tool
+end
+
+function misa.tools() return tools end
+function misa.tool(name) return tool_by_name[name] end
 
 local function finite(value)
   return value == value and value ~= math.huge and value ~= -math.huge

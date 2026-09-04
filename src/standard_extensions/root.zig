@@ -6,8 +6,10 @@ pub const default_config_path = build_options.default_config_path;
 
 pub const ids = [_][]const u8{
     "agent",
+    "models",
     "provider.fake",
     "provider.command",
+    "provider.claude",
     "ui",
 };
 
@@ -22,8 +24,10 @@ pub fn isLiteralPath(value: []const u8) bool {
 
 pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "agent")) return "agent.lua";
+    if (std.mem.eql(u8, id, "models")) return "models.lua";
     if (std.mem.eql(u8, id, "provider.fake")) return "provider/fake.lua";
     if (std.mem.eql(u8, id, "provider.command")) return "provider/command.lua";
+    if (std.mem.eql(u8, id, "provider.claude")) return "provider/claude.lua";
     if (std.mem.eql(u8, id, "ui")) return "ui.lua";
     return null;
 }
@@ -45,12 +49,14 @@ pub fn resolve(
 
 test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("agent.lua", catalogPath("agent").?);
+    try std.testing.expectEqualStrings("models.lua", catalogPath("models").?);
     try std.testing.expectEqualStrings("provider/fake.lua", catalogPath("provider.fake").?);
     try std.testing.expectEqualStrings("provider/command.lua", catalogPath("provider.command").?);
+    try std.testing.expectEqualStrings("provider/claude.lua", catalogPath("provider.claude").?);
     try std.testing.expect(catalogPath("provider") == null);
     try std.testing.expect(catalogPath("Agent") == null);
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
-    try std.testing.expectEqual(@as(usize, 4), ids.len);
+    try std.testing.expectEqual(@as(usize, 6), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {
