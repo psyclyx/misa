@@ -1,0 +1,17 @@
+tree-root-file = "build.zig.zon"
+walk = "filesystem"
+excludes = [".direnv/*", ".zig-cache/*", "npins/*", "zig-out/*"]
+
+[formatter.zig]
+command = "zig"
+options = ["fmt"]
+includes = ["*.zig"]
+
+[formatter.nix]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.markdown]
+command = "prettier"
+options = ["--write"]
+includes = ["*.md"]
