@@ -9,7 +9,7 @@ return {
       local item = command
       local event_type = "auth/" .. item.action
       misa.reg_command({ name = item.name, description = item.description, event = event_type, completion = "auth-provider" })
-      misa.reg_event(event_type, function(_, event)
+      misa.reg_event(event_type, function(_, event, cofx)
         local provider = type(event.arguments) == "string" and event.arguments:match("^%s*(%S+)%s*$") or nil
         if not provider then
           return { fx = { { type = "dispatch", event = {
@@ -17,10 +17,15 @@ return {
             message = "usage: " .. item.name .. " <provider>",
           } } } }
         end
-        return { fx = { {
+        local effects = {}
+        if cofx.terminal.interactive then effects[#effects + 1] = {
+          type = "view/commit", lines = { { spans = { { text = item.action .. " " .. provider .. "…", style = "dim" } } } },
+        } end
+        effects[#effects + 1] = {
           type = "auth/command", action = item.action, provider = provider,
           completion = "auth/complete", id = item.action .. ":" .. provider,
-        } } }
+        }
+        return { fx = effects }
       end)
     end
 
