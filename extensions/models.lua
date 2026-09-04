@@ -18,7 +18,18 @@ end
 
 return {
   setup = function(context)
-    misa.reg_command({ name = "/model", description = "Choose the active model", event = "model/open" })
+    misa.reg_command({
+      name = "/model", description = "Choose the active model", event = "model/open",
+      complete = function(prefix, db)
+        local result = {}
+        for _, model in ipairs(db.models and db.models.entries or {}) do
+          if model.id:sub(1, #prefix) == prefix then
+            result[#result + 1] = { value = model.id, label = model.id, description = model.label or "" }
+          end
+        end
+        return result
+      end,
+    })
     local configured = type(context.config) == "table" and context.config.models or nil
     local default = type(configured) == "table" and configured.default or nil
     if default ~= nil then assert(type(default) == "string" and default ~= "", "config.models.default must be a nonempty string") end
@@ -37,9 +48,15 @@ return {
       end,
     })
 
-    misa.reg_event("model/open", function(db)
+    misa.reg_event("model/open", function(db, event)
       local state = db.models
       assert(state and find(state.entries, state.selected), "model state is not initialized")
+      local requested = type(event.arguments) == "string" and event.arguments:match("^%s*(%S+)%s*$") or nil
+      if requested then
+        assert(find(state.entries, requested), "unknown model")
+        state.selected, state.index, state.picker = requested, selected_index(state.entries, requested), false
+        return { db = db, fx = { { type = "terminal/read" } } }
+      end
       state.picker = true
       state.index = selected_index(state.entries, state.selected)
       return { db = db, fx = { { type = "terminal/read" } } }

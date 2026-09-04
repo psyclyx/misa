@@ -48,7 +48,8 @@ function misa.protocols.openai(spec)
   end
 
   if spec.models_url then
-    misa.reg_event("model/open", function()
+    misa.reg_event("model/open", function(_, event)
+      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
       local credential = spec.models_credential == false and nil or { id = spec.credential, header = "authorization", prefix = "Bearer " }
       return { fx = { {
         type = "http/request", method = "GET", url = spec.models_url,

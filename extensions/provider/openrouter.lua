@@ -1,6 +1,7 @@
 -- OpenRouter API provider declaration.
 return {
   setup = function(context)
+    misa.reg_completion("auth-provider", { value = "openrouter", label = "OpenRouter", description = "OpenRouter OAuth" })
     assert(misa.protocols and misa.protocols.openai, "provider.openrouter requires protocol.openai first")
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.openrouter or nil

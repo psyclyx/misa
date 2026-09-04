@@ -33,8 +33,8 @@ PATH="$work/bin:$PATH" "$MISA_BIN" login claude
 [ "$(PATH="$work/bin:$PATH" "$MISA_BIN" status claude)" = 'claude status' ]
 PATH="$work/bin:$PATH" "$MISA_BIN" logout claude
 [ ! -e "$work/session-auth.json" ]
-printf '%s' '{"extensions":["auth","ui"]}' >"$work/auth-ui.json"
-[ "$(printf '/status openai\n' | MISA_CONFIG="$work/auth-ui.json" "$MISA_BIN")" = 'logged out' ]
+printf '%s' '{"extensions":["auth","protocol.openai","provider.openai","ui"],"config":{"providers":{"openai":{"discover_models":false}}}}' >"$work/auth-ui.json"
+[ "$(printf '/status op\t\n' | MISA_CONFIG="$work/auth-ui.json" "$MISA_BIN")" = 'logged out' ]
 
 stage=provider-composition
 # Real provider declarations compose without credentials until they are used.

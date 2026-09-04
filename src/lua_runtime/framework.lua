@@ -4,6 +4,7 @@ local events, interceptors, interceptor_ids = {}, {}, {}
 local cofx_fns, cofx_order, fx_fns = {}, {}, {}
 local models, model_by_id, tools, tool_by_name = {}, {}, {}, {}
 local commands, command_by_name = {}, {}
+local completions, completion_values = {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
 
@@ -71,6 +72,9 @@ function misa.reg_command(command)
   assert(type(command) == "table" and type(command.name) == "string" and command.name:match("^/[%w_-]+$"), "command.name must look like /name")
   assert(type(command.description) == "string", "command.description must be a string")
   assert(type(command.event) == "string" and command.event ~= "", "command.event must be nonempty")
+  assert(command.completion == nil or type(command.completion) == "string", "command.completion must name a completion group")
+  assert(command.complete == nil or type(command.complete) == "function", "command.complete must be a function")
+  assert(not (command.completion and command.complete), "command may have one completion source")
   assert(command_by_name[command.name] == nil, "duplicate command")
   command_by_name[command.name] = command
   commands[#commands + 1] = command
@@ -78,6 +82,32 @@ end
 
 function misa.commands() return commands end
 function misa.command(name) return command_by_name[name] end
+
+function misa.reg_completion(group, candidate)
+  open()
+  assert(type(group) == "string" and group ~= "", "completion group must be nonempty")
+  assert(type(candidate) == "table" and type(candidate.value) == "string" and candidate.value ~= "", "completion value must be nonempty")
+  assert(candidate.label == nil or type(candidate.label) == "string", "completion label must be a string")
+  assert(candidate.description == nil or type(candidate.description) == "string", "completion description must be a string")
+  completions[group] = completions[group] or {}
+  completion_values[group] = completion_values[group] or {}
+  assert(not completion_values[group][candidate.value], "duplicate completion value")
+  completion_values[group][candidate.value] = true
+  completions[group][#completions[group] + 1] = candidate
+end
+
+function misa.command_completions(command, prefix, state)
+  assert(type(command) == "table" and type(prefix) == "string", "invalid completion request")
+  local source = command.complete and command.complete(prefix, state) or completions[command.completion] or {}
+  assert(type(source) == "table", "command completer must return an array")
+  local result = {}
+  for _, candidate in ipairs(source) do
+    assert(type(candidate) == "table" and type(candidate.value) == "string", "invalid completion candidate")
+    if candidate.value:sub(1, #prefix) == prefix then result[#result + 1] = candidate end
+  end
+  table.sort(result, function(left, right) return left.value < right.value end)
+  return result
+end
 
 function misa.reg_tool(tool)
   open()

@@ -1,6 +1,7 @@
 -- Anthropic API provider declaration. Secrets are resolved natively by ID.
 return {
   setup = function(context)
+    misa.reg_completion("auth-provider", { value = "anthropic", label = "Anthropic", description = "Anthropic API key" })
     assert(misa.protocols and misa.protocols.anthropic, "provider.anthropic requires protocol.anthropic first")
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.anthropic or nil

@@ -44,11 +44,26 @@ local function labeled_lines(label, text, style)
   return lines
 end
 
-local function command_matches(prefix)
+local function completion_matches(input, db)
   local matches = {}
-  if prefix:sub(1, 1) ~= "/" or prefix:find("%s") then return matches end
+  if input:sub(1, 1) ~= "/" then return matches end
+  local command_name, argument_prefix = input:match("^(%S+)%s+(.*)$")
+  if command_name then
+    local command = misa.command(command_name)
+    if not command then return matches end
+    for _, candidate in ipairs(misa.command_completions(command, argument_prefix, db)) do
+      matches[#matches + 1] = {
+        text = command.name .. " " .. candidate.value,
+        label = candidate.label or candidate.value,
+        description = candidate.description or "",
+      }
+    end
+    return matches
+  end
   for _, command in ipairs(misa.commands()) do
-    if command.name:sub(1, #prefix) == prefix then matches[#matches + 1] = command end
+    if command.name:sub(1, #input) == input then
+      matches[#matches + 1] = { text = command.name, label = command.name, description = command.description }
+    end
   end
   return matches
 end
@@ -105,18 +120,18 @@ return {
         ui.completion_prefix, ui.completion_index = nil, nil
       elseif event.kind == "tab" then
         local prefix = ui.completion_prefix or ui.text
-        local matches = command_matches(prefix)
+        local matches = completion_matches(prefix, db)
         if #matches > 0 then
           ui.completion_index = ui.completion_index and (ui.completion_index % #matches + 1) or 1
           ui.completion_prefix = prefix
-          ui.text, ui.cursor = matches[ui.completion_index].name, #matches[ui.completion_index].name
+          ui.text, ui.cursor = matches[ui.completion_index].text, #matches[ui.completion_index].text
         end
       elseif (event.kind == "arrow_up" or event.kind == "arrow_down") and ui.completion_prefix then
-        local matches = command_matches(ui.completion_prefix)
+        local matches = completion_matches(ui.completion_prefix, db)
         if #matches > 0 then
           local delta = event.kind == "arrow_up" and -1 or 1
           ui.completion_index = ((ui.completion_index or 1) - 1 + delta) % #matches + 1
-          ui.text, ui.cursor = matches[ui.completion_index].name, #matches[ui.completion_index].name
+          ui.text, ui.cursor = matches[ui.completion_index].text, #matches[ui.completion_index].text
         end
       elseif event.kind == "arrow_left" then
         ui.completion_prefix, ui.completion_index = nil, nil
@@ -237,12 +252,12 @@ return {
         local editor_row, byte = editor_position(ui.text, ui.cursor)
         local row = #lines + editor_row
         for i = 1, #editor_lines do lines[#lines + 1] = editor_lines[i] end
-        local matches = command_matches(ui.completion_prefix or ui.text)
-        for i, command in ipairs(matches) do
+        local matches = completion_matches(ui.completion_prefix or ui.text, db)
+        for i, candidate in ipairs(matches) do
           local active = ui.completion_prefix and i == ui.completion_index
           lines[#lines + 1] = { spans = {
             { text = active and "> " or "  ", style = active and "accent" or "plain" },
-            { text = command.name, style = "bold" }, { text = "  " .. command.description, style = "dim" },
+            { text = candidate.label, style = "bold" }, { text = "  " .. candidate.description, style = "dim" },
           } }
         end
         row = math.max(1, math.min(row, #lines, cofx.terminal.lines))

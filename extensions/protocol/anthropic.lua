@@ -59,7 +59,8 @@ function misa.protocols.anthropic(spec)
   end
 
   if spec.models_url then
-    misa.reg_event("model/open", function()
+    misa.reg_event("model/open", function(_, event)
+      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
       local headers = { { name = "anthropic-version", value = "2023-06-01" } }
       for _, header in ipairs(spec.model_headers or spec.headers or {}) do headers[#headers + 1] = header end
       return { fx = { {

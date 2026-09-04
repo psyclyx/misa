@@ -30,6 +30,7 @@ end
 
 return {
   setup = function(context)
+    misa.reg_completion("auth-provider", { value = "openai-codex", label = "OpenAI Codex", description = "ChatGPT subscription OAuth" })
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.openai_codex or nil
     config = type(config) == "table" and config or {}

@@ -1,6 +1,7 @@
 -- Kimi Code subscription/API provider over Anthropic Messages.
 return {
   setup = function(context)
+    misa.reg_completion("auth-provider", { value = "kimi-coding", label = "Kimi Coding", description = "Kimi coding plan OAuth" })
     assert(misa.protocols and misa.protocols.anthropic, "provider.kimi requires protocol.anthropic first")
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.kimi or nil

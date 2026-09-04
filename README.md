@@ -70,9 +70,12 @@ phase. Setup may register:
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
 - `misa.reg_model(model)`: adds a provider-owned catalogue entry, including an
   optional `context_window`.
-- `misa.reg_command({name,description,event})`: adds a generic slash command;
-  the UI discovers and completes these registrations rather than hard-coding
-  command names.
+- `misa.reg_command({name,description,event,completion?,complete?})`: adds a
+  generic slash command. `completion` names a shared static candidate group;
+  `complete(prefix,db)` supplies dynamic candidates when needed.
+- `misa.reg_completion(group,{value,label?,description?})`: lets any plugin add
+  a candidate to a shared completion group. The UI handles filtering, sorting,
+  display, and insertion, so providers only declare their authentication ID.
 - `misa.reg_tool(tool)`: adds a semantic tool schema and its effect type.
   `misa.models()`, `misa.model(id)`, `misa.commands()`, `misa.command(name)`,
   `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
@@ -181,8 +184,10 @@ catalogue entries. Opening the picker refreshes model catalogues from OpenAI,
 Anthropic, OpenRouter, and Kimi when their APIs support listing models, while
 retaining static fallbacks on authentication or network failure. OpenRouter's
 public catalogue needs no credential. Set a provider's `discover_models` to
-`false`, or provide an explicit `models` list, to keep a fixed catalogue. The editor discovers registered slash commands, displays
-matching descriptions, and cycles matches with Tab. Its live startup banner
+`false`, or provide an explicit `models` list, to keep a fixed catalogue. The editor discovers registered slash commands and argument candidates,
+displays matching descriptions, and cycles matches with Tab. Login commands
+automatically complete authentication providers contributed by enabled
+provider plugins; `/model` completes the current dynamic model catalogue. Its live startup banner
 shows the selected model, cumulative session tokens, and latest context use.
 Interactive user and assistant messages are committed to scrollback as the
 transcript grows. `/clear` resets in-memory conversation and usage without

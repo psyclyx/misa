@@ -1,6 +1,7 @@
 -- OpenAI API provider declaration. API keys remain in the native auth store.
 return {
   setup = function(context)
+    misa.reg_completion("auth-provider", { value = "openai", label = "OpenAI", description = "OpenAI API key" })
     assert(misa.protocols and misa.protocols.openai, "provider.openai requires protocol.openai first")
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.openai or nil

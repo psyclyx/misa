@@ -8,7 +8,7 @@ return {
     }) do
       local item = command
       local event_type = "auth/" .. item.action
-      misa.reg_command({ name = item.name, description = item.description, event = event_type })
+      misa.reg_command({ name = item.name, description = item.description, event = event_type, completion = "auth-provider" })
       misa.reg_event(event_type, function(_, event)
         local provider = type(event.arguments) == "string" and event.arguments:match("^%s*(%S+)%s*$") or nil
         if not provider then

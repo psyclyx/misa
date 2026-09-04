@@ -44,6 +44,7 @@ end
 
 return {
   setup = function(context)
+    misa.reg_completion("auth-provider", { value = "claude", label = "Claude", description = "Claude Pro/Max via Claude Code" })
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.claude or nil
     config = type(config) == "table" and config or {}
