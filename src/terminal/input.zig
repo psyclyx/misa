@@ -12,6 +12,7 @@ pub const Event = union(enum) {
     arrow_right,
     escape,
     ctrl_c,
+    ctrl_d,
     eof,
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
@@ -84,7 +85,7 @@ pub const Decoder = struct {
             }
             if (byte == 4) {
                 self.consume(1);
-                try out.append(allocator, .eof);
+                try out.append(allocator, .ctrl_d);
                 continue;
             }
             if (byte == '\r') {
@@ -237,15 +238,15 @@ test "decoder handles fragmented safe multiline paste, escape timeout, ctrl-d, a
     var joined: std.ArrayList(u8) = .empty;
     defer joined.deinit(std.testing.allocator);
     var saw_escape = false;
-    var saw_eof = false;
+    var saw_ctrl_d = false;
     for (events.items) |event| switch (event) {
         .text => |text| try joined.appendSlice(std.testing.allocator, text),
         .escape => saw_escape = true,
-        .eof => saw_eof = true,
+        .ctrl_d => saw_ctrl_d = true,
         else => {},
     };
     try std.testing.expectEqualStrings("a\nb X�☃", joined.items);
-    try std.testing.expect(saw_escape and saw_eof);
+    try std.testing.expect(saw_escape and saw_ctrl_d);
 }
 
 test "decoder exposes tab as a semantic event" {

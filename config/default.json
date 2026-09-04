@@ -1,5 +1,5 @@
 {
-  "extensions": ["provider.claude", "tool.files", "tool.shell", "models", "agent", "ui"],
+  "extensions": ["provider.claude", "auth", "tool.files", "tool.shell", "models", "agent", "ui"],
   "config": {
     "models": { "default": "claude/sonnet" },
     "ui": { "plain_prompt": true }

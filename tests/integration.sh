@@ -33,6 +33,8 @@ PATH="$work/bin:$PATH" "$MISA_BIN" login claude
 [ "$(PATH="$work/bin:$PATH" "$MISA_BIN" status claude)" = 'claude status' ]
 PATH="$work/bin:$PATH" "$MISA_BIN" logout claude
 [ ! -e "$work/session-auth.json" ]
+printf '%s' '{"extensions":["auth","ui"]}' >"$work/auth-ui.json"
+[ "$(printf '/status openai\n' | MISA_CONFIG="$work/auth-ui.json" "$MISA_BIN")" = 'logged out' ]
 
 stage=provider-composition
 # Real provider declarations compose without credentials until they are used.
@@ -102,7 +104,8 @@ return {setup=function()
 end}
 LUA
 printf '{"extensions":["ui","%s"]}' "$work/command-completion.lua" >"$work/command-completion.json"
-[ "$(printf '/p\t\n' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" = pong ]
+[ "$(printf 'discard me\003/p\t\n' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" = pong ]
+[ -z "$(printf '\004' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" ]
 
 stage=dynamic-models
 cat >"$work/dynamic-models.lua" <<'LUA'

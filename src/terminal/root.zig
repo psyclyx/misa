@@ -44,6 +44,22 @@ fn restoreOnSignal(sig: posix.SIG) callconv(.c) void {
     }
 }
 
+fn rawMode(original: posix.termios) posix.termios {
+    var raw = original;
+    raw.lflag.ICANON = false;
+    raw.lflag.ECHO = false;
+    raw.lflag.IEXTEN = false;
+    raw.lflag.ISIG = false;
+    raw.iflag.IXON = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.BRKINT = false;
+    raw.iflag.INPCK = false;
+    raw.iflag.ISTRIP = false;
+    raw.cc[@intFromEnum(posix.V.MIN)] = 0;
+    raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+    return raw;
+}
+
 pub const Terminal = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -67,18 +83,7 @@ pub const Terminal = struct {
         var self: Terminal = .{ .allocator = allocator, .io = io, .interactive = interactive, .dimensions = dimensions(environ) };
         if (interactive) {
             self.saved = input_attr.?;
-            var raw = input_attr.?;
-            raw.lflag.ICANON = false;
-            raw.lflag.ECHO = false;
-            raw.lflag.IEXTEN = false;
-            raw.lflag.ISIG = false;
-            raw.iflag.IXON = false;
-            raw.iflag.ICRNL = false;
-            raw.iflag.BRKINT = false;
-            raw.iflag.INPCK = false;
-            raw.iflag.ISTRIP = false;
-            raw.cc[@intFromEnum(posix.V.MIN)] = 0;
-            raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+            const raw = rawMode(input_attr.?);
             try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, raw);
             errdefer posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, input_attr.?) catch {};
             signal_state.saved_termios = input_attr.?;
@@ -95,6 +100,14 @@ pub const Terminal = struct {
             // not enable it because std.posix exposes no portable async-safe write.
         }
         return self;
+    }
+
+    pub fn suspendInput(self: *Terminal) !void {
+        if (self.saved) |saved| try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved);
+    }
+
+    pub fn resumeInput(self: *Terminal) !void {
+        if (self.saved) |saved| try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, rawMode(saved));
     }
 
     pub fn deinit(self: *Terminal) void {

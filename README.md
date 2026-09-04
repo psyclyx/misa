@@ -5,7 +5,7 @@ system LuaJIT. The TUI uses only the Zig standard library. LuaJIT is the sole
 non-stdlib application dependency.
 
 No extensions are enabled implicitly: `{}` is valid and produces no output.
-The shipped extensions include `models`, `agent`, `ui`, protocol adapters,
+The shipped extensions include `models`, `agent`, `auth`, `ui`, protocol adapters,
 and fake, command, Claude Code, OpenAI, Anthropic, OpenRouter, and Kimi
 providers. `tool.files` and `tool.shell` provide optional coding tools. Select
 them through the one ordered `extensions` list. Protocol
@@ -15,6 +15,7 @@ adapters precede the API providers that use them:
 {
   "extensions": [
     "provider.claude",
+    "auth",
     "tool.files",
     "tool.shell",
     "models",
@@ -228,7 +229,9 @@ terminal echo. `misa login openai-codex` uses OpenAI's device flow for a
 ChatGPT subscription, `misa login kimi-coding` uses Kimi's device flow, and
 `misa login openrouter` uses OpenRouter's headless PKCE flow. Use
 `misa status PROVIDER` to inspect login state without exposing credential data
-and `misa logout PROVIDER` to remove it. For `claude`, all three commands are
+and `misa logout PROVIDER` to remove it. The `auth` extension provides the same
+flows inside the TUI as `/login PROVIDER`, `/status PROVIDER`, and
+`/logout PROVIDER`. For `claude`, all three commands are
 delegated to `claude auth`. OAuth access credentials are refreshed from their
 stored refresh tokens. Credentials are
 written atomically with mode `0600` beneath a mode `0700` directory. The

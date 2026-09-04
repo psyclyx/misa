@@ -139,7 +139,12 @@ return {
         if cofx.terminal.interactive then effects[#effects + 1] = { type = "view/commit", lines = labeled_lines("You", prompt, "user") } end
         effects[#effects + 1] = { type = "dispatch", event = { type = "agent/submit", prompt = prompt } }
         return { db = db, fx = effects }
-      elseif event.kind == "ctrl_c" or event.kind == "eof" then
+      elseif event.kind == "ctrl_c" then
+        ui.text, ui.cursor, ui.completion_prefix, ui.completion_index = "", 0, nil, nil
+      elseif event.kind == "ctrl_d" then
+        if ui.text == "" then return { db = db, fx = { { type = "app/quit" } } } end
+        if ui.cursor < #ui.text then ui.text = ui.text:sub(1, ui.cursor) .. ui.text:sub(next_cursor(ui.text, ui.cursor) + 1) end
+      elseif event.kind == "eof" then
         return { db = db, fx = { { type = "app/quit" } } }
       end
       return { db = db, fx = { { type = "terminal/read" } } }

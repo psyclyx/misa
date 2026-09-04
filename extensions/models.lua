@@ -64,7 +64,7 @@ return {
         state.index = state.index == #entries and 1 or state.index + 1
       elseif event.kind == "enter" then
         state.selected, state.picker = entries[state.index].id, false
-      elseif event.kind == "escape" or event.kind == "ctrl_c" or event.kind == "eof" then
+      elseif event.kind == "escape" or event.kind == "ctrl_c" or event.kind == "ctrl_d" or event.kind == "eof" then
         state.picker = false
       end
       return { db = db, fx = { { type = "terminal/read" } } }

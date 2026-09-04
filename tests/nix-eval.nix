@@ -40,6 +40,7 @@ in
 assert
   standard == {
     agent = "agent";
+    auth = "auth";
     models = "models";
     providerFake = "provider.fake";
     providerCommand = "provider.command";
@@ -75,6 +76,7 @@ assert
     "provider.fake"
   ];
 assert builtins.pathExists ../extensions/agent.lua;
+assert builtins.pathExists ../extensions/auth.lua;
 assert builtins.pathExists ../extensions/models.lua;
 assert builtins.pathExists ../extensions/provider/fake.lua;
 assert builtins.pathExists ../extensions/provider/command.lua;

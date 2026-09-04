@@ -8,6 +8,7 @@ const terminal_module = @import("misa_terminal");
 const process = @import("misa_process");
 
 const JsonDecode = struct { source: []const u8, completion: []const u8, id: []const u8 };
+const AuthCommand = struct { action: auth.Action, provider: []const u8, completion: []const u8, id: []const u8 };
 
 const NativeEffect = union(enum) {
     dispatch: std.json.Value,
@@ -18,6 +19,7 @@ const NativeEffect = union(enum) {
     http_request: http.Spec,
     file: file.Spec,
     json_decode: JsonDecode,
+    auth_command: AuthCommand,
 
     fn parse(value: std.json.Value) !NativeEffect {
         const object = switch (value) {
@@ -44,6 +46,16 @@ const NativeEffect = union(enum) {
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
         if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
         if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
+        if (std.mem.eql(u8, kind, "auth/command")) {
+            const action_name = nonEmptyStringField(object, "action") orelse return error.InvalidEffect;
+            const action: auth.Action = if (std.mem.eql(u8, action_name, "login")) .login else if (std.mem.eql(u8, action_name, "logout")) .logout else if (std.mem.eql(u8, action_name, "status")) .status else return error.InvalidEffect;
+            return .{ .auth_command = .{
+                .action = action,
+                .provider = nonEmptyStringField(object, "provider") orelse return error.InvalidEffect,
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            } };
+        }
         if (std.mem.eql(u8, kind, "json/decode")) return .{ .json_decode = .{
             .source = stringField(object, "source") orelse return error.InvalidEffect,
             .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
@@ -59,6 +71,7 @@ pub const Session = struct {
     runtime: *lua.Runtime,
     terminal: *terminal_module.Terminal,
     auth_store: ?*auth.Store,
+    environ: *const std.process.Environ.Map,
     queue: std.ArrayList([]u8) = .empty,
     queue_head: usize = 0,
     input_events: std.ArrayList(terminal_module.Event) = .empty,
@@ -141,6 +154,7 @@ pub const Session = struct {
             .http_request => |spec| try self.runHttp(spec),
             .file => |spec| try self.runFile(spec),
             .json_decode => |spec| try self.decodeJson(spec),
+            .auth_command => |spec| try self.runAuth(spec),
         }
     }
 
@@ -193,6 +207,41 @@ pub const Session = struct {
             defer self.allocator.free(event);
             try self.enqueue(event);
         }
+    }
+
+    fn runAuth(self: *Session, spec: AuthCommand) !void {
+        try self.terminal.suspendInput();
+        defer self.terminal.resumeInput() catch {};
+        const logged_in = auth.command(self.allocator, self.io, self.environ, spec.action, spec.provider) catch |err| {
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion,
+                .id = spec.id,
+                .ok = false,
+                .message = @errorName(err),
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+            return;
+        };
+        if (self.auth_store) |store| {
+            const refreshed = auth.Store.init(self.allocator, self.io, self.environ) catch {
+                const message = "credential updated; restart Misa before using it";
+                const event = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = spec.completion, .id = spec.id, .ok = true, .message = message }, .{});
+                defer self.allocator.free(event);
+                try self.enqueue(event);
+                return;
+            };
+            store.deinit();
+            store.* = refreshed;
+        }
+        const message = switch (spec.action) {
+            .login => "logged in",
+            .logout => "logged out",
+            .status => if (logged_in) "logged in" else "logged out",
+        };
+        const event = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = spec.completion, .id = spec.id, .ok = true, .message = message }, .{});
+        defer self.allocator.free(event);
+        try self.enqueue(event);
     }
 
     fn runFile(self: *Session, spec: file.Spec) !void {
@@ -313,6 +362,7 @@ pub const Session = struct {
             .arrow_right => try inputJson(self.allocator, "arrow_right"),
             .escape => try inputJson(self.allocator, "escape"),
             .ctrl_c => try inputJson(self.allocator, "ctrl_c"),
+            .ctrl_d => try inputJson(self.allocator, "ctrl_d"),
             .eof => try inputJson(self.allocator, "eof"),
         };
         defer self.allocator.free(json);

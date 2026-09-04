@@ -132,6 +132,62 @@ pub const Store = struct {
     }
 };
 
+pub const Action = enum { login, logout, status };
+
+pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, action: Action, provider: []const u8) !bool {
+    if (std.mem.eql(u8, provider, "claude")) {
+        try claudeAuth(io, @tagName(action));
+        return action != .logout;
+    }
+    if (!managedProvider(provider)) return error.UnknownProvider;
+    var store = try Store.init(allocator, io, environ);
+    defer store.deinit();
+    switch (action) {
+        .status => return store.contains(provider),
+        .logout => {
+            _ = try store.remove(provider);
+            return false;
+        },
+        .login => {},
+    }
+    if (std.mem.eql(u8, provider, "openai-codex") or std.mem.eql(u8, provider, "kimi-coding")) {
+        const credential = if (std.mem.eql(u8, provider, "openai-codex"))
+            try oauth.loginOpenAI(allocator, io)
+        else
+            try oauth.loginKimi(allocator, io);
+        defer credential.deinit(allocator);
+        try store.putOAuth(provider, credential.access, credential.refresh, credential.expires, credential.account_id);
+    } else if (std.mem.eql(u8, provider, "openrouter")) {
+        const authorization = try oauth.startOpenRouter(allocator, io);
+        defer authorization.deinit(allocator);
+        std.debug.print("Open this URL:\n{s}\n", .{authorization.url});
+        const input = try readSecret(allocator, io, "Paste the authorization code or redirect URL: ");
+        defer allocator.free(input);
+        const credential = try oauth.finishOpenRouter(allocator, io, authorization.verifier, input);
+        defer credential.deinit(allocator);
+        try store.putOAuth(provider, credential.access, credential.refresh, credential.expires, credential.account_id);
+    } else {
+        const secret = try readSecret(allocator, io, "API key: ");
+        defer allocator.free(secret);
+        try store.put(provider, secret);
+    }
+    std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
+    return true;
+}
+
+fn managedProvider(provider: []const u8) bool {
+    return std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "openai-codex") or
+        std.mem.eql(u8, provider, "anthropic") or std.mem.eql(u8, provider, "openrouter") or
+        std.mem.eql(u8, provider, "kimi-coding");
+}
+
+fn claudeAuth(io: std.Io, action: []const u8) !void {
+    var child = try std.process.spawn(io, .{ .argv = &.{ "claude", "auth", action } });
+    defer child.kill(io);
+    const term = try child.wait(io);
+    if (term != .exited or term.exited != 0) return error.ClaudeAuthFailed;
+}
+
 pub fn credentialPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
     if (environ.get("MISA_AUTH_FILE")) |path| return allocator.dupe(u8, path);
     if (environ.get("XDG_STATE_HOME")) |root| return std.fs.path.join(allocator, &.{ root, "misa", "auth.json" });

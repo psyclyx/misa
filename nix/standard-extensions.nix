@@ -1,5 +1,6 @@
 {
   agent = "agent";
+  auth = "auth";
   models = "models";
   providerFake = "provider.fake";
   providerCommand = "provider.command";
