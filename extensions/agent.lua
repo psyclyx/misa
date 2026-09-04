@@ -65,6 +65,14 @@ return {
       return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = table.concat(cofx.argv, " ") } } } }
     end)
 
+    misa.reg_event("agent/reset", function(db)
+      local agent = assert(db.agent, "agent state is not initialized")
+      assert(agent.status == "ready", "agent is busy")
+      agent.messages, agent.error, agent.last_usage = {}, nil, nil
+      agent.usage = { input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0 }
+      return { db = db }
+    end)
+
     misa.reg_event("agent/submit", function(db, event)
       assert(type(event.prompt) == "string" and event.prompt ~= "", "agent prompt must be nonempty")
       local agent = assert(db.agent, "agent state is not initialized")

@@ -83,11 +83,22 @@ return {
       elseif event.kind == "enter" and ui.text ~= "" then
         local prompt = ui.text
         ui.text, ui.cursor = "", 0
-        local next_event = prompt == "/model" and { type = "model/open" } or { type = "agent/submit", prompt = prompt }
+        local next_event
+        if prompt == "/model" then
+          next_event = { type = "model/open" }
+        elseif prompt == "/clear" then
+          next_event = { type = "agent/reset" }
+        else
+          next_event = { type = "agent/submit", prompt = prompt }
+        end
         return { db = db, fx = { { type = "dispatch", event = next_event } } }
       elseif event.kind == "ctrl_c" or event.kind == "eof" then
         return { db = db, fx = { { type = "app/quit" } } }
       end
+      return { db = db, fx = { { type = "terminal/read" } } }
+    end)
+
+    misa.reg_event("agent/reset", function(db)
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
 

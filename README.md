@@ -165,7 +165,8 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 ## Standard extensions
 
 `models` owns selection state and an inline `/model` picker; providers own the
-catalogue entries. `agent` owns normalized conversation history, repeated user
+catalogue entries. `/clear` resets in-memory conversation and usage state
+without altering committed terminal scrollback. `agent` owns normalized conversation history, repeated user
 turns, provider correlation, parallel tool-result collection, normalized token
 usage accounting, and automatic continuation after tools. `tool.files` registers `read_file`, `list_directory`,
 `write_file`, and `edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
