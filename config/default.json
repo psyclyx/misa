@@ -1,0 +1,6 @@
+{
+  "extensions": ["config/extensions/inspect.lua"],
+  "config": {
+    "message": "misa is running"
+  }
+}

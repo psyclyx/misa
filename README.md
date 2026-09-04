@@ -12,8 +12,13 @@ LuaJIT development headers and `pkg-config` must be available.
 ```sh
 zig build
 zig build test
-zig build run -- --config ./misa.json extra-argument
+zig build run -- --config config/default.json hello
 ```
+
+The checked-in `config/default.json` loads a small inspection extension and
+prints its config and forwarded arguments. Run the command above from the
+repository root as a quick smoke test; the example is selected explicitly and
+is not built-in harness behavior.
 
 A configuration path is mandatory, either through `--config PATH` or the
 `MISA_CONFIG` environment variable:
