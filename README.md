@@ -14,6 +14,13 @@ adapters precede the API providers that use them:
 ```json
 {
   "extensions": [
+    "protocol.anthropic",
+    "provider.anthropic",
+    "provider.kimi",
+    "protocol.openai",
+    "provider.openai",
+    "provider.openrouter",
+    "provider.openai-codex",
     "provider.claude",
     "auth",
     "tool.files",
@@ -23,7 +30,7 @@ adapters precede the API providers that use them:
     "ui"
   ],
   "config": {
-    "models": { "default": "claude/sonnet" }
+    "models": { "default": "claude/claude-sonnet-5" }
   }
 }
 ```
@@ -37,8 +44,9 @@ zig build run -- --config config/default.json hello
 ```
 
 Without an override, misa loads the installed `share/misa/default.json`, which
-selects Claude Code, coding tools, model policy, the agent, and the UI as a
-useful subscription-backed coding profile. Run `misa login claude` first.
+selects all shipped real providers, Claude Code by default, coding tools, model
+policy, authentication commands, the agent, and the UI as a useful coding
+profile. Run `misa login claude` first.
 `--config PATH` takes precedence over `MISA_CONFIG`, which takes precedence over
 that installed default. Arguments not consumed by `--config` are exposed as
 `cofx.argv`.
@@ -207,7 +215,14 @@ should set `config.providers.claude.mcp_arguments` to
 `provider.fake` keeps its state under
 `db.providers.fake`; `provider.command` adapts user executables.
 `provider.claude` invokes Claude Code's stream-JSON process protocol and reuses
-Claude's existing Pro/Max credentials without copying them into Misa. `ui` owns
+Claude's existing Pro/Max credentials without copying them into Misa. Its
+catalogue uses the current full model IDs from Anthropic's model documentation:
+Fable 5.1, Opus 5, Sonnet 5, and Haiku 4.5. At startup Misa reads
+`subscriptionType` from `claude auth status`; Max accounts get a 1M Opus
+context window and other plans get 200k. `config.providers.claude.max_plan` is
+an optional boolean override for environments where status discovery is
+unavailable. API-backed Anthropic catalogues are
+refreshed from `GET /v1/models` for the models available to that API key. `ui` owns
 the multiline UTF-8 editor and semantic projection. Interactive sessions return
 to the editor after each response; explicit argv remains a single headless turn.
 

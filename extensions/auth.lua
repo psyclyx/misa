@@ -31,8 +31,10 @@ return {
 
     misa.reg_event("auth/complete", function(_, event)
       local style = event.ok and "plain" or "error"
+      local message = event.message
+      if event.subscription_type and event.subscription_type ~= misa.json_null then message = message .. " (" .. event.subscription_type .. ")" end
       return { fx = {
-        { type = "view/commit", lines = { { spans = { { text = event.message, style = style } } } } },
+        { type = "view/commit", lines = { { spans = { { text = message, style = style } } } } },
         { type = "dispatch", event = { type = "auth/ready" } },
       } }
     end)

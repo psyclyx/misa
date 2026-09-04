@@ -77,7 +77,7 @@ function misa.protocols.anthropic(spec)
           discovered[#discovered + 1] = {
             id = spec.id .. "/" .. item.id, model = item.id,
             label = item.display_name or item.name or item.id,
-            context_window = item.context_window or item.context_length,
+            context_window = item.context_window or item.context_length or (type(item.max_input_tokens) == "number" and item.max_input_tokens > 0 and item.max_input_tokens or nil),
           }
         end
       end

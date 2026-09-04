@@ -55,15 +55,40 @@ return {
     assert(type(mcp_command) == "string" and mcp_command ~= "", "config.providers.claude.mcp_command must be nonempty")
     assert(type(mcp_arguments) == "table", "config.providers.claude.mcp_arguments must be an array")
 
+    assert(config.max_plan == nil or type(config.max_plan) == "boolean", "config.providers.claude.max_plan must be boolean")
+    local max_plan = config.max_plan == true
     local configured_models = config.models or {
-      { id = "claude/opus", model = "opus", label = "Claude Opus", context_window = 200000 },
-      { id = "claude/sonnet", model = "sonnet", label = "Claude Sonnet", context_window = 200000 },
-      { id = "claude/haiku", model = "haiku", label = "Claude Haiku", context_window = 200000 },
+      { id = "claude/claude-fable-5-1", model = "claude-fable-5-1", label = "Claude Fable 5.1", context_window = 1000000 },
+      { id = "claude/claude-opus-5", model = "claude-opus-5", label = "Claude Opus 5", context_window = max_plan and 1000000 or 200000 },
+      { id = "claude/claude-sonnet-5", model = "claude-sonnet-5", label = "Claude Sonnet 5", context_window = 1000000 },
+      { id = "claude/claude-haiku-4-5-20251001", model = "claude-haiku-4-5-20251001", label = "Claude Haiku 4.5", context_window = 200000 },
     }
     assert(type(configured_models) == "table" and #configured_models > 0, "config.providers.claude.models must be nonempty")
     for _, model in ipairs(configured_models) do
       assert(type(model) == "table" and type(model.id) == "string" and type(model.model) == "string", "invalid Claude model")
       misa.reg_model({ id = model.id, provider = "claude", model = model.model, label = model.label or model.id, context_window = model.context_window })
+    end
+
+    if config.max_plan == nil then
+      misa.reg_event("app/start", function()
+        return { fx = { {
+          type = "auth/command", action = "status", provider = "claude",
+          completion = "provider/claude-status", id = "claude-status",
+        } } }
+      end)
+      misa.reg_event("provider/claude-status", function(db, event)
+        if not event.ok or event.subscription_type == misa.json_null then return end
+        local is_max = event.subscription_type == "max"
+        for _, model in ipairs(db.models and db.models.entries or {}) do
+          if model.provider == "claude" and model.model:match("^claude%-opus%-") then
+            model.context_window = is_max and 1000000 or 200000
+          end
+        end
+        db.providers = db.providers or {}
+        db.providers.claude = db.providers.claude or {}
+        db.providers.claude.subscription_type = event.subscription_type
+        return { db = db }
+      end)
     end
 
     misa.reg_fx("provider.claude", function(effect)

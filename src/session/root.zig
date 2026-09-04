@@ -212,7 +212,7 @@ pub const Session = struct {
     fn runAuth(self: *Session, spec: AuthCommand) !void {
         try self.terminal.suspendInput();
         defer self.terminal.resumeInput() catch {};
-        const logged_in = auth.command(self.allocator, self.io, self.environ, spec.action, spec.provider) catch |err| {
+        const result = auth.command(self.allocator, self.io, self.environ, spec.action, spec.provider) catch |err| {
             const event = try std.json.Stringify.valueAlloc(self.allocator, .{
                 .type = spec.completion,
                 .id = spec.id,
@@ -223,6 +223,7 @@ pub const Session = struct {
             try self.enqueue(event);
             return;
         };
+        defer result.deinit(self.allocator);
         if (self.auth_store) |store| {
             const refreshed = auth.Store.init(self.allocator, self.io, self.environ) catch {
                 const message = "credential updated; restart Misa before using it";
@@ -237,9 +238,16 @@ pub const Session = struct {
         const message = switch (spec.action) {
             .login => "logged in",
             .logout => "logged out",
-            .status => if (logged_in) "logged in" else "logged out",
+            .status => if (result.logged_in) "logged in" else "logged out",
         };
-        const event = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = spec.completion, .id = spec.id, .ok = true, .message = message }, .{});
+        const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .type = spec.completion,
+            .id = spec.id,
+            .ok = true,
+            .message = message,
+            .provider = spec.provider,
+            .subscription_type = result.subscription_type,
+        }, .{});
         defer self.allocator.free(event);
         try self.enqueue(event);
     }

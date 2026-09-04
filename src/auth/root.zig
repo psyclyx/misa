@@ -134,19 +134,29 @@ pub const Store = struct {
 
 pub const Action = enum { login, logout, status };
 
-pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, action: Action, provider: []const u8) !bool {
+pub const CommandResult = struct {
+    logged_in: bool,
+    subscription_type: ?[]u8 = null,
+
+    pub fn deinit(self: CommandResult, allocator: std.mem.Allocator) void {
+        if (self.subscription_type) |value| allocator.free(value);
+    }
+};
+
+pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, action: Action, provider: []const u8) !CommandResult {
     if (std.mem.eql(u8, provider, "claude")) {
+        if (action == .status) return claudeStatus(allocator, io);
         try claudeAuth(io, @tagName(action));
-        return action != .logout;
+        return .{ .logged_in = action != .logout };
     }
     if (!managedProvider(provider)) return error.UnknownProvider;
     var store = try Store.init(allocator, io, environ);
     defer store.deinit();
     switch (action) {
-        .status => return store.contains(provider),
+        .status => return .{ .logged_in = store.contains(provider) },
         .logout => {
             _ = try store.remove(provider);
-            return false;
+            return .{ .logged_in = false };
         },
         .login => {},
     }
@@ -172,13 +182,40 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
         try store.put(provider, secret);
     }
     std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
-    return true;
+    return .{ .logged_in = true };
 }
 
 fn managedProvider(provider: []const u8) bool {
     return std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "openai-codex") or
         std.mem.eql(u8, provider, "anthropic") or std.mem.eql(u8, provider, "openrouter") or
         std.mem.eql(u8, provider, "kimi-coding");
+}
+
+fn claudeStatus(allocator: std.mem.Allocator, io: std.Io) !CommandResult {
+    const captured = try std.process.run(allocator, io, .{
+        .argv = &.{ "claude", "auth", "status" },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    });
+    defer allocator.free(captured.stdout);
+    defer allocator.free(captured.stderr);
+    if (captured.term != .exited or captured.term.exited != 0) return error.ClaudeAuthFailed;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, captured.stdout, .{});
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |value| value,
+        else => return error.InvalidClaudeAuthStatus,
+    };
+    const logged_in = switch (object.get("loggedIn") orelse return error.InvalidClaudeAuthStatus) {
+        .bool => |value| value,
+        else => return error.InvalidClaudeAuthStatus,
+    };
+    const subscription = switch (object.get("subscriptionType") orelse .null) {
+        .string => |value| try allocator.dupe(u8, value),
+        .null => null,
+        else => return error.InvalidClaudeAuthStatus,
+    };
+    return .{ .logged_in = logged_in, .subscription_type = subscription };
 }
 
 fn claudeAuth(io: std.Io, action: []const u8) !void {

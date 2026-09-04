@@ -217,7 +217,8 @@ return {
       for _, model in ipairs(model_state.entries or {}) do if model.id == model_state.selected then selected = model; break end end
       lines[#lines + 1] = { spans = {
         { text = "model  ", style = "dim" },
-        { text = selected and (selected.label or selected.id) or "none", style = "accent" },
+        { text = selected and selected.model or "none", style = "accent" },
+        { text = selected and ("  via " .. selected.provider) or "", style = "dim" },
       } }
       local last = agent.last_usage or {}
       local context_tokens = (last.input_tokens or 0) + (last.output_tokens or 0)
@@ -237,8 +238,8 @@ return {
           local marker = i == model_state.index and "> " or "  "
           lines[#lines + 1] = { spans = {
             { text = marker, style = i == model_state.index and "accent" or "plain" },
-            { text = model.label or model.id, style = model.id == model_state.selected and "bold" or "plain" },
-            { text = "  " .. model.id, style = "dim" },
+            { text = model.model, style = model.id == model_state.selected and "bold" or "plain" },
+            { text = "  " .. (model.label or model.id) .. "  [" .. model.provider .. "]", style = "dim" },
           } }
         end
         return { lines = lines, cursor = nil }

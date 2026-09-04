@@ -11,12 +11,13 @@ return {
       credential = "anthropic",
       url = config.url or "https://api.anthropic.com/v1/messages",
       max_tokens = config.max_tokens,
-      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.anthropic.com/v1/models" or nil),
+      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.anthropic.com/v1/models?limit=1000" or nil),
       model_filter = function(item) return item.id:match("^claude%-") ~= nil end,
       models = config.models or {
-        { id = "anthropic/claude-opus-4-6", model = "claude-opus-4-6", label = "Claude Opus 4.6", context_window = 200000 },
-        { id = "anthropic/claude-sonnet-4-6", model = "claude-sonnet-4-6", label = "Claude Sonnet 4.6", context_window = 200000 },
-        { id = "anthropic/claude-haiku-4-5", model = "claude-haiku-4-5", label = "Claude Haiku 4.5", context_window = 200000 },
+        { id = "anthropic/claude-fable-5-1", model = "claude-fable-5-1", label = "Claude Fable 5.1", context_window = 1000000 },
+        { id = "anthropic/claude-opus-5", model = "claude-opus-5", label = "Claude Opus 5", context_window = 1000000 },
+        { id = "anthropic/claude-sonnet-5", model = "claude-sonnet-5", label = "Claude Sonnet 5", context_window = 1000000 },
+        { id = "anthropic/claude-haiku-4-5-20251001", model = "claude-haiku-4-5-20251001", label = "Claude Haiku 4.5", context_window = 200000 },
       },
     })
   end,

@@ -1,7 +1,22 @@
 {
-  "extensions": ["provider.claude", "auth", "tool.files", "tool.shell", "models", "agent", "ui"],
+  "extensions": [
+    "protocol.anthropic",
+    "provider.anthropic",
+    "provider.kimi",
+    "protocol.openai",
+    "provider.openai",
+    "provider.openrouter",
+    "provider.openai-codex",
+    "provider.claude",
+    "auth",
+    "tool.files",
+    "tool.shell",
+    "models",
+    "agent",
+    "ui"
+  ],
   "config": {
-    "models": { "default": "claude/sonnet" },
+    "models": { "default": "claude/claude-sonnet-5" },
     "ui": { "plain_prompt": true }
   }
 }

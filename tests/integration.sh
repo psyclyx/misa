@@ -26,11 +26,11 @@ mkdir "$work/bin"
 cat >"$work/bin/claude" <<'SH'
 #!/bin/sh
 [ "$1" = auth ]
-case "$2" in login|logout) ;; status) printf 'claude status\n' ;; *) exit 1 ;; esac
+case "$2" in login|logout) ;; status) printf '{"loggedIn":true,"subscriptionType":"max"}\n' ;; *) exit 1 ;; esac
 SH
 chmod +x "$work/bin/claude"
 PATH="$work/bin:$PATH" "$MISA_BIN" login claude
-[ "$(PATH="$work/bin:$PATH" "$MISA_BIN" status claude)" = 'claude status' ]
+[ "$(PATH="$work/bin:$PATH" "$MISA_BIN" status claude)" = 'logged in (max)' ]
 PATH="$work/bin:$PATH" "$MISA_BIN" logout claude
 [ ! -e "$work/session-auth.json" ]
 printf '%s' '{"extensions":["auth","protocol.openai","provider.openai","ui"],"config":{"providers":{"openai":{"discover_models":false}}}}' >"$work/auth-ui.json"
@@ -38,8 +38,9 @@ printf '%s' '{"extensions":["auth","protocol.openai","provider.openai","ui"],"co
 
 stage=provider-composition
 # Real provider declarations compose without credentials until they are used.
-printf '%s' '{"extensions":["protocol.anthropic","provider.anthropic","provider.kimi","protocol.openai","provider.openai","provider.openrouter","provider.openai-codex","provider.claude","models","agent","ui"],"config":{"models":{"default":"anthropic/claude-sonnet-4-6"}}}' >"$work/providers.json"
-[ -z "$(MISA_CONFIG="$work/providers.json" "$MISA_BIN" </dev/null)" ]
+printf '%s' '{"extensions":["protocol.anthropic","provider.anthropic","provider.kimi","protocol.openai","provider.openai","provider.openrouter","provider.openai-codex","provider.claude","models","agent","ui"],"config":{"models":{"default":"anthropic/claude-sonnet-5"}}}' >"$work/providers.json"
+provider_output="$(MISA_CONFIG="$work/providers.json" "$MISA_BIN" </dev/null)"
+[ -z "$provider_output" ]
 
 # Terminal/process ownership stays native while ordinary Lua composition and
 # source loading remain available; decoded null retains its sentinel.
@@ -211,16 +212,21 @@ cat >"$work/claude" <<'SH'
 saw_empty=false
 saw_input=false
 saw_mcp=false
+saw_model=false
 expect_mcp=false
+expect_model=false
 for arg do
   [ -z "$arg" ] && saw_empty=true
   [ "$arg" = "stream-json" ] && saw_input=true
   if [ "$expect_mcp" = true ]; then case "$arg" in *'"mcpServers"'*'"misa"'*) saw_mcp=true ;; esac; expect_mcp=false; fi
+  if [ "$expect_model" = true ]; then [ "$arg" = "claude-sonnet-5" ] && saw_model=true; expect_model=false; fi
   [ "$arg" = "--mcp-config" ] && expect_mcp=true
+  [ "$arg" = "--model" ] && expect_model=true
 done
 [ "$saw_empty" = true ] || exit 30
 [ "$saw_input" = true ] || exit 31
 [ "$saw_mcp" = true ] || exit 33
+[ "$saw_model" = true ] || exit 34
 input=$(cat)
 case "$input" in *'"type":"user"'*) ;; *) exit 32 ;; esac
 case "$input" in *'"content":"Continue this conversation.'*) ;; *) exit 32 ;; esac
@@ -228,7 +234,7 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"test"}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"claude result","session_id":"test"}'
 SH
 chmod +x "$work/claude"
-printf '{"extensions":["provider.claude","tool.files","models","agent","ui"],"config":{"models":{"default":"claude/sonnet"},"providers":{"claude":{"executable":"%s","mcp_command":"%s","mcp_arguments":["mcp","--config","%s"]}}}}' "$work/claude" "$MISA_BIN" "$work/claude.json" >"$work/claude.json"
+printf '{"extensions":["provider.claude","tool.files","models","agent","ui"],"config":{"models":{"default":"claude/claude-sonnet-5"},"providers":{"claude":{"max_plan":true,"executable":"%s","mcp_command":"%s","mcp_arguments":["mcp","--config","%s"]}}}}' "$work/claude" "$MISA_BIN" "$work/claude.json" >"$work/claude.json"
 claude_output="$(MISA_CONFIG="$work/claude.json" "$MISA_BIN" hello)"
 if [ "$claude_output" != 'claude result' ]; then echo "claude output: $claude_output" >&2; exit 1; fi
 
