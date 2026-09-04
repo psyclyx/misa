@@ -117,6 +117,9 @@ Only the mutable frame at the bottom is erased/repainted with CR, relative
 movement, and per-row erase-line sequences; final cleanup erases only those
 owned rows. Live logical lines are conservatively clipped to one physical row
 before the final terminal column, while immutable commits may wrap naturally.
+The installed default sets `config.ui.plain_prompt = true`, causing the standard
+UI to commit one plain startup prompt before reading stdin when inline mode is
+unavailable; other profiles can opt into the same fallback behavior.
 Cell measurement uses local wcwidth-style zero-width combining/modifier ranges
 and known East Asian wide/emoji ranges; other printable codepoints are one cell.
 Each repaint is validated and buffered before one write.

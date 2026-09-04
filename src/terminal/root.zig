@@ -251,8 +251,12 @@ pub const Terminal = struct {
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) !Terminal {
         const term = environ.get("TERM") orelse "";
-        const input_attr = posix.tcgetattr(posix.STDIN_FILENO) catch null;
-        const output_tty = (posix.tcgetattr(posix.STDOUT_FILENO) catch null) != null;
+        // Use the stdlib's actual tty query for classification. tcgetattr on
+        // stdout is not a portable isatty substitute and fails in some real
+        // terminal/build-runner combinations even though the fd is a tty.
+        const input_tty = std.Io.File.stdin().isTty(io) catch false;
+        const output_tty = std.Io.File.stdout().isTty(io) catch false;
+        const input_attr = if (input_tty) posix.tcgetattr(posix.STDIN_FILENO) catch null else null;
         const interactive = input_attr != null and output_tty and term.len != 0 and !std.mem.eql(u8, term, "dumb");
         var self: Terminal = .{ .allocator = allocator, .io = io, .interactive = interactive, .dimensions = dimensions(environ) };
         if (interactive) {

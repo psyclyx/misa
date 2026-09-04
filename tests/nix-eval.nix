@@ -71,5 +71,5 @@ assert builtins.pathExists ../extensions/ui.lua;
 # building either from this evaluation-only test.
 assert pkgs.lib.hasSuffix ".drv" project.packages.misa.drvPath;
 assert pkgs.lib.hasSuffix ".drv" configured.drvPath;
-assert configured.unwrapped == project.packages.misa;
+assert configured.unwrapped.outPath == project.packages.misa.outPath;
 true

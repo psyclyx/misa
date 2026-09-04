@@ -54,10 +54,22 @@ local function editor_position(text, cursor)
 end
 
 return {
-  setup = function()
+  setup = function(context)
+    local config = type(context.config) == "table" and context.config.ui or nil
+    local plain_prompt = type(config) == "table" and config.plain_prompt == true
     misa.reg_event("app/start", function(db, _, cofx)
       normalize_editor(db)
-      if #cofx.argv == 0 then return { db = db, fx = { { type = "terminal/read" } } } end
+      if #cofx.argv == 0 then
+        local fx = {}
+        -- A stream fallback cannot show the mutable inline frame. Commit one
+        -- plain prompt so a misclassified or redirected session is observable
+        -- instead of appearing to hang while it waits for input.
+        if not cofx.terminal.interactive and plain_prompt then
+          fx[#fx + 1] = { type = "view/commit", lines = lines_for("misa> enter a prompt:", "plain") }
+        end
+        fx[#fx + 1] = { type = "terminal/read" }
+        return { db = db, fx = fx }
+      end
       return { db = db }
     end)
     misa.reg_event("terminal/input", function(db, event)
