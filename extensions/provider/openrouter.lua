@@ -19,6 +19,7 @@ return {
         { name = "http-referer", value = "https://github.com/psyclyx/misa" },
         { name = "x-title", value = "misa" },
       },
+      reasoning_effort = function(body, effort) body.reasoning = { effort = effort } end,
       models = config.models or {},
     })
   end,

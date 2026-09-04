@@ -30,13 +30,14 @@ return {
     end)
     misa.reg_event("provider/command-complete", function(_, event)
       assert(type(event.id) == "string" and event.id ~= "", "command completion id must be nonempty")
-      local next_event
+      local fx = { { type = "dispatch", event = { type = "agent/stream-start", id = event.id } } }
       if event.ok then
-        next_event = { type = "agent/result", id = event.id, content = { { type = "text", text = event.stdout } } }
+        fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "text", text = event.stdout } } }
+        fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-end", id = event.id } }
       else
-        next_event = { type = "agent/error", id = event.id, message = event.stderr ~= "" and event.stderr or ("command exited " .. tostring(event.status)) }
+        fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-error", id = event.id, message = event.stderr ~= "" and event.stderr or ("command exited " .. tostring(event.status)) } }
       end
-      return { fx = { { type = "dispatch", event = next_event } } }
+      return { fx = fx }
     end)
   end,
 }

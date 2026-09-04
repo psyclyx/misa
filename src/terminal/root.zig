@@ -1,4 +1,4 @@
-//! Portable terminal lifetime, decoding, signal restoration, and inline presentation.
+//! Portable terminal lifetime, decoding, signal restoration, and managed-screen presentation.
 const std = @import("std");
 const posix = std.posix;
 const input = @import("input.zig");
@@ -7,7 +7,7 @@ const presenter = @import("presenter.zig");
 pub const Event = input.Event;
 pub const Decoder = input.Decoder;
 pub const validateLines = presenter.validateLines;
-const appendErase = presenter.appendErase;
+const appendScreenPrelude = presenter.appendScreenPrelude;
 const appendView = presenter.appendView;
 const appendLines = presenter.appendLines;
 const cursorRow = presenter.cursorRow;
@@ -16,24 +16,29 @@ pub const Dimensions = struct { columns: usize = 80, lines: usize = 24 };
 
 pub const PreparedPresentation = struct {
     bytes: std.ArrayList(u8) = .empty,
-    rows: usize,
-    cursor_row: usize,
 
     pub fn deinit(self: *PreparedPresentation, allocator: std.mem.Allocator) void {
         self.bytes.deinit(allocator);
     }
 };
 
+const enter_managed_screen = "\x1b[?1049h\x1b[H\x1b[2J";
+const leave_managed_screen = "\x1b[?1049l";
+
 const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM };
 const SignalState = struct {
-    active: bool = false,
+    active: std.atomic.Value(bool) = .init(false),
+    screen_active: std.atomic.Value(bool) = .init(false),
+    resize_pending: std.atomic.Value(bool) = .init(false),
     saved_termios: posix.termios = undefined,
     old_actions: [handled_signals.len]posix.Sigaction = undefined,
+    old_winch: posix.Sigaction = undefined,
 };
 var signal_state: SignalState = .{};
 
 fn restoreOnSignal(sig: posix.SIG) callconv(.c) void {
-    if (!signal_state.active) return;
+    if (!signal_state.active.load(.acquire)) return;
+    if (signal_state.screen_active.load(.acquire)) _ = posix.system.write(posix.STDOUT_FILENO, leave_managed_screen.ptr, leave_managed_screen.len);
     posix.tcsetattr(posix.STDIN_FILENO, .NOW, signal_state.saved_termios) catch {};
     for (handled_signals, 0..) |candidate, i| {
         if (candidate == sig) {
@@ -42,6 +47,10 @@ fn restoreOnSignal(sig: posix.SIG) callconv(.c) void {
             return;
         }
     }
+}
+
+fn noteResize(_: posix.SIG) callconv(.c) void {
+    signal_state.resize_pending.store(true, .release);
 }
 
 fn rawMode(original: posix.termios) posix.termios {
@@ -67,8 +76,7 @@ pub const Terminal = struct {
     dimensions: Dimensions,
     saved: ?posix.termios = null,
     signals_installed: bool = false,
-    live_rows: usize = 0,
-    live_cursor_row: usize = 0,
+    screen_active: bool = false,
     decoder: Decoder = .{},
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) !Terminal {
@@ -80,83 +88,125 @@ pub const Terminal = struct {
         const output_tty = std.Io.File.stdout().isTty(io) catch false;
         const input_attr = if (input_tty) posix.tcgetattr(posix.STDIN_FILENO) catch null else null;
         const interactive = input_attr != null and output_tty and term.len != 0 and !std.mem.eql(u8, term, "dumb");
-        var self: Terminal = .{ .allocator = allocator, .io = io, .interactive = interactive, .dimensions = dimensions(environ) };
+        var self: Terminal = .{
+            .allocator = allocator,
+            .io = io,
+            .interactive = interactive,
+            .dimensions = if (output_tty) queryDimensions(io) catch dimensions(environ) else dimensions(environ),
+        };
         if (interactive) {
+            std.debug.assert(!signal_state.active.load(.acquire));
             self.saved = input_attr.?;
-            const raw = rawMode(input_attr.?);
-            try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, raw);
-            errdefer posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, input_attr.?) catch {};
             signal_state.saved_termios = input_attr.?;
             var signal_mask = posix.sigemptyset();
             for (handled_signals) |sig| posix.sigaddset(&signal_mask, sig);
+            posix.sigaddset(&signal_mask, .WINCH);
             var old_mask: posix.sigset_t = undefined;
             posix.sigprocmask(posix.SIG.BLOCK, &signal_mask, &old_mask);
             defer posix.sigprocmask(posix.SIG.SETMASK, &old_mask, null);
             const action: posix.Sigaction = .{ .handler = .{ .handler = restoreOnSignal }, .mask = posix.sigemptyset(), .flags = 0 };
             for (handled_signals, 0..) |sig, i| posix.sigaction(sig, &action, &signal_state.old_actions[i]);
-            signal_state.active = true;
+            const resize_action: posix.Sigaction = .{ .handler = .{ .handler = noteResize }, .mask = posix.sigemptyset(), .flags = 0 };
+            posix.sigaction(.WINCH, &resize_action, &signal_state.old_winch);
+            signal_state.resize_pending.store(false, .release);
+            signal_state.active.store(true, .release);
             self.signals_installed = true;
-            // Bracketed paste is decoded if a parent enables it, but misa does
-            // not enable it because std.posix exposes no portable async-safe write.
+            posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, rawMode(input_attr.?)) catch |err| {
+                self.restoreSignals();
+                return err;
+            };
+            self.screen_active = true;
+            signal_state.screen_active.store(true, .release);
+            self.writeAll(enter_managed_screen) catch |err| {
+                self.deinit();
+                return err;
+            };
         }
         return self;
     }
 
     pub fn suspendInput(self: *Terminal) !void {
+        if (self.screen_active) {
+            try self.writeAll(leave_managed_screen);
+            self.screen_active = false;
+            signal_state.screen_active.store(false, .release);
+        }
         if (self.saved) |saved| try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved);
     }
 
     pub fn resumeInput(self: *Terminal) !void {
         if (self.saved) |saved| try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, rawMode(saved));
+        if (self.interactive and !self.screen_active) {
+            self.screen_active = true;
+            signal_state.screen_active.store(true, .release);
+            self.writeAll(enter_managed_screen) catch |err| {
+                self.screen_active = false;
+                signal_state.screen_active.store(false, .release);
+                if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
+                return err;
+            };
+        }
     }
 
     pub fn deinit(self: *Terminal) void {
         if (self.interactive) {
-            self.eraseLive() catch {};
+            if (self.screen_active) self.writeAll(leave_managed_screen) catch {};
+            self.screen_active = false;
+            signal_state.screen_active.store(false, .release);
             if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
-            if (self.signals_installed) {
-                var signal_mask = posix.sigemptyset();
-                for (handled_signals) |sig| posix.sigaddset(&signal_mask, sig);
-                var old_mask: posix.sigset_t = undefined;
-                posix.sigprocmask(posix.SIG.BLOCK, &signal_mask, &old_mask);
-                for (handled_signals, 0..) |sig, i| posix.sigaction(sig, &signal_state.old_actions[i], null);
-                // While handled signals are blocked, no handler can observe the
-                // transition between restored actions and inactive state.
-                signal_state.active = false;
-                self.signals_installed = false;
-                posix.sigprocmask(posix.SIG.SETMASK, &old_mask, null);
-            }
+            self.restoreSignals();
         }
         self.decoder.deinit(self.allocator);
+    }
+
+    fn restoreSignals(self: *Terminal) void {
+        if (!self.signals_installed) return;
+        var signal_mask = posix.sigemptyset();
+        for (handled_signals) |sig| posix.sigaddset(&signal_mask, sig);
+        posix.sigaddset(&signal_mask, .WINCH);
+        var old_mask: posix.sigset_t = undefined;
+        posix.sigprocmask(posix.SIG.BLOCK, &signal_mask, &old_mask);
+        signal_state.active.store(false, .release);
+        for (handled_signals, 0..) |sig, i| posix.sigaction(sig, &signal_state.old_actions[i], null);
+        posix.sigaction(.WINCH, &signal_state.old_winch, null);
+        self.signals_installed = false;
+        posix.sigprocmask(posix.SIG.SETMASK, &old_mask, null);
+    }
+
+    /// Consume SIGWINCH's atomic notification and refresh dimensions in normal
+    /// execution context. Returns true only for a real dimension change.
+    pub fn pollResize(self: *Terminal) !bool {
+        if (!self.interactive or !signal_state.resize_pending.swap(false, .acq_rel)) return false;
+        const updated = try queryDimensions(self.io);
+        if (updated.columns == self.dimensions.columns and updated.lines == self.dimensions.lines) return false;
+        self.dimensions = updated;
+        return true;
     }
 
     /// Validate and render once. The session can then write the exact prepared
     /// bytes before committing Lua state without paying for a second render.
     pub fn preparePresentation(self: *const Terminal, view: std.json.Value) !PreparedPresentation {
-        var prepared: PreparedPresentation = .{ .rows = 0, .cursor_row = 0 };
+        var prepared: PreparedPresentation = .{};
         errdefer prepared.deinit(self.allocator);
-        if (self.interactive) try appendErase(&prepared.bytes, self.allocator, self.live_rows, self.live_cursor_row);
-        prepared.rows = try appendView(&prepared.bytes, self.allocator, view, self.dimensions.columns, self.dimensions.lines, self.interactive, false);
-        prepared.cursor_row = try cursorRow(view, prepared.rows);
+        if (self.interactive) try appendScreenPrelude(&prepared.bytes, self.allocator);
+        const rows = try appendView(&prepared.bytes, self.allocator, view, self.dimensions.columns, self.dimensions.lines, self.interactive, false);
+        _ = try cursorRow(view, rows);
         return prepared;
     }
 
     pub fn present(self: *Terminal, prepared: *const PreparedPresentation) !void {
         if (!self.interactive) return;
         try self.writeAll(prepared.bytes.items);
-        self.live_rows = prepared.rows;
-        self.live_cursor_row = prepared.cursor_row;
     }
 
     pub fn commit(self: *Terminal, lines: std.json.Value) !void {
         var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(self.allocator);
         // Build and validate everything before touching terminal ownership.
-        if (self.interactive) try appendErase(&buffer, self.allocator, self.live_rows, self.live_cursor_row);
-        _ = try appendLines(&buffer, self.allocator, lines, self.dimensions.columns, self.interactive, true, false);
+        if (self.interactive) try appendScreenPrelude(&buffer, self.allocator);
+        const rows = try appendLines(&buffer, self.allocator, lines, self.dimensions.columns, self.interactive, !self.interactive, false);
+        if (self.interactive and rows > self.dimensions.lines) return error.InvalidView;
         try self.writeAll(buffer.items);
-        self.live_rows = 0;
-        self.live_cursor_row = 0;
     }
 
     pub fn readEvents(self: *Terminal, out: *std.ArrayList(Event)) !void {
@@ -186,16 +236,6 @@ pub const Terminal = struct {
         try self.decoder.feed(self.allocator, bytes[0..n], out);
     }
 
-    fn eraseLive(self: *Terminal) !void {
-        if (self.live_rows == 0) return;
-        var buffer: std.ArrayList(u8) = .empty;
-        defer buffer.deinit(self.allocator);
-        try appendErase(&buffer, self.allocator, self.live_rows, self.live_cursor_row);
-        try self.writeAll(buffer.items);
-        self.live_rows = 0;
-        self.live_cursor_row = 0;
-    }
-
     fn writeAll(self: *Terminal, bytes: []const u8) !void {
         try std.Io.File.stdout().writeStreamingAll(self.io, bytes);
     }
@@ -207,12 +247,29 @@ fn classifyStreamEnd(interactive: bool) StreamEnd {
     return if (interactive) .timeout else .eof;
 }
 
+fn queryDimensions(io: std.Io) !Dimensions {
+    var size: posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
+    const result = (try io.operate(.{ .device_io_control = .{
+        .file = std.Io.File.stdout(),
+        .code = posix.T.IOCGWINSZ,
+        .arg = &size,
+    } })).device_io_control;
+    if (result < 0 or size.col == 0 or size.row == 0) return error.TerminalSizeUnavailable;
+    return .{ .columns = size.col, .lines = size.row };
+}
+
 fn dimensions(environ: *const std.process.Environ.Map) Dimensions {
     return .{ .columns = parseDimension(environ.get("COLUMNS"), 80), .lines = parseDimension(environ.get("LINES"), 24) };
 }
 fn parseDimension(value: ?[]const u8, fallback: usize) usize {
     const parsed = std.fmt.parseInt(usize, value orelse return fallback, 10) catch return fallback;
     return if (parsed == 0) fallback else parsed;
+}
+
+test "managed screen lifetime and frames use distinct control sequences" {
+    try std.testing.expectEqualStrings("\x1b[?1049h\x1b[H\x1b[2J", enter_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?1049l", leave_managed_screen);
+    try std.testing.expect(std.mem.indexOf(u8, enter_managed_screen, leave_managed_screen) == null);
 }
 
 test "idle interactive stream end is a read timeout, not EOF" {
@@ -230,7 +287,15 @@ test "terminal presentation validation uses instance width and cursor limit" {
     var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"abcdefghijklmnopq\"}]}],\"cursor\":{\"row\":1,\"byte\":15}}", .{});
     defer valid.deinit();
     var prepared = try narrow.preparePresentation(valid.value);
+    try std.testing.expect(std.mem.startsWith(u8, prepared.bytes.items, "\x1b[H\x1b[2J"));
     prepared.deinit(std.testing.allocator);
+
+    var too_tall = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[]},{\"spans\":[]}]}", .{});
+    defer too_tall.deinit();
+    const saved_lines = narrow.dimensions.lines;
+    narrow.dimensions.lines = 1;
+    try std.testing.expectError(error.InvalidView, narrow.preparePresentation(too_tall.value));
+    narrow.dimensions.lines = saved_lines;
 
     var invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"x\"}]}],\"cursor\":{\"row\":1,\"column\":1}}", .{});
     defer invalid.deinit();

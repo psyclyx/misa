@@ -5,6 +5,7 @@ const config_module = @import("misa_config");
 const lua = @import("misa_lua_runtime");
 const mcp = @import("misa_mcp");
 const standard_extensions = @import("misa_standard_extensions");
+const state_module = @import("misa_state");
 const terminal_module = @import("misa_terminal");
 const session_module = @import("misa_session");
 
@@ -138,13 +139,18 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
     });
     var auth_store: ?auth.Store = auth.Store.init(allocator, init.io, init.environ_map) catch null;
     defer if (auth_store) |*store| store.deinit();
+    var state_store = try state_module.Store.init(allocator, init.io, init.environ_map);
+    defer state_store.deinit();
     var session: session_module.Session = .{
         .allocator = allocator,
         .io = init.io,
         .runtime = runtime,
         .terminal = &terminal,
         .auth_store = if (auth_store) |*store| store else null,
+        .state_store = &state_store,
         .environ = init.environ_map,
+        .operations = .init(allocator, init.io),
+        .timers = .init(allocator),
     };
     defer session.deinit();
     try session.run();

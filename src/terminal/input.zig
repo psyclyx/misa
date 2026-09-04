@@ -3,6 +3,7 @@ const std = @import("std");
 
 pub const Event = union(enum) {
     text: []u8,
+    alt: []u8,
     enter,
     backspace,
     tab,
@@ -10,13 +11,18 @@ pub const Event = union(enum) {
     arrow_down,
     arrow_left,
     arrow_right,
+    page_up,
+    page_down,
     escape,
     ctrl_c,
     ctrl_d,
     eof,
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
-        if (self == .text) allocator.free(self.text);
+        switch (self) {
+            .text, .alt => |text| allocator.free(text),
+            else => {},
+        }
     }
 };
 
@@ -54,6 +60,7 @@ pub const Decoder = struct {
                 const sequences = [_]struct { bytes: []const u8, event: Event }{
                     .{ .bytes = "\x1b[A", .event = .arrow_up },    .{ .bytes = "\x1b[B", .event = .arrow_down },
                     .{ .bytes = "\x1b[C", .event = .arrow_right }, .{ .bytes = "\x1b[D", .event = .arrow_left },
+                    .{ .bytes = "\x1b[5~", .event = .page_up },    .{ .bytes = "\x1b[6~", .event = .page_down },
                 };
                 if (std.mem.startsWith(u8, p, "\x1b[200~")) {
                     if (p.len < 6) return;
@@ -72,8 +79,17 @@ pub const Decoder = struct {
                     if (std.mem.startsWith(u8, seq.bytes, p)) prefix = true;
                 } else {
                     if (prefix or std.mem.startsWith(u8, "\x1b[200~", p)) return;
-                    self.consume(1);
-                    try out.append(allocator, .escape);
+                    switch (altPrintable(p[1..])) {
+                        .incomplete => return,
+                        .printable => |len| {
+                            try appendOwned(allocator, out, .alt, p[1 .. len + 1]);
+                            self.consume(len + 1);
+                        },
+                        .control => {
+                            self.consume(1);
+                            try out.append(allocator, .escape);
+                        },
+                    }
                 }
                 continue;
             }
@@ -128,7 +144,7 @@ pub const Decoder = struct {
                 self.consume(len);
                 continue;
             }
-            try out.append(allocator, .{ .text = try allocator.dupe(u8, p[0..len]) });
+            try appendOwned(allocator, out, .text, p[0..len]);
             self.consume(len);
         }
     }
@@ -213,7 +229,11 @@ pub const Decoder = struct {
             try clean.append(allocator, '\n');
             self.paste_cr = false;
         }
-        if (clean.items.len != 0) try out.append(allocator, .{ .text = try clean.toOwnedSlice(allocator) }) else clean.deinit(allocator);
+        if (clean.items.len != 0) {
+            const owned = try clean.toOwnedSlice(allocator);
+            errdefer allocator.free(owned);
+            try out.append(allocator, .{ .text = owned });
+        } else clean.deinit(allocator);
     }
 
     fn consume(self: *Decoder, n: usize) void {
@@ -221,6 +241,23 @@ pub const Decoder = struct {
         self.pending.items.len -= n;
     }
 };
+
+fn appendOwned(allocator: std.mem.Allocator, out: *std.ArrayList(Event), comptime tag: std.meta.Tag(Event), bytes: []const u8) !void {
+    const owned = try allocator.dupe(u8, bytes);
+    errdefer allocator.free(owned);
+    try out.append(allocator, @unionInit(Event, @tagName(tag), owned));
+}
+
+const AltPrintable = union(enum) { incomplete, control, printable: usize };
+
+fn altPrintable(bytes: []const u8) AltPrintable {
+    if (bytes.len == 0) return .incomplete;
+    const len = std.unicode.utf8ByteSequenceLength(bytes[0]) catch return .control;
+    if (bytes.len < len) return .incomplete;
+    const cp = std.unicode.utf8Decode(bytes[0..len]) catch return .control;
+    if (cp < 0x20 or cp == 0x7f or (cp >= 0x80 and cp <= 0x9f)) return .control;
+    return .{ .printable = len };
+}
 
 test "decoder handles fragmented safe multiline paste, escape timeout, ctrl-d, and utf8" {
     var decoder: Decoder = .{};
@@ -247,6 +284,39 @@ test "decoder handles fragmented safe multiline paste, escape timeout, ctrl-d, a
     };
     try std.testing.expectEqualStrings("a\nb X�☃", joined.items);
     try std.testing.expect(saw_escape and saw_ctrl_d);
+}
+
+test "decoder normalizes Alt printable chords without changing Escape or arrows" {
+    var decoder: Decoder = .{};
+    defer decoder.deinit(std.testing.allocator);
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(std.testing.allocator);
+        events.deinit(std.testing.allocator);
+    }
+
+    try decoder.feed(std.testing.allocator, "\x1b1\x1b", &events);
+    try decoder.feed(std.testing.allocator, "é\x1b[A\x1b", &events);
+    try decoder.finish(std.testing.allocator, &events);
+
+    try std.testing.expectEqual(@as(usize, 4), events.items.len);
+    try std.testing.expectEqualStrings("1", events.items[0].alt);
+    try std.testing.expectEqualStrings("é", events.items[1].alt);
+    try std.testing.expect(events.items[2] == .arrow_up);
+    try std.testing.expect(events.items[3] == .escape);
+}
+
+test "decoder exposes page navigation keys" {
+    var decoder: Decoder = .{};
+    defer decoder.deinit(std.testing.allocator);
+    var events: std.ArrayList(Event) = .empty;
+    defer events.deinit(std.testing.allocator);
+    try decoder.feed(std.testing.allocator, "\x1b[5", &events);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try decoder.feed(std.testing.allocator, "~\x1b[6~", &events);
+    try std.testing.expectEqual(@as(usize, 2), events.items.len);
+    try std.testing.expect(events.items[0] == .page_up);
+    try std.testing.expect(events.items[1] == .page_down);
 }
 
 test "decoder exposes tab as a semantic event" {

@@ -35,13 +35,6 @@ local function mcp_config(command, arguments)
   return '{"mcpServers":{"misa":{"type":"stdio","command":' .. json_string(command) .. ',"args":[' .. table.concat(encoded, ",") .. ']}}}'
 end
 
-local function result_record(records)
-  for i = #records, 1, -1 do
-    local record = records[i]
-    if type(record) == "table" and record.type == "result" then return record end
-  end
-end
-
 return {
   setup = function(context)
     misa.reg_auth_provider({ id = "claude", model_provider = "claude", label = "Claude", description = "Claude Pro/Max via Claude Code" })
@@ -57,6 +50,17 @@ return {
 
     assert(config.max_plan == nil or type(config.max_plan) == "boolean", "config.providers.claude.max_plan must be boolean")
     local max_plan = config.max_plan == true
+    local serializer_id = "claude.cli"
+    misa.reg_request_options_serializer(serializer_id, {
+      accepts = function(name) return name == "reasoning_effort" end,
+      serialize = function(argv, name, value)
+        if name ~= "reasoning_effort" then return false end
+        argv[#argv + 1] = "--effort"; argv[#argv + 1] = value; return true
+      end,
+    })
+    local reasoning_api = { request_options_serializer = serializer_id, request_options = { reasoning_effort = {
+      choices = { "low", "medium", "high", "max" }, default = "high",
+    } } }
     local configured_models = config.models or {
       { id = "claude/claude-fable-5-1", model = "claude-fable-5-1", label = "Claude Fable 5.1", context_window = 1000000 },
       { id = "claude/claude-opus-5", model = "claude-opus-5", label = "Claude Opus 5", context_window = max_plan and 1000000 or 200000 },
@@ -66,7 +70,11 @@ return {
     assert(type(configured_models) == "table" and #configured_models > 0, "config.providers.claude.models must be nonempty")
     for _, model in ipairs(configured_models) do
       assert(type(model) == "table" and type(model.id) == "string" and type(model.model) == "string", "invalid Claude model")
-      misa.reg_model({ id = model.id, provider = "claude", model = model.model, label = model.label or model.id, context_window = model.context_window })
+      local api = model.api or reasoning_api
+      if type(api) == "table" and type(api.request_options) == "table" then
+        local copy = {}; for key, value in pairs(api) do copy[key] = value end; copy.request_options_serializer = serializer_id; api = copy
+      end
+      misa.reg_model({ id = model.id, provider = "claude", model = model.model, label = model.label or model.id, context_window = model.context_window, api = api })
     end
 
     if config.max_plan == nil then
@@ -95,12 +103,14 @@ return {
         "--input-format", "stream-json",
         "--output-format", "stream-json",
         "--verbose",
+        "--include-partial-messages",
         "--model", effect.model,
         "--tools", "",
         "--strict-mcp-config",
         "--permission-mode", "dontAsk",
         "--no-session-persistence",
       }
+      misa.serialize_request_options(serializer_id, effect.request_options or {}, argv)
       if #effect.tools > 0 then
         local allowed = {}
         for _, tool in ipairs(effect.tools) do allowed[#allowed + 1] = "mcp__misa__" .. tool.name end
@@ -116,33 +126,92 @@ return {
           type = "user", message = { role = "user", content = transcript(effect.messages) },
           parent_tool_use_id = misa.json_null,
         },
-        completion = "provider/claude-complete", stdout_format = "json_lines",
+        completion = "provider/claude-complete", stdout_format = "json_lines_stream",
       }
     end)
 
-    misa.reg_event("provider/claude-complete", function(_, event)
-      if not event.ok then
-        return { fx = { { type = "dispatch", event = {
-          type = "agent/error", id = event.id,
-          message = event.stderr ~= "" and event.stderr or ("claude exited " .. tostring(event.status)),
-        } } } }
+    misa.reg_event("provider/claude-complete", function(db, event)
+      db.providers = db.providers or {}; db.providers.claude_streams = db.providers.claude_streams or {}
+      if event.phase == "start" then
+        db.providers.claude_streams[event.id] = { saw_content = false, saw_stream_event = false, result = false }
+        return { db = db, fx = { { type = "dispatch", event = { type = "agent/stream-start", id = event.id } } } }
       end
-      local result = result_record(event.records)
-      if not result then
-        return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = "Claude returned no result record" } } } }
+      local state = db.providers.claude_streams[event.id] or { saw_content = false, saw_stream_event = false, result = false }
+      if event.phase == "end" then
+        db.providers.claude_streams[event.id] = nil
+        local next_event
+        if not event.ok then next_event = { type = "agent/stream-error", id = event.id,
+          message = event.message or (event.body ~= "" and event.body or ("claude exited " .. tostring(event.status))) }
+        elseif not state.result then next_event = { type = "agent/stream-error", id = event.id, message = "Claude returned no result record" }
+        else next_event = { type = "agent/stream-end", id = event.id } end
+        return { db = db, fx = { { type = "dispatch", event = next_event } } }
       end
-      if result.is_error or type(result.result) ~= "string" then
-        local message = type(result.result) == "string" and result.result or "Claude request failed"
-        return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = message } } } }
+      local fx = {}
+      for _, record in ipairs(event.records or {}) do
+        local partial = record.type == "stream_event" and record.event or nil
+        if type(partial) == "table" and (partial.type == "content_block_start" or partial.type == "content_block_delta") then state.saw_stream_event = true; break end
       end
-      local usage = type(result.usage) == "table" and result.usage or {}
-      return { fx = { { type = "dispatch", event = {
-        type = "agent/result", id = event.id, content = { { type = "text", text = result.result } },
-        usage = {
-          input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
-          cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
-        },
-      } } } }
+      for _, record in ipairs(event.records or {}) do
+        if record.type == "stream_event" and type(record.event) == "table" then
+          local partial = record.event
+          if partial.type == "content_block_start" and type(partial.content_block) == "table" then
+            local block = partial.content_block
+            if block.type == "tool_use" then
+              state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = {
+                type = "tool_call", index = partial.index, id = block.id, name = block.name, arguments_json = "",
+              } } }
+            elseif block.type == "text" and type(block.text) == "string" and block.text ~= "" then
+              state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "text", text = block.text } } }
+            elseif block.type == "thinking" and type(block.thinking) == "string" and block.thinking ~= "" then
+              state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "thinking", text = block.thinking } } }
+            end
+          elseif partial.type == "content_block_delta" and type(partial.delta) == "table" then
+            local delta = partial.delta
+            if delta.type == "text_delta" and type(delta.text) == "string" then state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "text", text = delta.text } } }
+            elseif delta.type == "thinking_delta" and type(delta.thinking) == "string" then state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "thinking", text = delta.thinking } } }
+            elseif delta.type == "input_json_delta" then state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = {
+              type = "tool_call", index = partial.index, arguments_json_delta = delta.partial_json or "",
+            } } } end
+          elseif partial.type == "message_start" and type(partial.message) == "table" then
+            local usage = type(partial.message.usage) == "table" and partial.message.usage or {}
+            fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-usage", id = event.id, usage = {
+              input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
+              cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
+            } } }
+          elseif partial.type == "message_delta" then
+            local usage = type(partial.usage) == "table" and partial.usage or {}
+            fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-usage", id = event.id,
+              stop_reason = type(partial.delta) == "table" and partial.delta.stop_reason or nil, usage = { output_tokens = usage.output_tokens or 0 },
+            } }
+          end
+        elseif record.type == "assistant" and type(record.message) == "table" and not state.saw_stream_event then
+          for _, block in ipairs(record.message.content or {}) do
+            if block.type == "text" and type(block.text) == "string" then
+              state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "text", text = block.text } } }
+            elseif block.type == "thinking" and type(block.thinking) == "string" then
+              state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "thinking", text = block.thinking } } }
+            elseif block.type == "tool_use" then
+              state.saw_content = true; fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = {
+                type = "tool_call", id = block.id, name = block.name, arguments = block.input,
+              } } }
+            end
+          end
+        elseif record.type == "result" then
+          state.result = true
+          if record.is_error then
+            fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-error", id = event.id, message = tostring(record.result or "Claude request failed") } }
+          elseif not state.saw_content and type(record.result) == "string" then
+            fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "text", text = record.result } } }
+          end
+          local usage = type(record.usage) == "table" and record.usage or {}
+          fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-usage", id = event.id, usage = {
+            input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
+            cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
+          } } }
+        end
+      end
+      db.providers.claude_streams[event.id] = state
+      return { db = db, fx = fx }
     end)
   end,
 }

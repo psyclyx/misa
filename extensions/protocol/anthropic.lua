@@ -8,6 +8,7 @@ local function message_content(message)
       -- Thinking signatures are provider-specific and cannot be replayed as
       -- ordinary text; retain visible reasoning only in Misa's history.
     elseif block.type == "tool_call" then
+      assert(type(block.arguments) == "table", "canonical tool arguments must be a table")
       blocks[#blocks + 1] = { type = "tool_use", id = block.id, name = block.name, input = block.arguments }
     end
   end
@@ -37,25 +38,27 @@ local function tools(values)
   return result
 end
 
-local function response_content(values)
-  local result = {}
-  for _, block in ipairs(values or {}) do
-    if block.type == "text" then
-      result[#result + 1] = { type = "text", text = block.text }
-    elseif block.type == "thinking" then
-      result[#result + 1] = { type = "thinking", text = block.thinking or "" }
-    elseif block.type == "tool_use" then
-      result[#result + 1] = { type = "tool_call", id = block.id, name = block.name, arguments = block.input }
-    end
-  end
-  return result
-end
-
 misa.protocols = misa.protocols or {}
+misa.protocols.serialize_anthropic_messages = messages
 function misa.protocols.anthropic(spec)
   assert(type(spec.id) == "string" and type(spec.url) == "string" and type(spec.models) == "table")
+  local serializer_id = "anthropic.messages." .. spec.id
+  misa.reg_request_options_serializer(serializer_id, {
+    accepts = function(name) return name == "reasoning_effort" end,
+    serialize = function(body, name, value)
+      if name ~= "reasoning_effort" then return false end
+      body.output_config = body.output_config or {}; body.output_config.effort = value
+      return true
+    end,
+  })
+  local function model_api(source)
+    if type(source) ~= "table" then return source end
+    local api = {}; for key, value in pairs(source) do api[key] = value end
+    if type(api.request_options) == "table" then api.request_options_serializer = serializer_id end
+    return api
+  end
   for _, model in ipairs(spec.models) do
-    misa.reg_model({ id = model.id, provider = spec.id, model = model.model, label = model.label or model.id, context_window = model.context_window })
+    misa.reg_model({ id = model.id, provider = spec.id, model = model.model, label = model.label or model.id, context_window = model.context_window, api = model_api(model.api) })
   end
 
   if spec.models_url then
@@ -98,6 +101,7 @@ function misa.protocols.anthropic(spec)
             id = spec.id .. "/" .. item.id, model = item.id,
             label = item.display_name or item.name or item.id,
             context_window = item.context_window or item.context_length or (type(item.max_input_tokens) == "number" and item.max_input_tokens > 0 and item.max_input_tokens or nil),
+            api = model_api(item.api or (type(item.request_options) == "table" and { request_options = item.request_options } or nil)),
           }
         end
       end
@@ -126,9 +130,10 @@ function misa.protocols.anthropic(spec)
     local body = {
       model = effect.model,
       max_tokens = spec.max_tokens or 16384,
-      messages = messages(effect.messages),
+      messages = messages(effect.messages), stream = true,
     }
     if effect.system_prompt then body.system = effect.system_prompt end
+    misa.serialize_request_options(serializer_id, effect.request_options or {}, body)
     local definitions = tools(effect.tools)
     if #definitions > 0 then body.tools = definitions end
     local headers = {
@@ -140,27 +145,59 @@ function misa.protocols.anthropic(spec)
       type = "http/request", method = "POST", url = spec.url, json = body,
       headers = headers,
       credential = { id = spec.credential, header = spec.auth_header or "x-api-key", prefix = spec.auth_prefix or "" },
-      response_format = "json", completion = "provider/" .. spec.id .. "-complete", id = effect.id,
+      response_format = "sse_json_stream", completion = "provider/" .. spec.id .. "-complete", id = effect.id,
     }
   end)
 
-  misa.reg_event("provider/" .. spec.id .. "-complete", function(_, event)
-    if not event.ok then
-      local detail = event.message or event.body or ("HTTP " .. tostring(event.status))
-      return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = detail } } } }
+  misa.reg_event("provider/" .. spec.id .. "-complete", function(db, event)
+    db.providers = db.providers or {}; db.providers.anthropic_streams = db.providers.anthropic_streams or {}
+    local streams = db.providers.anthropic_streams
+    if event.phase == "start" then streams[event.id] = false; return { db = db, fx = { { type = "dispatch", event = { type = "agent/stream-start", id = event.id } } } } end
+    if event.phase == "end" then
+      local terminal = streams[event.id] == true; streams[event.id] = nil
+      local body = type(event.body) == "string" and event.body ~= "" and event.body or nil
+      local http = type(event.status) == "number" and event.status >= 400 and ("HTTP " .. tostring(event.status) .. (body and (": " .. body) or "")) or nil
+      local next_event = event.ok and terminal and { type = "agent/stream-end", id = event.id } or {
+        type = "agent/stream-error", id = event.id, message = http or body or event.message or (not terminal and "Anthropic stream ended without message_stop") or "Anthropic request failed",
+      }
+      return { db = db, fx = { { type = "dispatch", event = next_event } } }
     end
-    local data = event.data
-    if type(data) ~= "table" or type(data.content) ~= "table" then
-      return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = "invalid Anthropic response" } } } }
+    local fx = {}
+    for _, record in ipairs(event.records or {}) do
+      if record.type == "message_stop" then streams[event.id] = true
+      elseif record.type == "content_block_start" and type(record.content_block) == "table" then
+        local block = record.content_block
+        if block.type == "tool_use" then fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = {
+          type = "tool_call", index = record.index, id = block.id, name = block.name, arguments_json = "",
+        } } } end
+      elseif record.type == "content_block_delta" and type(record.delta) == "table" then
+        local delta = record.delta
+        if delta.type == "text_delta" then fx[#fx + 1] = { type = "dispatch", event = {
+          type = "agent/stream-delta", id = event.id, delta = { type = "text", text = delta.text or "" },
+        } }
+        elseif delta.type == "thinking_delta" then fx[#fx + 1] = { type = "dispatch", event = {
+          type = "agent/stream-delta", id = event.id, delta = { type = "thinking", text = delta.thinking or "" },
+        } }
+        elseif delta.type == "input_json_delta" then fx[#fx + 1] = { type = "dispatch", event = {
+          type = "agent/stream-delta", id = event.id, delta = { type = "tool_call", index = record.index, arguments_json_delta = delta.partial_json or "" },
+        } } end
+      elseif record.type == "message_start" and type(record.message) == "table" then
+        local usage = type(record.message.usage) == "table" and record.message.usage or {}
+        fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-usage", id = event.id, usage = {
+          input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
+          cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
+        } } }
+      elseif record.type == "message_delta" then
+        local usage = type(record.usage) == "table" and record.usage or {}
+        fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-usage", id = event.id,
+          stop_reason = type(record.delta) == "table" and record.delta.stop_reason or nil,
+          usage = { output_tokens = usage.output_tokens or 0 },
+        } }
+      elseif record.type == "error" then fx[#fx + 1] = { type = "dispatch", event = {
+        type = "agent/stream-error", id = event.id, message = tostring(type(record.error) == "table" and record.error.message or "Anthropic request failed"),
+      } } end
     end
-    local usage = type(data.usage) == "table" and data.usage or {}
-    return { fx = { { type = "dispatch", event = {
-      type = "agent/result", id = event.id, content = response_content(data.content), stop_reason = data.stop_reason,
-      usage = {
-        input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
-        cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
-      },
-    } } } }
+    return { db = db, fx = fx }
   end)
 end
 

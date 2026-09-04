@@ -45,6 +45,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const state = b.createModule(.{
+        .root_source_file = b.path("src/state/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const session = b.createModule(.{
         .root_source_file = b.path("src/session/root.zig"),
         .target = target,
@@ -54,6 +59,7 @@ pub fn build(b: *std.Build) void {
     session.addImport("misa_file", file_effect);
     session.addImport("misa_lua_runtime", lua_runtime);
     session.addImport("misa_process", process_effect);
+    session.addImport("misa_state", state);
     session.addImport("misa_terminal", terminal);
     const mcp = b.createModule(.{
         .root_source_file = b.path("src/mcp/root.zig"),
@@ -74,6 +80,7 @@ pub fn build(b: *std.Build) void {
     main_module.addImport("misa_lua_runtime", lua_runtime);
     main_module.addImport("misa_mcp", mcp);
     main_module.addImport("misa_standard_extensions", standard_extensions);
+    main_module.addImport("misa_state", state);
     main_module.addImport("misa_terminal", terminal);
     main_module.addImport("misa_session", session);
 
@@ -99,12 +106,16 @@ pub fn build(b: *std.Build) void {
     const auth_unit = b.addTest(.{ .root_module = auth });
     const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
+    const process_unit = b.addTest(.{ .root_module = process_effect });
+    const state_unit = b.addTest(.{ .root_module = state });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
     const session_unit = b.addTest(.{ .root_module = session });
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&b.addRunArtifact(auth_unit).step);
     test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
+    test_step.dependOn(&b.addRunArtifact(process_unit).step);
+    test_step.dependOn(&b.addRunArtifact(state_unit).step);
     test_step.dependOn(&b.addRunArtifact(terminal_unit).step);
     test_step.dependOn(&b.addRunArtifact(session_unit).step);
 

@@ -58,9 +58,9 @@ return {
     end)
 
     for _, command in ipairs({
-      { name = "/login", description = "Log in to a provider: /login <provider>", action = "login" },
-      { name = "/logout", description = "Log out of a provider: /logout <provider>", action = "logout" },
-      { name = "/status", description = "Show provider login state: /status <provider>", action = "status" },
+      { name = "/login", description = "Log in to a provider", action = "login" },
+      { name = "/logout", description = "Log out of a provider", action = "logout" },
+      { name = "/status", description = "Show provider login state", action = "status" },
     }) do
       local item = command
       local event_type = "auth/" .. item.action
@@ -74,9 +74,9 @@ return {
           } } } }
         end
         local effects = {}
-        if cofx.terminal.interactive then effects[#effects + 1] = {
-          type = "view/commit", lines = { { spans = { { text = item.action .. " " .. provider .. "…", style = "dim" } } } },
-        } end
+        if cofx.terminal.interactive then effects[#effects + 1] = { type = "dispatch", event = {
+          type = "transcript/harness", text = item.action .. " " .. provider .. "…", level = "info",
+        } } end
         effects[#effects + 1] = {
           type = "auth/command", action = item.action, provider = provider,
           completion = "auth/complete", id = item.action .. ":" .. provider,
@@ -85,11 +85,12 @@ return {
       end)
     end
 
-    misa.reg_event("auth/complete", function(_, event)
-      local style = event.ok and "plain" or "error"
+    misa.reg_event("auth/complete", function(db, event)
       local message = event.message
       if event.subscription_type and event.subscription_type ~= misa.json_null then message = message .. " (" .. event.subscription_type .. ")" end
-      local effects = { { type = "view/commit", lines = { { spans = { { text = message, style = style } } } } } }
+      local effects = { { type = "dispatch", event = {
+        type = "transcript/harness", text = message, level = event.ok and "info" or "error",
+      } } }
       local provider = model_provider_for(event.provider)
       if provider and event.ok then
         effects[#effects + 1] = { type = "dispatch", event = {

@@ -1,13 +1,9 @@
-//! Scrollback-safe semantic frame presentation.
+//! Absolute semantic frame presentation for a managed terminal screen.
 const std = @import("std");
 const cell_width = @import("width.zig");
 
-pub fn appendErase(out: *std.ArrayList(u8), allocator: std.mem.Allocator, rows: usize, cursor_row: usize) !void {
-    if (rows == 0) return;
-    if (cursor_row > 0 and cursor_row < rows) try out.print(allocator, "\x1b[{d}B", .{rows - cursor_row});
-    try out.appendSlice(allocator, "\r\x1b[2K");
-    var remaining = rows - 1;
-    while (remaining > 0) : (remaining -= 1) try out.appendSlice(allocator, "\x1b[1A\r\x1b[2K");
+pub fn appendScreenPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    try out.appendSlice(allocator, "\x1b[H\x1b[2J");
 }
 
 const style_codes = std.StaticStringMap([]const u8).initComptime(.{
@@ -28,12 +24,9 @@ pub fn appendView(out: *std.ArrayList(u8), allocator: std.mem.Allocator, view: s
     };
     const lines = object.get("lines") orelse return error.InvalidView;
     const row_count = try appendLines(out, allocator, lines, columns, ansi, final_newline, true);
+    if (row_count > max_lines) return error.InvalidView;
     if (try resolveCursor(object.get("cursor"), lines, row_count, columns, max_lines)) |cursor| {
-        if (ansi and row_count != 0) {
-            if (row_count > cursor.row) try out.print(allocator, "\x1b[{d}A", .{row_count - cursor.row});
-            try out.appendSlice(allocator, "\r");
-            if (cursor.column > 1) try out.print(allocator, "\x1b[{d}C", .{cursor.column - 1});
-        }
+        if (ansi and row_count != 0) try out.print(allocator, "\x1b[{d};{d}H", .{ cursor.row, cursor.column });
     }
     return row_count;
 }
@@ -175,36 +168,36 @@ fn coordinate(value: ?std.json.Value) !usize {
     return @intCast(number);
 }
 
-pub fn renderForTest(allocator: std.mem.Allocator, previous_rows: usize, view: std.json.Value, commit: bool) ![]u8 {
+pub fn renderForTest(allocator: std.mem.Allocator, view: std.json.Value, commit: bool) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    try appendErase(&out, allocator, previous_rows, previous_rows);
+    try appendScreenPrelude(&out, allocator);
     _ = try appendView(&out, allocator, view, 80, 24, true, commit);
     return out.toOwnedSlice(allocator);
 }
 
-test "presenter erases exact rows, honors cursor, and forbids screen clears" {
+test "presenter redraws the viewport absolutely and honors cursor" {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"hello\",\"style\":\"accent\"}]},{\"spans\":[{\"text\":\"x\"}]}],\"cursor\":{\"row\":1,\"byte\":2}}", .{});
     defer parsed.deinit();
-    const frame = try renderForTest(std.testing.allocator, 2, parsed.value, false);
+    const frame = try renderForTest(std.testing.allocator, parsed.value, false);
     defer std.testing.allocator.free(frame);
-    try std.testing.expect(std.mem.startsWith(u8, frame, "\r\x1b[2K\x1b[1A\r\x1b[2K"));
-    try std.testing.expect(std.mem.endsWith(u8, frame, "\x1b[1A\r\x1b[2C"));
-    for ([_][]const u8{ "\x1b[J", "\x1b[2J", "\x1b[3J", "?1049" }) |forbidden| try std.testing.expect(std.mem.indexOf(u8, frame, forbidden) == null);
+    try std.testing.expect(std.mem.startsWith(u8, frame, "\x1b[H\x1b[2J"));
+    try std.testing.expect(std.mem.endsWith(u8, frame, "\x1b[1;3H"));
+    try std.testing.expect(std.mem.indexOf(u8, frame, "?1049") == null);
 }
 
 test "presenter converts semantic UTF-8 byte cursors across spans" {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"> \"},{\"text\":\"aéz\"}]}],\"cursor\":{\"row\":1,\"byte\":5}}", .{});
     defer parsed.deinit();
-    const frame = try renderForTest(std.testing.allocator, 0, parsed.value, false);
+    const frame = try renderForTest(std.testing.allocator, parsed.value, false);
     defer std.testing.allocator.free(frame);
-    try std.testing.expect(std.mem.endsWith(u8, frame, "\r\x1b[4C"));
+    try std.testing.expect(std.mem.endsWith(u8, frame, "\x1b[1;5H"));
     var narrow: std.ArrayList(u8) = .empty;
     defer narrow.deinit(std.testing.allocator);
     _ = try appendView(&narrow, std.testing.allocator, parsed.value, 4, 24, true, false);
-    try std.testing.expect(std.mem.endsWith(u8, narrow.items, "\r\x1b[2C"));
+    try std.testing.expect(std.mem.endsWith(u8, narrow.items, "\x1b[1;3H"));
 
     var split = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"é\"}]}],\"cursor\":{\"row\":1,\"byte\":1}}", .{});
     defer split.deinit();
-    try std.testing.expectError(error.InvalidView, renderForTest(std.testing.allocator, 0, split.value, false));
+    try std.testing.expectError(error.InvalidView, renderForTest(std.testing.allocator, split.value, false));
 }

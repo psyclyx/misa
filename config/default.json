@@ -1,5 +1,6 @@
 {
   "extensions": [
+    "json",
     "protocol.anthropic",
     "provider.anthropic",
     "provider.kimi",
@@ -11,13 +12,70 @@
     "auth",
     "tool.files",
     "tool.shell",
+    "fuzzy",
+    "keybindings",
+    "command_choice",
+    "preferences",
+    "themes",
+    "theme.default",
+    "animations",
+    "animation.default",
+    "components",
+    "layout",
+    "component.message",
+    "component.editor",
+    "component.picker",
+    "component.status",
+    "component.chrome",
+    "messages",
+    "status",
     "picker",
+    "picker_view",
     "models",
+    "request_options",
+    "effort",
     "agent",
+    "editor",
     "ui"
   ],
   "config": {
     "models": { "default": "claude/claude-sonnet-5" },
+    "keybindings": {
+      "global": {
+        "toggle_verbose": ["alt+t"],
+        "transcript_up": ["page_up", "alt+k"],
+        "transcript_down": ["page_down", "alt+j"],
+        "cycle_effort": ["alt+e"]
+      },
+      "picker": {
+        "accept": ["enter"],
+        "cancel": ["escape", "ctrl_c", "ctrl_d", "eof"],
+        "previous": ["arrow_up"],
+        "next": ["arrow_down"],
+        "next_panel": ["tab", "arrow_right"],
+        "previous_panel": ["arrow_left", "alt+p"],
+        "favorite": ["alt+v"]
+      }
+    },
+    "components": {
+      "roles": {
+        "root.header": "default.root.header",
+        "editor.input": "default.editor.input",
+        "editor.completions": "default.editor.completions",
+        "status.metrics": "default.status.metrics",
+        "picker": "default.picker",
+        "transcript.user": "default.transcript.user",
+        "transcript.assistant": "default.transcript.assistant",
+        "transcript.thinking": "default.transcript.thinking",
+        "transcript.thinking_collapsed": "default.transcript.thinking_collapsed",
+        "transcript.tool_call": "default.transcript.tool_call",
+        "transcript.tool_result": "default.transcript.tool_result",
+        "transcript.harness": "default.transcript.harness"
+      }
+    },
+    "themes": { "default": "default" },
+    "animations": { "default": "default" },
+    "messages": { "verbose": false, "markdown": true, "max_string": 4000, "max_items": 64, "max_depth": 8 },
     "ui": { "plain_prompt": true }
   }
 }

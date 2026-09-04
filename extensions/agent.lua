@@ -8,7 +8,8 @@ local function content(value, label)
     elseif block.type == "tool_call" then
       assert(type(block.id) == "string" and block.id ~= "", "tool call id must be nonempty")
       assert(type(block.name) == "string" and block.name ~= "", "tool call name must be nonempty")
-      assert(type(block.arguments) == "table" or type(block.arguments_json) == "string", "tool call arguments are missing")
+      assert(type(block.arguments) == "table", "tool call arguments must be a table")
+      assert(block.arguments_json == nil, "provider JSON must not enter canonical history")
     else
       error("unsupported assistant content block: " .. block.type)
     end
@@ -24,10 +25,13 @@ end
 
 local function request(db)
   local agent = db.agent
+  local selected = assert(selected_model(db), "selected model became unavailable")
+  local options, problem = {}, nil
+  if misa.prepare_request_options then options, problem = misa.prepare_request_options(db, selected) end
+  if problem then return nil, problem end
   agent.request_seq = agent.request_seq + 1
   local id = "agent-" .. tostring(agent.request_seq)
   agent.active_request_id, agent.status = id, "working"
-  local selected = assert(selected_model(db), "selected model became unavailable")
   return {
     type = "provider." .. selected.provider,
     id = id,
@@ -35,6 +39,16 @@ local function request(db)
     messages = agent.messages,
     tools = misa.tools(),
     system_prompt = agent.system_prompt,
+    request_options = options,
+  }
+end
+
+local function blocked(agent, problem)
+  agent.status, agent.active_request_id = "ready", nil
+  return {
+    { type = "dispatch", event = { type = "transcript/harness", text = problem.message, level = "error", problem = problem } },
+    { type = "dispatch", event = { type = "agent/status", status = "ready" } },
+    { type = "dispatch", event = { type = "agent/completed", exit = agent.exit_after_response } },
   }
 end
 
@@ -53,6 +67,85 @@ end
 
 local function tool_result(call_id, text, is_error)
   return { role = "tool", tool_call_id = call_id, content = { { type = "text", text = tostring(text) } }, is_error = is_error == true }
+end
+
+local function normalize_tool_arguments(blocks)
+  local failures = {}
+  for _, block in ipairs(blocks) do
+    if block.type == "tool_call" then
+      if block.arguments == nil then
+        assert(type(block.arguments_json) == "string", "tool call arguments are missing")
+        assert(misa.json and type(misa.json.decode) == "function", "JSON extension is required for provider tool calls")
+        local ok, decoded = pcall(misa.json.decode, block.arguments_json)
+        if ok and type(decoded) == "table" then block.arguments = decoded
+        else
+          block.arguments = {}
+          failures[block.id] = ok and "tool arguments must be a JSON object" or tostring(decoded)
+        end
+      end
+      block.arguments_json = nil
+    end
+  end
+  return failures
+end
+
+local function complete_response(db, agent, id, blocks, usage, stop_reason)
+  local argument_failures = normalize_tool_arguments(blocks)
+  blocks = content(blocks, "assistant")
+  record_usage(agent, usage)
+  agent.messages[#agent.messages + 1] = { role = "assistant", content = blocks }
+  agent.active_request_id, agent.accepted_request_id, agent.stream = nil, id, nil
+  local effects, saw_tool = {
+    { type = "dispatch", event = { type = "transcript/assistant", content = blocks, request_id = id } },
+    { type = "dispatch", event = { type = "agent/usage", usage = agent.usage, last_usage = agent.last_usage } },
+  }, false
+  for _, block in ipairs(blocks) do
+    if block.type == "tool_call" then
+      saw_tool = true
+      local tool = misa.tool(block.name)
+      if tool then
+        assert(not agent.pending_tools[block.id], "duplicate tool call id")
+        agent.pending_tools[block.id] = { name = block.name, request_id = id }
+        agent.pending_tool_count = agent.pending_tool_count + 1
+        if argument_failures[block.id] then
+          effects[#effects + 1] = { type = "dispatch", event = {
+            type = "tool/result", tool_call_id = block.id, text = argument_failures[block.id], is_error = true,
+          } }
+        else
+          effects[#effects + 1] = { type = tool.effect, request_id = id, tool_call_id = block.id, name = block.name, arguments = block.arguments }
+        end
+      else
+        local message = "unknown tool: " .. block.name
+        agent.messages[#agent.messages + 1] = tool_result(block.id, message, true)
+        effects[#effects + 1] = { type = "dispatch", event = { type = "transcript/tool-result", id = block.id, text = message, is_error = true } }
+      end
+    end
+  end
+  if agent.pending_tool_count > 0 then
+    agent.status = "tools"
+    effects[#effects + 1] = { type = "dispatch", event = { type = "agent/status", status = "tools" } }
+  elseif saw_tool then
+    local provider, problem = request(db)
+    if problem then for _, effect in ipairs(blocked(agent, problem)) do effects[#effects + 1] = effect end
+    else
+      effects[#effects + 1] = { type = "dispatch", event = { type = "agent/status", status = "working" } }
+      effects[#effects + 1] = provider
+    end
+  else
+    agent.status = "ready"
+    effects[#effects + 1] = { type = "dispatch", event = { type = "agent/status", status = "ready" } }
+    effects[#effects + 1] = { type = "dispatch", event = { type = "agent/completed", id = id, exit = agent.exit_after_response } }
+  end
+  return { db = db, fx = effects }
+end
+
+local function stream_blocks(stream)
+  local blocks = {}
+  for _, block in ipairs(stream.blocks) do
+    if block.type == "tool_call" and not (type(block.id) == "string" and block.id ~= "" and type(block.name) == "string" and block.name ~= "") then return nil end
+    blocks[#blocks + 1] = block
+  end
+  return blocks
 end
 
 return {
@@ -85,12 +178,21 @@ return {
       return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = prompt } } } }
     end)
 
+    misa.reg_event("agent/cancel-active", function(db)
+      local agent = db.agent
+      if not agent or agent.status ~= "working" or not agent.active_request_id then return { db = db } end
+      return { db = db, fx = { { type = "operation/cancel", id = agent.active_request_id } } }
+    end)
+
     misa.reg_event("agent/reset", function(db)
       local agent = assert(db.agent, "agent state is not initialized")
       assert(agent.status == "ready", "agent is busy")
-      agent.messages, agent.error, agent.last_usage = {}, nil, nil
+      agent.messages, agent.error, agent.last_usage = {}, nil, {}
       agent.usage = { input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0 }
-      return { db = db }
+      return { db = db, fx = {
+        { type = "dispatch", event = { type = "transcript/reset" } },
+        { type = "dispatch", event = { type = "agent/status", status = "ready", usage = agent.usage, last_usage = agent.last_usage } },
+      } }
     end)
 
     misa.reg_event("agent/submit", function(db, event)
@@ -100,70 +202,89 @@ return {
       if not selected_model(db) then
         local configured = db.models and db.models.configured_default
         local message = configured and ("configured model is unavailable: " .. configured) or "no available models; log in to a provider"
-        return { db = db, fx = { { type = "dispatch", event = {
-          type = "agent/unavailable", message = message,
-        } } } }
+        local problem = { kind = "request_readiness", code = "missing_model", model = configured, message = message }
+        return { db = db, fx = {
+          { type = "dispatch", event = { type = "transcript/harness", text = message, level = "error", problem = problem } },
+          { type = "dispatch", event = { type = "agent/completed", exit = agent.exit_after_response } },
+        } }
       end
+      local provider, problem = request(db)
+      if problem then return { db = db, fx = blocked(agent, problem) } end
       agent.messages[#agent.messages + 1] = { role = "user", content = { { type = "text", text = event.prompt } } }
-      return { db = db, fx = { request(db) } }
+      return { db = db, fx = {
+        { type = "dispatch", event = { type = "transcript/user", text = event.prompt } },
+        { type = "dispatch", event = { type = "agent/status", status = "working" } },
+        provider,
+      } }
     end)
 
+    -- Providers expose one normalized lifecycle. The agent alone correlates,
+    -- assembles, and decides when a response enters conversation history.
+    misa.reg_event("agent/stream-start", function(db, event)
+      local agent = db.agent
+      if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id or agent.stream then return end
+      agent.stream = { id = event.id, blocks = {}, tools = {} }
+      return { db = db }
+    end)
+
+    misa.reg_event("agent/stream-delta", function(db, event, cofx)
+      local agent, delta = db.agent, event.delta
+      local stream = agent and agent.stream
+      if not stream or event.id ~= agent.active_request_id or stream.id ~= event.id or type(delta) ~= "table" then return end
+      local fx = {}
+      if delta.type == "text" or delta.type == "thinking" then
+        assert(type(delta.text) == "string", "stream text delta must be a string")
+        if delta.text ~= "" then
+          local last = stream.blocks[#stream.blocks]
+          if last and last.type == delta.type then last.text = last.text .. delta.text
+          else stream.blocks[#stream.blocks + 1] = { type = delta.type, text = delta.text } end
+          if cofx.terminal.interactive then fx[1] = { type = "dispatch", event = { type = "transcript/stream-delta", request_id = event.id, kind = delta.type, text = delta.text } } end
+        end
+      elseif delta.type == "tool_call" then
+        local key = tostring(delta.index or delta.id or (#stream.blocks + 1))
+        local block = stream.tools[key]
+        if not block then
+          block = { type = "tool_call", id = delta.id, name = delta.name, arguments_json = "" }
+          stream.tools[key] = block; stream.blocks[#stream.blocks + 1] = block
+        end
+        if delta.id ~= nil then block.id = delta.id end
+        if delta.name ~= nil then block.name = delta.name end
+        if delta.arguments ~= nil then block.arguments, block.arguments_json = delta.arguments, nil end
+        if delta.arguments_json ~= nil then block.arguments_json = delta.arguments_json end
+        if delta.arguments_json_delta ~= nil then block.arguments_json = (block.arguments_json or "") .. delta.arguments_json_delta end
+      else error("unsupported agent stream delta: " .. tostring(delta.type)) end
+      return { db = db, fx = fx }
+    end)
+
+    misa.reg_event("agent/stream-usage", function(db, event)
+      local agent = db.agent
+      local stream = agent and agent.stream
+      if not stream or event.id ~= agent.active_request_id then return end
+      stream.usage = stream.usage or {}
+      for _, name in ipairs({ "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens" }) do
+        if type(event.usage) == "table" and event.usage[name] ~= nil then stream.usage[name] = event.usage[name] end
+      end
+      stream.stop_reason = event.stop_reason or stream.stop_reason
+      return { db = db }
+    end)
+
+    misa.reg_event("agent/stream-end", function(db, event)
+      local agent = db.agent
+      local stream = agent and agent.stream
+      if not stream or agent.status ~= "working" or event.id ~= agent.active_request_id or stream.id ~= event.id then return end
+      local blocks = stream_blocks(stream)
+      if not blocks then return { db = db, fx = { { type = "dispatch", event = {
+        type = "agent/stream-error", id = event.id, message = "provider ended an incomplete tool call",
+      } } } } end
+      return complete_response(db, agent, event.id, blocks, event.usage or stream.usage, event.stop_reason or stream.stop_reason)
+    end)
+
+    -- Compatibility input is immediately normalized; built-in providers never
+    -- use this legacy event.
     misa.reg_event("agent/result", function(db, event)
       local agent = db.agent
       if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id then return end
-      local blocks = content(event.content, "assistant")
-      record_usage(agent, event.usage)
-      agent.messages[#agent.messages + 1] = { role = "assistant", content = blocks }
-      agent.active_request_id, agent.accepted_request_id = nil, event.id
-      local effects, saw_tool = {}, false
-      for _, block in ipairs(blocks) do
-        if block.type == "tool_call" then
-          saw_tool = true
-          local tool = misa.tool(block.name)
-          if tool then
-            assert(not agent.pending_tools[block.id], "duplicate tool call id")
-            agent.pending_tools[block.id] = { name = block.name, request_id = event.id }
-            agent.pending_tool_count = agent.pending_tool_count + 1
-            if block.arguments_json then
-              effects[#effects + 1] = {
-                type = "json/decode", source = block.arguments_json,
-                completion = "agent/tool-arguments", id = block.id,
-              }
-            else
-              effects[#effects + 1] = {
-                type = tool.effect, request_id = event.id, tool_call_id = block.id,
-                name = block.name, arguments = block.arguments,
-              }
-            end
-          else
-            agent.messages[#agent.messages + 1] = tool_result(block.id, "unknown tool: " .. block.name, true)
-          end
-        end
-      end
-      if agent.pending_tool_count > 0 then
-        agent.status = "tools"
-      elseif saw_tool then
-        effects[#effects + 1] = request(db)
-      else
-        agent.status = "ready"
-      end
-      return { db = db, fx = effects }
-    end)
-
-    misa.reg_event("agent/tool-arguments", function(db, event)
-      local agent = db.agent
-      local pending = agent and agent.pending_tools[event.id]
-      assert(pending, "unexpected decoded tool arguments")
-      if not event.ok or type(event.data) ~= "table" then
-        return { fx = { { type = "dispatch", event = {
-          type = "tool/result", tool_call_id = event.id, text = event.message or "invalid tool arguments", is_error = true,
-        } } } }
-      end
-      local tool = assert(misa.tool(pending.name), "tool disappeared")
-      return { fx = { {
-        type = tool.effect, request_id = pending.request_id, tool_call_id = event.id,
-        name = pending.name, arguments = event.data,
-      } } }
+      return complete_response(db, agent, event.id, event.content, event.usage, event.stop_reason)
     end)
 
     misa.reg_event("tool/result", function(db, event)
@@ -173,16 +294,37 @@ return {
       agent.pending_tools[event.tool_call_id] = nil
       agent.pending_tool_count = agent.pending_tool_count - 1
       agent.messages[#agent.messages + 1] = tool_result(event.tool_call_id, event.text or "", event.is_error)
-      if agent.pending_tool_count == 0 then return { db = db, fx = { request(db) } } end
-      return { db = db }
+      local effects = { { type = "dispatch", event = {
+        type = "transcript/tool-result", id = event.tool_call_id, text = event.text or "", is_error = event.is_error == true,
+      } } }
+      if agent.pending_tool_count == 0 then
+        local provider, problem = request(db)
+        if problem then
+          for _, effect in ipairs(blocked(agent, problem)) do effects[#effects + 1] = effect end
+        else
+          effects[#effects + 1] = { type = "dispatch", event = { type = "agent/status", status = "working" } }
+          effects[#effects + 1] = provider
+        end
+      end
+      return { db = db, fx = effects }
     end)
 
-    misa.reg_event("agent/error", function(db, event)
+    local function stream_error(db, event)
       local agent = db.agent
       if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id then return end
-      agent.error, agent.status, agent.active_request_id = tostring(event.message or "provider failed"), "ready", nil
+      local partial = agent.stream and agent.stream.blocks or {}
+      agent.error, agent.status, agent.active_request_id, agent.stream = tostring(event.message or "provider failed"), "ready", nil, nil
       agent.accepted_request_id = event.id
-      return { db = db }
-    end)
+      local fx = {}
+      if #partial > 0 then fx[#fx + 1] = { type = "dispatch", event = {
+        type = "transcript/interrupted", request_id = event.id, content = partial,
+      } } end
+      fx[#fx + 1] = { type = "dispatch", event = { type = "transcript/harness", text = agent.error, level = "error" } }
+      fx[#fx + 1] = { type = "dispatch", event = { type = "agent/status", status = "ready" } }
+      fx[#fx + 1] = { type = "dispatch", event = { type = "agent/completed", id = event.id, exit = agent.exit_after_response } }
+      return { db = db, fx = fx }
+    end
+    misa.reg_event("agent/stream-error", stream_error)
+    misa.reg_event("agent/error", stream_error)
   end,
 }

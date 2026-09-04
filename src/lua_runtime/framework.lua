@@ -5,7 +5,9 @@ local cofx_fns, cofx_order, fx_fns = {}, {}, {}
 local models, model_by_id, tools, tool_by_name = {}, {}, {}, {}
 local commands, command_by_name = {}, {}
 local completions, completion_values = {}, {}
+local keybindings, keybinding_ids = {}, {}
 local auth_providers, auth_provider_ids, auth_model_providers = {}, {}, {}
+local request_serializers = {}
 local view_layers, view_layer_ids = {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
@@ -72,6 +74,64 @@ function misa.view_layers(state, cofx)
   return result
 end
 
+local function scalar(value)
+  local kind = type(value)
+  return kind == "string" or kind == "number" or kind == "boolean"
+end
+
+function misa.reg_request_options_serializer(id, serializer)
+  open()
+  assert(type(id) == "string" and id ~= "", "request option serializer ID must be nonempty")
+  assert(type(serializer) == "table" and type(serializer.accepts) == "function" and type(serializer.serialize) == "function", "invalid request option serializer")
+  assert(request_serializers[id] == nil, "duplicate request option serializer: " .. id)
+  request_serializers[id] = serializer
+end
+
+function misa.can_serialize_request_option(id, name)
+  local serializer = request_serializers[id]
+  return serializer ~= nil and serializer.accepts(name) == true
+end
+
+function misa.serialize_request_options(id, values, target)
+  local serializer = assert(request_serializers[id], "unknown request option serializer: " .. tostring(id))
+  assert(type(values) == "table", "request options must be a table")
+  for name, value in pairs(values) do
+    assert(serializer.accepts(name) == true, "request option is not serializable: " .. tostring(name))
+    assert(serializer.serialize(target, name, value) == true, "request option serializer did not consume: " .. tostring(name))
+  end
+  return target
+end
+
+local function validate_model_api(api)
+  assert(api == nil or type(api) == "table", "model.api must be a table")
+  if api == nil or api.request_options == nil then return end
+  assert(type(api.request_options) == "table", "model.api.request_options must be a table")
+  assert(type(api.request_options_serializer) == "string" and api.request_options_serializer ~= "", "model request options must identify a serializer")
+  assert(request_serializers[api.request_options_serializer], "unknown model request option serializer: " .. api.request_options_serializer)
+  for name, option in pairs(api.request_options) do
+    assert(type(name) == "string" and name ~= "", "request option names must be nonempty strings")
+    assert(type(option) == "table", "request option declarations must be tables")
+    assert(option.required == nil or type(option.required) == "boolean", "request option required must be boolean")
+    local choices = option.choices or option.values
+    assert(choices == nil or type(choices) == "table", "request option choices must be an array")
+    local seen = {}
+    for key in pairs(choices or {}) do
+      assert(type(key) == "number" and key >= 1 and key % 1 == 0 and key <= #choices, "request option choices must be an array")
+    end
+    for _, choice in ipairs(choices or {}) do
+      assert(scalar(choice), "request option choices must be scalar values")
+      local key = type(choice) .. ":" .. tostring(choice)
+      assert(not seen[key], "request option choices must be unique")
+      seen[key] = true
+    end
+    assert(option.default == nil or scalar(option.default), "request option default must be a scalar value")
+    if option.default ~= nil and choices then
+      local key = type(option.default) .. ":" .. tostring(option.default)
+      assert(seen[key], "request option default must be one of its choices")
+    end
+  end
+end
+
 function misa.reg_model(model)
   open()
   assert(type(model) == "table" and type(model.id) == "string" and model.id ~= "", "model.id must be a nonempty string")
@@ -79,6 +139,7 @@ function misa.reg_model(model)
   assert(type(model.model) == "string" and model.model ~= "", "model.model must be a nonempty string")
   assert(model.label == nil or type(model.label) == "string", "model.label must be a string")
   assert(model.context_window == nil or (type(model.context_window) == "number" and model.context_window > 0 and model.context_window % 1 == 0), "model.context_window must be a positive integer")
+  validate_model_api(model.api)
   assert(model_by_id[model.id] == nil, "duplicate model")
   model_by_id[model.id] = model
   models[#models + 1] = model
@@ -94,6 +155,8 @@ function misa.reg_command(command)
   assert(type(command.event) == "string" and command.event ~= "", "command.event must be nonempty")
   assert(command.completion == nil or type(command.completion) == "string", "command.completion must name a completion group")
   assert(command.complete == nil or type(command.complete) == "function", "command.complete must be a function")
+  assert(command.selected == nil or type(command.selected) == "function", "command.selected must be a function")
+  assert(command.preference_scope == nil or type(command.preference_scope) == "string", "command.preference_scope must be a string")
   assert(not (command.completion and command.complete), "command may have one completion source")
   assert(command_by_name[command.name] == nil, "duplicate command")
   command_by_name[command.name] = command
@@ -102,6 +165,21 @@ end
 
 function misa.commands() return commands end
 function misa.command(name) return command_by_name[name] end
+
+-- Keybinding declarations are data. The keybindings extension owns input
+-- normalization and configuration policy; feature extensions only name actions.
+function misa.reg_keybinding(binding)
+  open()
+  assert(type(binding) == "table" and type(binding.context) == "string" and binding.context ~= "", "keybinding context must be nonempty")
+  assert(type(binding.action) == "string" and binding.action ~= "", "keybinding action must be nonempty")
+  assert(type(binding.default) == "table", "keybinding default must be an array")
+  local id = binding.context .. "/" .. binding.action
+  assert(not keybinding_ids[id], "duplicate keybinding")
+  for _, key in ipairs(binding.default) do assert(type(key) == "string" and key ~= "", "keybinding keys must be nonempty strings") end
+  keybinding_ids[id] = true
+  keybindings[#keybindings + 1] = binding
+end
+function misa.keybindings() return keybindings end
 
 function misa.reg_completion(group, candidate)
   open()
@@ -134,11 +212,12 @@ function misa.command_completions(command, prefix, state)
   assert(type(command) == "table" and type(prefix) == "string", "invalid completion request")
   local source = command.complete and command.complete(prefix, state) or completions[command.completion] or {}
   assert(type(source) == "table", "command completer must return an array")
-  local result = {}
   for _, candidate in ipairs(source) do
     assert(type(candidate) == "table" and type(candidate.value) == "string", "invalid completion candidate")
-    if candidate.value:sub(1, #prefix) == prefix then result[#result + 1] = candidate end
   end
+  if misa.fuzzy_choices then return misa.fuzzy_choices(source, prefix) end
+  local result = {}
+  for _, candidate in ipairs(source) do if candidate.value:sub(1, #prefix) == prefix then result[#result + 1] = candidate end end
   table.sort(result, function(left, right) return left.value < right.value end)
   return result
 end
@@ -202,6 +281,21 @@ local function clone(value, active, depth)
   return result
 end
 
+-- Public to projection infrastructure only. Projection models may contain
+-- registered callbacks (for example picker indexing policy), so preserve
+-- functions while recursively copying every table they could otherwise mutate.
+local function snapshot(value, active, depth)
+  depth = depth or 0; assert(depth <= MAX_DEPTH, "maximum projection nesting depth exceeded")
+  local kind = type(value)
+  if kind == "function" or value == misa.json_null or kind == "nil" or kind == "boolean" or kind == "string" then return value end
+  if kind == "number" then assert(finite(value), "non-finite number"); return value end
+  assert(kind == "table", "projection input must contain only data or callbacks")
+  active = active or {}; assert(not active[value], "cyclic projection input"); active[value] = true
+  local result = {}; for key, item in pairs(value) do result[key] = snapshot(item, active, depth + 1) end
+  active[value] = nil; return result
+end
+function misa.snapshot(value) return snapshot(value) end
+
 local function append(destination, values)
   assert(type(values) == "table", "fx must be an array")
   for i = 1, #values do
@@ -257,8 +351,10 @@ function misa._dispatch(event, terminal)
         effects[#effects + 1] = effect
       end
     end
+    -- Projection receives snapshots, never the transaction's working state.
+    -- A misbehaving view can only mutate its private copies.
     local frame = misa.json_null
-    if view then frame = view(tx.db, tx.cofx); assert(type(frame) == "table", "view must return a table") end
+    if view then frame = view(clone(tx.db), clone(tx.cofx)); assert(type(frame) == "table", "view must return a table") end
     pending_db = tx.db
     return effects, frame
   end, traceback)

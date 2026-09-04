@@ -1,0 +1,155 @@
+//! Parse and validate the fixed native effect contract before execution.
+const std = @import("std");
+const auth = @import("misa_auth");
+const file = @import("misa_file");
+const http = @import("http.zig");
+const process = @import("misa_process");
+const state = @import("misa_state");
+const terminal = @import("misa_terminal");
+const timer = @import("timer.zig");
+
+pub const JsonDecode = struct { source: []const u8, completion: []const u8, id: []const u8 };
+pub const StateLoad = struct { namespace: []const u8, completion: []const u8 };
+pub const StateSave = struct { namespace: []const u8, data: std.json.Value };
+pub const AuthCommand = struct { action: auth.Action, provider: []const u8, completion: []const u8, id: []const u8 };
+pub const CancelOperation = struct { id: []const u8 };
+
+pub const Effect = union(enum) {
+    dispatch: std.json.Value,
+    terminal_read,
+    view_commit: std.json.Value,
+    app_quit,
+    process_run: process.Spec,
+    http_request: http.Spec,
+    file: file.Spec,
+    json_decode: JsonDecode,
+    auth_command: AuthCommand,
+    state_load: StateLoad,
+    state_save: StateSave,
+    operation_cancel: CancelOperation,
+    timer_start: timer.Start,
+    timer_stop: timer.Stop,
+
+    pub fn parse(value: std.json.Value) !Effect {
+        const object = switch (value) {
+            .object => |item| item,
+            else => return error.InvalidEffect,
+        };
+        const kind = nonEmptyStringField(object, "type") orelse return error.InvalidEffect;
+        if (std.mem.eql(u8, kind, "dispatch")) {
+            const event = object.get("event") orelse return error.InvalidEffect;
+            const event_object = switch (event) {
+                .object => |item| item,
+                else => return error.InvalidEffect,
+            };
+            _ = nonEmptyStringField(event_object, "type") orelse return error.InvalidEffect;
+            return .{ .dispatch = event };
+        }
+        if (std.mem.eql(u8, kind, "terminal/read")) return .terminal_read;
+        if (std.mem.eql(u8, kind, "view/commit")) {
+            const lines = object.get("lines") orelse return error.InvalidEffect;
+            try terminal.validateLines(lines);
+            return .{ .view_commit = lines };
+        }
+        if (std.mem.eql(u8, kind, "app/quit")) return .app_quit;
+        if (std.mem.eql(u8, kind, "operation/cancel")) return .{ .operation_cancel = .{
+            .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+        } };
+        if (std.mem.eql(u8, kind, "timer/start")) {
+            const interval = object.get("interval_ms") orelse return error.InvalidEffect;
+            if (interval != .integer or interval.integer < 10 or interval.integer > 60_000) return error.InvalidEffect;
+            return .{ .timer_start = .{
+                .interval_ms = @intCast(interval.integer),
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            } };
+        }
+        if (std.mem.eql(u8, kind, "timer/stop")) return .{ .timer_stop = .{
+            .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+        } };
+        if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
+        if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
+        if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
+        if (std.mem.eql(u8, kind, "auth/command")) {
+            const action_name = nonEmptyStringField(object, "action") orelse return error.InvalidEffect;
+            const action: auth.Action = if (std.mem.eql(u8, action_name, "login")) .login else if (std.mem.eql(u8, action_name, "logout")) .logout else if (std.mem.eql(u8, action_name, "status")) .status else return error.InvalidEffect;
+            return .{ .auth_command = .{
+                .action = action,
+                .provider = nonEmptyStringField(object, "provider") orelse return error.InvalidEffect,
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            } };
+        }
+        if (std.mem.eql(u8, kind, "json/decode")) return .{ .json_decode = .{
+            .source = stringField(object, "source") orelse return error.InvalidEffect,
+            .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+            .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+        } };
+        if (std.mem.eql(u8, kind, "state/load")) {
+            const namespace = nonEmptyStringField(object, "namespace") orelse return error.InvalidEffect;
+            state.validateNamespace(namespace) catch return error.InvalidEffect;
+            return .{ .state_load = .{
+                .namespace = namespace,
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+            } };
+        }
+        if (std.mem.eql(u8, kind, "state/save")) {
+            const namespace = nonEmptyStringField(object, "namespace") orelse return error.InvalidEffect;
+            state.validateNamespace(namespace) catch return error.InvalidEffect;
+            return .{ .state_save = .{
+                .namespace = namespace,
+                .data = object.get("data") orelse return error.InvalidEffect,
+            } };
+        }
+        return error.UnknownNativeEffect;
+    }
+};
+
+fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |item| item,
+        else => null,
+    };
+}
+
+fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const string = stringField(object, name) orelse return null;
+    return if (string.len != 0 and std.mem.indexOfScalar(u8, string, 0) == null) string else null;
+}
+
+test "validation covers the whole native contract" {
+    var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\",\"arg\"],\"completion\":\"done\",\"id\":\"1\"}", .{});
+    defer valid.deinit();
+    _ = try Effect.parse(valid.value);
+    var stream = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\"],\"completion\":\"done\",\"id\":\"1\",\"stdout_format\":\"json_lines_stream\"}", .{});
+    defer stream.deinit();
+    const stream_effect = try Effect.parse(stream.value);
+    try std.testing.expectEqual(process.StdoutFormat.json_lines_stream, stream_effect.process_run.stdout_format);
+    var invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\"],\"completion\":\"\",\"id\":\"\"}", .{});
+    defer invalid.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(invalid.value));
+    var cancel = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"operation/cancel\",\"id\":\"request-1\"}", .{});
+    defer cancel.deinit();
+    _ = try Effect.parse(cancel.value);
+    var timer_effect_json = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"timer/start\",\"interval_ms\":80,\"completion\":\"ui/tick\",\"id\":\"animation\"}", .{});
+    defer timer_effect_json.deinit();
+    const timer_effect = try Effect.parse(timer_effect_json.value);
+    try std.testing.expectEqual(@as(u64, 80), timer_effect.timer_start.interval_ms);
+    var bad_timer = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"timer/start\",\"interval_ms\":0,\"completion\":\"ui/tick\",\"id\":\"animation\"}", .{});
+    defer bad_timer.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_timer.value));
+    var bad_view = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"view/commit\",\"lines\":[{\"spans\":[{\"text\":\"bad\\n\"}]}]}", .{});
+    defer bad_view.deinit();
+    try std.testing.expectError(error.InvalidView, Effect.parse(bad_view.value));
+
+    var state_save = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"state/save\",\"namespace\":\"preferences\",\"data\":{}}", .{});
+    defer state_save.deinit();
+    _ = try Effect.parse(state_save.value);
+    var bad_state = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"state/load\",\"namespace\":\"preferences\"}", .{});
+    defer bad_state.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_state.value));
+    var unsafe_state = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"state/load\",\"namespace\":\"../other\",\"completion\":\"done\"}", .{});
+    defer unsafe_state.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(unsafe_state.value));
+}

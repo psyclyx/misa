@@ -1,268 +1,38 @@
--- UTF-8 byte-oriented editor policy and semantic projection. Zig owns cells.
-local function lines_for(text, style, preserve_trailing)
-  local lines = {}
-  text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
-  if not preserve_trailing and text:sub(-1) == "\n" then text = text:sub(1, -2) end
-  if text == "" then return { { spans = { { text = "", style = style } } } } end
-  for line in (text .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = { spans = { { text = line, style = style } } } end
-  return lines
+-- Root composition only. Feature state and viewport extraction remain owned by
+-- editor, messages, picker layers, and status.
+local function append(target,source,limit)
+  for _,line in ipairs(source or {}) do if not limit or #target<limit then target[#target+1]=line end end
 end
-
-local function previous_cursor(text, cursor)
-  if cursor == 0 then return 0 end
-  local previous = cursor - 1
-  while previous > 0 do
-    local byte = text:byte(previous + 1)
-    if byte < 128 or byte >= 192 then break end
-    previous = previous - 1
+local function slice(lines,first,count)
+  local result={}; for index=math.max(1,first),math.min(#lines,first+count-1) do result[#result+1]=lines[index] end; return result
+end
+local function bound_frame(lines,columns,cursor)
+  columns=math.max(1,columns); local result={}
+  for _,line in ipairs(lines) do local remaining,spans=columns,{}
+    for _,source in ipairs(line.spans or {}) do if remaining>0 then local text,_,used=misa.layout.take(source.text or "",remaining); spans[#spans+1]={text=text,style=source.style}; remaining=math.max(0,remaining-used) end end
+    result[#result+1]={spans=spans}
   end
-  return previous
+  if cursor then local bytes=0; for _,item in ipairs(result[cursor.row] and result[cursor.row].spans or {}) do bytes=bytes+#(item.text or "") end; cursor.byte=math.min(cursor.byte,bytes) end
+  return {lines=result,cursor=cursor}
 end
-
-local function next_cursor(text, cursor)
-  if cursor >= #text then return #text end
-  local next = cursor + 1
-  while next < #text do
-    local byte = text:byte(next + 1)
-    if byte < 128 or byte >= 192 then break end
-    next = next + 1
-  end
-  return next
-end
-
-local function editor(db)
-  db.ui = db.ui or {}
-  local ui = db.ui
-  ui.text = type(ui.text) == "string" and ui.text or ""
-  if type(ui.cursor) ~= "number" or ui.cursor % 1 ~= 0 or ui.cursor < 0 or ui.cursor > #ui.text then ui.cursor = #ui.text end
-  return ui
-end
-
-local function labeled_lines(label, text, style)
-  local lines = lines_for(text, style)
-  table.insert(lines[1].spans, 1, { text = label .. "  ", style = "bold" })
-  return lines
-end
-
-local function completion_matches(input, db)
-  local matches = {}
-  if input:sub(1, 1) ~= "/" then return matches end
-  local command_name, argument_prefix = input:match("^(%S+)%s+(.*)$")
-  if command_name then
-    local command = misa.command(command_name)
-    if not command then return matches end
-    for _, candidate in ipairs(misa.command_completions(command, argument_prefix, db)) do
-      matches[#matches + 1] = {
-        text = command.name .. " " .. candidate.value,
-        label = candidate.label or candidate.value,
-        description = candidate.description or "",
-      }
-    end
-    return matches
-  end
-  for _, command in ipairs(misa.commands()) do
-    if command.name:sub(1, #input) == input then
-      matches[#matches + 1] = { text = command.name, label = command.name, description = command.description }
-    end
-  end
-  return matches
-end
-
-local function command_input(text)
-  local name, arguments = text:match("^(%S+)%s*(.-)%s*$")
-  return name and misa.command(name), arguments
-end
-
-local function token_count(agent)
-  local usage = agent.usage or {}
-  return (usage.input_tokens or 0) + (usage.output_tokens or 0)
-end
-
-local function assistant_text(blocks)
-  local parts = {}
-  for _, block in ipairs(blocks or {}) do if block.type == "text" then parts[#parts + 1] = block.text end end
-  return table.concat(parts, "")
-end
-
-local function editor_position(text, cursor)
-  local prefix = text:sub(1, cursor)
-  local row, line_start = 1, 0
-  for index in prefix:gmatch("()\n") do row, line_start = row + 1, index end
-  return row, cursor - line_start
-end
-
-return {
-  setup = function(context)
-    local config = type(context.config) == "table" and context.config.ui or nil
-    local plain_prompt = type(config) == "table" and config.plain_prompt == true
-
-    misa.reg_event("app/start", function(db, _, cofx)
-      editor(db)
-      if #cofx.argv ~= 0 then return { db = db } end
-      local fx = {}
-      if not cofx.terminal.interactive and plain_prompt then
-        fx[#fx + 1] = { type = "view/commit", lines = lines_for("misa> enter a prompt:", "plain") }
-      end
-      fx[#fx + 1] = { type = "terminal/read" }
-      return { db = db, fx = fx }
-    end)
-
-    misa.reg_event("terminal/input", function(db, event, cofx)
-      local ui = editor(db)
-      if event.kind == "text" then
-        ui.text = ui.text:sub(1, ui.cursor) .. event.text .. ui.text:sub(ui.cursor + 1)
-        ui.cursor = ui.cursor + #event.text
-        ui.completion_prefix, ui.completion_index = nil, nil
-      elseif event.kind == "backspace" then
-        local previous = previous_cursor(ui.text, ui.cursor)
-        ui.text = ui.text:sub(1, previous) .. ui.text:sub(ui.cursor + 1)
-        ui.cursor = previous
-        ui.completion_prefix, ui.completion_index = nil, nil
-      elseif event.kind == "tab" then
-        local prefix = ui.completion_prefix or ui.text
-        local matches = completion_matches(prefix, db)
-        if #matches > 0 then
-          ui.completion_index = ui.completion_index and (ui.completion_index % #matches + 1) or 1
-          ui.completion_prefix = prefix
-          ui.text, ui.cursor = matches[ui.completion_index].text, #matches[ui.completion_index].text
-        end
-      elseif (event.kind == "arrow_up" or event.kind == "arrow_down") and ui.completion_prefix then
-        local matches = completion_matches(ui.completion_prefix, db)
-        if #matches > 0 then
-          local delta = event.kind == "arrow_up" and -1 or 1
-          ui.completion_index = ((ui.completion_index or 1) - 1 + delta) % #matches + 1
-          ui.text, ui.cursor = matches[ui.completion_index].text, #matches[ui.completion_index].text
-        end
-      elseif event.kind == "arrow_left" then
-        ui.completion_prefix, ui.completion_index = nil, nil
-        ui.cursor = previous_cursor(ui.text, ui.cursor)
-      elseif event.kind == "arrow_right" then
-        ui.completion_prefix, ui.completion_index = nil, nil
-        ui.cursor = next_cursor(ui.text, ui.cursor)
-      elseif event.kind == "escape" and ui.completion_prefix then
-        ui.completion_prefix, ui.completion_index = nil, nil
-      elseif event.kind == "enter" and ui.text ~= "" then
-        local prompt = ui.text
-        ui.text, ui.cursor, ui.completion_prefix, ui.completion_index = "", 0, nil, nil
-        local command, arguments = command_input(prompt)
-        if command then
-          return { db = db, fx = { { type = "dispatch", event = {
-            type = command.event, command = command.name, arguments = arguments,
-          } } } }
-        end
-        local effects = {}
-        if cofx.terminal.interactive then effects[#effects + 1] = { type = "view/commit", lines = labeled_lines("You", prompt, "user") } end
-        effects[#effects + 1] = { type = "dispatch", event = { type = "agent/submit", prompt = prompt } }
-        return { db = db, fx = effects }
-      elseif event.kind == "ctrl_c" then
-        ui.text, ui.cursor, ui.completion_prefix, ui.completion_index = "", 0, nil, nil
-      elseif event.kind == "ctrl_d" then
-        if ui.text == "" then return { db = db, fx = { { type = "app/quit" } } } end
-        if ui.cursor < #ui.text then ui.text = ui.text:sub(1, ui.cursor) .. ui.text:sub(next_cursor(ui.text, ui.cursor) + 1) end
-      elseif event.kind == "eof" then
-        return { db = db, fx = { { type = "app/quit" } } }
-      end
-      return { db = db, fx = { { type = "terminal/read" } } }
-    end)
-
-    misa.reg_event("agent/reset", function(db)
-      return { db = db, fx = { { type = "terminal/read" } } }
-    end)
-
-    misa.reg_event("agent/unavailable", function(db, event, cofx)
-      local effects = { { type = "view/commit", lines = lines_for(event.message, "error") } }
-      effects[#effects + 1] = cofx.terminal.interactive and { type = "terminal/read" } or { type = "app/quit" }
-      return { db = db, fx = effects }
-    end)
-
-    misa.reg_event("ui/redraw", function(db)
-      return { db = db, fx = { { type = "terminal/read" } } }
-    end)
-
-    misa.reg_interceptor({
-      id = "ui/completion",
-      before = function(tx)
-        local agent, event = tx.db.agent, tx.event
-        tx.ui_accepts_completion = agent and (event.type == "agent/result" or event.type == "agent/error")
-          and agent.status == "working" and agent.active_request_id == event.id
-        return tx
-      end,
-      after = function(tx)
-        if not tx.ui_accepts_completion then return tx end
-        local agent, event = tx.db.agent, tx.event
-        if event.type == "agent/result" and agent.accepted_request_id == event.id then
-          local text = assistant_text(event.content)
-          if text ~= "" then
-            local rendered = tx.cofx.terminal.interactive and labeled_lines("Assistant", text, "assistant") or lines_for(text, "assistant")
-            tx.fx[#tx.fx + 1] = { type = "view/commit", lines = rendered }
-          end
-        elseif event.type == "agent/error" and agent.accepted_request_id == event.id then
-          tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(tostring(event.message), "error") }
-        end
-        if agent.status == "ready" then
-          if agent.exit_after_response then
-            tx.fx[#tx.fx + 1] = { type = "app/quit" }
-          elseif tx.cofx.terminal.interactive then
-            tx.fx[#tx.fx + 1] = { type = "dispatch", event = { type = "ui/redraw" } }
-          else
-            tx.fx[#tx.fx + 1] = { type = "terminal/read" }
-          end
-        end
-        return tx
-      end,
-    })
-
-    misa.reg_view(function(db, cofx)
-      local ui = db.ui or { text = "", cursor = 0 }
-      local agent = db.agent or {}
-      local lines = {
-        { spans = { { text = "misa", style = "bold" }, { text = "  coding agent", style = "dim" } } },
-      }
-      local model_state = db.models or {}
-      local selected = nil
-      for _, model in ipairs(model_state.entries or {}) do if model.id == model_state.selected then selected = model; break end end
-      lines[#lines + 1] = { spans = {
-        { text = "model  ", style = "dim" },
-        { text = selected and selected.id or "none available", style = "accent" },
-      } }
-      local last = agent.last_usage or {}
-      local context_tokens = (last.input_tokens or 0) + (last.output_tokens or 0)
-      local context_window = selected and selected.context_window or nil
-      lines[#lines + 1] = { spans = {
-        { text = "session  ", style = "dim" }, { text = tostring(token_count(agent)) .. " tokens", style = "plain" },
-        { text = "    context  ", style = "dim" },
-        { text = context_window and (tostring(context_tokens) .. " / " .. tostring(context_window)) or tostring(context_tokens), style = "plain" },
-      } }
-      local layer_cofx = { terminal = cofx.terminal, available_lines = math.max(0, cofx.terminal.lines - #lines) }
-      for _, layer in ipairs(misa.view_layers(db, layer_cofx)) do
-        local offset = #lines
-        for _, line in ipairs(layer.lines or {}) do lines[#lines + 1] = line end
-        if layer.exclusive then
-          local cursor = layer.cursor and { row = offset + layer.cursor.row, byte = layer.cursor.byte } or nil
-          return { lines = lines, cursor = cursor }
-        end
-      end
-      if agent.status == "working" then lines[#lines + 1] = { spans = { { text = "working…", style = "dim" } } } end
-      if agent.status == "tools" then lines[#lines + 1] = { spans = { { text = "running tools…", style = "dim" } } } end
-      local cursor = nil
-      if agent.status == "ready" or agent.status == nil then
-        local editor_lines = lines_for(ui.text, "user", true)
-        table.insert(editor_lines[1].spans, 1, { text = "> ", style = "accent" })
-        local editor_row, byte = editor_position(ui.text, ui.cursor)
-        local row = #lines + editor_row
-        for i = 1, #editor_lines do lines[#lines + 1] = editor_lines[i] end
-        local matches = completion_matches(ui.completion_prefix or ui.text, db)
-        for i, candidate in ipairs(matches) do
-          local active = ui.completion_prefix and i == ui.completion_index
-          lines[#lines + 1] = { spans = {
-            { text = active and "> " or "  ", style = active and "accent" or "plain" },
-            { text = candidate.label, style = "bold" }, { text = "  " .. candidate.description, style = "dim" },
-          } }
-        end
-        row = math.max(1, math.min(row, #lines, cofx.terminal.lines))
-        cursor = { row = row, byte = byte + (editor_row == 1 and 2 or 0) }
-      end
-      return { lines = lines, cursor = cursor }
-    end)
-  end,
-}
+return {setup=function()
+  misa.reg_view(function(db,cofx)
+    local height=math.max(0,cofx.terminal.lines); if height==0 then return {lines={}} end
+    local header=misa.render_component(db,"root.header",{}).lines; local header_count=height>=4 and math.min(2,#header) or 0
+    local layer_cofx={terminal=cofx.terminal,available_lines=math.max(0,height-header_count)}
+    for _,layer in ipairs(misa.view_layers(db,layer_cofx)) do if layer.exclusive then
+      local lines={}; append(lines,header,header_count); local offset=#lines; append(lines,layer.lines,height)
+      local cursor=layer.cursor and {row=math.min(height,offset+layer.cursor.row),byte=layer.cursor.byte} or nil
+      return bound_frame(lines,cofx.terminal.columns,cursor)
+    end end
+    local status=misa.status_projection and misa.status_projection(db) or {}; local status_count=(#status>0 and height>=2) and 1 or 0
+    local editor=misa.editor_projection and misa.editor_projection(db) or {busy=true,row=1,byte=0,input={},completions={}}
+    local editor_budget=math.min(#editor.input,math.max(1,math.floor(height/2)),math.max(1,height-header_count-status_count))
+    local editor_first=math.max(1,math.min(editor.row-math.floor(editor_budget/2),#editor.input-editor_budget+1)); local editor_lines=slice(editor.input,editor_first,editor_budget)
+    local remaining=math.max(0,height-header_count-status_count-#editor_lines); local completion_count=math.min(#editor.completions,5,math.floor(remaining/3)); remaining=remaining-completion_count
+    local transcript=misa.transcript_window and misa.transcript_window(db,{interactive=true,columns=cofx.terminal.columns},remaining) or {}
+    local lines={}; append(lines,header,header_count); append(lines,transcript); local input_offset=#lines; append(lines,editor_lines); append(lines,editor.completions,#lines+completion_count); append(lines,status,status_count>0 and #lines+status_count or #lines)
+    local cursor; if not editor.busy then cursor={row=math.max(1,math.min(height,input_offset+(editor.row-editor_first+1))),byte=editor.byte+((editor.row==1) and 2 or 0)} end
+    return bound_frame(lines,cofx.terminal.columns,cursor)
+  end)
+end}

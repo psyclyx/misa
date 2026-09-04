@@ -1,7 +1,7 @@
 //! Direct-argv process execution and captured-output normalization.
 const std = @import("std");
 
-pub const StdoutFormat = enum { text, json_lines };
+pub const StdoutFormat = enum { text, json_lines, json_lines_stream };
 
 pub const Spec = struct {
     argv: []const std.json.Value,
@@ -35,12 +35,19 @@ pub const Spec = struct {
             .argv = argv,
             .completion = nonEmptyString(object, "completion") orelse return error.InvalidEffect,
             .id = nonEmptyString(object, "id") orelse return error.InvalidEffect,
-            .stdout_format = if (std.mem.eql(u8, format, "text")) .text else if (std.mem.eql(u8, format, "json_lines")) .json_lines else return error.InvalidEffect,
+            .stdout_format = if (std.mem.eql(u8, format, "text")) .text else if (std.mem.eql(u8, format, "json_lines")) .json_lines else if (std.mem.eql(u8, format, "json_lines_stream")) .json_lines_stream else return error.InvalidEffect,
             .stdin = stdin,
             .stdin_json = stdin_json,
         };
     }
 };
+
+pub const StreamSink = struct {
+    context: *anyopaque,
+    emit: *const fn (context: *anyopaque, json_line: []const u8) anyerror!void,
+};
+
+pub const StreamResult = struct { status: i64, stderr: []u8 };
 
 pub const Result = struct {
     status: i64,
@@ -91,6 +98,87 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, spec: Spec) !Result {
     };
 }
 
+/// Emit complete JSONL records as stdout arrives. The child and both pipes are
+/// owned here so cancellation of the surrounding I/O task kills and reaps it.
+pub fn runJsonLines(allocator: std.mem.Allocator, io: std.Io, spec: Spec, sink: StreamSink) !StreamResult {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    for (spec.argv) |arg| try argv.append(allocator, arg.string);
+    var encoded: ?[]u8 = null;
+    defer if (encoded) |value| allocator.free(value);
+    if (spec.stdin_json) |value| {
+        const json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        defer allocator.free(json);
+        encoded = try std.fmt.allocPrint(allocator, "{s}\n", .{json});
+    }
+    const stdin = spec.stdin orelse encoded;
+    var child = try std.process.spawn(io, .{ .argv = argv.items, .stdin = if (stdin != null) .pipe else .ignore, .stdout = .pipe, .stderr = .pipe });
+    defer child.kill(io);
+    var stdin_group: std.Io.Group = .init;
+    defer stdin_group.cancel(io);
+    var pump: WritePump = .{};
+    if (stdin) |bytes| {
+        const pipe = child.stdin.?;
+        child.stdin = null;
+        stdin_group.async(io, WritePump.run, .{ &pump, io, pipe, bytes });
+    }
+    var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var reader: std.Io.File.MultiReader = undefined;
+    reader.init(allocator, io, buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer reader.deinit();
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(allocator);
+    var stderr: std.ArrayList(u8) = .empty;
+    errdefer stderr.deinit(allocator);
+    while (reader.fill(1, .none)) |_| {
+        const stdout_bytes = reader.reader(0).buffered();
+        try feedJsonLines(allocator, &line, stdout_bytes, sink);
+        reader.reader(0).tossBuffered();
+        const stderr_bytes = reader.reader(1).buffered();
+        if (stderr.items.len + stderr_bytes.len > 1024 * 1024) return error.StreamTooLong;
+        try stderr.appendSlice(allocator, stderr_bytes);
+        reader.reader(1).tossBuffered();
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |other| return other,
+    }
+    try reader.checkAnyError();
+    try stdin_group.await(io);
+    if (pump.failure) |failure| return failure;
+    const tail = std.mem.trim(u8, line.items, " \t\r");
+    if (tail.len != 0) try emitValidated(allocator, sink, tail);
+    const term = try child.wait(io);
+    const clean_stderr = try sanitizeOutput(allocator, stderr.items, 1024 * 1024);
+    stderr.deinit(allocator);
+    return .{ .status = termStatus(term), .stderr = clean_stderr };
+}
+
+fn feedJsonLines(allocator: std.mem.Allocator, line: *std.ArrayList(u8), bytes: []const u8, sink: StreamSink) !void {
+    for (bytes) |byte| if (byte == '\n') {
+        const value = std.mem.trim(u8, line.items, " \t\r");
+        if (value.len != 0) try emitValidated(allocator, sink, value);
+        line.clearRetainingCapacity();
+    } else {
+        try line.append(allocator, byte);
+        if (line.items.len > 256 * 1024) return error.StreamRecordTooLarge;
+    };
+}
+
+fn emitValidated(allocator: std.mem.Allocator, sink: StreamSink, line: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+    try sink.emit(sink.context, line);
+}
+
+fn termStatus(term: std.process.Child.Term) i64 {
+    return switch (term) {
+        .exited => |code| code,
+        .signal => |signal| -@as(i64, @intCast(@intFromEnum(signal))),
+        .stopped => |signal| -@as(i64, @intCast(@intFromEnum(signal))),
+        .unknown => |code| @intCast(code),
+    };
+}
+
 fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin: ?[]const u8) !std.process.RunResult {
     if (stdin == null) return std.process.run(allocator, io, .{
         .argv = argv,
@@ -99,9 +187,12 @@ fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, s
     });
     var child = try std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
     defer child.kill(io);
-    try child.stdin.?.writeStreamingAll(io, stdin.?);
-    child.stdin.?.close(io);
+    var stdin_group: std.Io.Group = .init;
+    defer stdin_group.cancel(io);
+    var pump: WritePump = .{};
+    const pipe = child.stdin.?;
     child.stdin = null;
+    stdin_group.async(io, WritePump.run, .{ &pump, io, pipe, stdin.? });
 
     var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var reader: std.Io.File.MultiReader = undefined;
@@ -115,11 +206,25 @@ fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, s
         else => |other| return other,
     }
     try reader.checkAnyError();
+    try stdin_group.await(io);
+    if (pump.failure) |failure| return failure;
     const term = try child.wait(io);
     const stdout = try reader.toOwnedSlice(0);
     errdefer allocator.free(stdout);
     return .{ .term = term, .stdout = stdout, .stderr = try reader.toOwnedSlice(1) };
 }
+
+const WritePump = struct {
+    failure: ?anyerror = null,
+
+    fn run(self: *WritePump, io: std.Io, pipe: std.Io.File, bytes: []const u8) std.Io.Cancelable!void {
+        defer pipe.close(io);
+        pipe.writeStreamingAll(io, bytes) catch |err| {
+            if (err == error.Canceled) return error.Canceled;
+            self.failure = err;
+        };
+    }
+};
 
 /// Make captured bytes safe for JSON and later semantic presentation.
 pub fn sanitizeOutput(allocator: std.mem.Allocator, input: []const u8, limit: usize) ![]u8 {
@@ -208,6 +313,56 @@ fn optionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const string = optionalString(object, name) orelse return null;
     return if (string.len != 0 and std.mem.indexOfScalar(u8, string, 0) == null) string else null;
+}
+
+test "JSONL callback runs before delayed producer completion" {
+    const Probe = struct {
+        io: std.Io,
+        first: ?std.Io.Timestamp = null,
+        count: usize = 0,
+        fn emit(context: *anyopaque, line: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.first == null) self.first = .now(self.io, .awake);
+            self.count += 1;
+            _ = line;
+        }
+    };
+    var argv = [_]std.json.Value{
+        .{ .string = "/bin/sh" },
+        .{ .string = "-c" },
+        .{ .string = "printf '{\"n\":1}\\n'; sleep 0.25; printf '{\"n\":2}\\n'" },
+    };
+    var probe: Probe = .{ .io = std.testing.io };
+    const result = try runJsonLines(std.testing.allocator, std.testing.io, .{
+        .argv = &argv,
+        .completion = "done",
+        .id = "test",
+        .stdout_format = .json_lines_stream,
+        .stdin = null,
+        .stdin_json = null,
+    }, .{ .context = &probe, .emit = Probe.emit });
+    defer std.testing.allocator.free(result.stderr);
+    const finished: std.Io.Timestamp = .now(std.testing.io, .awake);
+    try std.testing.expectEqual(@as(usize, 2), probe.count);
+    try std.testing.expect(finished.nanoseconds - probe.first.?.nanoseconds >= 100 * std.time.ns_per_ms);
+}
+
+test "stdin and stdout are pumped concurrently" {
+    const input = try std.testing.allocator.alloc(u8, 256 * 1024);
+    defer std.testing.allocator.free(input);
+    @memset(input, 'x');
+    const argv = [_][]const u8{
+        "/bin/sh",
+        "-c",
+        // Both directions exceed ordinary pipe capacity. Sequential pumping
+        // deadlocks because the child writes before it reads.
+        "dd if=/dev/zero bs=262144 count=1 2>/dev/null; cat >/dev/null",
+    };
+    const captured = try capture(std.testing.allocator, std.testing.io, &argv, input);
+    defer std.testing.allocator.free(captured.stdout);
+    defer std.testing.allocator.free(captured.stderr);
+    try std.testing.expectEqual(@as(i64, 0), termStatus(captured.term));
+    try std.testing.expectEqual(@as(usize, 256 * 1024), captured.stdout.len);
 }
 
 test "output sanitizer removes terminal controls and repairs utf8" {
