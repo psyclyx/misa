@@ -44,7 +44,7 @@ misa.protocols = misa.protocols or {}
 function misa.protocols.openai(spec)
   assert(type(spec.id) == "string" and type(spec.url) == "string" and type(spec.models) == "table")
   for _, model in ipairs(spec.models) do
-    misa.reg_model({ id = model.id, provider = spec.id, model = model.model, label = model.label or model.id })
+    misa.reg_model({ id = model.id, provider = spec.id, model = model.model, label = model.label or model.id, context_window = model.context_window })
   end
 
   misa.reg_fx("provider." .. spec.id, function(effect)

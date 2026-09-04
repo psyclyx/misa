@@ -13,10 +13,16 @@ adapters precede the API providers that use them:
 
 ```json
 {
-  "extensions": ["provider.fake", "models", "agent", "ui"],
+  "extensions": [
+    "provider.claude",
+    "tool.files",
+    "tool.shell",
+    "models",
+    "agent",
+    "ui"
+  ],
   "config": {
-    "models": { "default": "fake/default" },
-    "providers": { "fake": { "responses": ["hello\n"] } }
+    "models": { "default": "claude/sonnet" }
   }
 }
 ```
@@ -30,7 +36,8 @@ zig build run -- --config config/default.json hello
 ```
 
 Without an override, misa loads the installed `share/misa/default.json`, which
-selects the fake provider, agent, and UI as a runnable smoke-test profile.
+selects Claude Code, coding tools, model policy, the agent, and the UI as a
+useful subscription-backed coding profile. Run `misa login claude` first.
 `--config PATH` takes precedence over `MISA_CONFIG`, which takes precedence over
 that installed default. Arguments not consumed by `--config` are exposed as
 `cofx.argv`.
@@ -60,10 +67,14 @@ phase. Setup may register:
 - `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
   or an ordered array of native effects.
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
-- `misa.reg_model(model)`: adds a provider-owned catalogue entry.
+- `misa.reg_model(model)`: adds a provider-owned catalogue entry, including an
+  optional `context_window`.
+- `misa.reg_command({name,description,event})`: adds a generic slash command;
+  the UI discovers and completes these registrations rather than hard-coding
+  command names.
 - `misa.reg_tool(tool)`: adds a semantic tool schema and its effect type.
-  `misa.models()`, `misa.model(id)`, `misa.tools()`, and `misa.tool(name)` expose
-  the sealed registries to policy extensions.
+  `misa.models()`, `misa.model(id)`, `misa.commands()`, `misa.command(name)`,
+  `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
 
 Registrations are sealed after setup. Recursive dispatch is unavailable. Each
 transaction takes one bounded working copy of `db`, then commits it only after
@@ -165,11 +176,16 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 ## Standard extensions
 
 `models` owns selection state and an inline `/model` picker; providers own the
-catalogue entries. `/clear` resets in-memory conversation and usage state
-without altering committed terminal scrollback. `agent` owns normalized conversation history, repeated user
-turns, provider correlation, parallel tool-result collection, normalized token
-usage accounting, and automatic continuation after tools. `tool.files` registers `read_file`, `list_directory`,
-`write_file`, and `edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
+catalogue entries. The editor discovers registered slash commands, displays
+matching descriptions, and cycles matches with Tab. Its live startup banner
+shows the selected model, cumulative session tokens, and latest context use.
+Interactive user and assistant messages are committed to scrollback as the
+transcript grows. `/clear` resets in-memory conversation and usage without
+clearing that scrollback. `agent` owns normalized conversation history,
+repeated user turns, provider correlation, parallel tool-result collection,
+normalized token usage accounting, and automatic continuation after tools.
+`tool.files` registers `read_file`, `list_directory`, `write_file`, and
+`edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
 extensions and are not enabled by the harness. `misa mcp` exposes the same
 Lua-registered schemas and effect translators as an MCP stdio server. The
 Claude provider supplies this bridge through `--mcp-config` whenever tools are

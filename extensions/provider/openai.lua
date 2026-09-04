@@ -11,8 +11,8 @@ return {
       url = config.url or "https://api.openai.com/v1/chat/completions",
       max_tokens = config.max_tokens,
       models = config.models or {
-        { id = "openai/gpt-5.4", model = "gpt-5.4", label = "GPT-5.4" },
-        { id = "openai/gpt-5.4-mini", model = "gpt-5.4-mini", label = "GPT-5.4 Mini" },
+        { id = "openai/gpt-5.4", model = "gpt-5.4", label = "GPT-5.4", context_window = 1000000 },
+        { id = "openai/gpt-5.4-mini", model = "gpt-5.4-mini", label = "GPT-5.4 Mini", context_window = 400000 },
       },
     })
   end,

@@ -61,6 +61,8 @@ pub const Session = struct {
     auth_store: ?*auth.Store,
     queue: std.ArrayList([]u8) = .empty,
     queue_head: usize = 0,
+    input_events: std.ArrayList(terminal_module.Event) = .empty,
+    input_head: usize = 0,
     running: bool = false,
     quit: bool = false,
     read_requested: bool = false,
@@ -68,6 +70,8 @@ pub const Session = struct {
     pub fn deinit(self: *Session) void {
         for (self.queue.items[self.queue_head..]) |item| self.allocator.free(item);
         self.queue.deinit(self.allocator);
+        for (self.input_events.items[self.input_head..]) |event| event.deinit(self.allocator);
+        self.input_events.deinit(self.allocator);
     }
 
     /// Seed app/start, then drain the queue. Dispatch effects only append; they never recurse.
@@ -103,9 +107,9 @@ pub const Session = struct {
             try self.runtime.commitTransaction();
             for (effects.items) |effect| try self.execute(effect);
             self.compactQueue();
-            // A read request is level-triggered. Drain already-decoded events
-            // before blocking again so a single read containing a whole line
-            // cannot starve its Enter event.
+            // A read request is level-triggered. Decoded terminal events are
+            // released one at a time so policy effects from Enter run before
+            // bytes that followed it in the same OS read.
             if (!self.quit and self.queue_head == self.queue.items.len and self.read_requested)
                 try self.readTerminal();
         }
@@ -142,14 +146,23 @@ pub const Session = struct {
 
     fn readTerminal(self: *Session) !void {
         self.read_requested = false;
-        var events: std.ArrayList(terminal_module.Event) = .empty;
-        defer {
-            for (events.items) |event| event.deinit(self.allocator);
-            events.deinit(self.allocator);
+        if (self.input_head == self.input_events.items.len) {
+            self.input_events.clearRetainingCapacity();
+            self.input_head = 0;
+            try self.terminal.readEvents(&self.input_events);
         }
-        try self.terminal.readEvents(&events);
-        for (events.items) |event| try self.enqueueInput(event);
-        if (events.items.len == 0) self.read_requested = true;
+        if (self.input_head == self.input_events.items.len) {
+            self.read_requested = true;
+            return;
+        }
+        const event = self.input_events.items[self.input_head];
+        self.input_head += 1;
+        defer event.deinit(self.allocator);
+        try self.enqueueInput(event);
+        if (self.input_head == self.input_events.items.len) {
+            self.input_events.clearRetainingCapacity();
+            self.input_head = 0;
+        }
     }
 
     fn runProcess(self: *Session, spec: process.Spec) !void {
@@ -297,6 +310,7 @@ pub const Session = struct {
             .text => |text| try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "terminal/input", .kind = "text", .text = text }, .{}),
             .enter => try inputJson(self.allocator, "enter"),
             .backspace => try inputJson(self.allocator, "backspace"),
+            .tab => try inputJson(self.allocator, "tab"),
             .arrow_up => try inputJson(self.allocator, "arrow_up"),
             .arrow_down => try inputJson(self.allocator, "arrow_down"),
             .arrow_left => try inputJson(self.allocator, "arrow_left"),

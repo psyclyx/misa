@@ -51,6 +51,7 @@ end
 
 return {
   setup = function(context)
+    misa.reg_command({ name = "/clear", description = "Reset conversation and token usage", event = "agent/reset" })
     local config = type(context.config) == "table" and context.config.agent or nil
     config = type(config) == "table" and config or {}
     assert(config.system_prompt == nil or type(config.system_prompt) == "string", "config.agent.system_prompt must be a string")

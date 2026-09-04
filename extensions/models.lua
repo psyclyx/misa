@@ -7,6 +7,7 @@ end
 
 return {
   setup = function(context)
+    misa.reg_command({ name = "/model", description = "Choose the active model", event = "model/open" })
     local configured = type(context.config) == "table" and context.config.models or nil
     local default = type(configured) == "table" and configured.default or nil
     if default ~= nil then assert(type(default) == "string" and default ~= "", "config.models.default must be a nonempty string") end

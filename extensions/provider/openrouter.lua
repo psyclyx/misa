@@ -16,8 +16,8 @@ return {
       },
       models = config.models or {
         { id = "openrouter/auto", model = "openrouter/auto", label = "OpenRouter Auto" },
-        { id = "openrouter/claude-sonnet-4.6", model = "anthropic/claude-sonnet-4.6", label = "Claude Sonnet 4.6 (OpenRouter)" },
-        { id = "openrouter/kimi-k2.5", model = "moonshotai/kimi-k2.5", label = "Kimi K2.5 (OpenRouter)" },
+        { id = "openrouter/claude-sonnet-4.6", model = "anthropic/claude-sonnet-4.6", label = "Claude Sonnet 4.6 (OpenRouter)", context_window = 200000 },
+        { id = "openrouter/kimi-k2.5", model = "moonshotai/kimi-k2.5", label = "Kimi K2.5 (OpenRouter)", context_window = 262144 },
       },
     })
   end,

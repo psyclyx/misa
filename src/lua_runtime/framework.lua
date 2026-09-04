@@ -3,6 +3,7 @@ local traceback = debug.traceback
 local events, interceptors, interceptor_ids = {}, {}, {}
 local cofx_fns, cofx_order, fx_fns = {}, {}, {}
 local models, model_by_id, tools, tool_by_name = {}, {}, {}, {}
+local commands, command_by_name = {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
 
@@ -56,6 +57,7 @@ function misa.reg_model(model)
   assert(type(model.provider) == "string" and model.provider ~= "", "model.provider must be a nonempty string")
   assert(type(model.model) == "string" and model.model ~= "", "model.model must be a nonempty string")
   assert(model.label == nil or type(model.label) == "string", "model.label must be a string")
+  assert(model.context_window == nil or (type(model.context_window) == "number" and model.context_window > 0 and model.context_window % 1 == 0), "model.context_window must be a positive integer")
   assert(model_by_id[model.id] == nil, "duplicate model")
   model_by_id[model.id] = model
   models[#models + 1] = model
@@ -63,6 +65,19 @@ end
 
 function misa.models() return models end
 function misa.model(id) return model_by_id[id] end
+
+function misa.reg_command(command)
+  open()
+  assert(type(command) == "table" and type(command.name) == "string" and command.name:match("^/[%w_-]+$"), "command.name must look like /name")
+  assert(type(command.description) == "string", "command.description must be a string")
+  assert(type(command.event) == "string" and command.event ~= "", "command.event must be nonempty")
+  assert(command_by_name[command.name] == nil, "duplicate command")
+  command_by_name[command.name] = command
+  commands[#commands + 1] = command
+end
+
+function misa.commands() return commands end
+function misa.command(name) return command_by_name[name] end
 
 function misa.reg_tool(tool)
   open()

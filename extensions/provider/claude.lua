@@ -55,14 +55,14 @@ return {
     assert(type(mcp_arguments) == "table", "config.providers.claude.mcp_arguments must be an array")
 
     local configured_models = config.models or {
-      { id = "claude/opus", model = "opus", label = "Claude Opus" },
-      { id = "claude/sonnet", model = "sonnet", label = "Claude Sonnet" },
-      { id = "claude/haiku", model = "haiku", label = "Claude Haiku" },
+      { id = "claude/opus", model = "opus", label = "Claude Opus", context_window = 200000 },
+      { id = "claude/sonnet", model = "sonnet", label = "Claude Sonnet", context_window = 200000 },
+      { id = "claude/haiku", model = "haiku", label = "Claude Haiku", context_window = 200000 },
     }
     assert(type(configured_models) == "table" and #configured_models > 0, "config.providers.claude.models must be nonempty")
     for _, model in ipairs(configured_models) do
       assert(type(model) == "table" and type(model.id) == "string" and type(model.model) == "string", "invalid Claude model")
-      misa.reg_model({ id = model.id, provider = "claude", model = model.model, label = model.label or model.id })
+      misa.reg_model({ id = model.id, provider = "claude", model = model.model, label = model.label or model.id, context_window = model.context_window })
     end
 
     misa.reg_fx("provider.claude", function(effect)

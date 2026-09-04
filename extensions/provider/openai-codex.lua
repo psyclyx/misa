@@ -34,10 +34,10 @@ return {
     local config = type(providers) == "table" and providers.openai_codex or nil
     config = type(config) == "table" and config or {}
     for _, model in ipairs(config.models or {
-      { id = "openai-codex/gpt-5.4", model = "gpt-5.4", label = "GPT-5.4 (ChatGPT)" },
-      { id = "openai-codex/gpt-5.3-codex", model = "gpt-5.3-codex", label = "GPT-5.3 Codex" },
+      { id = "openai-codex/gpt-5.4", model = "gpt-5.4", label = "GPT-5.4 (ChatGPT)", context_window = 1000000 },
+      { id = "openai-codex/gpt-5.3-codex", model = "gpt-5.3-codex", label = "GPT-5.3 Codex", context_window = 400000 },
     }) do
-      misa.reg_model({ id = model.id, provider = "openai-codex", model = model.model, label = model.label or model.id })
+      misa.reg_model({ id = model.id, provider = "openai-codex", model = model.model, label = model.label or model.id, context_window = model.context_window })
     end
 
     misa.reg_fx("provider.openai-codex", function(effect)

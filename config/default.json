@@ -1,10 +1,7 @@
 {
-  "extensions": ["provider.fake", "models", "agent", "ui"],
+  "extensions": ["provider.claude", "tool.files", "tool.shell", "models", "agent", "ui"],
   "config": {
-    "models": { "default": "fake/default" },
-    "ui": { "plain_prompt": true },
-    "providers": {
-      "fake": { "responses": ["misa is running\n"] }
-    }
+    "models": { "default": "claude/sonnet" },
+    "ui": { "plain_prompt": true }
   }
 }

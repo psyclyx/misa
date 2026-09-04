@@ -14,7 +14,7 @@ return {
       max_tokens = config.max_tokens,
       headers = { { name = "user-agent", value = "misa/0.1" } },
       models = config.models or {
-        { id = "kimi/kimi-for-coding", model = "kimi-for-coding", label = "Kimi For Coding" },
+        { id = "kimi/kimi-for-coding", model = "kimi-for-coding", label = "Kimi For Coding", context_window = 262144 },
       },
     })
   end,

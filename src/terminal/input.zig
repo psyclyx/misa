@@ -5,6 +5,7 @@ pub const Event = union(enum) {
     text: []u8,
     enter,
     backspace,
+    tab,
     arrow_up,
     arrow_down,
     arrow_left,
@@ -97,6 +98,11 @@ pub const Decoder = struct {
             if (byte == '\n') {
                 self.consume(1);
                 try out.append(allocator, .enter);
+                continue;
+            }
+            if (byte == '\t') {
+                self.consume(1);
+                try out.append(allocator, .tab);
                 continue;
             }
             if (byte == 0x7f or byte == 8) {

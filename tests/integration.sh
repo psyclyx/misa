@@ -92,6 +92,18 @@ MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello >"$work/exact-output"
 printf 'fake response\n' >"$work/expected-output"
 cmp "$work/expected-output" "$work/exact-output"
 
+stage=command-completion
+cat >"$work/command-completion.lua" <<'LUA'
+return {setup=function()
+  misa.reg_command({name="/ping",description="test generic completion",event="test/ping"})
+  misa.reg_event("test/ping",function()
+    return {fx={{type="view/commit",lines={{spans={{text="pong"}}}}},{type="app/quit"}}}
+  end)
+end}
+LUA
+printf '{"extensions":["ui","%s"]}' "$work/command-completion.lua" >"$work/command-completion.json"
+[ "$(printf '/p\t\n' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" = pong ]
+
 stage=agent-tool-loop
 # The agent executes normalized tool calls, records results, and asks the
 # provider to continue until it returns a final assistant message.
