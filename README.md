@@ -36,7 +36,7 @@ consumed `--config` pair, and `--` terminator are not included in
 
 `src/main.zig` only handles CLI/process concerns. `src/config/root.zig` owns the
 JSON envelope and deliberately does not interpret its free-form payload.
-`src/lua_runtime/root.zig` owns the LuaJIT lifetime behind a narrow C shim.
+`src/lua_runtime/root.zig` owns the LuaJIT lifetime and calls its C API directly.
 These are explicit named Zig modules in `build.zig`; lower layers do not import
 the CLI.
 

@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    lua_runtime.addCSourceFile(.{ .file = b.path("src/lua_runtime/shim.c"), .flags = &.{"-std=c99"} });
     lua_runtime.linkSystemLibrary("luajit", .{ .use_pkg_config = .force });
 
     const main_module = b.createModule(.{
