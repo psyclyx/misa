@@ -1,5 +1,7 @@
 //! Non-reentrant FIFO owner for Lua transactions and fixed native effects.
 const std = @import("std");
+const auth = @import("misa_auth");
+const http = @import("http.zig");
 const lua = @import("misa_lua_runtime");
 const terminal_module = @import("misa_terminal");
 const process = @import("process.zig");
@@ -10,6 +12,7 @@ const NativeEffect = union(enum) {
     view_commit: std.json.Value,
     app_quit,
     process_run: process.Spec,
+    http_request: http.Spec,
 
     fn parse(value: std.json.Value) !NativeEffect {
         const object = switch (value) {
@@ -34,6 +37,7 @@ const NativeEffect = union(enum) {
         }
         if (std.mem.eql(u8, kind, "app/quit")) return .app_quit;
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
+        if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
         return error.UnknownNativeEffect;
     }
 };
@@ -43,6 +47,7 @@ pub const Session = struct {
     io: std.Io,
     runtime: *lua.Runtime,
     terminal: *terminal_module.Terminal,
+    auth_store: *const auth.Store,
     queue: std.ArrayList([]u8) = .empty,
     queue_head: usize = 0,
     running: bool = false,
@@ -118,6 +123,7 @@ pub const Session = struct {
             .view_commit => |lines| try self.terminal.commit(lines),
             .app_quit => self.quit = true,
             .process_run => |spec| try self.runProcess(spec),
+            .http_request => |spec| try self.runHttp(spec),
         }
     }
 
@@ -157,6 +163,58 @@ pub const Session = struct {
                 .stdout = result.stdout,
                 .stderr = result.stderr,
                 .status = result.status,
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+        }
+    }
+
+    fn runHttp(self: *Session, spec: http.Spec) !void {
+        const result = http.run(self.allocator, self.io, self.auth_store, spec) catch |err| {
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion,
+                .id = spec.id,
+                .ok = false,
+                .status = @as(u16, 0),
+                .body = "",
+                .message = @errorName(err),
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+            return;
+        };
+        defer result.deinit(self.allocator);
+        if (spec.response_format == .json and result.status >= 200 and result.status < 300) {
+            var data = std.json.parseFromSlice(std.json.Value, self.allocator, result.body, .{ .allocate = .alloc_always }) catch {
+                const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                    .type = spec.completion,
+                    .id = spec.id,
+                    .ok = false,
+                    .status = result.status,
+                    .body = "",
+                    .message = "InvalidJsonResponse",
+                }, .{});
+                defer self.allocator.free(event);
+                try self.enqueue(event);
+                return;
+            };
+            defer data.deinit();
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion,
+                .id = spec.id,
+                .ok = true,
+                .status = result.status,
+                .data = data.value,
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+        } else {
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion,
+                .id = spec.id,
+                .ok = result.status >= 200 and result.status < 300,
+                .status = result.status,
+                .body = result.body,
             }, .{});
             defer self.allocator.free(event);
             try self.enqueue(event);

@@ -2,10 +2,20 @@
 set -eu
 case "$1" in /*) MISA_BIN="$1" ;; *) MISA_BIN="$PWD/${1#./}" ;; esac
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+export MISA_AUTH_FILE="$work/session-auth.json"
 
 # No extensions remains completely silent.
 printf '{}' >"$work/empty.json"
-[ -z "$(MISA_CONFIG="$work/empty.json" "$MISA_BIN")" ]
+[ -z "$(MISA_AUTH_FILE="$work/empty-auth.json" MISA_CONFIG="$work/empty.json" "$MISA_BIN")" ]
+
+# Explicit API-key login writes only the XDG credential store with restrictive
+# permissions; secrets never enter the ordinary config.
+printf 'test-secret\n' | MISA_AUTH_FILE="$work/auth/auth.json" "$MISA_BIN" login openai 2>"$work/login-output"
+grep -F 'saved openai credential' "$work/login-output" >/dev/null
+! grep -F 'test-secret' "$work/login-output" >/dev/null
+[ "$(stat -c %a "$work/auth")" = 700 ]
+[ "$(stat -c %a "$work/auth/auth.json")" = 600 ]
+grep -F 'test-secret' "$work/auth/auth.json" >/dev/null
 
 # Terminal/process ownership stays native while ordinary Lua composition and
 # source loading remain available; decoded null retains its sentinel.
@@ -59,6 +69,20 @@ EOF
 MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello >"$work/exact-output"
 printf 'fake response\n' >"$work/expected-output"
 cmp "$work/expected-output" "$work/exact-output"
+
+# The agent executes normalized tool calls, records results, and asks the
+# provider to continue until it returns a final assistant message.
+cat >"$work/tool.lua" <<'LUA'
+return {setup=function()
+  misa.reg_tool({name="echo",description="Echo text",input_schema={type="object"},effect="tool.echo"})
+  misa.reg_fx("tool.echo",function(effect)
+    assert(effect.arguments.value=="from tool")
+    return {type="dispatch",event={type="tool/result",tool_call_id=effect.tool_call_id,text=effect.arguments.value}}
+  end)
+end}
+LUA
+printf '{"extensions":["provider.fake","models","agent","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"call-1","name":"echo","arguments":{"value":"from tool"}}],"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
+[ "$(MISA_AUTH_FILE="$work/auth/auth.json" MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" use tool)" = 'after tool' ]
 
 # Completion does not depend on ui being registered after agent/provider.
 cat >"$work/ui-first.json" <<'EOF'

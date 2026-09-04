@@ -8,7 +8,7 @@ local function content(value, label)
     elseif block.type == "tool_call" then
       assert(type(block.id) == "string" and block.id ~= "", "tool call id must be nonempty")
       assert(type(block.name) == "string" and block.name ~= "", "tool call name must be nonempty")
-      assert(type(block.arguments) == "table", "tool call arguments must be an object")
+      assert(type(block.arguments) == "table" or type(block.arguments_json) == "string", "tool call arguments are missing")
     else
       error("unsupported assistant content block: " .. block.type)
     end
@@ -76,7 +76,7 @@ return {
             agent.pending_tool_count = agent.pending_tool_count + 1
             effects[#effects + 1] = {
               type = tool.effect, request_id = event.id, tool_call_id = block.id,
-              name = block.name, arguments = block.arguments,
+              name = block.name, arguments = block.arguments, arguments_json = block.arguments_json,
             }
           else
             agent.messages[#agent.messages + 1] = tool_result(block.id, "unknown tool: " .. block.name, true)

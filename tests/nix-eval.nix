@@ -44,6 +44,12 @@ assert
     providerFake = "provider.fake";
     providerCommand = "provider.command";
     providerClaude = "provider.claude";
+    protocolAnthropic = "protocol.anthropic";
+    providerAnthropic = "provider.anthropic";
+    providerKimi = "provider.kimi";
+    protocolOpenAI = "protocol.openai";
+    providerOpenAI = "provider.openai";
+    providerOpenRouter = "provider.openrouter";
     ui = "ui";
   };
 assert
@@ -70,6 +76,12 @@ assert builtins.pathExists ../extensions/models.lua;
 assert builtins.pathExists ../extensions/provider/fake.lua;
 assert builtins.pathExists ../extensions/provider/command.lua;
 assert builtins.pathExists ../extensions/provider/claude.lua;
+assert builtins.pathExists ../extensions/protocol/anthropic.lua;
+assert builtins.pathExists ../extensions/provider/anthropic.lua;
+assert builtins.pathExists ../extensions/provider/kimi.lua;
+assert builtins.pathExists ../extensions/protocol/openai.lua;
+assert builtins.pathExists ../extensions/provider/openai.lua;
+assert builtins.pathExists ../extensions/provider/openrouter.lua;
 assert builtins.pathExists ../extensions/ui.lua;
 # Instantiate both the package and configured wrapper without recursively
 # building either from this evaluation-only test.

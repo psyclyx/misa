@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const auth = b.createModule(.{
+        .root_source_file = b.path("src/auth/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const config = b.createModule(.{
         .root_source_file = b.path("src/config/root.zig"),
         .target = target,
@@ -35,6 +40,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    session.addImport("misa_auth", auth);
     session.addImport("misa_lua_runtime", lua_runtime);
     session.addImport("misa_terminal", terminal);
 
@@ -43,6 +49,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    main_module.addImport("misa_auth", auth);
     main_module.addImport("misa_config", config);
     main_module.addImport("misa_lua_runtime", lua_runtime);
     main_module.addImport("misa_standard_extensions", standard_extensions);
@@ -68,11 +75,13 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run.addArgs(args);
     b.step("run", "Run misa").dependOn(&run.step);
 
+    const auth_unit = b.addTest(.{ .root_module = auth });
     const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
     const session_unit = b.addTest(.{ .root_module = session });
     const test_step = b.step("test", "Run unit and integration tests");
+    test_step.dependOn(&b.addRunArtifact(auth_unit).step);
     test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
     test_step.dependOn(&b.addRunArtifact(terminal_unit).step);

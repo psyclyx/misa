@@ -5,9 +5,10 @@ system LuaJIT. The TUI uses only the Zig standard library. LuaJIT is the sole
 non-stdlib application dependency.
 
 No extensions are enabled implicitly: `{}` is valid and produces no output.
-The shipped extensions are `models`, `agent`, `ui`, `provider.fake`,
-`provider.command`, and `provider.claude`. Select them through the one ordered
-`extensions` list:
+The shipped extensions include `models`, `agent`, `ui`, protocol adapters,
+and fake, command, Claude Code, OpenAI, Anthropic, OpenRouter, and Kimi
+providers. Select them through the one ordered `extensions` list. Protocol
+adapters precede the API providers that use them:
 
 ```json
 {
@@ -74,11 +75,13 @@ The fixed native effects are:
 
 - `{type="dispatch", event=<table>}`
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>}`
+- `{type="http/request", url=..., json=..., credential=..., completion=..., id=...}`
 - `{type="terminal/read"}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
 
-Unknown native effects fail the session. `process/run` invokes direct argv,
+Unknown native effects fail the session. `http/request` injects credentials by
+ID inside Zig, so secret bytes never cross into Lua policy. `process/run` invokes direct argv,
 never a shell, captures stdout and stderr with 1 MiB bounds, and never inherits
 the terminal output. Captured tabs are normalized to spaces and malformed UTF-8
 is repaired before completion events are dispatched. Completion events include
@@ -173,6 +176,21 @@ p.lib.mkMisa {
   };
 }
 ```
+
+## Credentials
+
+Run `misa login openai`, `misa login anthropic`, `misa login openrouter`, or
+`misa login kimi-coding` to enter an API key without terminal echo. Credentials
+are written atomically with mode `0600` beneath a mode `0700` directory. The
+path is `$MISA_AUTH_FILE`, otherwise `$XDG_STATE_HOME/misa/auth.json`, otherwise
+`$HOME/.local/state/misa/auth.json`. They never belong in regular or Nix
+configuration. `misa login claude` delegates to `claude auth login`; Claude Code
+continues to own and refresh its existing subscription credentials.
+
+API provider lists include their protocol explicitly, for example
+`[ "protocol.anthropic", "provider.anthropic", "models", "agent", "ui" ]`.
+OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
+`protocol.anthropic`.
 
 NixOS, nix-darwin, and home-manager expose the same
 `programs.misa.extensions` option. Nix path values select custom extensions;

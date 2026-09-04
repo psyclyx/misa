@@ -1,5 +1,6 @@
 //! Thin CLI entry point: resolve configuration, then hand it to the Lua runtime.
 const std = @import("std");
+const auth = @import("misa_auth");
 const config_module = @import("misa_config");
 const lua = @import("misa_lua_runtime");
 const standard_extensions = @import("misa_standard_extensions");
@@ -13,6 +14,12 @@ pub fn main(init: std.process.Init) !void {
     var argv: std.ArrayList([:0]const u8) = .empty;
     defer argv.deinit(allocator);
     while (args_iterator.next()) |arg| try argv.append(allocator, arg);
+
+    if (argv.items.len > 1 and std.mem.eql(u8, argv.items[1], "login")) {
+        if (argv.items.len != 3) fatal("usage: misa login <openai|anthropic|openrouter|kimi-coding|claude>");
+        try login(init, allocator, argv.items[2]);
+        return;
+    }
 
     var extension_argv: std.ArrayList([:0]const u8) = .empty;
     defer extension_argv.deinit(allocator);
@@ -66,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
         const resolved = standard_extensions.resolve(allocator, configured, extension_dir) catch |err| switch (err) {
             error.UnknownStandardExtension => {
                 std.debug.print(
-                    "misa: invalid config '{s}': unknown standard extension ID '{s}' (expected agent, models, provider.fake, provider.command, provider.claude, or ui; use a path containing '/' or ending in .lua for a custom extension)\n",
+                    "misa: invalid config '{s}': unknown standard extension ID '{s}' (use a documented standard ID, or a path containing '/' or ending in .lua for a custom extension)\n",
                     .{ path, configured },
                 );
                 std.process.exit(2);
@@ -106,9 +113,36 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
         .columns = terminal.dimensions.columns,
         .lines = terminal.dimensions.lines,
     });
-    var session: session_module.Session = .{ .allocator = allocator, .io = init.io, .runtime = runtime, .terminal = &terminal };
+    var auth_store = try auth.Store.init(allocator, init.io, init.environ_map);
+    defer auth_store.deinit();
+    var session: session_module.Session = .{
+        .allocator = allocator,
+        .io = init.io,
+        .runtime = runtime,
+        .terminal = &terminal,
+        .auth_store = &auth_store,
+    };
     defer session.deinit();
     try session.run();
+}
+
+fn login(init: std.process.Init, allocator: std.mem.Allocator, provider: []const u8) !void {
+    if (std.mem.eql(u8, provider, "claude")) {
+        var child = try std.process.spawn(init.io, .{ .argv = &.{ "claude", "auth", "login" } });
+        defer child.kill(init.io);
+        const term = try child.wait(init.io);
+        if (term != .exited or term.exited != 0) return error.ClaudeLoginFailed;
+        return;
+    }
+    const known = std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "anthropic") or
+        std.mem.eql(u8, provider, "openrouter") or std.mem.eql(u8, provider, "kimi-coding");
+    if (!known) fatal("unknown login provider");
+    var store = try auth.Store.init(allocator, init.io, init.environ_map);
+    defer store.deinit();
+    const secret = try auth.readSecret(allocator, init.io, "API key: ");
+    defer allocator.free(secret);
+    try store.put(provider, secret);
+    std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
 }
 
 fn fatal(message: []const u8) noreturn {

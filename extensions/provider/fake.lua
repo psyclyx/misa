@@ -5,7 +5,7 @@ return {
     local fake = type(providers) == "table" and providers.fake or nil
     local responses = type(fake) == "table" and fake.responses or nil
     assert(type(responses) == "table", "config.providers.fake.responses must be an array of strings")
-    for i = 1, #responses do assert(type(responses[i]) == "string", "fake responses must be strings") end
+    for i = 1, #responses do assert(type(responses[i]) == "string" or type(responses[i]) == "table", "fake responses must be strings or content arrays") end
 
     misa.reg_model({ id = "fake/default", provider = "fake", model = "default", label = "Fake" })
 
@@ -22,10 +22,11 @@ return {
       local text = responses[state.next_response]
       state.next_response = state.next_response + 1
       db.providers.fake = state
-      if type(text) ~= "string" then
+      if text == nil then
         return { db = db, fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = "fake responses exhausted" } } } }
       end
-      return { db = db, fx = { { type = "dispatch", event = { type = "agent/result", id = event.id, content = { { type = "text", text = text } } } } } }
+      local content = type(text) == "string" and { { type = "text", text = text } } or text
+      return { db = db, fx = { { type = "dispatch", event = { type = "agent/result", id = event.id, content = content } } } }
     end)
   end,
 }
