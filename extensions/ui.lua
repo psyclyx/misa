@@ -169,6 +169,12 @@ return {
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
 
+    misa.reg_event("agent/unavailable", function(db, event, cofx)
+      local effects = { { type = "view/commit", lines = lines_for(event.message, "error") } }
+      effects[#effects + 1] = cofx.terminal.interactive and { type = "terminal/read" } or { type = "app/quit" }
+      return { db = db, fx = effects }
+    end)
+
     misa.reg_event("ui/redraw", function(db)
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
@@ -217,8 +223,7 @@ return {
       for _, model in ipairs(model_state.entries or {}) do if model.id == model_state.selected then selected = model; break end end
       lines[#lines + 1] = { spans = {
         { text = "model  ", style = "dim" },
-        { text = selected and selected.model or "none", style = "accent" },
-        { text = selected and ("  via " .. selected.provider) or "", style = "dim" },
+        { text = selected and selected.id or "none available", style = "accent" },
       } }
       local last = agent.last_usage or {}
       local context_tokens = (last.input_tokens or 0) + (last.output_tokens or 0)
@@ -229,20 +234,29 @@ return {
         { text = context_window and (tostring(context_tokens) .. " / " .. tostring(context_window)) or tostring(context_tokens), style = "plain" },
       } }
       if model_state.picker then
-        local entries = model_state.entries or {}
-        local room = math.max(1, cofx.terminal.lines - #lines)
-        local first = math.max(1, math.min(model_state.index - math.floor(room / 2), #entries - room + 1))
-        local last_index = math.min(#entries, first + room - 1)
-        for i = first, last_index do
-          local model = entries[i]
-          local marker = i == model_state.index and "> " or "  "
-          lines[#lines + 1] = { spans = {
-            { text = marker, style = i == model_state.index and "accent" or "plain" },
-            { text = model.model, style = model.id == model_state.selected and "bold" or "plain" },
-            { text = "  " .. (model.label or model.id) .. "  [" .. model.provider .. "]", style = "dim" },
-          } }
+        local entries = model_state.filtered or {}
+        local query_row = #lines + 1
+        lines[#lines + 1] = { spans = {
+          { text = "model> ", style = "accent" }, { text = model_state.query or "", style = "plain" },
+          { text = "  " .. tostring(#entries) .. "/" .. tostring(#(model_state.entries or {})), style = "dim" },
+        } }
+        local room = math.max(0, cofx.terminal.lines - #lines)
+        if #entries == 0 and room > 0 then
+          lines[#lines + 1] = { spans = { { text = "  no matching available models", style = "dim" } } }
+        elseif room > 0 then
+          local first = math.max(1, math.min(model_state.index - math.floor(room / 2), #entries - room + 1))
+          local last_index = math.min(#entries, first + room - 1)
+          for i = first, last_index do
+            local model = entries[i]
+            local marker = i == model_state.index and "> " or "  "
+            lines[#lines + 1] = { spans = {
+              { text = marker, style = i == model_state.index and "accent" or "plain" },
+              { text = model.id, style = model.id == model_state.selected and "bold" or "plain" },
+              { text = "  " .. (model.label or ""), style = "dim" },
+            } }
+          end
         end
-        return { lines = lines, cursor = nil }
+        return { lines = lines, cursor = { row = query_row, byte = 7 + #(model_state.query or "") } }
       end
       if agent.status == "working" then lines[#lines + 1] = { spans = { { text = "working…", style = "dim" } } } end
       if agent.status == "tools" then lines[#lines + 1] = { spans = { { text = "running tools…", style = "dim" } } } end

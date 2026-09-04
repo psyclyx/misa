@@ -44,7 +44,7 @@ end
 
 return {
   setup = function(context)
-    misa.reg_completion("auth-provider", { value = "claude", label = "Claude", description = "Claude Pro/Max via Claude Code" })
+    misa.reg_auth_provider({ id = "claude", model_provider = "claude", label = "Claude", description = "Claude Pro/Max via Claude Code" })
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.claude or nil
     config = type(config) == "table" and config or {}
@@ -70,18 +70,12 @@ return {
     end
 
     if config.max_plan == nil then
-      misa.reg_event("app/start", function()
-        return { fx = { {
-          type = "auth/command", action = "status", provider = "claude",
-          completion = "provider/claude-status", id = "claude-status",
-        } } }
-      end)
-      misa.reg_event("provider/claude-status", function(db, event)
-        if not event.ok or event.subscription_type == misa.json_null then return end
-        local is_max = event.subscription_type == "max"
-        for _, model in ipairs(db.models and db.models.entries or {}) do
+      misa.reg_event("models/provider-availability", function(db, event)
+        if event.provider ~= "claude" or event.subscription_type == nil or event.subscription_type == misa.json_null then return end
+        local has_extended_opus = event.subscription_type == "max" or event.subscription_type == "team" or event.subscription_type == "enterprise"
+        for _, model in ipairs(db.models and db.models.catalogue or {}) do
           if model.provider == "claude" and model.model:match("^claude%-opus%-") then
-            model.context_window = is_max and 1000000 or 200000
+            model.context_window = has_extended_opus and 1000000 or 200000
           end
         end
         db.providers = db.providers or {}

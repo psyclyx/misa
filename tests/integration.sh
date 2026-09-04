@@ -121,8 +121,32 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["%s","models","agent","ui"],"config":{"models":{"default":"dynamic/old"}}}' "$work/dynamic-models.lua" >"$work/dynamic-models.json"
+printf '{"extensions":["%s","models","agent","ui"]}' "$work/dynamic-models.lua" >"$work/dynamic-models.json"
 [ "$(MISA_CONFIG="$work/dynamic-models.json" "$MISA_BIN" test)" = 'dynamic model' ]
+
+stage=model-picker-filter
+cat >"$work/model-picker-filter.lua" <<'LUA'
+return {setup=function()
+  misa.reg_model({id="picker/vendor/first",provider="picker",model="vendor/first",label="First"})
+  misa.reg_model({id="picker/vendor/second",provider="picker",model="vendor/second",label="Second"})
+  misa.reg_fx("provider.picker",function(effect)
+    assert(effect.model=="vendor/second")
+    return {type="dispatch",event={type="agent/result",id=effect.id,content={{type="text",text="picked "..effect.model}}}}
+  end)
+end}
+LUA
+printf '{"extensions":["%s","models","agent","ui"],"config":{"models":{"default":"picker/vendor/first"}}}' "$work/model-picker-filter.lua" >"$work/model-picker-filter.json"
+[ "$(printf '/model\nsecond\nhello\n' | MISA_CONFIG="$work/model-picker-filter.json" "$MISA_BIN")" = 'picked vendor/second' ]
+
+stage=unavailable-models
+cat >"$work/unavailable-models.lua" <<'LUA'
+return {setup=function()
+  misa.reg_auth_provider({id="openai",model_provider="private",label="Private"})
+  misa.reg_model({id="private/model",provider="private",model="model",label="Private model"})
+end}
+LUA
+printf '{"extensions":["%s","auth","models","agent","ui"],"config":{"models":{"default":"private/model"}}}' "$work/unavailable-models.lua" >"$work/unavailable-models.json"
+[ "$(printf 'hello\n' | MISA_AUTH_FILE="$work/missing-auth.json" MISA_CONFIG="$work/unavailable-models.json" "$MISA_BIN")" = 'configured model is unavailable: private/model' ]
 
 stage=agent-tool-loop
 # The agent executes normalized tool calls, records results, and asks the

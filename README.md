@@ -78,6 +78,8 @@ phase. Setup may register:
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
 - `misa.reg_model(model)`: adds a provider-owned catalogue entry, including an
   optional `context_window`.
+- `misa.reg_auth_provider(provider)`: declares an authentication ID and its
+  corresponding model provider for completion and availability tracking.
 - `misa.reg_command({name,description,event,completion?,complete?})`: adds a
   generic slash command. `completion` names a shared static candidate group;
   `complete(prefix,db)` supplies dynamic candidates when needed.
@@ -85,7 +87,7 @@ phase. Setup may register:
   a candidate to a shared completion group. The UI handles filtering, sorting,
   display, and insertion, so providers only declare their authentication ID.
 - `misa.reg_tool(tool)`: adds a semantic tool schema and its effect type.
-  `misa.models()`, `misa.model(id)`, `misa.commands()`, `misa.command(name)`,
+  `misa.models()`, `misa.model(id)`, `misa.auth_providers()`, `misa.commands()`, `misa.command(name)`,
   `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
 
 Registrations are sealed after setup. Recursive dispatch is unavailable. Each
@@ -188,12 +190,13 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 ## Standard extensions
 
 `models` owns selection state and an inline `/model` picker; providers own the
-catalogue entries. Opening the picker refreshes model catalogues from OpenAI,
-Anthropic, OpenRouter, and Kimi when their APIs support listing models. The
-Anthropic catalogue is loaded authoritatively from its paginated `GET
-/v1/models` response rather than maintained in Misa. OpenRouter's public
-catalogue needs no credential. Set a provider's `discover_models` to
-`false`, or provide an explicit `models` list, to keep a fixed catalogue. The editor discovers registered slash commands and argument candidates,
+catalogue entries. Type in the picker to filter provider-qualified IDs, then use
+the arrow keys and Enter to select. Models from providers that are not logged in
+are hidden. OpenAI, Anthropic, OpenRouter, and Kimi catalogues are loaded from
+their model APIs at startup and refreshed when the picker opens; Misa does not
+maintain fallback lists for those providers. Set a provider's `discover_models`
+to `false` and provide an explicit `models` list to keep a fixed catalogue. The
+editor discovers registered slash commands and argument candidates,
 displays matching descriptions, and cycles matches with Tab. Login commands
 automatically complete authentication providers contributed by enabled
 provider plugins; `/model` completes the current dynamic model catalogue. Its live startup banner

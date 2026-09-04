@@ -19,7 +19,7 @@ end
 local function selected_model(db)
   local state = assert(db.models, "model state is not initialized")
   for _, model in ipairs(state.entries or {}) do if model.id == state.selected then return model end end
-  error("no model selected")
+  return nil
 end
 
 local function request(db)
@@ -27,7 +27,7 @@ local function request(db)
   agent.request_seq = agent.request_seq + 1
   local id = "agent-" .. tostring(agent.request_seq)
   agent.active_request_id, agent.status = id, "working"
-  local selected = selected_model(db)
+  local selected = assert(selected_model(db), "selected model became unavailable")
   return {
     type = "provider." .. selected.provider,
     id = id,
@@ -69,7 +69,20 @@ return {
         usage = { input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0 },
       }
       if #cofx.argv == 0 then return { db = db } end
-      return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = table.concat(cofx.argv, " ") } } } }
+      local prompt = table.concat(cofx.argv, " ")
+      if db.auth_startup and not db.auth_startup.ready then
+        db.agent.startup_prompt = prompt
+        return { db = db }
+      end
+      return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = prompt } } } }
+    end)
+
+    misa.reg_event("auth/startup-ready", function(db)
+      local agent = db.agent
+      if not agent or not agent.startup_prompt then return end
+      local prompt = agent.startup_prompt
+      agent.startup_prompt = nil
+      return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = prompt } } } }
     end)
 
     misa.reg_event("agent/reset", function(db)
@@ -84,6 +97,13 @@ return {
       assert(type(event.prompt) == "string" and event.prompt ~= "", "agent prompt must be nonempty")
       local agent = assert(db.agent, "agent state is not initialized")
       assert(agent.status == "ready", "agent is busy")
+      if not selected_model(db) then
+        local configured = db.models and db.models.configured_default
+        local message = configured and ("configured model is unavailable: " .. configured) or "no available models; log in to a provider"
+        return { db = db, fx = { { type = "dispatch", event = {
+          type = "agent/unavailable", message = message,
+        } } } }
+      end
       agent.messages[#agent.messages + 1] = { role = "user", content = { { type = "text", text = event.prompt } } }
       return { db = db, fx = { request(db) } }
     end)

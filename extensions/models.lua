@@ -1,5 +1,5 @@
 -- Model selection policy. Providers own catalogue entries; this extension owns
--- only the selected model and picker transitions.
+-- availability, filtering, selection, and picker transitions.
 local function copy_model(model)
   return {
     id = model.id, provider = model.provider, model = model.model,
@@ -13,7 +13,33 @@ end
 
 local function selected_index(entries, selected)
   for i, model in ipairs(entries) do if model.id == selected then return i end end
-  return 1
+  return #entries > 0 and 1 or 0
+end
+
+local function pop_utf8(value)
+  local index = #value
+  while index > 0 and value:byte(index) >= 0x80 and value:byte(index) < 0xc0 do index = index - 1 end
+  return value:sub(1, math.max(0, index - 1))
+end
+
+local function rebuild(state, preferred)
+  local entries = {}
+  for _, model in ipairs(state.catalogue) do
+    if state.available[model.provider] ~= false then entries[#entries + 1] = model end
+  end
+  state.entries = entries
+  if not find(entries, state.selected) then
+    state.selected = find(entries, preferred) and preferred or (preferred == nil and #entries > 0 and entries[1].id or nil)
+  end
+
+  local query = state.query:lower()
+  local filtered = {}
+  for _, model in ipairs(entries) do
+    local text = (model.id .. " " .. (model.label or "") .. " " .. model.provider):lower()
+    if query == "" or text:find(query, 1, true) then filtered[#filtered + 1] = model end
+  end
+  state.filtered = filtered
+  state.index = selected_index(filtered, state.selected)
 end
 
 return {
@@ -38,27 +64,29 @@ return {
       id = "models/initialize",
       before = function(tx)
         if tx.event.type ~= "app/start" or tx.db.models then return tx end
-        local entries = {}
-        for _, model in ipairs(misa.models()) do entries[#entries + 1] = copy_model(model) end
-        assert(#entries > 0, "no models registered")
-        local selected = default or entries[1].id
-        assert(find(entries, selected), "configured default model is not registered")
-        tx.db.models = { entries = entries, selected = selected, picker = false, index = selected_index(entries, selected) }
+        local catalogue = {}
+        for _, model in ipairs(misa.models()) do catalogue[#catalogue + 1] = copy_model(model) end
+        local state = {
+          catalogue = catalogue, available = tx.db.provider_availability or {}, entries = {}, filtered = {},
+          selected = default, configured_default = default, picker = false, query = "", index = 0,
+        }
+        rebuild(state, default)
+        tx.db.models = state
         return tx
       end,
     })
 
     misa.reg_event("model/open", function(db, event)
-      local state = db.models
-      assert(state and find(state.entries, state.selected), "model state is not initialized")
+      local state = assert(db.models, "model state is not initialized")
       local requested = type(event.arguments) == "string" and event.arguments:match("^%s*(%S+)%s*$") or nil
       if requested then
-        assert(find(state.entries, requested), "unknown model")
-        state.selected, state.index, state.picker = requested, selected_index(state.entries, requested), false
+        assert(find(state.entries, requested), "unknown or unavailable model")
+        state.selected, state.picker = requested, false
+        rebuild(state, default)
         return { db = db, fx = { { type = "terminal/read" } } }
       end
-      state.picker = true
-      state.index = selected_index(state.entries, state.selected)
+      state.picker, state.query = true, ""
+      rebuild(state, default)
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
 
@@ -66,7 +94,7 @@ return {
       id = "models/input",
       before = function(tx)
         if tx.event.type == "terminal/input" and tx.db.models and tx.db.models.picker then
-          tx.event = { type = "model/input", kind = tx.event.kind }
+          tx.event = { type = "model/input", kind = tx.event.kind, text = tx.event.text }
         end
         return tx
       end,
@@ -74,26 +102,41 @@ return {
 
     misa.reg_event("model/input", function(db, event)
       local state = db.models
-      local entries = state.entries
-      if event.kind == "arrow_up" then
-        state.index = state.index == 1 and #entries or state.index - 1
-      elseif event.kind == "arrow_down" then
-        state.index = state.index == #entries and 1 or state.index + 1
-      elseif event.kind == "enter" then
+      local entries = state.filtered
+      if event.kind == "text" and type(event.text) == "string" then
+        state.query = state.query .. event.text
+        rebuild(state, default)
+      elseif event.kind == "backspace" then
+        state.query = pop_utf8(state.query)
+        rebuild(state, default)
+      elseif event.kind == "arrow_up" and #entries > 0 then
+        state.index = state.index <= 1 and #entries or state.index - 1
+      elseif event.kind == "arrow_down" and #entries > 0 then
+        state.index = state.index >= #entries and 1 or state.index + 1
+      elseif event.kind == "enter" and #entries > 0 then
         state.selected, state.picker = entries[state.index].id, false
+        rebuild(state, default)
       elseif event.kind == "escape" or event.kind == "ctrl_c" or event.kind == "ctrl_d" or event.kind == "eof" then
         state.picker = false
       end
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
 
+    misa.reg_event("models/provider-availability", function(db, event)
+      assert(type(event.provider) == "string" and type(event.available) == "boolean", "invalid provider availability")
+      local state = assert(db.models, "model state is not initialized")
+      state.available[event.provider] = event.available
+      rebuild(state, default)
+      return { db = db }
+    end)
+
     misa.reg_event("models/replace-provider", function(db, event)
       assert(type(event.provider) == "string" and event.provider ~= "", "model provider must be nonempty")
       assert(type(event.models) == "table", "models must be an array")
-      local state, entries, seen = assert(db.models, "model state is not initialized"), {}, {}
-      for _, model in ipairs(state.entries) do
+      local state, catalogue, seen = assert(db.models, "model state is not initialized"), {}, {}
+      for _, model in ipairs(state.catalogue) do
         if model.provider ~= event.provider or (model.id == state.selected and event.authoritative ~= true) then
-          entries[#entries + 1] = model
+          catalogue[#catalogue + 1] = model
           seen[model.id] = true
         end
       end
@@ -102,29 +145,24 @@ return {
         assert(type(model.model) == "string" and model.model ~= "", "invalid discovered model ID")
         assert(model.context_window == nil or (type(model.context_window) == "number" and model.context_window > 0 and model.context_window % 1 == 0), "invalid context window")
         if seen[model.id] then
-          for i, existing in ipairs(entries) do
-            if existing.id == model.id then table.remove(entries, i); break end
-          end
+          for i, existing in ipairs(catalogue) do if existing.id == model.id then table.remove(catalogue, i); break end end
         end
         seen[model.id] = true
-        entries[#entries + 1] = {
+        catalogue[#catalogue + 1] = {
           id = model.id, provider = event.provider, model = model.model,
           label = type(model.label) == "string" and model.label or model.id,
           context_window = model.context_window,
         }
       end
-      if #entries == 0 then return { db = db } end
-      state.entries = entries
-      if not find(entries, state.selected) then state.selected = entries[1].id end
-      state.index = selected_index(entries, state.selected)
+      state.catalogue = catalogue
+      rebuild(state, default)
       return { db = db }
     end)
 
     misa.reg_event("model/select", function(db, event)
-      assert(type(event.id) == "string" and find(db.models.entries, event.id), "unknown model")
-      db.models.selected = event.id
-      db.models.index = selected_index(db.models.entries, event.id)
-      db.models.picker = false
+      assert(type(event.id) == "string" and find(db.models.entries, event.id), "unknown or unavailable model")
+      db.models.selected, db.models.picker = event.id, false
+      rebuild(db.models, default)
       return { db = db }
     end)
   end,

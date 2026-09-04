@@ -210,8 +210,9 @@ pub const Session = struct {
     }
 
     fn runAuth(self: *Session, spec: AuthCommand) !void {
-        try self.terminal.suspendInput();
-        defer self.terminal.resumeInput() catch {};
+        const should_suspend = spec.action != .status;
+        if (should_suspend) try self.terminal.suspendInput();
+        defer if (should_suspend) self.terminal.resumeInput() catch {};
         const result = auth.command(self.allocator, self.io, self.environ, spec.action, spec.provider) catch |err| {
             const event = try std.json.Stringify.valueAlloc(self.allocator, .{
                 .type = spec.completion,
@@ -246,6 +247,7 @@ pub const Session = struct {
             .ok = true,
             .message = message,
             .provider = spec.provider,
+            .logged_in = result.logged_in,
             .subscription_type = result.subscription_type,
         }, .{});
         defer self.allocator.free(event);

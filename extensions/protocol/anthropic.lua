@@ -80,15 +80,19 @@ function misa.protocols.anthropic(spec)
       db.model_discovery[spec.id] = {}
       return { db = db, fx = { request(nil) } }
     end
-    if spec.discover_on_start then misa.reg_event("app/start", discover) end
+    misa.reg_event("models/discover", function(db, event)
+      if event.provider and event.provider ~= spec.id then return end
+      return discover(db)
+    end)
     misa.reg_event("model/open", function(db, event)
       if type(event.arguments) == "string" and event.arguments:match("%S") then return end
+      if db.models and db.models.available[spec.id] == false then return end
       return discover(db)
     end)
     misa.reg_event(completion, function(db, event)
       if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then
         if db.model_discovery then db.model_discovery[spec.id] = nil end
-        return { db = db }
+        return { db = db, fx = { { type = "dispatch", event = { type = "models/discovery-complete", provider = spec.id } } } }
       end
       db.model_discovery = db.model_discovery or {}
       local discovered = db.model_discovery[spec.id] or {}
@@ -106,14 +110,20 @@ function misa.protocols.anthropic(spec)
         local cursor = event.data.last_id
         if type(cursor) ~= "string" or cursor == "" then
           db.model_discovery[spec.id] = nil
-          return { db = db }
+          return { db = db, fx = { { type = "dispatch", event = { type = "models/discovery-complete", provider = spec.id } } } }
         end
         return { db = db, fx = { request(cursor) } }
       end
       db.model_discovery[spec.id] = nil
-      if #discovered == 0 then return { db = db } end
-      table.sort(discovered, function(left, right) return left.id < right.id end)
-      return { db = db, fx = { { type = "dispatch", event = { type = "models/replace-provider", provider = spec.id, models = discovered, authoritative = spec.catalogue_authoritative == true } } } }
+      local effects = { { type = "dispatch", event = { type = "models/discovery-complete", provider = spec.id } } }
+      if #discovered > 0 or spec.catalogue_authoritative == true then
+        table.sort(discovered, function(left, right) return left.id < right.id end)
+        table.insert(effects, 1, { type = "dispatch", event = {
+          type = "models/replace-provider", provider = spec.id, models = discovered,
+          authoritative = spec.catalogue_authoritative == true,
+        } })
+      end
+      return { db = db, fx = effects }
     end)
   end
 

@@ -48,17 +48,27 @@ function misa.protocols.openai(spec)
   end
 
   if spec.models_url then
-    misa.reg_event("model/open", function(_, event)
-      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
+    local function discover()
       local credential = spec.models_credential == false and nil or { id = spec.credential, header = "authorization", prefix = "Bearer " }
       return { fx = { {
         type = "http/request", method = "GET", url = spec.models_url,
         headers = spec.model_headers or {}, credential = credential,
         response_format = "json", completion = "provider/" .. spec.id .. "-models", id = "models-" .. spec.id,
       } } }
+    end
+    misa.reg_event("models/discover", function(_, event)
+      if event.provider and event.provider ~= spec.id then return end
+      return discover()
+    end)
+    misa.reg_event("model/open", function(db, event)
+      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
+      if db.models and db.models.available[spec.id] == false then return end
+      return discover()
     end)
     misa.reg_event("provider/" .. spec.id .. "-models", function(_, event)
-      if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then return end
+      if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then
+        return { fx = { { type = "dispatch", event = { type = "models/discovery-complete", provider = spec.id } } } }
+      end
       local discovered = {}
       for _, item in ipairs(event.data.data) do
         if type(item) == "table" and type(item.id) == "string" and (not spec.model_filter or spec.model_filter(item)) then
@@ -68,9 +78,14 @@ function misa.protocols.openai(spec)
           }
         end
       end
-      if #discovered == 0 then return end
       table.sort(discovered, function(left, right) return left.id < right.id end)
-      return { fx = { { type = "dispatch", event = { type = "models/replace-provider", provider = spec.id, models = discovered } } } }
+      return { fx = {
+        { type = "dispatch", event = {
+          type = "models/replace-provider", provider = spec.id, models = discovered,
+          authoritative = spec.catalogue_authoritative == true,
+        } },
+        { type = "dispatch", event = { type = "models/discovery-complete", provider = spec.id } },
+      } }
     end)
   end
 

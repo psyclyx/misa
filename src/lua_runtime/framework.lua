@@ -5,6 +5,7 @@ local cofx_fns, cofx_order, fx_fns = {}, {}, {}
 local models, model_by_id, tools, tool_by_name = {}, {}, {}, {}
 local commands, command_by_name = {}, {}
 local completions, completion_values = {}, {}
+local auth_providers, auth_provider_ids, auth_model_providers = {}, {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
 
@@ -95,6 +96,20 @@ function misa.reg_completion(group, candidate)
   completion_values[group][candidate.value] = true
   completions[group][#completions[group] + 1] = candidate
 end
+
+function misa.reg_auth_provider(provider)
+  open()
+  assert(type(provider) == "table" and type(provider.id) == "string" and provider.id ~= "", "auth provider ID must be nonempty")
+  assert(type(provider.model_provider) == "string" and provider.model_provider ~= "", "auth model provider must be nonempty")
+  assert(provider.discover_models == nil or type(provider.discover_models) == "boolean", "auth provider discover_models must be boolean")
+  assert(not auth_provider_ids[provider.id], "duplicate auth provider")
+  assert(not auth_model_providers[provider.model_provider], "duplicate auth model provider")
+  auth_provider_ids[provider.id] = true
+  auth_model_providers[provider.model_provider] = true
+  auth_providers[#auth_providers + 1] = provider
+  misa.reg_completion("auth-provider", { value = provider.id, label = provider.label, description = provider.description })
+end
+function misa.auth_providers() return auth_providers end
 
 function misa.command_completions(command, prefix, state)
   assert(type(command) == "table" and type(prefix) == "string", "invalid completion request")
