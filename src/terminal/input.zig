@@ -248,6 +248,16 @@ test "decoder handles fragmented safe multiline paste, escape timeout, ctrl-d, a
     try std.testing.expect(saw_escape and saw_eof);
 }
 
+test "decoder exposes tab as a semantic event" {
+    var decoder: Decoder = .{};
+    defer decoder.deinit(std.testing.allocator);
+    var events: std.ArrayList(Event) = .empty;
+    defer events.deinit(std.testing.allocator);
+    try decoder.feed(std.testing.allocator, "\t", &events);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(events.items[0] == .tab);
+}
+
 test "decoder timeout resolves partial escape sequences and normalizes CRLF" {
     var decoder: Decoder = .{};
     defer decoder.deinit(std.testing.allocator);
