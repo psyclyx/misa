@@ -60,6 +60,10 @@ pub fn build(b: *std.Build) void {
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
+    // The default inferred mode captures stdio, so misa sees pipes instead of
+    // the caller's terminal and immediately receives EOF. A TUI run must own
+    // the real terminal for its lifetime.
+    run.stdio = .inherit;
     run.setEnvironmentVariable("MISA_EXTENSION_DIR", b.pathFromRoot("extensions"));
     if (b.args) |args| run.addArgs(args);
     b.step("run", "Run misa").dependOn(&run.step);
