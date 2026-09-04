@@ -49,9 +49,9 @@ pub fn main(init: std.process.Init) !void {
     };
     defer config.deinit();
 
-    var runtime = lua.Runtime.init(allocator, config.config_json, config.config_value, extension_argv.items) catch |err| {
-        if (err == error.ConfigNestingTooDeep) {
-            std.debug.print("misa: invalid config '{s}': nesting exceeds maximum depth of {d}\n", .{ path, lua.max_json_nesting_depth });
+    var runtime = lua.Runtime.init(allocator, config.config_value, extension_argv.items) catch |err| {
+        if (err == error.MaximumNestingDepth) {
+            std.debug.print("misa: invalid config '{s}': nesting exceeds maximum depth of {d}\n", .{ path, lua.max_nesting_depth });
             std.process.exit(2);
         }
         std.debug.print("misa: cannot initialize LuaJIT: {s}\n", .{@errorName(err)});

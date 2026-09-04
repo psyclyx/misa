@@ -1,159 +1,158 @@
--- Trusted event framework. This file is embedded by Zig and is never loaded at runtime.
+-- Trusted event framework, embedded by Zig.
 local traceback = debug.traceback
-local events, interceptors, cofx_fns, cofx_order, fx_fns = {}, {}, {}, {}, {}
+local events, interceptors, interceptor_ids = {}, {}, {}
+local cofx_fns, cofx_order, fx_fns = {}, {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
 
 misa = { json_null = {} }
 local function open() assert(not sealed, "registrations are sealed") end
+
 function misa.reg_event(name, fn)
-  open(); assert(type(name) == "string" and name ~= ""); assert(type(fn) == "function")
-  local handlers = events[name] or {}; events[name] = handlers; handlers[#handlers + 1] = fn
-end
-function misa.reg_interceptor(value)
-  open(); assert(type(value) == "table" and type(value.id) == "string" and value.id ~= "")
-  assert(value.before == nil or type(value.before) == "function")
-  assert(value.after == nil or type(value.after) == "function")
-  interceptors[#interceptors + 1] = value
-end
-function misa.reg_cofx(name, fn)
-  open(); assert(type(name) == "string" and name ~= "" and name ~= "config" and name ~= "config_json" and name ~= "argv" and name ~= "terminal")
-  assert(type(fn) == "function"); assert(cofx_fns[name] == nil, "duplicate cofx")
-  cofx_fns[name] = fn; cofx_order[#cofx_order + 1] = name
-end
-function misa.reg_fx(name, fn)
-  open(); assert(type(name) == "string" and name ~= ""); assert(type(fn) == "function")
-  assert(fx_fns[name] == nil, "duplicate fx"); fx_fns[name] = fn
-end
-function misa.reg_view(fn)
-  open(); assert(type(fn) == "function"); assert(view == nil, "view already registered"); view = fn
+  open()
+  assert(type(name) == "string" and name ~= "")
+  assert(type(fn) == "function")
+  local handlers = events[name] or {}
+  events[name] = handlers
+  handlers[#handlers + 1] = fn
 end
 
-local function esc(value)
-  return '"' .. value:gsub('[%z\1-\31\\"]', function(char)
-    local byte = char:byte()
-    if char == '"' then return '\\"' elseif char == '\\' then return '\\\\'
-    elseif char == '\n' then return '\\n' elseif char == '\r' then return '\\r'
-    elseif char == '\t' then return '\\t' else return string.format('\\u%04x', byte) end
-  end) .. '"'
+function misa.reg_interceptor(value)
+  open()
+  assert(type(value) == "table" and type(value.id) == "string" and value.id ~= "")
+  assert(not interceptor_ids[value.id], "duplicate interceptor")
+  assert(value.before == nil or type(value.before) == "function")
+  assert(value.after == nil or type(value.after) == "function")
+  interceptor_ids[value.id] = true
+  interceptors[#interceptors + 1] = value
 end
-local function finite(value) return value == value and value ~= math.huge and value ~= -math.huge end
+
+function misa.reg_cofx(name, fn)
+  open()
+  assert(type(name) == "string" and name ~= "")
+  assert(name ~= "config" and name ~= "argv" and name ~= "terminal")
+  assert(type(fn) == "function" and cofx_fns[name] == nil, "duplicate cofx")
+  cofx_fns[name] = fn
+  cofx_order[#cofx_order + 1] = name
+end
+
+function misa.reg_fx(name, fn)
+  open()
+  assert(type(name) == "string" and name ~= "")
+  assert(type(fn) == "function" and fx_fns[name] == nil, "duplicate fx")
+  fx_fns[name] = fn
+end
+
+function misa.reg_view(fn)
+  open()
+  assert(type(fn) == "function" and view == nil, "view already registered")
+  view = fn
+end
+
+local function finite(value)
+  return value == value and value ~= math.huge and value ~= -math.huge
+end
+
+-- One working copy gives a transaction exclusive state without repeatedly
+-- cloning immutable configuration and coeffects.
 local function clone(value, active, depth)
-  depth = depth or 0; assert(depth <= MAX_DEPTH, "maximum nesting depth exceeded")
+  depth = depth or 0
+  assert(depth <= MAX_DEPTH, "maximum state nesting depth exceeded")
   local kind = type(value)
   if value == misa.json_null or kind == "nil" or kind == "boolean" or kind == "string" then return value end
   if kind == "number" then assert(finite(value), "non-finite number"); return value end
-  assert(kind == "table", "state must contain only JSON values")
-  active = active or {}; assert(not active[value], "cyclic state"); active[value] = true
-  local result, count, maximum, key_shape = {}, 0, 0, nil
-  for key in pairs(value) do
+  assert(kind == "table", "state must contain only data")
+  active = active or {}
+  assert(not active[value], "cyclic state")
+  active[value] = true
+  local result = {}
+  for key, item in pairs(value) do
     local key_kind = type(key)
-    assert(key_kind == "string" or (key_kind == "number" and finite(key) and key >= 1 and key % 1 == 0), "invalid table key")
-    local shape = key_kind == "string" and "object" or "array"
-    assert(key_shape == nil or key_shape == shape, "table mixes object and array keys")
-    key_shape, count = shape, count + 1
-    if shape == "array" and key > maximum then maximum = key end
+    assert(key_kind == "string" or (key_kind == "number" and finite(key) and key >= 1 and key % 1 == 0), "invalid state key")
+    result[key] = clone(item, active, depth + 1)
   end
-  assert(key_shape ~= "array" or maximum == count, "array state must be contiguous")
-  for key, item in pairs(value) do result[key] = clone(item, active, depth + 1) end
   active[value] = nil
   return result
 end
-local function encode(value, active, depth)
-  depth = depth or 0; assert(depth <= MAX_DEPTH, "maximum nesting depth exceeded")
-  local kind = type(value)
-  if value == misa.json_null or kind == "nil" then return "null"
-  elseif kind == "boolean" then return tostring(value)
-  elseif kind == "number" then assert(finite(value), "non-finite number"); return tostring(value)
-  elseif kind == "string" then return esc(value) end
-  assert(kind == "table", "event data must contain JSON values")
-  active = active or {}; assert(not active[value], "cyclic event data"); active[value] = true
-  local count, maximum, array = 0, 0, true
-  for key in pairs(value) do
-    count = count + 1
-    if type(key) ~= "number" or not finite(key) or key < 1 or key % 1 ~= 0 then array = false
-    elseif key > maximum then maximum = key end
-  end
-  local out = {}
-  if array and maximum == count then
-    for i = 1, maximum do out[#out + 1] = encode(value[i], active, depth + 1) end
-    active[value] = nil; return "[" .. table.concat(out, ",") .. "]"
-  end
-  for key, item in pairs(value) do
-    assert(type(key) == "string", "object keys must be strings")
-    out[#out + 1] = esc(key) .. ":" .. encode(item, active, depth + 1)
-  end
-  active[value] = nil; return "{" .. table.concat(out, ",") .. "}"
-end
+
 local function append(destination, values)
-  assert(type(values) == "table", "fx must be a table")
-  for i = 1, #values do assert(type(values[i]) == "table", "fx entries must be tables"); destination[#destination + 1] = values[i] end
+  assert(type(values) == "table", "fx must be an array")
+  for i = 1, #values do
+    assert(type(values[i]) == "table", "fx entries must be tables")
+    destination[#destination + 1] = values[i]
+  end
 end
--- Zig captures this bounded clone bridge in the registry and removes the field
--- before loading extensions. Keep cloning policy in one trusted implementation.
-function misa._clone(value) return clone(value) end
-function misa._seal(context) sealed = true; base_context = clone(context) end
+
+function misa._seal(context)
+  sealed = true
+  base_context = context
+end
+
 function misa._dispatch(event, terminal)
-  assert(sealed, "registrations are not sealed"); assert(not dispatching, "recursive dispatch is forbidden")
+  assert(sealed and not dispatching, "invalid dispatch state")
   assert(pending_db == nil, "previous transaction was not committed")
   assert(type(event) == "table" and type(event.type) == "string" and event.type ~= "", "event.type must be a nonempty string")
-  assert(type(terminal) == "table" and type(terminal.interactive) == "boolean", "invalid terminal coeffect")
-  assert(type(terminal.columns) == "number" and terminal.columns >= 1 and terminal.columns % 1 == 0, "invalid terminal columns")
-  assert(type(terminal.lines) == "number" and terminal.lines >= 1 and terminal.lines % 1 == 0, "invalid terminal lines")
   dispatching = true
-  local ok, result = xpcall(function()
-    -- Every transaction gets an isolated base snapshot. Extension mutation is
-    -- therefore transaction-local, including when native validation rejects it.
-    local cofx = {
-      config = clone(base_context.config),
-      config_json = clone(base_context.config_json),
-      argv = clone(base_context.argv),
-      terminal = clone(terminal),
-    }
+  local ok, native, projection = xpcall(function()
+    local cofx = { config = base_context.config, argv = base_context.argv, terminal = terminal }
     local working = clone(db)
-    -- Derived coeffects are intentionally threaded in registration order, so a
-    -- later derivation may read values installed by earlier derivations.
     for _, name in ipairs(cofx_order) do cofx[name] = cofx_fns[name](cofx, event, working) end
     local tx = { db = working, event = event, cofx = cofx, fx = {} }
-    local function valid_tx(value)
+    local function validate(value)
       assert(type(value) == "table" and type(value.db) == "table" and type(value.cofx) == "table" and type(value.fx) == "table", "invalid interceptor transaction")
     end
-    for i = 1, #interceptors do if interceptors[i].before then tx = interceptors[i].before(tx) or tx; valid_tx(tx) end end
-    for _, fn in ipairs(events[tx.event.type] or {}) do
-      local value = fn(tx.db, tx.event, tx.cofx)
-      assert(value == nil or type(value) == "table", "event handler result must be a table")
-      if value then
-        if value.db ~= nil then assert(type(value.db) == "table", "handler db must be a table"); tx.db = value.db end
-        if value.fx ~= nil then append(tx.fx, value.fx) end
+    for i = 1, #interceptors do
+      local before = interceptors[i].before
+      if before then tx = before(tx) or tx; validate(tx) end
+    end
+    for _, handler in ipairs(events[tx.event.type] or {}) do
+      local result = handler(tx.db, tx.event, tx.cofx)
+      assert(result == nil or type(result) == "table", "event handler result must be a table")
+      if result then
+        if result.db ~= nil then assert(type(result.db) == "table", "handler db must be a table"); tx.db = result.db end
+        if result.fx ~= nil then append(tx.fx, result.fx) end
       end
     end
-    for i = #interceptors, 1, -1 do if interceptors[i].after then tx = interceptors[i].after(tx) or tx; valid_tx(tx) end end
-    local native = {}
+    for i = #interceptors, 1, -1 do
+      local after = interceptors[i].after
+      if after then tx = after(tx) or tx; validate(tx) end
+    end
+    local effects = {}
     for _, effect in ipairs(tx.fx) do
-      local kind = effect.type; assert(type(kind) == "string" and kind ~= "", "effect.type must be a nonempty string")
+      local kind = effect.type
+      assert(type(kind) == "string" and kind ~= "", "effect.type must be a nonempty string")
       local translator = fx_fns[kind]
       if translator then
-        local translated = translator(effect, tx.cofx, tx.db); assert(type(translated) == "table", "fx translator must return a table")
-        if translated.type then native[#native + 1] = translated else append(native, translated) end
-      else native[#native + 1] = effect end
+        local translated = translator(effect, tx.cofx, tx.db)
+        assert(type(translated) == "table", "fx translator must return a table")
+        if translated.type then effects[#effects + 1] = translated else append(effects, translated) end
+      else
+        effects[#effects + 1] = effect
+      end
     end
-    local projection = misa.json_null
-    if view then projection = view(tx.db, tx.cofx); assert(type(projection) == "table", "view must return a table") end
-    local encoded = encode({ fx = native, view = projection })
-    pending_db = clone(tx.db)
-    return encoded
+    local frame = misa.json_null
+    if view then frame = view(tx.db, tx.cofx); assert(type(frame) == "table", "view must return a table") end
+    pending_db = tx.db
+    return effects, frame
   end, traceback)
   dispatching = false
-  if not ok then error(result, 0) end
-  return result
+  if not ok then error(native, 0) end
+  return native, projection
 end
+
 function misa._commit()
   assert(pending_db ~= nil, "no transaction to commit")
   db, pending_db = pending_db, nil
 end
 
--- Remove every standard direct output, process, native-code, dynamic loading,
--- and termination route before untrusted extension chunks are evaluated.
-os = nil; io = nil; print = nil; package = nil; require = nil
-load = nil; loadstring = nil; loadfile = nil; dofile = nil
-ffi = nil; jit = nil; debug = nil; module = nil
+-- Extensions are trusted policy. Keep ordinary Lua loading/composition, while
+-- reserving terminal output, process termination, and native-library loading
+-- to Zig-owned effects.
+if package then
+  package.loadlib = nil
+  package.loaded.io, package.loaded.os, package.loaded.debug = nil, nil, nil
+  package.loaded.ffi, package.loaded.jit = nil, nil
+  package.preload.ffi, package.preload.jit = nil, nil
+  package.loaders[3], package.loaders[4] = nil, nil
+end
+os, io, print, ffi, jit, debug = nil, nil, nil, nil, nil, nil

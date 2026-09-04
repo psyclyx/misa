@@ -51,19 +51,19 @@ phase. Setup may register:
   return `{db,event,cofx,fx}`.
 - `misa.reg_cofx(name, fn)`: derives a policy value. Derivations run in
   registration order; a later derivation may read values installed by earlier
-  ones. Base coeffects always include `config`, `config_json`, `argv`, and
-  `terminal={interactive=<bool>,columns=<integer>,lines=<integer>}`. These four
-  names are reserved and are fresh bounded deep clones for every transaction.
+  ones. Base coeffects always include `config`, `argv`, and
+  `terminal={interactive=<bool>,columns=<integer>,lines=<integer>}`. These names
+  are reserved. Configuration and argv are shared immutable inputs by contract.
 - `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
   or an ordered array of native effects.
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
 
-Each setup callback receives its own bounded deep clone of setup context, so
-mutation cannot affect a later extension. Registrations are sealed after all
-setup callbacks. Recursive dispatch is not available. Every transaction is
-protected by a traceback handler. Extensions
-must not write or render; Lua output APIs and all dynamic loaders (`load`,
-`loadstring`, `loadfile`, and `dofile`) are unavailable.
+Registrations are sealed after setup. Recursive dispatch is unavailable. Each
+transaction takes one bounded working copy of `db`, then commits it only after
+its effects and view pass native validation and presentation. Extensions must
+not write or render: `io`, `os`, and `print` are unavailable. Ordinary Lua
+source composition (`require`, `load`, `loadfile`, and `dofile`) remains
+available, while native `package.loadlib`, FFI, and JIT access are disabled.
 
 The fixed native effects are:
 
@@ -86,19 +86,16 @@ A view is modest semantic data:
   lines = {
     { spans = { { text = "working", style = "dim" } } }
   },
-  cursor = { row = 1, byte = 0 } -- or {row=1,column=1}, or nil
+  cursor = { row = 1, byte = 0 } -- or nil
 }
 ```
 
 Styles are `plain`, `dim`, `bold`, `accent`, `user`, `assistant`, and `error`.
 Text must be valid UTF-8 and may not contain controls, ESC, CR, or LF. Cursor
-rows and columns are one-based. The alternative zero-based `byte` is an UTF-8
-boundary in the concatenated spans of that row; Zig converts it to a terminal
-cell column and clamps it to the presentable width. A column cursor may address
-a rendered cell or the valid insertion endpoint immediately after the row, but
-not space beyond it. Exactly one of `byte` or `column` is required. Zig owns
-wrapping and ANSI mapping; noninteractive output
-strips styles.
+rows are one-based; `byte` is a zero-based UTF-8 boundary in the concatenated
+spans of that row. Zig alone converts it to a terminal cell column and clamps it
+to the presentable width. Zig owns clipping and ANSI mapping; noninteractive
+output strips styles.
 
 ## Terminal architecture and limitations
 
@@ -107,9 +104,10 @@ application state. A transaction is fully validated, then its pending semantic
 view is successfully presented, then Lua policy state is committed, and only
 then are the prevalidated effects executed. Policy changes are rollback-safe
 through validation and presentation. A native side-effect or I/O failure after
-commit is fatal and is not generally rollbackable. `src/terminal/root.zig` owns tty/raw-mode
-lifetime, incremental input decoding, and all stdout writes. Raw mode is always
-restored with `defer`.
+commit is fatal and is not generally rollbackable. `src/terminal/root.zig`
+owns tty/raw-mode lifetime and all stdout writes; `terminal/input.zig`,
+`terminal/presenter.zig`, and `terminal/width.zig` own their respective pure
+mechanisms. Raw mode is always restored with `defer`.
 
 The inline presenter never enters the alternate screen and never clears the
 screen or scrollback. Immutable commits use real newlines and are forgotten.
@@ -135,14 +133,15 @@ does not provide a portable POSIX PTY constructor, and misa does not add an
 OS-specific helper or external dependency for one. Zig 0.16 no longer
 exports `std.posix.read/write/isatty`; misa uses the corresponding
 `std.Io.File` portable abstractions. Raw mode uses portable termios with a read
-timeout, and POSIX signal actions restore it before chaining/defaulting fatal
-and termination signals. Bracketed-paste markers are decoded, but misa does not
+timeout, and POSIX signal actions restore it before chaining/defaulting normal
+termination signals. Bracketed-paste markers are decoded, but misa does not
 enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 
 ## Standard extensions
 
-`agent` stores prompt/status/response/error in `db` and performs one completion
-(no tool loop). `provider.fake` keeps its response cursor in `db`.
+`agent` stores prompt/status/response/error under `db.agent` and performs one
+completion (no tool loop). `provider.fake` keeps its state under
+`db.providers.fake`; UI editor state lives under `db.ui`.
 `provider.command` translates to direct-argv `process/run`. `ui` owns a
 multiline UTF-8 editor with a byte cursor, insertion, backspace, and left/right
 movement, plus semantic projection. It commits the final result to scrollback

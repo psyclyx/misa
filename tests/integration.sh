@@ -7,12 +7,14 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 printf '{}' >"$work/empty.json"
 [ -z "$(MISA_CONFIG="$work/empty.json" "$MISA_BIN")" ]
 
-# Dangerous libraries and output/process/exit routes are gone before even the
-# extension chunk runs; decoded null retains the documented sentinel.
+# Terminal/process ownership stays native while ordinary Lua composition and
+# source loading remain available; decoded null retains its sentinel.
 cat >"$work/sandbox.lua" <<'LUA'
-assert(os == nil and io == nil and print == nil and package == nil and require == nil)
-assert(load == nil and loadstring == nil and loadfile == nil and dofile == nil)
-assert(ffi == nil and jit == nil and debug == nil)
+assert(os == nil and io == nil and print == nil and debug == nil)
+assert(type(package) == "table" and package.loadlib == nil and type(require) == "function")
+assert(type(load) == "function" and type(loadstring) == "function" and type(loadfile) == "function" and type(dofile) == "function")
+assert(ffi == nil and jit == nil)
+local ok = pcall(require, "ffi"); assert(not ok)
 return {setup=function(context)
   assert(context.config.missing == misa.json_null)
   misa.reg_event("app/start", function() return {fx={{type="app/quit"}}} end)
@@ -32,13 +34,12 @@ return { setup = function()
   misa.reg_event("app/start", function(db,event,cofx)
     assert(cofx.config.nested.value == 7)
     db.order[#db.order+1]="first:"..cofx.ordered
-    cofx.config.nested.value, cofx.argv[1], cofx.terminal.columns = 99, "mutated", 1
     return {db=db,fx={{type="test/next"}}}
   end)
   misa.reg_event("app/start", function(db) db.order[#db.order+1]="second"; return {db=db} end)
   misa.reg_fx("test/next", function() return {type="dispatch",event={type="test/done"}} end)
   misa.reg_event("test/done", function(db, event, cofx)
-    assert(cofx.config.nested.value == 7 and cofx.argv[1] == "original" and cofx.terminal.columns ~= 1)
+    assert(cofx.config.nested.value == 7 and cofx.argv[1] == "original")
     local ok,err=pcall(function() misa.reg_event("late",function() end) end)
     assert(not ok and err:find("sealed"))
     return {fx={{type="view/commit",lines={{spans={{text=table.concat(db.order,","),style="plain"}}}}},{type="app/quit"}}}
@@ -48,19 +49,6 @@ end }
 LUA
 printf '{"extensions":["%s"],"config":{"nested":{"value":7}}}' "$work/contracts.lua" >"$work/contracts.json"
 [ "$(MISA_CONFIG="$work/contracts.json" "$MISA_BIN" original)" = 'before,first:derived:ordered,second,after,before' ]
-
-# Setup context is cloned for each callback, independently of extension order.
-cat >"$work/mutate-setup.lua" <<'LUA'
-return {setup=function(context) context.config.nested.value=99; context.argv[1]="changed" end}
-LUA
-cat >"$work/check-setup.lua" <<'LUA'
-return {setup=function(context)
-  assert(context.config.nested.value==7 and context.argv[1]=="original")
-  misa.reg_event("app/start",function() return {fx={{type="app/quit"}}} end)
-end}
-LUA
-printf '{"extensions":["%s","%s"],"config":{"nested":{"value":7}}}' "$work/mutate-setup.lua" "$work/check-setup.lua" >"$work/setup-clones.json"
-MISA_CONFIG="$work/setup-clones.json" "$MISA_BIN" original
 
 cat >"$work/fake.json" <<'EOF'
 {"extensions":["provider.fake","agent","ui"],"config":{"agent":{"provider":"fake"},"providers":{"fake":{"responses":["fake response\n"]}}}}
@@ -119,7 +107,7 @@ return {setup=function(context)
   local ok = pcall(function() misa.reg_cofx("terminal", function() end) end)
   assert(not ok, "terminal cofx name must be reserved")
   misa.reg_event("app/start",function(db,event,cofx)
-    assert(cofx.config.value==42 and cofx.config_json=='{"value":42'..'}' and cofx.argv[1]=='arg')
+    assert(cofx.config.value==42 and cofx.argv[1]=='arg')
     assert(cofx.terminal.interactive == false and cofx.terminal.columns == 37 and cofx.terminal.lines == 11)
     return {fx={{type="view/commit",lines={{spans={{text="plain",style="accent"}}}}},{type="app/quit"}}}
   end)

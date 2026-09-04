@@ -5,13 +5,11 @@ const std = @import("std");
 pub const Config = struct {
     parsed: std.json.Parsed(std.json.Value),
     extensions: []const std.json.Value,
-    config_json: []u8,
     config_value: std.json.Value,
     owns_config_value: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Config) void {
-        self.allocator.free(self.config_json);
         if (self.owns_config_value) self.config_value.object.deinit(self.allocator);
         self.parsed.deinit();
     }
@@ -42,41 +40,35 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Config {
     const has_config = root.get("config") != null;
     var config_value: std.json.Value = root.get("config") orelse .{ .object = .{} };
     errdefer if (!has_config) config_value.object.deinit(allocator);
-    const config_json = try std.json.Stringify.valueAlloc(allocator, config_value, .{});
     return .{
         .parsed = parsed,
         .extensions = extensions,
-        .config_json = config_json,
         .config_value = config_value,
         .owns_config_value = !has_config,
         .allocator = allocator,
     };
 }
 
-test "preserves extension order and serializes free-form config" {
+test "preserves extension order and free-form config" {
     var config = try parse(std.testing.allocator,
         \\{"extensions":["first.lua","second.lua"],"config":{"visible":true,"n":3}}
     );
     defer config.deinit();
     try std.testing.expectEqualStrings("first.lua", config.extensionPath(0));
     try std.testing.expectEqualStrings("second.lua", config.extensionPath(1));
-    try std.testing.expectEqualStrings("{\"visible\":true,\"n\":3}", config.config_json);
+    try std.testing.expect(config.config_value.object.get("visible").?.bool);
 }
 
 test "omitted fields use native defaults" {
     var config = try parse(std.testing.allocator, "{}");
     defer config.deinit();
     try std.testing.expectEqual(@as(usize, 0), config.extensions.len);
-    try std.testing.expectEqualStrings("{}", config.config_json);
-
-    var only_extensions = try parse(std.testing.allocator, "{\"extensions\":[]}");
-    defer only_extensions.deinit();
-    try std.testing.expectEqualStrings("{}", only_extensions.config_json);
+    try std.testing.expectEqual(@as(usize, 0), config.config_value.object.count());
 
     var only_config = try parse(std.testing.allocator, "{\"config\":[]}");
     defer only_config.deinit();
     try std.testing.expectEqual(@as(usize, 0), only_config.extensions.len);
-    try std.testing.expectEqualStrings("[]", only_config.config_json);
+    try std.testing.expectEqual(@as(usize, 0), only_config.config_value.array.items.len);
 }
 
 test "rejects malformed harness shape" {

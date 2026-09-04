@@ -1,5 +1,4 @@
--- UTF-8 byte-oriented editor policy and semantic projection. Zig alone owns
--- terminal cell widths and converts cursor.byte within its semantic line.
+-- UTF-8 byte-oriented editor policy and semantic projection. Zig owns cells.
 local function lines_for(text, style, preserve_trailing)
   local lines = {}
   text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
@@ -31,19 +30,12 @@ local function next_cursor(text, cursor)
   return next
 end
 
-local function normalize_editor(db)
-  db.editor = type(db.editor) == "string" and db.editor or ""
-  if type(db.editor_cursor) ~= "number" or db.editor_cursor % 1 ~= 0 or db.editor_cursor < 0 or db.editor_cursor > #db.editor then
-    db.editor_cursor = #db.editor
-  elseif db.editor_cursor < #db.editor then
-    local byte = db.editor:byte(db.editor_cursor + 1)
-    if byte >= 128 and byte < 192 then db.editor_cursor = #db.editor end
-  end
-end
-
-local function insert_at_cursor(db, text)
-  db.editor = db.editor:sub(1, db.editor_cursor) .. text .. db.editor:sub(db.editor_cursor + 1)
-  db.editor_cursor = db.editor_cursor + #text
+local function editor(db)
+  db.ui = db.ui or {}
+  local ui = db.ui
+  ui.text = type(ui.text) == "string" and ui.text or ""
+  if type(ui.cursor) ~= "number" or ui.cursor % 1 ~= 0 or ui.cursor < 0 or ui.cursor > #ui.text then ui.cursor = #ui.text end
+  return ui
 end
 
 local function editor_position(text, cursor)
@@ -57,88 +49,77 @@ return {
   setup = function(context)
     local config = type(context.config) == "table" and context.config.ui or nil
     local plain_prompt = type(config) == "table" and config.plain_prompt == true
+
     misa.reg_event("app/start", function(db, _, cofx)
-      normalize_editor(db)
-      if #cofx.argv == 0 then
-        local fx = {}
-        -- A stream fallback cannot show the mutable inline frame. Commit one
-        -- plain prompt so a misclassified or redirected session is observable
-        -- instead of appearing to hang while it waits for input.
-        if not cofx.terminal.interactive and plain_prompt then
-          fx[#fx + 1] = { type = "view/commit", lines = lines_for("misa> enter a prompt:", "plain") }
-        end
-        fx[#fx + 1] = { type = "terminal/read" }
-        return { db = db, fx = fx }
+      editor(db)
+      if #cofx.argv ~= 0 then return { db = db } end
+      local fx = {}
+      if not cofx.terminal.interactive and plain_prompt then
+        fx[#fx + 1] = { type = "view/commit", lines = lines_for("misa> enter a prompt:", "plain") }
       end
-      return { db = db }
+      fx[#fx + 1] = { type = "terminal/read" }
+      return { db = db, fx = fx }
     end)
+
     misa.reg_event("terminal/input", function(db, event)
-      normalize_editor(db)
+      local ui = editor(db)
       if event.kind == "text" then
-        insert_at_cursor(db, event.text)
+        ui.text = ui.text:sub(1, ui.cursor) .. event.text .. ui.text:sub(ui.cursor + 1)
+        ui.cursor = ui.cursor + #event.text
       elseif event.kind == "backspace" then
-        local previous = previous_cursor(db.editor, db.editor_cursor)
-        db.editor = db.editor:sub(1, previous) .. db.editor:sub(db.editor_cursor + 1)
-        db.editor_cursor = previous
+        local previous = previous_cursor(ui.text, ui.cursor)
+        ui.text = ui.text:sub(1, previous) .. ui.text:sub(ui.cursor + 1)
+        ui.cursor = previous
       elseif event.kind == "arrow_left" then
-        db.editor_cursor = previous_cursor(db.editor, db.editor_cursor)
+        ui.cursor = previous_cursor(ui.text, ui.cursor)
       elseif event.kind == "arrow_right" then
-        db.editor_cursor = next_cursor(db.editor, db.editor_cursor)
-      elseif event.kind == "enter" then
-        if db.editor ~= "" then
-          local prompt = db.editor
-          db.editor, db.editor_cursor = "", 0
-          return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = prompt } } } }
-        end
+        ui.cursor = next_cursor(ui.text, ui.cursor)
+      elseif event.kind == "enter" and ui.text ~= "" then
+        local prompt = ui.text
+        ui.text, ui.cursor = "", 0
+        return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = prompt } } } }
       elseif event.kind == "ctrl_c" or event.kind == "eof" then
         return { db = db, fx = { { type = "app/quit" } } }
       end
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
-    -- Completion is decided after all event handlers, so ui works whether its
-    -- setup ran before or after agent. The accepted id makes one matching
-    -- completion transaction produce exactly one immutable commit.
-    misa.reg_interceptor({ id = "ui/completion",
+
+    misa.reg_interceptor({
+      id = "ui/completion",
       before = function(tx)
-        local event = tx.event
-        tx.ui_accepts_completion = (event.type == "agent/result" or event.type == "agent/error")
-          and tx.db.status == "working" and tx.db.active_request_id == event.id
+        local agent, event = tx.db.agent, tx.event
+        tx.ui_accepts_completion = agent and (event.type == "agent/result" or event.type == "agent/error")
+          and agent.status == "working" and agent.active_request_id == event.id
         return tx
       end,
       after = function(tx)
         if not tx.ui_accepts_completion then return tx end
-        local event = tx.event
-        if event.type == "agent/result" and tx.db.status == "done" and tx.db.accepted_request_id == event.id then
+        local agent, event = tx.db.agent, tx.event
+        if event.type == "agent/result" and agent.status == "done" and agent.accepted_request_id == event.id then
           tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(event.text, "assistant") }
           tx.fx[#tx.fx + 1] = { type = "app/quit" }
-        elseif event.type == "agent/error" and tx.db.status == "error" and tx.db.accepted_request_id == event.id then
+        elseif event.type == "agent/error" and agent.status == "error" and agent.accepted_request_id == event.id then
           tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(tostring(event.message), "error") }
           tx.fx[#tx.fx + 1] = { type = "app/quit" }
         end
         return tx
       end,
     })
+
     misa.reg_view(function(db, cofx)
-      -- Projection is pure: editor normalization belongs to input events.
-      local editor = type(db.editor) == "string" and db.editor or ""
-      local editor_cursor = type(db.editor_cursor) == "number" and db.editor_cursor or #editor
+      local ui = db.ui or { text = "", cursor = 0 }
+      local agent = db.agent or {}
       local lines = {}
-      if db.status == "working" then lines[#lines + 1] = { spans = { { text = "working…", style = "dim" } } } end
+      if agent.status == "working" then lines[#lines + 1] = { spans = { { text = "working…", style = "dim" } } } end
       local cursor = nil
-      if db.status ~= "done" and db.status ~= "error" then
-        local editor_lines = lines_for(editor, "user", true)
+      if agent.status ~= "done" and agent.status ~= "error" then
+        local editor_lines = lines_for(ui.text, "user", true)
         table.insert(editor_lines[1].spans, 1, { text = "> ", style = "accent" })
-        local editor_row, byte = editor_position(editor, editor_cursor)
-        local editor_start = #lines + 1
+        local editor_row, byte = editor_position(ui.text, ui.cursor)
         local row = #lines + editor_row
         for i = 1, #editor_lines do lines[#lines + 1] = editor_lines[i] end
-        local clamped_row = math.max(1, math.min(row, #lines, cofx.terminal.lines))
-        if clamped_row ~= row then
-          byte = clamped_row == editor_start and 2 or 0
-        else
-          byte = byte + (editor_row == 1 and 2 or 0)
-        end
-        cursor = { row = clamped_row, byte = byte }
+        row = math.max(1, math.min(row, #lines, cofx.terminal.lines))
+        cursor = { row = row, byte = byte + (editor_row == 1 and 2 or 0) }
       end
       return { lines = lines, cursor = cursor }
     end)

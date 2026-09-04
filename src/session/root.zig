@@ -33,19 +33,10 @@ pub const Session = struct {
             const event = self.queue.items[self.queue_head];
             self.queue_head += 1;
             defer self.allocator.free(event);
-            const result = self.runtime.dispatch(event) catch return error.LuaTransactionFailed;
-            defer self.allocator.free(result);
-            var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, result, .{});
-            defer parsed.deinit();
-            const envelope = switch (parsed.value) {
-                .object => |o| o,
-                else => return error.InvalidTransaction,
-            };
-            const view = envelope.get("view") orelse return error.InvalidTransaction;
-            const effects = switch (envelope.get("fx") orelse return error.InvalidTransaction) {
-                .array => |a| a.items,
-                else => return error.InvalidTransaction,
-            };
+            var transaction = self.runtime.dispatch(event) catch return error.LuaTransactionFailed;
+            defer transaction.deinit();
+            const view = transaction.view;
+            const effects = transaction.effects;
             // Validate everything, then make the pending semantic view visible
             // before committing policy state. Validation/presentation failures
             // leave canonical Lua db unchanged. After commit, effect I/O is

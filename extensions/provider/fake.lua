@@ -1,4 +1,4 @@
--- Deterministic provider. Its cursor is explicit canonical db state.
+-- Deterministic provider. Its cursor lives in its own model namespace.
 return {
   setup = function(context)
     local providers = type(context.config) == "table" and context.config.providers or nil
@@ -12,12 +12,15 @@ return {
       assert(type(effect.id) == "string" and effect.id ~= "", "fake id must be a nonempty string")
       return { type = "dispatch", event = { type = "provider/fake", id = effect.id, prompt = effect.prompt } }
     end)
+
     misa.reg_event("provider/fake", function(db, event)
       assert(type(event.prompt) == "string" and event.prompt ~= "", "fake prompt must be a nonempty string")
       assert(type(event.id) == "string" and event.id ~= "", "fake id must be a nonempty string")
-      local index = (db.provider_fake_index or 0) + 1
-      db.provider_fake_index = index
-      local text = responses[index]
+      db.providers = db.providers or {}
+      local state = db.providers.fake or { next_response = 1 }
+      local text = responses[state.next_response]
+      state.next_response = state.next_response + 1
+      db.providers.fake = state
       if type(text) ~= "string" then
         return { db = db, fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = "fake responses exhausted" } } } }
       end
