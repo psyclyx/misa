@@ -51,6 +51,8 @@ assert
     providerOpenAI = "provider.openai";
     providerOpenAICodex = "provider.openai-codex";
     providerOpenRouter = "provider.openrouter";
+    toolFiles = "tool.files";
+    toolShell = "tool.shell";
     ui = "ui";
   };
 assert
@@ -84,6 +86,8 @@ assert builtins.pathExists ../extensions/protocol/openai.lua;
 assert builtins.pathExists ../extensions/provider/openai.lua;
 assert builtins.pathExists ../extensions/provider/openai-codex.lua;
 assert builtins.pathExists ../extensions/provider/openrouter.lua;
+assert builtins.pathExists ../extensions/tool/files.lua;
+assert builtins.pathExists ../extensions/tool/shell.lua;
 assert builtins.pathExists ../extensions/ui.lua;
 # Instantiate both the package and configured wrapper without recursively
 # building either from this evaluation-only test.

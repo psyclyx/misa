@@ -1,6 +1,7 @@
 //! Non-reentrant FIFO owner for Lua transactions and fixed native effects.
 const std = @import("std");
 const auth = @import("misa_auth");
+const file = @import("file.zig");
 const http = @import("http.zig");
 const lua = @import("misa_lua_runtime");
 const terminal_module = @import("misa_terminal");
@@ -15,6 +16,7 @@ const NativeEffect = union(enum) {
     app_quit,
     process_run: process.Spec,
     http_request: http.Spec,
+    file: file.Spec,
     json_decode: JsonDecode,
 
     fn parse(value: std.json.Value) !NativeEffect {
@@ -41,6 +43,7 @@ const NativeEffect = union(enum) {
         if (std.mem.eql(u8, kind, "app/quit")) return .app_quit;
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
         if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
+        if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
         if (std.mem.eql(u8, kind, "json/decode")) return .{ .json_decode = .{
             .source = stringField(object, "source") orelse return error.InvalidEffect,
             .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
@@ -132,6 +135,7 @@ pub const Session = struct {
             .app_quit => self.quit = true,
             .process_run => |spec| try self.runProcess(spec),
             .http_request => |spec| try self.runHttp(spec),
+            .file => |spec| try self.runFile(spec),
             .json_decode => |spec| try self.decodeJson(spec),
         }
     }
@@ -176,6 +180,29 @@ pub const Session = struct {
             defer self.allocator.free(event);
             try self.enqueue(event);
         }
+    }
+
+    fn runFile(self: *Session, spec: file.Spec) !void {
+        const result = file.run(self.allocator, self.io, spec) catch |err| {
+            const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+                .type = spec.completion(),
+                .id = spec.requestId(),
+                .ok = false,
+                .message = @errorName(err),
+            }, .{});
+            defer self.allocator.free(event);
+            try self.enqueue(event);
+            return;
+        };
+        defer self.allocator.free(result);
+        const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .type = spec.completion(),
+            .id = spec.requestId(),
+            .ok = true,
+            .text = result,
+        }, .{});
+        defer self.allocator.free(event);
+        try self.enqueue(event);
     }
 
     fn decodeJson(self: *Session, spec: JsonDecode) !void {

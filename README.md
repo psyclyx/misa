@@ -7,7 +7,8 @@ non-stdlib application dependency.
 No extensions are enabled implicitly: `{}` is valid and produces no output.
 The shipped extensions include `models`, `agent`, `ui`, protocol adapters,
 and fake, command, Claude Code, OpenAI, Anthropic, OpenRouter, and Kimi
-providers. Select them through the one ordered `extensions` list. Protocol
+providers. `tool.files` and `tool.shell` provide optional coding tools. Select
+them through the one ordered `extensions` list. Protocol
 adapters precede the API providers that use them:
 
 ```json
@@ -76,6 +77,10 @@ The fixed native effects are:
 - `{type="dispatch", event=<table>}`
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>}`
 - `{type="http/request", url=..., json=..., credential=..., completion=..., id=...}`
+- `{type="file/read", path=..., completion=..., id=...}`
+- `{type="file/write", path=..., content=..., completion=..., id=...}`
+- `{type="file/edit", path=..., content=..., replacement=..., completion=..., id=...}`
+- `{type="json/decode", source=..., completion=..., id=...}`
 - `{type="terminal/read"}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
@@ -83,7 +88,11 @@ The fixed native effects are:
 Unknown native effects fail the session. `http/request` injects credentials by
 ID inside Zig, so secret bytes never cross into Lua policy. `process/run` invokes direct argv,
 never a shell, captures stdout and stderr with 1 MiB bounds, and never inherits
-the terminal output. Captured tabs are normalized to spaces and malformed UTF-8
+the terminal output. The shell tool explicitly translates its command to
+`{"sh", "-lc", command}` in Lua; filesystem and process isolation are concerns
+of the environment launching Misa, not of the tool extension. File effects use
+paths exactly as supplied and bound file content to 1 MiB. Captured tabs are
+normalized to spaces and malformed UTF-8
 is repaired before completion events are dispatched. Completion events include
 `ok`, `status`, `stdout`, `stderr`, and `id`. With
 `stdout_format="json_lines"`, successful output is decoded into an ordered
@@ -154,7 +163,9 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 `models` owns selection state and an inline `/model` picker; providers own the
 catalogue entries. `agent` owns normalized conversation history, repeated user
 turns, provider correlation, parallel tool-result collection, and automatic
-continuation after tools. `provider.fake` keeps its state under
+continuation after tools. `tool.files` registers `read_file`, `write_file`, and
+`edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
+extensions and are not enabled by the harness. `provider.fake` keeps its state under
 `db.providers.fake`; `provider.command` adapts user executables.
 `provider.claude` invokes Claude Code's stream-JSON process protocol and reuses
 Claude's existing Pro/Max credentials without copying them into Misa. `ui` owns

@@ -17,6 +17,8 @@ pub const ids = [_][]const u8{
     "provider.openai",
     "provider.openai-codex",
     "provider.openrouter",
+    "tool.files",
+    "tool.shell",
     "ui",
 };
 
@@ -42,6 +44,8 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "provider.openai")) return "provider/openai.lua";
     if (std.mem.eql(u8, id, "provider.openai-codex")) return "provider/openai-codex.lua";
     if (std.mem.eql(u8, id, "provider.openrouter")) return "provider/openrouter.lua";
+    if (std.mem.eql(u8, id, "tool.files")) return "tool/files.lua";
+    if (std.mem.eql(u8, id, "tool.shell")) return "tool/shell.lua";
     if (std.mem.eql(u8, id, "ui")) return "ui.lua";
     return null;
 }
@@ -77,7 +81,9 @@ test "catalog accepts exact IDs only" {
     try std.testing.expect(catalogPath("provider") == null);
     try std.testing.expect(catalogPath("Agent") == null);
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
-    try std.testing.expectEqual(@as(usize, 13), ids.len);
+    try std.testing.expectEqualStrings("tool/files.lua", catalogPath("tool.files").?);
+    try std.testing.expectEqualStrings("tool/shell.lua", catalogPath("tool.shell").?);
+    try std.testing.expectEqual(@as(usize, 15), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {
