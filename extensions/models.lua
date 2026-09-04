@@ -73,12 +73,23 @@ return {
     misa.reg_event("models/replace-provider", function(db, event)
       assert(type(event.provider) == "string" and event.provider ~= "", "model provider must be nonempty")
       assert(type(event.models) == "table", "models must be an array")
-      local state, entries = assert(db.models, "model state is not initialized"), {}
-      for _, model in ipairs(state.entries) do if model.provider ~= event.provider then entries[#entries + 1] = model end end
+      local state, entries, seen = assert(db.models, "model state is not initialized"), {}, {}
+      for _, model in ipairs(state.entries) do
+        if model.provider ~= event.provider or model.id == state.selected then
+          entries[#entries + 1] = model
+          seen[model.id] = true
+        end
+      end
       for _, model in ipairs(event.models) do
         assert(type(model) == "table" and type(model.id) == "string" and model.id ~= "", "invalid discovered model")
         assert(type(model.model) == "string" and model.model ~= "", "invalid discovered model ID")
-        assert(model.context_window == nil or (type(model.context_window) == "number" and model.context_window > 0), "invalid context window")
+        assert(model.context_window == nil or (type(model.context_window) == "number" and model.context_window > 0 and model.context_window % 1 == 0), "invalid context window")
+        if seen[model.id] then
+          for i, existing in ipairs(entries) do
+            if existing.id == model.id then table.remove(entries, i); break end
+          end
+        end
+        seen[model.id] = true
         entries[#entries + 1] = {
           id = model.id, provider = event.provider, model = model.model,
           label = type(model.label) == "string" and model.label or model.id,
