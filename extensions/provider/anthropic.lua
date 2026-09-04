@@ -6,19 +6,24 @@ return {
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.anthropic or nil
     config = type(config) == "table" and config or {}
+    local models = config.models
+    if models == nil then
+      models = {}
+      local model_config = type(context.config) == "table" and context.config.models or nil
+      local default = type(model_config) == "table" and model_config.default or nil
+      local wire_model = type(default) == "string" and default:match("^anthropic/(.+)$") or nil
+      if wire_model then models[1] = { id = default, model = wire_model, label = wire_model } end
+    end
     misa.protocols.anthropic({
       id = "anthropic",
       credential = "anthropic",
       url = config.url or "https://api.anthropic.com/v1/messages",
       max_tokens = config.max_tokens,
-      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.anthropic.com/v1/models?limit=1000" or nil),
+      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.anthropic.com/v1/models" or nil),
+      discover_on_start = true,
+      catalogue_authoritative = true,
       model_filter = function(item) return item.id:match("^claude%-") ~= nil end,
-      models = config.models or {
-        { id = "anthropic/claude-fable-5-1", model = "claude-fable-5-1", label = "Claude Fable 5.1", context_window = 1000000 },
-        { id = "anthropic/claude-opus-5", model = "claude-opus-5", label = "Claude Opus 5", context_window = 1000000 },
-        { id = "anthropic/claude-sonnet-5", model = "claude-sonnet-5", label = "Claude Sonnet 5", context_window = 1000000 },
-        { id = "anthropic/claude-haiku-4-5-20251001", model = "claude-haiku-4-5-20251001", label = "Claude Haiku 4.5", context_window = 200000 },
-      },
+      models = models,
     })
   end,
 }

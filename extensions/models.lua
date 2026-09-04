@@ -92,7 +92,7 @@ return {
       assert(type(event.models) == "table", "models must be an array")
       local state, entries, seen = assert(db.models, "model state is not initialized"), {}, {}
       for _, model in ipairs(state.entries) do
-        if model.provider ~= event.provider or model.id == state.selected then
+        if model.provider ~= event.provider or (model.id == state.selected and event.authoritative ~= true) then
           entries[#entries + 1] = model
           seen[model.id] = true
         end

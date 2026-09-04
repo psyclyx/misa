@@ -189,9 +189,10 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 
 `models` owns selection state and an inline `/model` picker; providers own the
 catalogue entries. Opening the picker refreshes model catalogues from OpenAI,
-Anthropic, OpenRouter, and Kimi when their APIs support listing models, while
-retaining static fallbacks on authentication or network failure. OpenRouter's
-public catalogue needs no credential. Set a provider's `discover_models` to
+Anthropic, OpenRouter, and Kimi when their APIs support listing models. The
+Anthropic catalogue is loaded authoritatively from its paginated `GET
+/v1/models` response rather than maintained in Misa. OpenRouter's public
+catalogue needs no credential. Set a provider's `discover_models` to
 `false`, or provide an explicit `models` list, to keep a fixed catalogue. The editor discovers registered slash commands and argument candidates,
 displays matching descriptions, and cycles matches with Tab. Login commands
 automatically complete authentication providers contributed by enabled

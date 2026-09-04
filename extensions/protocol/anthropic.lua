@@ -59,19 +59,40 @@ function misa.protocols.anthropic(spec)
   end
 
   if spec.models_url then
-    misa.reg_event("model/open", function(_, event)
-      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
+    local completion = "provider/" .. spec.id .. "-models"
+    local function request(after_id)
+      local separator = spec.models_url:find("?", 1, true) and "&" or "?"
+      local url = spec.models_url .. separator .. "limit=1000"
+      if after_id then
+        assert(after_id:match("^[%w._:-]+$"), "invalid Anthropic model cursor")
+        url = url .. "&after_id=" .. after_id
+      end
       local headers = { { name = "anthropic-version", value = "2023-06-01" } }
       for _, header in ipairs(spec.model_headers or spec.headers or {}) do headers[#headers + 1] = header end
-      return { fx = { {
-        type = "http/request", method = "GET", url = spec.models_url, headers = headers,
+      return {
+        type = "http/request", method = "GET", url = url, headers = headers,
         credential = { id = spec.credential, header = spec.auth_header or "x-api-key", prefix = spec.auth_prefix or "" },
-        response_format = "json", completion = "provider/" .. spec.id .. "-models", id = "models-" .. spec.id,
-      } } }
+        response_format = "json", completion = completion, id = "models-" .. spec.id,
+      }
+    end
+    local function discover(db)
+      db.model_discovery = db.model_discovery or {}
+      db.model_discovery[spec.id] = {}
+      return { db = db, fx = { request(nil) } }
+    end
+    if spec.discover_on_start then misa.reg_event("app/start", discover) end
+    misa.reg_event("model/open", function(db, event)
+      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
+      return discover(db)
     end)
-    misa.reg_event("provider/" .. spec.id .. "-models", function(_, event)
-      if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then return end
-      local discovered = {}
+    misa.reg_event(completion, function(db, event)
+      if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then
+        if db.model_discovery then db.model_discovery[spec.id] = nil end
+        return { db = db }
+      end
+      db.model_discovery = db.model_discovery or {}
+      local discovered = db.model_discovery[spec.id] or {}
+      db.model_discovery[spec.id] = discovered
       for _, item in ipairs(event.data.data) do
         if type(item) == "table" and type(item.id) == "string" and (not spec.model_filter or spec.model_filter(item)) then
           discovered[#discovered + 1] = {
@@ -81,9 +102,18 @@ function misa.protocols.anthropic(spec)
           }
         end
       end
-      if #discovered == 0 then return end
+      if event.data.has_more == true then
+        local cursor = event.data.last_id
+        if type(cursor) ~= "string" or cursor == "" then
+          db.model_discovery[spec.id] = nil
+          return { db = db }
+        end
+        return { db = db, fx = { request(cursor) } }
+      end
+      db.model_discovery[spec.id] = nil
+      if #discovered == 0 then return { db = db } end
       table.sort(discovered, function(left, right) return left.id < right.id end)
-      return { fx = { { type = "dispatch", event = { type = "models/replace-provider", provider = spec.id, models = discovered } } } }
+      return { db = db, fx = { { type = "dispatch", event = { type = "models/replace-provider", provider = spec.id, models = discovered, authoritative = spec.catalogue_authoritative == true } } } }
     end)
   end
 

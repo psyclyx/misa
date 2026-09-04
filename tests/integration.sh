@@ -113,7 +113,7 @@ cat >"$work/dynamic-models.lua" <<'LUA'
 return {setup=function()
   misa.reg_model({id="dynamic/old",provider="dynamic",model="old",label="Old",context_window=10})
   misa.reg_event("app/start",function()
-    return {fx={{type="dispatch",event={type="models/replace-provider",provider="dynamic",models={{id="dynamic/old",model="new",label="New",context_window=20}}}}}}
+    return {fx={{type="dispatch",event={type="models/replace-provider",provider="dynamic",authoritative=true,models={{id="dynamic/new",model="new",label="New",context_window=20}}}}}}
   end)
   misa.reg_fx("provider.dynamic",function(effect)
     assert(effect.model=="new")
