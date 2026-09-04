@@ -106,6 +106,9 @@ end}
 LUA
 printf '{"extensions":["provider.fake","models","agent","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"call-1","name":"echo","arguments_json":"{\\\"value\\\":\\\"from tool\\\"}"}],"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
 [ "$(MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" use tool)" = 'after tool' ]
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"value":"from tool"}}}' |
+  MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" mcp >"$work/mcp-custom-output"
+grep -F '"text":"from tool"' "$work/mcp-custom-output" >/dev/null
 
 stage=native-tools
 cat >"$work/native-tools.json" <<JSON

@@ -62,6 +62,17 @@ fn callTool(allocator: std.mem.Allocator, io: std.Io, runtime: *lua.Runtime, req
         else => return writeToolResult(allocator, io, id, "tool translator returned invalid effect", true),
     };
     const kind = stringField(effect, "type") orelse return writeToolResult(allocator, io, id, "tool effect has no type", true);
+    if (std.mem.eql(u8, kind, "dispatch")) {
+        const event = objectField(effect, "event") orelse return writeToolResult(allocator, io, id, "dispatch effect has no event", true);
+        if (!std.mem.eql(u8, stringField(event, "type") orelse "", "tool/result"))
+            return writeToolResult(allocator, io, id, "tool dispatch did not produce a result", true);
+        const text = stringField(event, "text") orelse "";
+        const is_error = switch (event.get("is_error") orelse std.json.Value{ .bool = false }) {
+            .bool => |value| value,
+            else => true,
+        };
+        return writeToolResult(allocator, io, id, text, is_error);
+    }
     if (std.mem.startsWith(u8, kind, "file/")) {
         const spec = file.Spec.parse(kind, effect) catch |err| return writeToolResult(allocator, io, id, @errorName(err), true);
         const text = file.run(allocator, io, spec) catch |err| return writeToolResult(allocator, io, id, @errorName(err), true);
