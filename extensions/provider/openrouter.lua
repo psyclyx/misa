@@ -10,6 +10,8 @@ return {
       credential = "openrouter",
       url = config.url or "https://openrouter.ai/api/v1/chat/completions",
       max_tokens = config.max_tokens,
+      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://openrouter.ai/api/v1/models" or nil),
+      models_credential = false,
       headers = {
         { name = "http-referer", value = "https://github.com/psyclyx/misa" },
         { name = "x-title", value = "misa" },

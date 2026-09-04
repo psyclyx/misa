@@ -58,6 +58,34 @@ function misa.protocols.anthropic(spec)
     misa.reg_model({ id = model.id, provider = spec.id, model = model.model, label = model.label or model.id, context_window = model.context_window })
   end
 
+  if spec.models_url then
+    misa.reg_event("model/open", function()
+      local headers = { { name = "anthropic-version", value = "2023-06-01" } }
+      for _, header in ipairs(spec.model_headers or spec.headers or {}) do headers[#headers + 1] = header end
+      return { fx = { {
+        type = "http/request", method = "GET", url = spec.models_url, headers = headers,
+        credential = { id = spec.credential, header = spec.auth_header or "x-api-key", prefix = spec.auth_prefix or "" },
+        response_format = "json", completion = "provider/" .. spec.id .. "-models", id = "models-" .. spec.id,
+      } } }
+    end)
+    misa.reg_event("provider/" .. spec.id .. "-models", function(_, event)
+      if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then return end
+      local discovered = {}
+      for _, item in ipairs(event.data.data) do
+        if type(item) == "table" and type(item.id) == "string" and (not spec.model_filter or spec.model_filter(item)) then
+          discovered[#discovered + 1] = {
+            id = spec.id .. "/" .. item.id, model = item.id,
+            label = item.display_name or item.name or item.id,
+            context_window = item.context_window or item.context_length,
+          }
+        end
+      end
+      if #discovered == 0 then return end
+      table.sort(discovered, function(left, right) return left.id < right.id end)
+      return { fx = { { type = "dispatch", event = { type = "models/replace-provider", provider = spec.id, models = discovered } } } }
+    end)
+  end
+
   misa.reg_fx("provider." .. spec.id, function(effect)
     local body = {
       model = effect.model,

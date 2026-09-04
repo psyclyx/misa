@@ -94,7 +94,7 @@ pub const Result = struct {
     }
 };
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, store: *auth.Store, spec: Spec) !Result {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec) !Result {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     for (spec.headers) |value| {
@@ -104,11 +104,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, store: *auth.Store, spec: S
     var injected: ?[]u8 = null;
     defer if (injected) |value| allocator.free(value);
     if (spec.credential) |credential| {
-        const secret = try store.access(credential.id);
+        const secret = try (store orelse return error.CredentialStoreUnavailable).access(credential.id);
         injected = try std.mem.concat(allocator, u8, &.{ credential.prefix, secret });
         try headers.append(allocator, .{ .name = credential.header, .value = injected.? });
         if (credential.metadata_field) |field| {
-            const value = store.getField(credential.id, field) orelse return error.CredentialMetadataMissing;
+            const value = store.?.getField(credential.id, field) orelse return error.CredentialMetadataMissing;
             try headers.append(allocator, .{ .name = credential.metadata_header.?, .value = value });
         }
     }

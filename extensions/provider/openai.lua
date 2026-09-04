@@ -10,6 +10,10 @@ return {
       credential = "openai",
       url = config.url or "https://api.openai.com/v1/chat/completions",
       max_tokens = config.max_tokens,
+      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.openai.com/v1/models" or nil),
+      model_filter = function(item)
+        return item.id:match("^gpt%-") or item.id:match("^o[134]%-") or item.id:match("^o[134]$")
+      end,
       models = config.models or {
         { id = "openai/gpt-5.4", model = "gpt-5.4", label = "GPT-5.4", context_window = 1000000 },
         { id = "openai/gpt-5.4-mini", model = "gpt-5.4-mini", label = "GPT-5.4 Mini", context_window = 400000 },

@@ -16,12 +16,18 @@ local function content(value, label)
   return value
 end
 
+local function selected_model(db)
+  local state = assert(db.models, "model state is not initialized")
+  for _, model in ipairs(state.entries or {}) do if model.id == state.selected then return model end end
+  error("no model selected")
+end
+
 local function request(db)
   local agent = db.agent
   agent.request_seq = agent.request_seq + 1
   local id = "agent-" .. tostring(agent.request_seq)
   agent.active_request_id, agent.status = id, "working"
-  local selected = assert(db.models and misa.model(db.models.selected), "no model selected")
+  local selected = selected_model(db)
   return {
     type = "provider." .. selected.provider,
     id = id,

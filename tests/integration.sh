@@ -104,6 +104,22 @@ LUA
 printf '{"extensions":["ui","%s"]}' "$work/command-completion.lua" >"$work/command-completion.json"
 [ "$(printf '/p\t\n' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" = pong ]
 
+stage=dynamic-models
+cat >"$work/dynamic-models.lua" <<'LUA'
+return {setup=function()
+  misa.reg_model({id="dynamic/old",provider="dynamic",model="old",label="Old",context_window=10})
+  misa.reg_event("app/start",function()
+    return {fx={{type="dispatch",event={type="models/replace-provider",provider="dynamic",models={{id="dynamic/new",model="new",label="New",context_window=20}}}}}}
+  end)
+  misa.reg_fx("provider.dynamic",function(effect)
+    assert(effect.model=="new")
+    return {type="dispatch",event={type="agent/result",id=effect.id,content={{type="text",text="dynamic model"}}}}
+  end)
+end}
+LUA
+printf '{"extensions":["%s","models","agent","ui"],"config":{"models":{"default":"dynamic/old"}}}' "$work/dynamic-models.lua" >"$work/dynamic-models.json"
+[ "$(MISA_CONFIG="$work/dynamic-models.json" "$MISA_BIN" test)" = 'dynamic model' ]
+
 stage=agent-tool-loop
 # The agent executes normalized tool calls, records results, and asks the
 # provider to continue until it returns a final assistant message.

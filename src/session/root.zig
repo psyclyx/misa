@@ -242,11 +242,7 @@ pub const Session = struct {
     }
 
     fn runHttp(self: *Session, spec: http.Spec) !void {
-        const store = self.auth_store orelse {
-            try self.enqueueHttpError(spec, error.CredentialStoreUnavailable);
-            return;
-        };
-        const result = http.run(self.allocator, self.io, store, spec) catch |err| {
+        const result = http.run(self.allocator, self.io, self.auth_store, spec) catch |err| {
             try self.enqueueHttpError(spec, err);
             return;
         };

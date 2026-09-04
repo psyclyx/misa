@@ -10,6 +10,8 @@ return {
       credential = "anthropic",
       url = config.url or "https://api.anthropic.com/v1/messages",
       max_tokens = config.max_tokens,
+      models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.anthropic.com/v1/models" or nil),
+      model_filter = function(item) return item.id:match("^claude%-") ~= nil end,
       models = config.models or {
         { id = "anthropic/claude-opus-4-6", model = "claude-opus-4-6", label = "Claude Opus 4.6", context_window = 200000 },
         { id = "anthropic/claude-sonnet-4-6", model = "claude-sonnet-4-6", label = "Claude Sonnet 4.6", context_window = 200000 },

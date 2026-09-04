@@ -47,6 +47,32 @@ function misa.protocols.openai(spec)
     misa.reg_model({ id = model.id, provider = spec.id, model = model.model, label = model.label or model.id, context_window = model.context_window })
   end
 
+  if spec.models_url then
+    misa.reg_event("model/open", function()
+      local credential = spec.models_credential == false and nil or { id = spec.credential, header = "authorization", prefix = "Bearer " }
+      return { fx = { {
+        type = "http/request", method = "GET", url = spec.models_url,
+        headers = spec.model_headers or {}, credential = credential,
+        response_format = "json", completion = "provider/" .. spec.id .. "-models", id = "models-" .. spec.id,
+      } } }
+    end)
+    misa.reg_event("provider/" .. spec.id .. "-models", function(_, event)
+      if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then return end
+      local discovered = {}
+      for _, item in ipairs(event.data.data) do
+        if type(item) == "table" and type(item.id) == "string" and (not spec.model_filter or spec.model_filter(item)) then
+          discovered[#discovered + 1] = {
+            id = spec.id .. "/" .. item.id, model = item.id,
+            label = item.name or item.id, context_window = item.context_length or item.context_window,
+          }
+        end
+      end
+      if #discovered == 0 then return end
+      table.sort(discovered, function(left, right) return left.id < right.id end)
+      return { fx = { { type = "dispatch", event = { type = "models/replace-provider", provider = spec.id, models = discovered } } } }
+    end)
+  end
+
   misa.reg_fx("provider." .. spec.id, function(effect)
     local converted = messages(effect.messages)
     if effect.system_prompt then table.insert(converted, 1, { role = "system", content = effect.system_prompt }) end

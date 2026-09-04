@@ -183,7 +183,8 @@ return {
         { spans = { { text = "misa", style = "bold" }, { text = "  coding agent", style = "dim" } } },
       }
       local model_state = db.models or {}
-      local selected = model_state.selected and misa.model(model_state.selected) or nil
+      local selected = nil
+      for _, model in ipairs(model_state.entries or {}) do if model.id == model_state.selected then selected = model; break end end
       lines[#lines + 1] = { spans = {
         { text = "model  ", style = "dim" },
         { text = selected and (selected.label or selected.id) or "none", style = "accent" },
@@ -197,7 +198,7 @@ return {
         { text = context_window and (tostring(context_tokens) .. " / " .. tostring(context_window)) or tostring(context_tokens), style = "plain" },
       } }
       if model_state.picker then
-        local entries = misa.models()
+        local entries = model_state.entries or {}
         local room = math.max(1, cofx.terminal.lines - #lines)
         local first = math.max(1, math.min(model_state.index - math.floor(room / 2), #entries - room + 1))
         local last_index = math.min(#entries, first + room - 1)

@@ -176,7 +176,11 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 ## Standard extensions
 
 `models` owns selection state and an inline `/model` picker; providers own the
-catalogue entries. The editor discovers registered slash commands, displays
+catalogue entries. Opening the picker refreshes model catalogues from OpenAI,
+Anthropic, OpenRouter, and Kimi when their APIs support listing models, while
+retaining static fallbacks on authentication or network failure. OpenRouter's
+public catalogue needs no credential. Set a provider's `discover_models` to
+`false`, or provide an explicit `models` list, to keep a fixed catalogue. The editor discovers registered slash commands, displays
 matching descriptions, and cycles matches with Tab. Its live startup banner
 shows the selected model, cumulative session tokens, and latest context use.
 Interactive user and assistant messages are committed to scrollback as the
