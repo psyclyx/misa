@@ -12,19 +12,24 @@ pub const Spec = struct {
     credential: ?Credential,
     completion: []const u8,
     id: []const u8,
-    response_format: enum { text, json },
+    response_format: enum { text, json, sse_json },
 
     pub const Credential = struct {
         id: []const u8,
         header: []const u8,
         prefix: []const u8,
+        metadata_field: ?[]const u8,
+        metadata_header: ?[]const u8,
     };
 
     pub fn parse(object: std.json.ObjectMap) !Spec {
         const url = nonEmptyString(object, "url") orelse return error.InvalidEffect;
         if ((!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) or std.mem.indexOfScalar(u8, url, 0) != null)
             return error.InvalidEffect;
-        const method_name = optionalString(object, "method") orelse "POST";
+        const method_name = if (object.get("method")) |value| switch (value) {
+            .string => |string| string,
+            else => return error.InvalidEffect,
+        } else "POST";
         const method: std.http.Method = if (std.mem.eql(u8, method_name, "POST")) .POST else if (std.mem.eql(u8, method_name, "GET")) .GET else return error.InvalidEffect;
         const body = if (object.get("body")) |value| switch (value) {
             .string => |string| string,
@@ -53,12 +58,19 @@ pub const Spec = struct {
                 .id = nonEmptyString(item, "id") orelse return error.InvalidEffect,
                 .header = nonEmptyString(item, "header") orelse return error.InvalidEffect,
                 .prefix = stringField(item, "prefix") orelse "",
+                .metadata_field = stringField(item, "metadata_field"),
+                .metadata_header = stringField(item, "metadata_header"),
             };
+            if ((parsed.metadata_field == null) != (parsed.metadata_header == null)) return error.InvalidEffect;
             try validateHeader(parsed.header);
             try validateHeader(parsed.prefix);
+            if (parsed.metadata_header) |header| try validateHeader(header);
             break :blk parsed;
         } else null;
-        const response_format = optionalString(object, "response_format") orelse "text";
+        const response_format = if (object.get("response_format")) |value| switch (value) {
+            .string => |string| string,
+            else => return error.InvalidEffect,
+        } else "text";
         return .{
             .url = url,
             .method = method,
@@ -68,7 +80,7 @@ pub const Spec = struct {
             .credential = credential,
             .completion = nonEmptyString(object, "completion") orelse return error.InvalidEffect,
             .id = nonEmptyString(object, "id") orelse return error.InvalidEffect,
-            .response_format = if (std.mem.eql(u8, response_format, "text")) .text else if (std.mem.eql(u8, response_format, "json")) .json else return error.InvalidEffect,
+            .response_format = if (std.mem.eql(u8, response_format, "text")) .text else if (std.mem.eql(u8, response_format, "json")) .json else if (std.mem.eql(u8, response_format, "sse_json")) .sse_json else return error.InvalidEffect,
         };
     }
 };
@@ -82,7 +94,7 @@ pub const Result = struct {
     }
 };
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, store: *const auth.Store, spec: Spec) !Result {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, store: *auth.Store, spec: Spec) !Result {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     for (spec.headers) |value| {
@@ -92,9 +104,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, store: *const auth.Store, s
     var injected: ?[]u8 = null;
     defer if (injected) |value| allocator.free(value);
     if (spec.credential) |credential| {
-        const secret = store.get(credential.id) orelse return error.CredentialMissing;
+        const secret = try store.access(credential.id);
         injected = try std.mem.concat(allocator, u8, &.{ credential.prefix, secret });
         try headers.append(allocator, .{ .name = credential.header, .value = injected.? });
+        if (credential.metadata_field) |field| {
+            const value = store.getField(credential.id, field) orelse return error.CredentialMetadataMissing;
+            try headers.append(allocator, .{ .name = credential.metadata_header.?, .value = value });
+        }
     }
 
     const encoded = if (spec.json) |json| try std.json.Stringify.valueAlloc(allocator, json, .{}) else null;
@@ -121,10 +137,6 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, store: *const auth.Store, s
 
 fn validateHeader(value: []const u8) !void {
     if (std.mem.indexOfAny(u8, value, "\r\n\x00") != null) return error.InvalidEffect;
-}
-
-fn optionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
-    return stringField(object, name);
 }
 
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {

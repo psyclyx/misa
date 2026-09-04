@@ -72,12 +72,19 @@ return {
           local tool = misa.tool(block.name)
           if tool then
             assert(not agent.pending_tools[block.id], "duplicate tool call id")
-            agent.pending_tools[block.id] = true
+            agent.pending_tools[block.id] = { name = block.name, request_id = event.id }
             agent.pending_tool_count = agent.pending_tool_count + 1
-            effects[#effects + 1] = {
-              type = tool.effect, request_id = event.id, tool_call_id = block.id,
-              name = block.name, arguments = block.arguments, arguments_json = block.arguments_json,
-            }
+            if block.arguments_json then
+              effects[#effects + 1] = {
+                type = "json/decode", source = block.arguments_json,
+                completion = "agent/tool-arguments", id = block.id,
+              }
+            else
+              effects[#effects + 1] = {
+                type = tool.effect, request_id = event.id, tool_call_id = block.id,
+                name = block.name, arguments = block.arguments,
+              }
+            end
           else
             agent.messages[#agent.messages + 1] = tool_result(block.id, "unknown tool: " .. block.name, true)
           end
@@ -91,6 +98,22 @@ return {
         agent.status = "ready"
       end
       return { db = db, fx = effects }
+    end)
+
+    misa.reg_event("agent/tool-arguments", function(db, event)
+      local agent = db.agent
+      local pending = agent and agent.pending_tools[event.id]
+      assert(pending, "unexpected decoded tool arguments")
+      if not event.ok or type(event.data) ~= "table" then
+        return { fx = { { type = "dispatch", event = {
+          type = "tool/result", tool_call_id = event.id, text = event.message or "invalid tool arguments", is_error = true,
+        } } } }
+      end
+      local tool = assert(misa.tool(pending.name), "tool disappeared")
+      return { fx = { {
+        type = tool.effect, request_id = pending.request_id, tool_call_id = event.id,
+        name = pending.name, arguments = event.data,
+      } } }
     end)
 
     misa.reg_event("tool/result", function(db, event)

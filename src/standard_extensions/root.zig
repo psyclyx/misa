@@ -15,6 +15,7 @@ pub const ids = [_][]const u8{
     "provider.kimi",
     "protocol.openai",
     "provider.openai",
+    "provider.openai-codex",
     "provider.openrouter",
     "ui",
 };
@@ -39,6 +40,7 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "provider.kimi")) return "provider/kimi.lua";
     if (std.mem.eql(u8, id, "protocol.openai")) return "protocol/openai.lua";
     if (std.mem.eql(u8, id, "provider.openai")) return "provider/openai.lua";
+    if (std.mem.eql(u8, id, "provider.openai-codex")) return "provider/openai-codex.lua";
     if (std.mem.eql(u8, id, "provider.openrouter")) return "provider/openrouter.lua";
     if (std.mem.eql(u8, id, "ui")) return "ui.lua";
     return null;
@@ -70,11 +72,12 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("provider/kimi.lua", catalogPath("provider.kimi").?);
     try std.testing.expectEqualStrings("protocol/openai.lua", catalogPath("protocol.openai").?);
     try std.testing.expectEqualStrings("provider/openai.lua", catalogPath("provider.openai").?);
+    try std.testing.expectEqualStrings("provider/openai-codex.lua", catalogPath("provider.openai-codex").?);
     try std.testing.expectEqualStrings("provider/openrouter.lua", catalogPath("provider.openrouter").?);
     try std.testing.expect(catalogPath("provider") == null);
     try std.testing.expect(catalogPath("Agent") == null);
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
-    try std.testing.expectEqual(@as(usize, 12), ids.len);
+    try std.testing.expectEqual(@as(usize, 13), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {

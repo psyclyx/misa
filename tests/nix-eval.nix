@@ -49,6 +49,7 @@ assert
     providerKimi = "provider.kimi";
     protocolOpenAI = "protocol.openai";
     providerOpenAI = "provider.openai";
+    providerOpenAICodex = "provider.openai-codex";
     providerOpenRouter = "provider.openrouter";
     ui = "ui";
   };
@@ -81,6 +82,7 @@ assert builtins.pathExists ../extensions/provider/anthropic.lua;
 assert builtins.pathExists ../extensions/provider/kimi.lua;
 assert builtins.pathExists ../extensions/protocol/openai.lua;
 assert builtins.pathExists ../extensions/provider/openai.lua;
+assert builtins.pathExists ../extensions/provider/openai-codex.lua;
 assert builtins.pathExists ../extensions/provider/openrouter.lua;
 assert builtins.pathExists ../extensions/ui.lua;
 # Instantiate both the package and configured wrapper without recursively

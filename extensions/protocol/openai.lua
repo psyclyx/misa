@@ -48,7 +48,9 @@ function misa.protocols.openai(spec)
   end
 
   misa.reg_fx("provider." .. spec.id, function(effect)
-    local body = { model = effect.model, messages = messages(effect.messages) }
+    local converted = messages(effect.messages)
+    if effect.system_prompt then table.insert(converted, 1, { role = "system", content = effect.system_prompt }) end
+    local body = { model = effect.model, messages = converted }
     local definitions = tools(effect.tools)
     if #definitions > 0 then body.tools = definitions end
     if spec.max_tokens then body.max_completion_tokens = spec.max_tokens end

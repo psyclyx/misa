@@ -10,12 +10,20 @@ printf '{}' >"$work/empty.json"
 
 # Explicit API-key login writes only the XDG credential store with restrictive
 # permissions; secrets never enter the ordinary config.
-printf 'test-secret\n' | MISA_AUTH_FILE="$work/auth/auth.json" "$MISA_BIN" login openai 2>"$work/login-output"
+printf 'test-secret\n' | env -u MISA_AUTH_FILE XDG_STATE_HOME="$work/state" "$MISA_BIN" login openai 2>"$work/login-output"
 grep -F 'saved openai credential' "$work/login-output" >/dev/null
 ! grep -F 'test-secret' "$work/login-output" >/dev/null
-[ "$(stat -c %a "$work/auth")" = 700 ]
-[ "$(stat -c %a "$work/auth/auth.json")" = 600 ]
-grep -F 'test-secret' "$work/auth/auth.json" >/dev/null
+[ "$(stat -c %a "$work/state/misa")" = 700 ]
+[ "$(stat -c %a "$work/state/misa/auth.json")" = 600 ]
+grep -F 'test-secret' "$work/state/misa/auth.json" >/dev/null
+mkdir "$work/bin"
+cat >"$work/bin/claude" <<'SH'
+#!/bin/sh
+[ "$1 $2" = "auth login" ]
+SH
+chmod +x "$work/bin/claude"
+PATH="$work/bin:$PATH" "$MISA_BIN" login claude
+[ ! -e "$work/session-auth.json" ]
 
 # Terminal/process ownership stays native while ordinary Lua composition and
 # source loading remain available; decoded null retains its sentinel.
@@ -81,8 +89,8 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["provider.fake","models","agent","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"call-1","name":"echo","arguments":{"value":"from tool"}}],"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
-[ "$(MISA_AUTH_FILE="$work/auth/auth.json" MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" use tool)" = 'after tool' ]
+printf '{"extensions":["provider.fake","models","agent","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"call-1","name":"echo","arguments_json":"{\\\"value\\\":\\\"from tool\\\"}"}],"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
+[ "$(MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" use tool)" = 'after tool' ]
 
 # Completion does not depend on ui being registered after agent/provider.
 cat >"$work/ui-first.json" <<'EOF'

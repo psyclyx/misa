@@ -6,6 +6,8 @@ const lua = @import("misa_lua_runtime");
 const terminal_module = @import("misa_terminal");
 const process = @import("process.zig");
 
+const JsonDecode = struct { source: []const u8, completion: []const u8, id: []const u8 };
+
 const NativeEffect = union(enum) {
     dispatch: std.json.Value,
     terminal_read,
@@ -13,6 +15,7 @@ const NativeEffect = union(enum) {
     app_quit,
     process_run: process.Spec,
     http_request: http.Spec,
+    json_decode: JsonDecode,
 
     fn parse(value: std.json.Value) !NativeEffect {
         const object = switch (value) {
@@ -38,6 +41,11 @@ const NativeEffect = union(enum) {
         if (std.mem.eql(u8, kind, "app/quit")) return .app_quit;
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
         if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
+        if (std.mem.eql(u8, kind, "json/decode")) return .{ .json_decode = .{
+            .source = stringField(object, "source") orelse return error.InvalidEffect,
+            .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+            .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+        } };
         return error.UnknownNativeEffect;
     }
 };
@@ -47,7 +55,7 @@ pub const Session = struct {
     io: std.Io,
     runtime: *lua.Runtime,
     terminal: *terminal_module.Terminal,
-    auth_store: *const auth.Store,
+    auth_store: ?*auth.Store,
     queue: std.ArrayList([]u8) = .empty,
     queue_head: usize = 0,
     running: bool = false,
@@ -124,6 +132,7 @@ pub const Session = struct {
             .app_quit => self.quit = true,
             .process_run => |spec| try self.runProcess(spec),
             .http_request => |spec| try self.runHttp(spec),
+            .json_decode => |spec| try self.decodeJson(spec),
         }
     }
 
@@ -169,23 +178,45 @@ pub const Session = struct {
         }
     }
 
-    fn runHttp(self: *Session, spec: http.Spec) !void {
-        const result = http.run(self.allocator, self.io, self.auth_store, spec) catch |err| {
+    fn decodeJson(self: *Session, spec: JsonDecode) !void {
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, spec.source, .{ .allocate = .alloc_always }) catch {
             const event = try std.json.Stringify.valueAlloc(self.allocator, .{
                 .type = spec.completion,
                 .id = spec.id,
                 .ok = false,
-                .status = @as(u16, 0),
-                .body = "",
-                .message = @errorName(err),
+                .message = "invalid JSON",
             }, .{});
             defer self.allocator.free(event);
             try self.enqueue(event);
             return;
         };
+        defer parsed.deinit();
+        const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .type = spec.completion,
+            .id = spec.id,
+            .ok = true,
+            .data = parsed.value,
+        }, .{});
+        defer self.allocator.free(event);
+        try self.enqueue(event);
+    }
+
+    fn runHttp(self: *Session, spec: http.Spec) !void {
+        const store = self.auth_store orelse {
+            try self.enqueueHttpError(spec, error.CredentialStoreUnavailable);
+            return;
+        };
+        const result = http.run(self.allocator, self.io, store, spec) catch |err| {
+            try self.enqueueHttpError(spec, err);
+            return;
+        };
         defer result.deinit(self.allocator);
-        if (spec.response_format == .json and result.status >= 200 and result.status < 300) {
-            var data = std.json.parseFromSlice(std.json.Value, self.allocator, result.body, .{ .allocate = .alloc_always }) catch {
+        if (spec.response_format != .text and result.status >= 200 and result.status < 300) {
+            var data = (switch (spec.response_format) {
+                .json => std.json.parseFromSlice(std.json.Value, self.allocator, result.body, .{ .allocate = .alloc_always }),
+                .sse_json => parseSseJson(self.allocator, result.body),
+                .text => unreachable,
+            }) catch {
                 const event = try std.json.Stringify.valueAlloc(self.allocator, .{
                     .type = spec.completion,
                     .id = spec.id,
@@ -221,6 +252,19 @@ pub const Session = struct {
         }
     }
 
+    fn enqueueHttpError(self: *Session, spec: http.Spec, err: anyerror) !void {
+        const event = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .type = spec.completion,
+            .id = spec.id,
+            .ok = false,
+            .status = @as(u16, 0),
+            .body = "",
+            .message = @errorName(err),
+        }, .{});
+        defer self.allocator.free(event);
+        try self.enqueue(event);
+    }
+
     fn enqueueInput(self: *Session, event: terminal_module.Event) !void {
         const json = switch (event) {
             .text => |text| try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "terminal/input", .kind = "text", .text = text }, .{}),
@@ -238,6 +282,25 @@ pub const Session = struct {
         try self.enqueue(json);
     }
 };
+fn parseSseJson(allocator: std.mem.Allocator, source: []const u8) !std.json.Parsed(std.json.Value) {
+    var document: std.ArrayList(u8) = .empty;
+    defer document.deinit(allocator);
+    try document.append(allocator, '[');
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    var first = true;
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "data:")) continue;
+        const data = std.mem.trimStart(u8, line[5..], " \t");
+        if (data.len == 0 or std.mem.eql(u8, data, "[DONE]")) continue;
+        if (!first) try document.append(allocator, ',');
+        first = false;
+        try document.appendSlice(allocator, data);
+    }
+    try document.append(allocator, ']');
+    return std.json.parseFromSlice(std.json.Value, allocator, document.items, .{ .allocate = .alloc_always });
+}
+
 fn parseJsonLines(allocator: std.mem.Allocator, source: []const u8) !std.json.Parsed(std.json.Value) {
     var document: std.ArrayList(u8) = .empty;
     defer document.deinit(allocator);
@@ -259,13 +322,24 @@ fn inputJson(allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, .{ .type = "terminal/input", .kind = kind }, .{});
 }
 
-fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
-    const string = switch (value) {
+    return switch (value) {
         .string => |item| item,
-        else => return null,
+        else => null,
     };
+}
+
+fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const string = stringField(object, name) orelse return null;
     return if (string.len != 0 and std.mem.indexOfScalar(u8, string, 0) == null) string else null;
+}
+
+test "SSE data records become one owned array" {
+    var parsed = try parseSseJson(std.testing.allocator, "event: update\ndata: {\"type\":\"delta\"}\n\ndata: [DONE]\n");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
+    try std.testing.expectEqualStrings("delta", parsed.value.array.items[0].object.get("type").?.string);
 }
 
 test "JSON lines become one owned array" {

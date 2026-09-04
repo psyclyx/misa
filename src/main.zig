@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
     while (args_iterator.next()) |arg| try argv.append(allocator, arg);
 
     if (argv.items.len > 1 and std.mem.eql(u8, argv.items[1], "login")) {
-        if (argv.items.len != 3) fatal("usage: misa login <openai|anthropic|openrouter|kimi-coding|claude>");
+        if (argv.items.len != 3) fatal("usage: misa login <openai|openai-codex|anthropic|openrouter|kimi-coding|claude>");
         try login(init, allocator, argv.items[2]);
         return;
     }
@@ -113,14 +113,14 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
         .columns = terminal.dimensions.columns,
         .lines = terminal.dimensions.lines,
     });
-    var auth_store = try auth.Store.init(allocator, init.io, init.environ_map);
-    defer auth_store.deinit();
+    var auth_store: ?auth.Store = auth.Store.init(allocator, init.io, init.environ_map) catch null;
+    defer if (auth_store) |*store| store.deinit();
     var session: session_module.Session = .{
         .allocator = allocator,
         .io = init.io,
         .runtime = runtime,
         .terminal = &terminal,
-        .auth_store = &auth_store,
+        .auth_store = if (auth_store) |*store| store else null,
     };
     defer session.deinit();
     try session.run();
@@ -134,14 +134,29 @@ fn login(init: std.process.Init, allocator: std.mem.Allocator, provider: []const
         if (term != .exited or term.exited != 0) return error.ClaudeLoginFailed;
         return;
     }
-    const known = std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "anthropic") or
-        std.mem.eql(u8, provider, "openrouter") or std.mem.eql(u8, provider, "kimi-coding");
-    if (!known) fatal("unknown login provider");
     var store = try auth.Store.init(allocator, init.io, init.environ_map);
     defer store.deinit();
-    const secret = try auth.readSecret(allocator, init.io, "API key: ");
-    defer allocator.free(secret);
-    try store.put(provider, secret);
+    if (std.mem.eql(u8, provider, "openai-codex") or std.mem.eql(u8, provider, "kimi-coding")) {
+        const credential = if (std.mem.eql(u8, provider, "openai-codex"))
+            try auth.oauth.loginOpenAI(allocator, init.io)
+        else
+            try auth.oauth.loginKimi(allocator, init.io);
+        defer credential.deinit(allocator);
+        try store.putOAuth(provider, credential.access, credential.refresh, credential.expires, credential.account_id);
+    } else if (std.mem.eql(u8, provider, "openrouter")) {
+        const authorization = try auth.oauth.startOpenRouter(allocator, init.io);
+        defer authorization.deinit(allocator);
+        std.debug.print("Open this URL:\n{s}\n", .{authorization.url});
+        const input = try auth.readSecret(allocator, init.io, "Paste the authorization code or redirect URL: ");
+        defer allocator.free(input);
+        const credential = try auth.oauth.finishOpenRouter(allocator, init.io, authorization.verifier, input);
+        defer credential.deinit(allocator);
+        try store.putOAuth(provider, credential.access, credential.refresh, credential.expires, credential.account_id);
+    } else if (std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "anthropic")) {
+        const secret = try auth.readSecret(allocator, init.io, "API key: ");
+        defer allocator.free(secret);
+        try store.put(provider, secret);
+    } else fatal("unknown login provider");
     std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
 }
 

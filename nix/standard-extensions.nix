@@ -9,6 +9,7 @@
   providerKimi = "provider.kimi";
   protocolOpenAI = "protocol.openai";
   providerOpenAI = "provider.openai";
+  providerOpenAICodex = "provider.openai-codex";
   providerOpenRouter = "provider.openrouter";
   ui = "ui";
 }
