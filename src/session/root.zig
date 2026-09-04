@@ -78,8 +78,12 @@ pub const Session = struct {
             // before committing policy state. Validation/presentation failures
             // leave canonical Lua db unchanged. After commit, effect I/O is
             // fatal on failure and cannot in general be rolled back.
-            if (view != .null) try self.terminal.validatePresentation(view);
-            if (view != .null) try self.terminal.present(view);
+            var presentation: ?terminal_module.PreparedPresentation = if (view != .null)
+                try self.terminal.preparePresentation(view)
+            else
+                null;
+            defer if (presentation) |*prepared| prepared.deinit(self.allocator);
+            if (presentation) |*prepared| try self.terminal.present(prepared);
             try self.runtime.commitTransaction();
             for (effects.items) |effect| try self.execute(effect);
             self.compactQueue();
@@ -161,10 +165,6 @@ pub const Session = struct {
         try self.enqueue(json);
     }
 };
-pub fn validateEffect(value: std.json.Value) !void {
-    _ = try NativeEffect.parse(value);
-}
-
 fn inputJson(allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, .{ .type = "terminal/input", .kind = kind }, .{});
 }
@@ -181,11 +181,11 @@ fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8
 test "effect validation covers the whole native contract" {
     var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\",\"arg\"],\"completion\":\"done\",\"id\":\"1\"}", .{});
     defer valid.deinit();
-    try validateEffect(valid.value);
+    _ = try NativeEffect.parse(valid.value);
     var invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\"],\"completion\":\"\",\"id\":\"\"}", .{});
     defer invalid.deinit();
-    try std.testing.expectError(error.InvalidEffect, validateEffect(invalid.value));
+    try std.testing.expectError(error.InvalidEffect, NativeEffect.parse(invalid.value));
     var bad_view = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"view/commit\",\"lines\":[{\"spans\":[{\"text\":\"bad\\n\"}]}]}", .{});
     defer bad_view.deinit();
-    try std.testing.expectError(error.InvalidView, validateEffect(bad_view.value));
+    try std.testing.expectError(error.InvalidView, NativeEffect.parse(bad_view.value));
 }

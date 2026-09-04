@@ -118,6 +118,12 @@ pub const Runtime = struct {
         }
         self.pop(1);
         self.assertStack(0);
+        for (self.extensions.items) |extension| {
+            c.luaL_unref(self.state, c.LUA_REGISTRYINDEX, extension.ref);
+            self.allocator.free(extension.path);
+        }
+        self.extensions.deinit(self.allocator);
+        self.extensions = .empty;
     }
 
     pub fn setTerminalInfo(self: *Runtime, info: TerminalInfo) void {

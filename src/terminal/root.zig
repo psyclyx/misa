@@ -14,6 +14,16 @@ const cursorRow = presenter.cursorRow;
 
 pub const Dimensions = struct { columns: usize = 80, lines: usize = 24 };
 
+pub const PreparedPresentation = struct {
+    bytes: std.ArrayList(u8) = .empty,
+    rows: usize,
+    cursor_row: usize,
+
+    pub fn deinit(self: *PreparedPresentation, allocator: std.mem.Allocator) void {
+        self.bytes.deinit(allocator);
+    }
+};
+
 const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM };
 const SignalState = struct {
     active: bool = false,
@@ -107,28 +117,22 @@ pub const Terminal = struct {
         self.decoder.deinit(self.allocator);
     }
 
-    /// Validate with this terminal's real width and presentation mode. Session
-    /// transactions call this before committing their pending Lua state.
-    pub fn validatePresentation(self: *const Terminal, view: std.json.Value) !void {
-        var sink: std.ArrayList(u8) = .empty;
-        defer sink.deinit(self.allocator);
-        _ = try self.appendPresentation(&sink, view);
+    /// Validate and render once. The session can then write the exact prepared
+    /// bytes before committing Lua state without paying for a second render.
+    pub fn preparePresentation(self: *const Terminal, view: std.json.Value) !PreparedPresentation {
+        var prepared: PreparedPresentation = .{ .rows = 0, .cursor_row = 0 };
+        errdefer prepared.deinit(self.allocator);
+        if (self.interactive) try appendErase(&prepared.bytes, self.allocator, self.live_rows, self.live_cursor_row);
+        prepared.rows = try appendView(&prepared.bytes, self.allocator, view, self.dimensions.columns, self.dimensions.lines, self.interactive, false);
+        prepared.cursor_row = try cursorRow(view, prepared.rows);
+        return prepared;
     }
 
-    pub fn present(self: *Terminal, view: std.json.Value) !void {
-        var buffer: std.ArrayList(u8) = .empty;
-        defer buffer.deinit(self.allocator);
-        if (self.interactive) try appendErase(&buffer, self.allocator, self.live_rows, self.live_cursor_row);
-        const new_rows = try self.appendPresentation(&buffer, view);
+    pub fn present(self: *Terminal, prepared: *const PreparedPresentation) !void {
         if (!self.interactive) return;
-        const new_cursor_row = try cursorRow(view, new_rows);
-        try self.writeAll(buffer.items);
-        self.live_rows = new_rows;
-        self.live_cursor_row = new_cursor_row;
-    }
-
-    fn appendPresentation(self: *const Terminal, out: *std.ArrayList(u8), view: std.json.Value) !usize {
-        return appendView(out, self.allocator, view, self.dimensions.columns, self.dimensions.lines, self.interactive, false);
+        try self.writeAll(prepared.bytes.items);
+        self.live_rows = prepared.rows;
+        self.live_cursor_row = prepared.cursor_row;
     }
 
     pub fn commit(self: *Terminal, lines: std.json.Value) !void {
@@ -212,18 +216,20 @@ test "terminal presentation validation uses instance width and cursor limit" {
     };
     var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"abcdefghijklmnopq\"}]}],\"cursor\":{\"row\":1,\"byte\":15}}", .{});
     defer valid.deinit();
-    try narrow.validatePresentation(valid.value);
+    var prepared = try narrow.preparePresentation(valid.value);
+    prepared.deinit(std.testing.allocator);
 
     var invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"x\"}]}],\"cursor\":{\"row\":1,\"column\":1}}", .{});
     defer invalid.deinit();
-    try std.testing.expectError(error.InvalidView, narrow.validatePresentation(invalid.value));
+    try std.testing.expectError(error.InvalidView, narrow.preparePresentation(invalid.value));
     var past_row = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"x\"}]}],\"cursor\":{\"row\":2,\"byte\":0}}", .{});
     defer past_row.deinit();
-    try std.testing.expectError(error.InvalidView, narrow.validatePresentation(past_row.value));
+    try std.testing.expectError(error.InvalidView, narrow.preparePresentation(past_row.value));
 
     narrow.interactive = false;
     narrow.dimensions.columns = 3;
     var plain_limit = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"unclipped in plain mode\"}]}],\"cursor\":{\"row\":1,\"byte\":2}}", .{});
     defer plain_limit.deinit();
-    try narrow.validatePresentation(plain_limit.value);
+    prepared = try narrow.preparePresentation(plain_limit.value);
+    prepared.deinit(std.testing.allocator);
 }
