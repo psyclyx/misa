@@ -1,48 +1,16 @@
 # misa
 
-misa is a small coding-agent harness built with Zig 0.16 and system LuaJIT. The
-core supplies ordered extension loading and composition. It has **no extensions
-enabled by default**: `{}` is valid and silent.
+misa is a small event-driven coding-agent harness built with Zig 0.16 and
+system LuaJIT. The TUI uses only the Zig standard library. LuaJIT is the sole
+non-stdlib application dependency.
 
-The distribution includes three optional standard extensions:
-
-| ID                 | Installed file         | Purpose                         |
-| ------------------ | ---------------------- | ------------------------------- |
-| `agent`            | `agent.lua`            | one-shot agent                  |
-| `provider.fake`    | `provider/fake.lua`    | deterministic response provider |
-| `provider.command` | `provider/command.lua` | trusted local command provider  |
-
-These remain extensions, not a second plugin system. Select standard extensions
-by exact bare ID in the existing ordered `extensions` list. An entry containing
-`/`, or ending in `.lua`, is a literal custom path and is left unchanged. Any
-other bare value is an unknown-ID configuration error.
-
-## Build and run
-
-LuaJIT development headers and `pkg-config` must be available.
-
-```sh
-zig build
-zig build test
-zig build test-nix # explicit Nix evaluation suite; requires Nix
-zig build -Doptimize=ReleaseSafe
-zig build run -- --config config/default.json hello
-```
-
-`zig build` installs the complete `extensions/` tree under
-`share/misa/extensions`. Bare IDs resolve first under `MISA_EXTENSION_DIR`, when
-set, and otherwise under `../share/misa/extensions` relative to the running
-executable. `zig build run` and source-layout integration tests set
-`MISA_EXTENSION_DIR` to the source tree. `zig build test` also installs into its
-build prefix and automatically verifies executable-relative lookup with the
-override unset. Literal paths are interpreted by LuaJIT from misa's working
-directory.
-
-A configuration path is mandatory through `--config PATH` or `MISA_CONFIG`:
+No extensions are enabled implicitly: `{}` is valid and produces no output.
+The shipped extensions are `provider.fake`, `provider.command`, `agent`, and
+`ui`. Select them, in setup order, through the one `extensions` list:
 
 ```json
 {
-  "extensions": ["provider.fake", "agent", "./local/report.lua"],
+  "extensions": ["provider.fake", "agent", "ui"],
   "config": {
     "agent": { "provider": "fake" },
     "providers": { "fake": { "responses": ["hello\n"] } }
@@ -50,131 +18,146 @@ A configuration path is mandatory through `--config PATH` or `MISA_CONFIG`:
 }
 ```
 
-Both fields may be omitted, defaulting to `[]` and `{}`. `extensions` order is
-preserved. misa consumes at most one `--config PATH` before a `--` terminator.
-All other arguments are forwarded unchanged; arguments after `--` are always
-forwarded, even if named `--config`.
-
-The checked-in `config/default.json` explicitly selects `provider.fake` and
-`agent`; it is an exact smoke-test example, not a default imposed by misa.
-
-## Extension API
-
-Every script returns a table with optional `setup(context)` and `run(context)`
-functions. All setup callbacks run in extension order, then all run callbacks.
-An error stops execution. Context contains:
-
-- `config`: the decoded free-form JSON value;
-- `config_json`: the same value serialized as JSON, retained for compatibility;
-- `argv`: forwarded arguments, indexed from 1;
-- `misa`: the global composition API.
-
-JSON objects, arrays, strings, booleans, integers, floats, and null are converted
-recursively. Every JSON null, including nested nulls, is the stable
-`misa.json_null` singleton. LuaJIT numbers are doubles, so large JSON integers
-can lose precision. Lua tables also cannot intrinsically distinguish an empty
-JSON array from an empty object after decoding; use `config_json` if either
-distinction matters. Conversion is limited to 128 nested array/object levels;
-deeper configuration is rejected during LuaJIT initialization rather than
-risking native or Lua stack exhaustion.
-
-```lua
-misa.register("event-name", function(value) return value end)
-local count = misa.handler_count("event-name")
-local results = misa.call("event-name", value)
+```sh
+zig build
+zig build test
+zig build test-nix
+zig build -Doptimize=ReleaseSafe
+zig build run -- --config config/default.json hello
 ```
 
-Handlers run in registration order. Results have an `n` handler count; nil
-results leave holes, so iterate `1` through `results.n` rather than using `#` or
-`ipairs` when nil is possible.
+A configuration path is required via `--config PATH` or `MISA_CONFIG`.
+Arguments not consumed by that option are exposed as `cofx.argv`. Bare standard IDs use `MISA_EXTENSION_DIR` when set, otherwise the absolute
+`share/misa/extensions` path compiled from `zig build --prefix`. Relocated or
+copied binaries must set `MISA_EXTENSION_DIR`; misa never discovers its own
+executable path. Values containing `/` or ending in `.lua` are literal custom
+paths.
 
-## Standard extension contracts
+## Event, coeffect, effect, and view contract
 
-### `agent`
+An extension returns `{ setup = function(context) ... end }`. There is no `run`
+phase. Setup may register:
 
-The one-shot agent requires `config.agent.provider` and at least one forwarded
-prompt argument. It joins prompt arguments with spaces, optionally includes the
-string `config.agent.system_prompt`, and calls exactly one
-`provider.<id>.complete` handler with a request table. The handler must return
-`{ text = string }`; the agent prints that text, adding a trailing newline only
-when the response lacks one, and exits. There is no tool loop.
+- `misa.reg_event(type, handler)`: handlers run in registration order and thread
+  canonical Lua `db`. A handler receives `(db, event, cofx)` and returns nil or
+  `{db=<table>, fx=<ordered array>}`.
+- `misa.reg_interceptor({id=..., before=fn?, after=fn?})`: before callbacks run
+  in registration order and after callbacks in reverse. They receive and may
+  return `{db,event,cofx,fx}`.
+- `misa.reg_cofx(name, fn)`: derives a policy value. Derivations run in
+  registration order; a later derivation may read values installed by earlier
+  ones. Base coeffects always include `config`, `config_json`, `argv`, and
+  `terminal={interactive=<bool>,columns=<integer>,lines=<integer>}`. These four
+  names are reserved and are fresh bounded deep clones for every transaction.
+- `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
+  or an ordered array of native effects.
+- `misa.reg_view(fn)`: registers exactly one semantic projection.
 
-### `provider.fake`
+Each setup callback receives its own bounded deep clone of setup context, so
+mutation cannot affect a later extension. Registrations are sealed after all
+setup callbacks. Recursive dispatch is not available. Every transaction is
+protected by a traceback handler. Extensions
+must not write or render; Lua output APIs and all dynamic loaders (`load`,
+`loadstring`, `loadfile`, and `dofile`) are unavailable.
 
-This registers `provider.fake.complete`. Each call returns the next string from
-`config.providers.fake.responses`; exhausting the configured responses is an
-error. It is intended for deterministic examples and tests.
+The fixed native effects are:
 
-### `provider.command`
+- `{type="dispatch", event=<table>}`
+- `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>}`
+- `{type="terminal/read"}`
+- `{type="view/commit", lines=<semantic lines>}`
+- `{type="app/quit"}`
 
-This registers `provider.command.complete` and requires a nonempty array of
-nonempty, NUL-free strings at `config.providers.command.argv`. It rigorously
-POSIX-shell quotes every configured argument and appends the request prompt as
-one final, quoted argument. It captures `io.popen` stdout and reports both read
-and close failures.
+Unknown native effects fail the session. `process/run` invokes direct argv,
+never a shell, captures stdout and stderr with 1 MiB bounds, and never inherits
+the terminal output. Captured tabs are normalized to spaces and malformed UTF-8
+is repaired before completion events are dispatched. Completion events include
+`ok`, `status`, `stdout`, `stderr`, and `id`.
 
-The configured executable and its environment are trusted. This provider does
-not create a security boundary and should not run untrusted commands. It has no
-HTTP transport or native process abstraction.
+A view is modest semantic data:
+
+```lua
+{
+  lines = {
+    { spans = { { text = "working", style = "dim" } } }
+  },
+  cursor = { row = 1, byte = 0 } -- or {row=1,column=1}, or nil
+}
+```
+
+Styles are `plain`, `dim`, `bold`, `accent`, `user`, `assistant`, and `error`.
+Text must be valid UTF-8 and may not contain controls, ESC, CR, or LF. Cursor
+rows and columns are one-based. The alternative zero-based `byte` is an UTF-8
+boundary in the concatenated spans of that row; Zig converts it to a terminal
+cell column and clamps it to the presentable width. A column cursor may address
+a rendered cell or the valid insertion endpoint immediately after the row, but
+not space beyond it. Exactly one of `byte` or `column` is required. Zig owns
+wrapping and ANSI mapping; noninteractive output
+strips styles.
+
+## Terminal architecture and limitations
+
+`src/session/root.zig` owns a non-reentrant FIFO event loop. Lua owns canonical
+application state. A transaction is fully validated, then its pending semantic
+view is successfully presented, then Lua policy state is committed, and only
+then are the prevalidated effects executed. Policy changes are rollback-safe
+through validation and presentation. A native side-effect or I/O failure after
+commit is fatal and is not generally rollbackable. `src/terminal/root.zig` owns tty/raw-mode
+lifetime, incremental input decoding, and all stdout writes. Raw mode is always
+restored with `defer`.
+
+The inline presenter never enters the alternate screen and never clears the
+screen or scrollback. Immutable commits use real newlines and are forgotten.
+Only the mutable frame at the bottom is erased/repainted with CR, relative
+movement, and per-row erase-line sequences; final cleanup erases only those
+owned rows. Live logical lines are conservatively clipped to one physical row
+before the final terminal column, while immutable commits may wrap naturally.
+Cell measurement uses local wcwidth-style zero-width combining/modifier ranges
+and known East Asian wide/emoji ranges; other printable codepoints are one cell.
+Each repaint is validated and buffered before one write.
+
+Portability is intentionally conservative: terminal mode uses Zig's portable
+POSIX/stdlib abstractions, dimensions come from `COLUMNS`/`LINES` with an 80x24
+fallback, and there is no live resize. Input reads and process execution are
+synchronous in this increment. Bracketed paste, fragmented UTF-8, Enter,
+backspace, arrows, Escape, Ctrl-C, and EOF are decoded. Decoder, presenter,
+and installed-layout behavior are covered without third-party
+test dependencies. There is no PTY integration test: Zig's standard library
+does not provide a portable POSIX PTY constructor, and misa does not add an
+OS-specific helper or external dependency for one. Zig 0.16 no longer
+exports `std.posix.read/write/isatty`; misa uses the corresponding
+`std.Io.File` portable abstractions. Raw mode uses portable termios with a read
+timeout, and POSIX signal actions restore it before chaining/defaulting fatal
+and termination signals. Bracketed-paste markers are decoded, but misa does not
+enable that mode because Zig exposes no portable async-signal-safe POSIX write.
+
+## Standard extensions
+
+`agent` stores prompt/status/response/error in `db` and performs one completion
+(no tool loop). `provider.fake` keeps its response cursor in `db`.
+`provider.command` translates to direct-argv `process/run`. `ui` owns a
+multiline UTF-8 editor with a byte cursor, insertion, backspace, and left/right
+movement, plus semantic projection. It commits the final result to scrollback
+and quits. Explicit argv works in plain/non-TTY mode; an interactive invocation
+accepts one submission.
 
 ## Nix
 
-The standalone `default.nix` exports packages, overlay, shell, `lib`, modules,
-and `standardExtensions`. `lib.standardExtensions` has values convenient with
-`with`:
+`default.nix` exports the package, overlay, shell, modules, `lib`, and
+`standardExtensions`. Raw and Nix configurations use the same ordered list:
 
 ```nix
-let
-  misaProject = import ./path/to/misa { inherit pkgs; };
-  configured = misaProject.lib.mkMisa {
-    extensions = with misaProject.lib.standardExtensions; [
-      providerFake
-      ./extensions/my-extension.lua
-      agent
-    ];
-    config = {
-      agent.provider = "fake";
-      providers.fake.responses = [ "done\n" ];
-    };
-  };
-in
-configured
-```
-
-`mkMisa.extensions` accepts an ordered mixture of standard ID strings and Nix
-path values. Bare strings are validated against the catalog; custom extensions
-must be path values and are coerced through Nix interpolation to store paths
-with closure references. The wrapped package sets
-only `MISA_CONFIG`; standard IDs resolve from the shipped files installed in
-the package.
-
-NixOS, nix-darwin, and home-manager share the same single
-`programs.misa.extensions` option and the same catalog validation:
-
-```nix
-{
-  imports = [ misaProject.nixosModules.default ]; # or darwin/homeManager
-  programs.misa = {
-    enable = true;
-    extensions = with misaProject.lib.standardExtensions; [
-      providerCommand
-      agent
-    ];
-    config = {
-      agent.provider = "command";
-      providers.command.argv = [ "/trusted/path/to/provider" "--mode" "plain" ];
-    };
+let p = import ./path/to/misa { inherit pkgs; }; in
+p.lib.mkMisa {
+  extensions = with p.lib.standardExtensions; [ providerFake agent ui ];
+  config = {
+    agent.provider = "fake";
+    providers.fake.responses = [ "done\n" ];
   };
 }
 ```
 
-No module or wrapper enables extensions by default. Generated configuration is
-world-readable in the Nix store; do not put secrets in it.
-
-## Architecture
-
-`src/main.zig` owns CLI/process concerns and standard-ID resolution.
-`src/config/root.zig` owns the JSON envelope. `src/standard_extensions/root.zig`
-owns the exact catalog and resolver. `src/lua_runtime/root.zig` owns LuaJIT and
-uses its C API directly with checked stack invariants. They are explicit named
-modules in `build.zig`.
+NixOS, nix-darwin, and home-manager expose the same
+`programs.misa.extensions` option. Nix path values select custom extensions;
+bare strings must be catalog IDs. Generated config is world-readable in the
+Nix store, so it must not contain secrets.

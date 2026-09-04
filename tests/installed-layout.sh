@@ -5,7 +5,7 @@ MISA_BIN="$1"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cat >"$work/config.json" <<'EOF'
-{"extensions":["provider.fake","agent"],"config":{"agent":{"provider":"fake"},"providers":{"fake":{"responses":["installed lookup ok"]}}}}
+{"extensions":["provider.fake","agent","ui"],"config":{"agent":{"provider":"fake"},"providers":{"fake":{"responses":["installed lookup ok"]}}}}
 EOF
 
 unset MISA_EXTENSION_DIR

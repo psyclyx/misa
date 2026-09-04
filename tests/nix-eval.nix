@@ -42,6 +42,7 @@ assert
     agent = "agent";
     providerFake = "provider.fake";
     providerCommand = "provider.command";
+    ui = "ui";
   };
 assert
   defaults.configData == {
@@ -65,4 +66,10 @@ assert
 assert builtins.pathExists ../extensions/agent.lua;
 assert builtins.pathExists ../extensions/provider/fake.lua;
 assert builtins.pathExists ../extensions/provider/command.lua;
+assert builtins.pathExists ../extensions/ui.lua;
+# Instantiate both the package and configured wrapper without recursively
+# building either from this evaluation-only test.
+assert pkgs.lib.hasSuffix ".drv" project.packages.misa.drvPath;
+assert pkgs.lib.hasSuffix ".drv" configured.drvPath;
+assert configured.unwrapped == project.packages.misa;
 true

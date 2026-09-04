@@ -1,30 +1,38 @@
--- One-shot agent: turn forwarded arguments into one provider request.
-local provider_name
-local system_prompt
-
+-- Agent state machine. Providers are selected by effect type; no direct calls or output.
 return {
   setup = function(context)
-    local agent = type(context.config) == "table" and context.config.agent or nil
-    assert(type(agent) == "table", "config.agent must be an object")
-    assert(type(agent.provider) == "string" and agent.provider ~= "", "config.agent.provider must be a nonempty string")
-    provider_name = agent.provider
-    if agent.system_prompt ~= nil then
-      assert(type(agent.system_prompt) == "string", "config.agent.system_prompt must be a string")
-      system_prompt = agent.system_prompt
-    end
-  end,
+    local config = type(context.config) == "table" and context.config.agent or nil
+    assert(type(config) == "table", "config.agent must be an object")
+    assert(type(config.provider) == "string" and config.provider ~= "", "config.agent.provider must be a nonempty string")
 
-  run = function(context)
-    assert(#context.argv > 0, "agent requires forwarded prompt arguments")
-    local request = { prompt = table.concat(context.argv, " ") }
-    if system_prompt ~= nil then request.system_prompt = system_prompt end
-
-    local handler_name = "provider." .. provider_name .. ".complete"
-    assert(context.misa.handler_count(handler_name) == 1, "agent requires exactly one " .. handler_name .. " handler")
-    local results = context.misa.call(handler_name, request)
-    local response = results[1]
-    assert(type(response) == "table" and type(response.text) == "string", "provider response must be { text = string }")
-    io.write(response.text)
-    if response.text:sub(-1) ~= "\n" then io.write("\n") end
+    misa.reg_event("app/start", function(db, _, cofx)
+      if #cofx.argv == 0 then return end
+      return { fx = { { type = "dispatch", event = { type = "agent/submit", prompt = table.concat(cofx.argv, " ") } } } }
+    end)
+    misa.reg_event("agent/submit", function(db, event)
+      assert(type(event.prompt) == "string" and event.prompt ~= "", "agent prompt must be nonempty")
+      db.agent_request_seq = (db.agent_request_seq or 0) + 1
+      local id = "agent-" .. tostring(db.agent_request_seq)
+      db.prompt, db.response, db.error, db.status = event.prompt, nil, nil, "working"
+      db.active_request_id, db.accepted_request_id = id, nil
+      local request = { type = "provider." .. config.provider, prompt = event.prompt, id = id }
+      if config.system_prompt ~= nil then assert(type(config.system_prompt) == "string"); request.system_prompt = config.system_prompt end
+      return { db = db, fx = { request } }
+    end)
+    misa.reg_event("agent/result", function(db, event)
+      assert(type(event.id) == "string" and event.id ~= "", "agent result id must be nonempty")
+      assert(type(event.text) == "string", "agent result text must be a string")
+      if db.status ~= "working" or event.id ~= db.active_request_id then return end
+      db.response, db.error, db.status = event.text, nil, "done"
+      db.accepted_request_id, db.active_request_id = event.id, nil
+      return { db = db }
+    end)
+    misa.reg_event("agent/error", function(db, event)
+      assert(type(event.id) == "string" and event.id ~= "", "agent error id must be nonempty")
+      if db.status ~= "working" or event.id ~= db.active_request_id then return end
+      db.error, db.status = tostring(event.message or "provider failed"), "error"
+      db.accepted_request_id, db.active_request_id = event.id, nil
+      return { db = db }
+    end)
   end,
 }

@@ -9,11 +9,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const standard_extension_options = b.addOptions();
+    standard_extension_options.addOption([]const u8, "default_extension_dir", b.getInstallPath(.{ .custom = "share/misa" }, "extensions"));
     const standard_extensions = b.createModule(.{
         .root_source_file = b.path("src/standard_extensions/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    standard_extensions.addOptions("misa_build_options", standard_extension_options);
     const lua_runtime = b.createModule(.{
         .root_source_file = b.path("src/lua_runtime/root.zig"),
         .target = target,
@@ -21,6 +24,18 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     lua_runtime.linkSystemLibrary("luajit", .{ .use_pkg_config = .force });
+    const terminal = b.createModule(.{
+        .root_source_file = b.path("src/terminal/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const session = b.createModule(.{
+        .root_source_file = b.path("src/session/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    session.addImport("misa_lua_runtime", lua_runtime);
+    session.addImport("misa_terminal", terminal);
 
     const main_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -30,6 +45,8 @@ pub fn build(b: *std.Build) void {
     main_module.addImport("misa_config", config);
     main_module.addImport("misa_lua_runtime", lua_runtime);
     main_module.addImport("misa_standard_extensions", standard_extensions);
+    main_module.addImport("misa_terminal", terminal);
+    main_module.addImport("misa_session", session);
 
     const exe = b.addExecutable(.{ .name = "misa", .root_module = main_module });
     b.installArtifact(exe);
@@ -46,9 +63,13 @@ pub fn build(b: *std.Build) void {
 
     const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
+    const terminal_unit = b.addTest(.{ .root_module = terminal });
+    const session_unit = b.addTest(.{ .root_module = session });
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
+    test_step.dependOn(&b.addRunArtifact(terminal_unit).step);
+    test_step.dependOn(&b.addRunArtifact(session_unit).step);
 
     const integration = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/integration.sh") });
     integration.addFileArg(exe.getEmittedBin());

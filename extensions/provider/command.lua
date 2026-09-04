@@ -1,35 +1,29 @@
--- Provider backed by a trusted local executable. All values are shell-quoted.
-local function quote(value)
-  assert(type(value) == "string", "command arguments must be strings")
-  return "'" .. value:gsub("'", "'\\''") .. "'"
-end
-
+-- Command provider translates policy effects to a direct-argv native process.
 return {
   setup = function(context)
     local providers = type(context.config) == "table" and context.config.providers or nil
     local command = type(providers) == "table" and providers.command or nil
-    local argv = type(command) == "table" and command.argv or nil
-    assert(type(argv) == "table" and #argv > 0, "config.providers.command.argv must be a nonempty array of strings")
-
-    local configured = {}
-    for index = 1, #argv do
-      assert(type(argv[index]) == "string" and argv[index] ~= "", "config.providers.command.argv must contain nonempty strings")
-      assert(not argv[index]:find("\0", 1, true), "config.providers.command.argv must not contain NUL")
-      configured[index] = quote(argv[index])
+    local configured = type(command) == "table" and command.argv or nil
+    assert(type(configured) == "table" and #configured > 0, "config.providers.command.argv must be a nonempty array")
+    local argv = {}
+    for i = 1, #configured do
+      assert(type(configured[i]) == "string" and configured[i] ~= "", "command argv must contain nonempty strings")
+      assert(not configured[i]:find("\0", 1, true), "command argv must not contain NUL")
+      argv[i] = configured[i]
     end
-
-    context.misa.register("provider.command.complete", function(request)
-      assert(type(request) == "table" and type(request.prompt) == "string", "command provider request.prompt must be a string")
-      local words = {}
-      for index = 1, #configured do words[index] = configured[index] end
-      words[#words + 1] = quote(request.prompt)
-      local pipe, open_error = io.popen(table.concat(words, " "), "r")
-      assert(pipe, "cannot start command provider: " .. tostring(open_error))
-      local text, read_error = pipe:read("*a")
-      local ok, reason, status = pipe:close()
-      assert(text ~= nil, "cannot read command provider output: " .. tostring(read_error))
-      assert(ok == true, "command provider failed: " .. tostring(reason) .. " " .. tostring(status))
-      return { text = text }
+    misa.reg_fx("provider.command", function(effect)
+      assert(type(effect.prompt) == "string" and effect.prompt ~= "", "command prompt must be a nonempty string")
+      assert(type(effect.id) == "string" and effect.id ~= "", "command id must be a nonempty string")
+      local direct = {}; for i = 1, #argv do direct[i] = argv[i] end
+      direct[#direct + 1] = effect.prompt
+      return { type = "process/run", argv = direct, id = effect.id, completion = "provider/command-complete" }
+    end)
+    misa.reg_event("provider/command-complete", function(db, event)
+      assert(type(event.id) == "string" and event.id ~= "", "command completion id must be nonempty")
+      local next_event
+      if event.ok then next_event = { type = "agent/result", id = event.id, text = event.stdout }
+      else next_event = { type = "agent/error", id = event.id, message = event.stderr ~= "" and event.stderr or ("command exited " .. tostring(event.status)) } end
+      return { fx = { { type = "dispatch", event = next_event } } }
     end)
   end,
 }

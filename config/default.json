@@ -1,5 +1,5 @@
 {
-  "extensions": ["provider.fake", "agent"],
+  "extensions": ["provider.fake", "agent", "ui"],
   "config": {
     "agent": { "provider": "fake" },
     "providers": {
