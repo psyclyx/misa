@@ -18,6 +18,15 @@ pub const TerminalInfo = struct {
 };
 
 /// Effects and view copied out of Lua into one short-lived arena.
+pub const OwnedValue = struct {
+    arena: std.heap.ArenaAllocator,
+    value: std.json.Value,
+
+    pub fn deinit(self: *OwnedValue) void {
+        self.arena.deinit();
+    }
+};
+
 pub const Transaction = struct {
     arena: std.heap.ArenaAllocator,
     effects: []const std.json.Value,
@@ -184,6 +193,45 @@ pub const Runtime = struct {
         };
         c.lua_settop(self.state, 0);
         return transaction;
+    }
+
+    pub fn mcpTools(self: *Runtime) !OwnedValue {
+        return self.callMcp("_mcp_tools", null, null, null);
+    }
+
+    pub fn mcpToolEffect(self: *Runtime, name: []const u8, arguments: std.json.Value, id: []const u8) !OwnedValue {
+        return self.callMcp("_mcp_tool_effect", name, arguments, id);
+    }
+
+    fn callMcp(self: *Runtime, function: []const u8, name: ?[]const u8, arguments: ?std.json.Value, id: ?[]const u8) !OwnedValue {
+        self.assertStack(0);
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_getfield(self.state, -1, function.ptr);
+        c.lua_remove(self.state, -2);
+        self.pushTraceback();
+        c.lua_insert(self.state, -2);
+        const argument_count: c_int = if (name) |tool_name| blk: {
+            _ = c.lua_pushlstring(self.state, tool_name.ptr, tool_name.len);
+            try self.pushJson(arguments.?, 0);
+            _ = c.lua_pushlstring(self.state, id.?.ptr, id.?.len);
+            break :blk 3;
+        } else 0;
+        if (c.lua_pcall(self.state, argument_count, 1, 1) != 0) {
+            self.setError("MCP policy: {s}", .{self.stackError()});
+            c.lua_settop(self.state, 0);
+            return error.McpPolicyFailed;
+        }
+        var result: OwnedValue = .{ .arena = std.heap.ArenaAllocator.init(self.allocator), .value = undefined };
+        errdefer result.deinit();
+        var active: std.ArrayList(?*const anyopaque) = .empty;
+        defer active.deinit(self.allocator);
+        result.value = self.readLuaValue(result.arena.allocator(), -1, 0, &active) catch |err| {
+            self.setError("invalid MCP policy value: {s}", .{@errorName(err)});
+            c.lua_settop(self.state, 0);
+            return error.McpPolicyFailed;
+        };
+        c.lua_settop(self.state, 0);
+        return result;
     }
 
     pub fn commitTransaction(self: *Runtime) !void {

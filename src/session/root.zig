@@ -1,11 +1,11 @@
 //! Non-reentrant FIFO owner for Lua transactions and fixed native effects.
 const std = @import("std");
 const auth = @import("misa_auth");
-const file = @import("file.zig");
+const file = @import("misa_file");
 const http = @import("http.zig");
 const lua = @import("misa_lua_runtime");
 const terminal_module = @import("misa_terminal");
-const process = @import("process.zig");
+const process = @import("misa_process");
 
 const JsonDecode = struct { source: []const u8, completion: []const u8, id: []const u8 };
 

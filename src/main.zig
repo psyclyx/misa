@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("misa_auth");
 const config_module = @import("misa_config");
 const lua = @import("misa_lua_runtime");
+const mcp = @import("misa_mcp");
 const standard_extensions = @import("misa_standard_extensions");
 const terminal_module = @import("misa_terminal");
 const session_module = @import("misa_session");
@@ -27,11 +28,12 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    const mcp_mode = argv.items.len > 1 and std.mem.eql(u8, argv.items[1], "mcp");
     var extension_argv: std.ArrayList([:0]const u8) = .empty;
     defer extension_argv.deinit(allocator);
     var config_path: ?[]const u8 = null;
     var forwarding_only = false;
-    var i: usize = 1;
+    var i: usize = if (mcp_mode) 2 else 1;
     while (i < argv.items.len) : (i += 1) {
         const arg = argv.items[i];
         if (!forwarding_only and std.mem.eql(u8, arg, "--")) {
@@ -100,6 +102,14 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("misa: {s}\n", .{runtime.lastError()});
         std.process.exit(1);
     };
+
+    if (mcp_mode) {
+        mcp.run(allocator, init.io, &runtime) catch |err| {
+            std.debug.print("misa: MCP bridge failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        return;
+    }
 
     runSession(init, allocator, &runtime) catch |err| {
         if (err == error.LuaTransactionFailed)

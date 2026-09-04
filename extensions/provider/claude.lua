@@ -21,6 +21,20 @@ local function transcript(messages)
   return table.concat(out, "\n")
 end
 
+local function json_string(value)
+  assert(type(value) == "string" and not value:find("%z"), "MCP command arguments must be strings without NUL")
+  return '"' .. value:gsub('[%z\1-\31\\"]', function(char)
+    local escapes = { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+    return escapes[char] or string.format("\\u%04x", char:byte())
+  end) .. '"'
+end
+
+local function mcp_config(command, arguments)
+  local encoded = {}
+  for _, argument in ipairs(arguments) do encoded[#encoded + 1] = json_string(argument) end
+  return '{"mcpServers":{"misa":{"type":"stdio","command":' .. json_string(command) .. ',"args":[' .. table.concat(encoded, ",") .. ']}}}'
+end
+
 local function result_record(records)
   for i = #records, 1, -1 do
     local record = records[i]
@@ -35,6 +49,10 @@ return {
     config = type(config) == "table" and config or {}
     local executable = config.executable or "claude"
     assert(type(executable) == "string" and executable ~= "", "config.providers.claude.executable must be nonempty")
+    local mcp_command = config.mcp_command or "misa"
+    local mcp_arguments = config.mcp_arguments or { "mcp" }
+    assert(type(mcp_command) == "string" and mcp_command ~= "", "config.providers.claude.mcp_command must be nonempty")
+    assert(type(mcp_arguments) == "table", "config.providers.claude.mcp_arguments must be an array")
 
     local configured_models = config.models or {
       { id = "claude/opus", model = "opus", label = "Claude Opus" },
@@ -60,6 +78,14 @@ return {
         "--permission-mode", "dontAsk",
         "--no-session-persistence",
       }
+      if #effect.tools > 0 then
+        local allowed = {}
+        for _, tool in ipairs(effect.tools) do allowed[#allowed + 1] = "mcp__misa__" .. tool.name end
+        argv[#argv + 1] = "--mcp-config"
+        argv[#argv + 1] = mcp_config(mcp_command, mcp_arguments)
+        argv[#argv + 1] = "--allowedTools"
+        argv[#argv + 1] = table.concat(allowed, ",")
+      end
       if effect.system_prompt then argv[#argv + 1] = "--system-prompt"; argv[#argv + 1] = effect.system_prompt end
       return {
         type = "process/run", argv = argv, id = effect.id,

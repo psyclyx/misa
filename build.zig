@@ -35,14 +35,34 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const file_effect = b.createModule(.{
+        .root_source_file = b.path("src/capability/file.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const process_effect = b.createModule(.{
+        .root_source_file = b.path("src/capability/process.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const session = b.createModule(.{
         .root_source_file = b.path("src/session/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     session.addImport("misa_auth", auth);
+    session.addImport("misa_file", file_effect);
     session.addImport("misa_lua_runtime", lua_runtime);
+    session.addImport("misa_process", process_effect);
     session.addImport("misa_terminal", terminal);
+    const mcp = b.createModule(.{
+        .root_source_file = b.path("src/mcp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp.addImport("misa_file", file_effect);
+    mcp.addImport("misa_lua_runtime", lua_runtime);
+    mcp.addImport("misa_process", process_effect);
 
     const main_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -52,6 +72,7 @@ pub fn build(b: *std.Build) void {
     main_module.addImport("misa_auth", auth);
     main_module.addImport("misa_config", config);
     main_module.addImport("misa_lua_runtime", lua_runtime);
+    main_module.addImport("misa_mcp", mcp);
     main_module.addImport("misa_standard_extensions", standard_extensions);
     main_module.addImport("misa_terminal", terminal);
     main_module.addImport("misa_session", session);

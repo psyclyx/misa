@@ -1,13 +1,15 @@
 #!/bin/sh
 set -eu
 case "$1" in /*) MISA_BIN="$1" ;; *) MISA_BIN="$PWD/${1#./}" ;; esac
-work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+work="$(mktemp -d)"; stage=start
+trap 'status=$?; if [ "$status" -ne 0 ]; then echo "integration failed during $stage" >&2; fi; rm -rf "$work"; exit "$status"' EXIT
 export MISA_AUTH_FILE="$work/session-auth.json"
 
 # No extensions remains completely silent.
 printf '{}' >"$work/empty.json"
 [ -z "$(MISA_AUTH_FILE="$work/empty-auth.json" MISA_CONFIG="$work/empty.json" "$MISA_BIN")" ]
 
+stage=authentication
 # Explicit API-key login writes only the XDG credential store with restrictive
 # permissions; secrets never enter the ordinary config.
 printf 'test-secret\n' | env -u MISA_AUTH_FILE XDG_STATE_HOME="$work/state" "$MISA_BIN" login openai 2>"$work/login-output"
@@ -32,6 +34,7 @@ PATH="$work/bin:$PATH" "$MISA_BIN" login claude
 PATH="$work/bin:$PATH" "$MISA_BIN" logout claude
 [ ! -e "$work/session-auth.json" ]
 
+stage=provider-composition
 # Real provider declarations compose without credentials until they are used.
 printf '%s' '{"extensions":["protocol.anthropic","provider.anthropic","provider.kimi","protocol.openai","provider.openai","provider.openrouter","provider.openai-codex","provider.claude","models","agent","ui"],"config":{"models":{"default":"anthropic/claude-sonnet-4-6"}}}' >"$work/providers.json"
 [ -z "$(MISA_CONFIG="$work/providers.json" "$MISA_BIN" </dev/null)" ]
@@ -89,6 +92,7 @@ MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello >"$work/exact-output"
 printf 'fake response\n' >"$work/expected-output"
 cmp "$work/expected-output" "$work/exact-output"
 
+stage=agent-tool-loop
 # The agent executes normalized tool calls, records results, and asks the
 # provider to continue until it returns a final assistant message.
 cat >"$work/tool.lua" <<'LUA'
@@ -103,12 +107,23 @@ LUA
 printf '{"extensions":["provider.fake","models","agent","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"call-1","name":"echo","arguments_json":"{\\\"value\\\":\\\"from tool\\\"}"}],"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
 [ "$(MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" use tool)" = 'after tool' ]
 
+stage=native-tools
 cat >"$work/native-tools.json" <<JSON
 {"extensions":["provider.fake","tool.files","tool.shell","models","agent","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"write-1","name":"write_file","arguments":{"path":"$work/native-tool.txt","content":"alpha"}}],[{"type":"tool_call","id":"edit-1","name":"edit_file","arguments":{"path":"$work/native-tool.txt","old_text":"alpha","new_text":"beta"}}],[{"type":"tool_call","id":"read-1","name":"read_file","arguments":{"path":"$work/native-tool.txt"}}],[{"type":"tool_call","id":"shell-1","name":"shell","arguments":{"command":"printf shell-ok"}}],"tools done"]}}}}
 JSON
 [ "$(MISA_CONFIG="$work/native-tools.json" "$MISA_BIN" use native tools)" = 'tools done' ]
 [ "$(cat "$work/native-tool.txt")" = beta ]
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"$work/mcp-tool.txt\",\"content\":\"from mcp\"}}}" |
+  MISA_CONFIG="$work/native-tools.json" "$MISA_BIN" mcp >"$work/mcp-output"
+grep -F '"name":"read_file"' "$work/mcp-output" >/dev/null
+grep -F '"isError":false' "$work/mcp-output" >/dev/null
+[ "$(cat "$work/mcp-tool.txt")" = 'from mcp' ]
 
+stage=ui-order
 # Completion does not depend on ui being registered after agent/provider.
 cat >"$work/ui-first.json" <<'EOF'
 {"extensions":["ui","agent","models","provider.fake"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["ui first"]}}}}
@@ -134,6 +149,7 @@ printf '\033[200~ab\ncd\033[201~\033[D\177X\n' | MISA_CONFIG="$work/editor.json"
 printf 'ab\nXd\n' >"$work/expected-editor-output"
 cmp "$work/expected-editor-output" "$work/editor-output"
 
+stage=command-provider
 # process/run receives direct argv. Shell metacharacters are one literal argument.
 cat >"$work/provider" <<'SH'
 #!/bin/sh
@@ -152,27 +168,36 @@ EOF
 printf 'result $(touch SHOULD_NOT_EXIST); it'"'"'s literal:�\n' >"$work/expected-command-output"
 cmp "$work/expected-command-output" "$work/command-output"
 
+stage=claude-provider
 # Claude provider speaks the CLI's stream-json protocol, including the empty
 # --tools argument, without requiring the Agent SDK package or copying auth.
 cat >"$work/claude" <<'SH'
 #!/bin/sh
 saw_empty=false
 saw_input=false
+saw_mcp=false
+expect_mcp=false
 for arg do
   [ -z "$arg" ] && saw_empty=true
   [ "$arg" = "stream-json" ] && saw_input=true
+  if [ "$expect_mcp" = true ]; then case "$arg" in *'"mcpServers"'*'"misa"'*) saw_mcp=true ;; esac; expect_mcp=false; fi
+  [ "$arg" = "--mcp-config" ] && expect_mcp=true
 done
 [ "$saw_empty" = true ] || exit 30
 [ "$saw_input" = true ] || exit 31
+[ "$saw_mcp" = true ] || exit 33
 input=$(cat)
-case "$input" in *'"type":"user"'*'"content":"Continue this conversation.'*) ;; *) exit 32 ;; esac
+case "$input" in *'"type":"user"'*) ;; *) exit 32 ;; esac
+case "$input" in *'"content":"Continue this conversation.'*) ;; *) exit 32 ;; esac
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"test"}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"claude result","session_id":"test"}'
 SH
 chmod +x "$work/claude"
-printf '{"extensions":["provider.claude","models","agent","ui"],"config":{"models":{"default":"claude/sonnet"},"providers":{"claude":{"executable":"%s"}}}}' "$work/claude" >"$work/claude.json"
-[ "$(MISA_CONFIG="$work/claude.json" "$MISA_BIN" hello)" = 'claude result' ]
+printf '{"extensions":["provider.claude","tool.files","models","agent","ui"],"config":{"models":{"default":"claude/sonnet"},"providers":{"claude":{"executable":"%s","mcp_command":"%s","mcp_arguments":["mcp","--config","%s"]}}}}' "$work/claude" "$MISA_BIN" "$work/claude.json" >"$work/claude.json"
+claude_output="$(MISA_CONFIG="$work/claude.json" "$MISA_BIN" hello)"
+if [ "$claude_output" != 'claude result' ]; then echo "claude output: $claude_output" >&2; exit 1; fi
 
+stage=contract-errors
 # Config and argv remain available in base cofx; plain output contains no ANSI.
 cat >"$work/context.lua" <<'LUA'
 return {setup=function(context)
@@ -245,4 +270,5 @@ deep='{}'; i=0
 while [ "$i" -lt 130 ]; do deep="{\"x\":$deep}"; i=$((i + 1)); done
 printf '{"config":%s}' "$deep" >"$work/deep.json"
 if MISA_CONFIG="$work/deep.json" "$MISA_BIN" 2>"$work/error"; then exit 1; fi
-grep -E 'nesting|depth' "$work/error" >/dev/null
+case "$(cat "$work/error")" in *nesting*|*depth*) ;; *) exit 1 ;; esac
+:

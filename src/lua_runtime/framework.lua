@@ -68,7 +68,7 @@ function misa.reg_tool(tool)
   open()
   assert(type(tool) == "table" and type(tool.name) == "string" and tool.name ~= "", "tool.name must be a nonempty string")
   assert(type(tool.description) == "string", "tool.description must be a string")
-  assert(type(tool.input_schema) == "table", "tool.input_schema must be a table")
+  assert(type(tool.input_schema) == "table" and tool.input_schema.type == "object", "tool.input_schema must be an object schema")
   assert(type(tool.effect) == "string" and tool.effect ~= "", "tool.effect must be a nonempty string")
   assert(tool_by_name[tool.name] == nil, "duplicate tool")
   tool_by_name[tool.name] = tool
@@ -77,6 +77,25 @@ end
 
 function misa.tools() return tools end
 function misa.tool(name) return tool_by_name[name] end
+
+-- The MCP bridge asks Lua for schemas and translates calls through the same
+-- registered tool/effect policy used by the interactive agent.
+function misa._mcp_tools() return tools end
+function misa._mcp_tool_effect(name, arguments, id)
+  assert(sealed, "registrations are not sealed")
+  local tool = assert(tool_by_name[name], "unknown tool: " .. tostring(name))
+  assert(type(arguments) == "table", "tool arguments must be an object")
+  local translator = assert(fx_fns[tool.effect], "tool effect has no translator: " .. tool.effect)
+  local translated = translator({
+    type = tool.effect, arguments = arguments, tool_call_id = id,
+    request_id = "mcp", name = name,
+  }, {
+    config = base_context.config, argv = base_context.argv,
+    terminal = { interactive = false, columns = 80, lines = 24 },
+  }, db)
+  assert(type(translated) == "table" and type(translated.type) == "string", "MCP tool translator must return one native effect")
+  return translated
+end
 
 local function finite(value)
   return value == value and value ~= math.huge and value ~= -math.huge

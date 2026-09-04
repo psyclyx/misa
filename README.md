@@ -121,8 +121,9 @@ output strips styles.
 ## Terminal architecture and limitations
 
 `src/session/root.zig` owns a non-reentrant FIFO event loop and parses effects
-once into a closed native union; `src/session/process.zig` owns direct process
-execution and captured-output normalization. Lua owns canonical application
+once into a closed native union; `src/capability/process.zig` owns direct
+process execution and captured-output normalization, while
+`src/capability/file.zig` owns bounded file operations. Lua owns canonical application
 state. A transaction is fully validated, then its pending semantic
 view is successfully presented, then Lua policy state is committed, and only
 then are the prevalidated effects executed. Policy changes are rollback-safe
@@ -167,7 +168,15 @@ catalogue entries. `agent` owns normalized conversation history, repeated user
 turns, provider correlation, parallel tool-result collection, normalized token
 usage accounting, and automatic continuation after tools. `tool.files` registers `read_file`, `write_file`, and
 `edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
-extensions and are not enabled by the harness. `provider.fake` keeps its state under
+extensions and are not enabled by the harness. `misa mcp` exposes the same
+Lua-registered schemas and effect translators as an MCP stdio server. The
+Claude provider supplies this bridge through `--mcp-config` whenever tools are
+registered, while retaining `--tools ""` so Claude's own tools remain disabled.
+The MCP child inherits `MISA_CONFIG`; configurations selected with `--config`
+should set `config.providers.claude.mcp_arguments` to
+`["mcp", "--config", "/the/same/config.json"]`. `mcp_command` defaults to
+`misa` and may be set to an absolute executable path.
+`provider.fake` keeps its state under
 `db.providers.fake`; `provider.command` adapts user executables.
 `provider.claude` invokes Claude Code's stream-JSON process protocol and reuses
 Claude's existing Pro/Max credentials without copying them into Misa. `ui` owns
