@@ -6,6 +6,7 @@ local models, model_by_id, tools, tool_by_name = {}, {}, {}, {}
 local commands, command_by_name = {}, {}
 local completions, completion_values = {}, {}
 local auth_providers, auth_provider_ids, auth_model_providers = {}, {}, {}
+local view_layers, view_layer_ids = {}, {}
 local view, sealed, dispatching, db, pending_db, base_context = nil, false, false, {}, nil, nil
 local MAX_DEPTH = 128
 
@@ -51,6 +52,24 @@ function misa.reg_view(fn)
   open()
   assert(type(fn) == "function" and view == nil, "view already registered")
   view = fn
+end
+
+function misa.reg_view_layer(id, fn)
+  open()
+  assert(type(id) == "string" and id ~= "", "view layer ID must be nonempty")
+  assert(type(fn) == "function" and not view_layer_ids[id], "duplicate view layer")
+  view_layer_ids[id] = true
+  view_layers[#view_layers + 1] = fn
+end
+
+function misa.view_layers(state, cofx)
+  local result = {}
+  for _, project in ipairs(view_layers) do
+    local layer = project(state, cofx)
+    assert(layer == nil or type(layer) == "table", "view layer must be a table")
+    if layer then result[#result + 1] = layer end
+  end
+  return result
 end
 
 function misa.reg_model(model)

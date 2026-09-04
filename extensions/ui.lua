@@ -233,30 +233,14 @@ return {
         { text = "    context  ", style = "dim" },
         { text = context_window and (tostring(context_tokens) .. " / " .. tostring(context_window)) or tostring(context_tokens), style = "plain" },
       } }
-      if model_state.picker then
-        local entries = model_state.filtered or {}
-        local query_row = #lines + 1
-        lines[#lines + 1] = { spans = {
-          { text = "model> ", style = "accent" }, { text = model_state.query or "", style = "plain" },
-          { text = "  " .. tostring(#entries) .. "/" .. tostring(#(model_state.entries or {})), style = "dim" },
-        } }
-        local room = math.max(0, cofx.terminal.lines - #lines)
-        if #entries == 0 and room > 0 then
-          lines[#lines + 1] = { spans = { { text = "  no matching available models", style = "dim" } } }
-        elseif room > 0 then
-          local first = math.max(1, math.min(model_state.index - math.floor(room / 2), #entries - room + 1))
-          local last_index = math.min(#entries, first + room - 1)
-          for i = first, last_index do
-            local model = entries[i]
-            local marker = i == model_state.index and "> " or "  "
-            lines[#lines + 1] = { spans = {
-              { text = marker, style = i == model_state.index and "accent" or "plain" },
-              { text = model.id, style = model.id == model_state.selected and "bold" or "plain" },
-              { text = "  " .. (model.label or ""), style = "dim" },
-            } }
-          end
+      local layer_cofx = { terminal = cofx.terminal, available_lines = math.max(0, cofx.terminal.lines - #lines) }
+      for _, layer in ipairs(misa.view_layers(db, layer_cofx)) do
+        local offset = #lines
+        for _, line in ipairs(layer.lines or {}) do lines[#lines + 1] = line end
+        if layer.exclusive then
+          local cursor = layer.cursor and { row = offset + layer.cursor.row, byte = layer.cursor.byte } or nil
+          return { lines = lines, cursor = cursor }
         end
-        return { lines = lines, cursor = { row = query_row, byte = 7 + #(model_state.query or "") } }
       end
       if agent.status == "working" then lines[#lines + 1] = { spans = { { text = "working…", style = "dim" } } } end
       if agent.status == "tools" then lines[#lines + 1] = { spans = { { text = "running tools…", style = "dim" } } } end

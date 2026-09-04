@@ -42,6 +42,7 @@ assert
     agent = "agent";
     auth = "auth";
     models = "models";
+    picker = "picker";
     providerFake = "provider.fake";
     providerCommand = "provider.command";
     providerClaude = "provider.claude";
@@ -78,6 +79,7 @@ assert
 assert builtins.pathExists ../extensions/agent.lua;
 assert builtins.pathExists ../extensions/auth.lua;
 assert builtins.pathExists ../extensions/models.lua;
+assert builtins.pathExists ../extensions/picker.lua;
 assert builtins.pathExists ../extensions/provider/fake.lua;
 assert builtins.pathExists ../extensions/provider/command.lua;
 assert builtins.pathExists ../extensions/provider/claude.lua;

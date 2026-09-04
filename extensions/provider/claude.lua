@@ -73,15 +73,18 @@ return {
       misa.reg_event("models/provider-availability", function(db, event)
         if event.provider ~= "claude" or event.subscription_type == nil or event.subscription_type == misa.json_null then return end
         local has_extended_opus = event.subscription_type == "max" or event.subscription_type == "team" or event.subscription_type == "enterprise"
-        for _, model in ipairs(db.models and db.models.catalogue or {}) do
-          if model.provider == "claude" and model.model:match("^claude%-opus%-") then
-            model.context_window = has_extended_opus and 1000000 or 200000
+        local updates = {}
+        for _, model in ipairs(configured_models) do
+          if model.model:match("^claude%-opus%-") then
+            updates[#updates + 1] = { id = model.id, context_window = has_extended_opus and 1000000 or 200000 }
           end
         end
         db.providers = db.providers or {}
         db.providers.claude = db.providers.claude or {}
         db.providers.claude.subscription_type = event.subscription_type
-        return { db = db }
+        return { db = db, fx = { { type = "dispatch", event = {
+          type = "models/update", provider = "claude", models = updates,
+        } } } }
       end)
     end
 

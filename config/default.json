@@ -11,6 +11,7 @@
     "auth",
     "tool.files",
     "tool.shell",
+    "picker",
     "models",
     "agent",
     "ui"

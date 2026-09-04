@@ -2,6 +2,7 @@
   agent = "agent";
   auth = "auth";
   models = "models";
+  picker = "picker";
   providerFake = "provider.fake";
   providerCommand = "provider.command";
   providerClaude = "provider.claude";

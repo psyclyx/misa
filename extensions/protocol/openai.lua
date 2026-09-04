@@ -60,11 +60,6 @@ function misa.protocols.openai(spec)
       if event.provider and event.provider ~= spec.id then return end
       return discover()
     end)
-    misa.reg_event("model/open", function(db, event)
-      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
-      if db.models and db.models.available[spec.id] == false then return end
-      return discover()
-    end)
     misa.reg_event("provider/" .. spec.id .. "-models", function(_, event)
       if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then
         return { fx = { { type = "dispatch", event = { type = "models/discovery-complete", provider = spec.id } } } }

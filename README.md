@@ -25,6 +25,7 @@ adapters precede the API providers that use them:
     "auth",
     "tool.files",
     "tool.shell",
+    "picker",
     "models",
     "agent",
     "ui"
@@ -76,6 +77,8 @@ phase. Setup may register:
 - `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
   or an ordered array of native effects.
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
+- `misa.reg_view_layer(id,fn)`: contributes an optional semantic overlay layer;
+  the UI composes layers without knowing plugin-owned state.
 - `misa.reg_model(model)`: adds a provider-owned catalogue entry, including an
   optional `context_window`.
 - `misa.reg_auth_provider(provider)`: declares an authentication ID and its
@@ -189,12 +192,15 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 
 ## Standard extensions
 
-`models` owns selection state and an inline `/model` picker; providers own the
-catalogue entries. Type in the picker to filter provider-qualified IDs, then use
+`picker` is a generic searchable single-selection overlay: extensions open it
+with semantic items and receive the chosen value through an event. `models` owns
+only model catalogue, availability, and selection policy; its `/model` command
+uses `picker` without owning input or filtering behavior. Type in the picker to
+filter provider-qualified IDs, then use
 the arrow keys and Enter to select. Models from providers that are not logged in
 are hidden. OpenAI, Anthropic, OpenRouter, and Kimi catalogues are loaded from
-their model APIs at startup and refreshed when the picker opens; Misa does not
-maintain fallback lists for those providers. Set a provider's `discover_models`
+their model APIs after successful authentication; Misa does not maintain
+fallback lists for those providers. Set a provider's `discover_models`
 to `false` and provide an explicit `models` list to keep a fixed catalogue. The
 editor discovers registered slash commands and argument candidates,
 displays matching descriptions, and cycles matches with Tab. Login commands
@@ -238,7 +244,7 @@ to the editor after each response; explicit argv remains a single headless turn.
 ```nix
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
-  extensions = with p.lib.standardExtensions; [ providerFake models agent ui ];
+  extensions = with p.lib.standardExtensions; [ providerFake picker models agent ui ];
   config = {
     models.default = "fake/default";
     providers.fake.responses = [ "done\n" ];
@@ -265,7 +271,7 @@ configuration. `misa login claude` delegates to `claude auth login`; Claude Code
 continues to own and refresh its existing subscription credentials.
 
 API provider lists include their protocol explicitly, for example
-`[ "protocol.anthropic", "provider.anthropic", "models", "agent", "ui" ]`.
+`[ "protocol.anthropic", "provider.anthropic", "picker", "models", "agent", "ui" ]`.
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
 `protocol.anthropic`. ChatGPT subscription access is the separate
 `provider.openai-codex` extension and its Codex Responses protocol.

@@ -84,11 +84,6 @@ function misa.protocols.anthropic(spec)
       if event.provider and event.provider ~= spec.id then return end
       return discover(db)
     end)
-    misa.reg_event("model/open", function(db, event)
-      if type(event.arguments) == "string" and event.arguments:match("%S") then return end
-      if db.models and db.models.available[spec.id] == false then return end
-      return discover(db)
-    end)
     misa.reg_event(completion, function(db, event)
       if not event.ok or type(event.data) ~= "table" or type(event.data.data) ~= "table" then
         if db.model_discovery then db.model_discovery[spec.id] = nil end

@@ -1,5 +1,5 @@
 -- Model selection policy. Providers own catalogue entries; this extension owns
--- availability, filtering, selection, and picker transitions.
+-- availability and selection. Search and picker transitions belong to picker.
 local function copy_model(model)
   return {
     id = model.id, provider = model.provider, model = model.model,
@@ -11,15 +11,25 @@ local function find(entries, id)
   for _, model in ipairs(entries) do if model.id == id then return model end end
 end
 
-local function selected_index(entries, selected)
-  for i, model in ipairs(entries) do if model.id == selected then return i end end
-  return #entries > 0 and 1 or 0
+local function picker_items(state)
+  local items = {}
+  for _, model in ipairs(state.entries) do
+    items[#items + 1] = { value = model.id, label = model.id, description = model.label or "" }
+  end
+  return items
 end
 
-local function pop_utf8(value)
-  local index = #value
-  while index > 0 and value:byte(index) >= 0x80 and value:byte(index) < 0xc0 do index = index - 1 end
-  return value:sub(1, math.max(0, index - 1))
+local function picker_updates(state)
+  if not state.picker_token then return {} end
+  return { { type = "dispatch", event = {
+    type = "picker/update", id = "models", token = state.picker_token,
+    items = picker_items(state), selected = state.selected or misa.json_null,
+  } } }
+end
+
+local function select_model(state, id)
+  state.selected = id
+  return picker_updates(state)
 end
 
 local function rebuild(state, preferred)
@@ -31,15 +41,6 @@ local function rebuild(state, preferred)
   if not find(entries, state.selected) then
     state.selected = find(entries, preferred) and preferred or (preferred == nil and #entries > 0 and entries[1].id or nil)
   end
-
-  local query = state.query:lower()
-  local filtered = {}
-  for _, model in ipairs(entries) do
-    local text = (model.id .. " " .. (model.label or "") .. " " .. model.provider):lower()
-    if query == "" or text:find(query, 1, true) then filtered[#filtered + 1] = model end
-  end
-  state.filtered = filtered
-  state.index = selected_index(filtered, state.selected)
 end
 
 return {
@@ -67,8 +68,8 @@ return {
         local catalogue = {}
         for _, model in ipairs(misa.models()) do catalogue[#catalogue + 1] = copy_model(model) end
         local state = {
-          catalogue = catalogue, available = tx.db.provider_availability or {}, entries = {}, filtered = {},
-          selected = default, configured_default = default, picker = false, query = "", index = 0,
+          catalogue = catalogue, available = tx.db.provider_availability or {}, entries = {},
+          selected = default, configured_default = default,
         }
         rebuild(state, default)
         tx.db.models = state
@@ -81,43 +82,25 @@ return {
       local requested = type(event.arguments) == "string" and event.arguments:match("^%s*(%S+)%s*$") or nil
       if requested then
         assert(find(state.entries, requested), "unknown or unavailable model")
-        state.selected, state.picker = requested, false
-        rebuild(state, default)
-        return { db = db, fx = { { type = "terminal/read" } } }
+        local effects = select_model(state, requested)
+        effects[#effects + 1] = { type = "terminal/read" }
+        return { db = db, fx = effects }
       end
-      state.picker, state.query = true, ""
-      rebuild(state, default)
-      return { db = db, fx = { { type = "terminal/read" } } }
+      assert(misa.picker, "model picker requires the picker extension")
+      state.picker_sequence = (state.picker_sequence or 0) + 1
+      state.picker_token = "models:" .. tostring(state.picker_sequence)
+      return { db = db, fx = { { type = "dispatch", event = {
+        type = "picker/open", id = "models", token = state.picker_token, title = "model", items = picker_items(state),
+        selected = state.selected, completion = "model/picked",
+      } } } }
     end)
 
-    misa.reg_interceptor({
-      id = "models/input",
-      before = function(tx)
-        if tx.event.type == "terminal/input" and tx.db.models and tx.db.models.picker then
-          tx.event = { type = "model/input", kind = tx.event.kind, text = tx.event.text }
-        end
-        return tx
-      end,
-    })
-
-    misa.reg_event("model/input", function(db, event)
-      local state = db.models
-      local entries = state.filtered
-      if event.kind == "text" and type(event.text) == "string" then
-        state.query = state.query .. event.text
-        rebuild(state, default)
-      elseif event.kind == "backspace" then
-        state.query = pop_utf8(state.query)
-        rebuild(state, default)
-      elseif event.kind == "arrow_up" and #entries > 0 then
-        state.index = state.index <= 1 and #entries or state.index - 1
-      elseif event.kind == "arrow_down" and #entries > 0 then
-        state.index = state.index >= #entries and 1 or state.index + 1
-      elseif event.kind == "enter" and #entries > 0 then
-        state.selected, state.picker = entries[state.index].id, false
-        rebuild(state, default)
-      elseif event.kind == "escape" or event.kind == "ctrl_c" or event.kind == "ctrl_d" or event.kind == "eof" then
-        state.picker = false
+    misa.reg_event("model/picked", function(db, event)
+      if event.picker ~= "models" or event.picker_token ~= db.models.picker_token then return end
+      db.models.picker_token = nil
+      if event.cancelled ~= true then
+        assert(type(event.value) == "string" and find(db.models.entries, event.value), "unknown or unavailable model")
+        db.models.selected = event.value
       end
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
@@ -127,7 +110,24 @@ return {
       local state = assert(db.models, "model state is not initialized")
       state.available[event.provider] = event.available
       rebuild(state, default)
-      return { db = db }
+      return { db = db, fx = picker_updates(state) }
+    end)
+
+    misa.reg_event("models/update", function(db, event)
+      assert(type(event.provider) == "string" and type(event.models) == "table", "invalid model update")
+      local state = assert(db.models, "model state is not initialized")
+      local updates = {}
+      for _, update in ipairs(event.models) do
+        assert(type(update) == "table" and type(update.id) == "string", "invalid model update")
+        assert(update.context_window == nil or (type(update.context_window) == "number" and update.context_window > 0 and update.context_window % 1 == 0), "invalid context window")
+        updates[update.id] = update
+      end
+      for _, model in ipairs(state.catalogue) do
+        local update = model.provider == event.provider and updates[model.id] or nil
+        if update then model.context_window = update.context_window end
+      end
+      rebuild(state, default)
+      return { db = db, fx = picker_updates(state) }
     end)
 
     misa.reg_event("models/replace-provider", function(db, event)
@@ -156,14 +156,12 @@ return {
       end
       state.catalogue = catalogue
       rebuild(state, default)
-      return { db = db }
+      return { db = db, fx = picker_updates(state) }
     end)
 
     misa.reg_event("model/select", function(db, event)
       assert(type(event.id) == "string" and find(db.models.entries, event.id), "unknown or unavailable model")
-      db.models.selected, db.models.picker = event.id, false
-      rebuild(db.models, default)
-      return { db = db }
+      return { db = db, fx = select_model(db.models, event.id) }
     end)
   end,
 }

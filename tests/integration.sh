@@ -108,6 +108,26 @@ printf '{"extensions":["ui","%s"]}' "$work/command-completion.lua" >"$work/comma
 [ "$(printf 'discard me\003/p\t\n' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" = pong ]
 [ -z "$(printf '\004' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" ]
 
+stage=generic-picker
+cat >"$work/generic-picker.lua" <<'LUA'
+return {setup=function()
+  misa.reg_command({name="/choose",description="test generic picker",event="test/choose"})
+  misa.reg_event("test/choose",function(db)
+    return {db=db,fx={{type="dispatch",event={type="picker/open",id="test",token="test:1",title="choice",selected="alpha",completion="test/chosen",items={
+      {value="alpha",label="Alpha"},{value="beta/path",label="Beta"},
+    }}}}}
+  end)
+  misa.reg_event("test/chosen",function(_,event)
+    local text=event.cancelled and ("cancelled "..event.picker_token) or event.value
+    return {fx={{type="view/commit",lines={{spans={{text=text}}}}},{type="app/quit"}}}
+  end)
+end}
+LUA
+printf '{"extensions":["picker","ui","%s"]}' "$work/generic-picker.lua" >"$work/generic-picker.json"
+[ "$(printf '/choose\nbeta\n' | MISA_CONFIG="$work/generic-picker.json" "$MISA_BIN")" = 'beta/path' ]
+printf '/choose\n\033' | MISA_CONFIG="$work/generic-picker.json" "$MISA_BIN" >"$work/picker-cancelled"
+grep -E '^cancelled test:[0-9]+$' "$work/picker-cancelled" >/dev/null
+
 stage=dynamic-models
 cat >"$work/dynamic-models.lua" <<'LUA'
 return {setup=function()
@@ -135,7 +155,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["%s","models","agent","ui"],"config":{"models":{"default":"picker/vendor/first"}}}' "$work/model-picker-filter.lua" >"$work/model-picker-filter.json"
+printf '{"extensions":["%s","picker","models","agent","ui"],"config":{"models":{"default":"picker/vendor/first"}}}' "$work/model-picker-filter.lua" >"$work/model-picker-filter.json"
 [ "$(printf '/model\nsecond\nhello\n' | MISA_CONFIG="$work/model-picker-filter.json" "$MISA_BIN")" = 'picked vendor/second' ]
 
 stage=unavailable-models

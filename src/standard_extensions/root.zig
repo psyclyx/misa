@@ -8,6 +8,7 @@ pub const ids = [_][]const u8{
     "agent",
     "auth",
     "models",
+    "picker",
     "provider.fake",
     "provider.command",
     "provider.claude",
@@ -36,6 +37,7 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "agent")) return "agent.lua";
     if (std.mem.eql(u8, id, "auth")) return "auth.lua";
     if (std.mem.eql(u8, id, "models")) return "models.lua";
+    if (std.mem.eql(u8, id, "picker")) return "picker.lua";
     if (std.mem.eql(u8, id, "provider.fake")) return "provider/fake.lua";
     if (std.mem.eql(u8, id, "provider.command")) return "provider/command.lua";
     if (std.mem.eql(u8, id, "provider.claude")) return "provider/claude.lua";
@@ -71,6 +73,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("agent.lua", catalogPath("agent").?);
     try std.testing.expectEqualStrings("auth.lua", catalogPath("auth").?);
     try std.testing.expectEqualStrings("models.lua", catalogPath("models").?);
+    try std.testing.expectEqualStrings("picker.lua", catalogPath("picker").?);
     try std.testing.expectEqualStrings("provider/fake.lua", catalogPath("provider.fake").?);
     try std.testing.expectEqualStrings("provider/command.lua", catalogPath("provider.command").?);
     try std.testing.expectEqualStrings("provider/claude.lua", catalogPath("provider.claude").?);
@@ -86,7 +89,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
     try std.testing.expectEqualStrings("tool/files.lua", catalogPath("tool.files").?);
     try std.testing.expectEqualStrings("tool/shell.lua", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 16), ids.len);
+    try std.testing.expectEqual(@as(usize, 17), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {
