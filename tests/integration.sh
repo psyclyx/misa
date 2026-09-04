@@ -25,6 +25,10 @@ chmod +x "$work/bin/claude"
 PATH="$work/bin:$PATH" "$MISA_BIN" login claude
 [ ! -e "$work/session-auth.json" ]
 
+# Real provider declarations compose without credentials until they are used.
+printf '%s' '{"extensions":["protocol.anthropic","provider.anthropic","provider.kimi","protocol.openai","provider.openai","provider.openrouter","provider.openai-codex","provider.claude","models","agent","ui"],"config":{"models":{"default":"anthropic/claude-sonnet-4-6"}}}' >"$work/providers.json"
+[ -z "$(MISA_CONFIG="$work/providers.json" "$MISA_BIN" </dev/null)" ]
+
 # Terminal/process ownership stays native while ordinary Lua composition and
 # source loading remain available; decoded null retains its sentinel.
 cat >"$work/sandbox.lua" <<'LUA'
