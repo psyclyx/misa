@@ -15,9 +15,15 @@ pub fn main(init: std.process.Init) !void {
     defer argv.deinit(allocator);
     while (args_iterator.next()) |arg| try argv.append(allocator, arg);
 
-    if (argv.items.len > 1 and std.mem.eql(u8, argv.items[1], "login")) {
-        if (argv.items.len != 3) fatal("usage: misa login <openai|openai-codex|anthropic|openrouter|kimi-coding|claude>");
-        try login(init, allocator, argv.items[2]);
+    if (argv.items.len > 1 and (std.mem.eql(u8, argv.items[1], "login") or std.mem.eql(u8, argv.items[1], "logout") or std.mem.eql(u8, argv.items[1], "status"))) {
+        if (argv.items.len != 3) fatal("usage: misa <login|logout|status> <openai|openai-codex|anthropic|openrouter|kimi-coding|claude>");
+        const command = argv.items[1];
+        if (std.mem.eql(u8, command, "login"))
+            try login(init, allocator, argv.items[2])
+        else if (std.mem.eql(u8, command, "logout"))
+            try logout(init, allocator, argv.items[2])
+        else
+            try status(init, allocator, argv.items[2]);
         return;
     }
 
@@ -127,13 +133,7 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
 }
 
 fn login(init: std.process.Init, allocator: std.mem.Allocator, provider: []const u8) !void {
-    if (std.mem.eql(u8, provider, "claude")) {
-        var child = try std.process.spawn(init.io, .{ .argv = &.{ "claude", "auth", "login" } });
-        defer child.kill(init.io);
-        const term = try child.wait(init.io);
-        if (term != .exited or term.exited != 0) return error.ClaudeLoginFailed;
-        return;
-    }
+    if (std.mem.eql(u8, provider, "claude")) return claudeAuth(init, "login");
     var store = try auth.Store.init(allocator, init.io, init.environ_map);
     defer store.deinit();
     if (std.mem.eql(u8, provider, "openai-codex") or std.mem.eql(u8, provider, "kimi-coding")) {
@@ -158,6 +158,35 @@ fn login(init: std.process.Init, allocator: std.mem.Allocator, provider: []const
         try store.put(provider, secret);
     } else fatal("unknown login provider");
     std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
+}
+
+fn logout(init: std.process.Init, allocator: std.mem.Allocator, provider: []const u8) !void {
+    if (std.mem.eql(u8, provider, "claude")) return claudeAuth(init, "logout");
+    if (!managedProvider(provider)) fatal("unknown provider");
+    var store = try auth.Store.init(allocator, init.io, init.environ_map);
+    defer store.deinit();
+    _ = try store.remove(provider);
+}
+
+fn status(init: std.process.Init, allocator: std.mem.Allocator, provider: []const u8) !void {
+    if (std.mem.eql(u8, provider, "claude")) return claudeAuth(init, "status");
+    if (!managedProvider(provider)) fatal("unknown provider");
+    var store = try auth.Store.init(allocator, init.io, init.environ_map);
+    defer store.deinit();
+    try std.Io.File.stdout().writeStreamingAll(init.io, if (store.contains(provider)) "logged in\n" else "logged out\n");
+}
+
+fn managedProvider(provider: []const u8) bool {
+    return std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "openai-codex") or
+        std.mem.eql(u8, provider, "anthropic") or std.mem.eql(u8, provider, "openrouter") or
+        std.mem.eql(u8, provider, "kimi-coding");
+}
+
+fn claudeAuth(init: std.process.Init, command: []const u8) !void {
+    var child = try std.process.spawn(init.io, .{ .argv = &.{ "claude", "auth", command } });
+    defer child.kill(init.io);
+    const term = try child.wait(init.io);
+    if (term != .exited or term.exited != 0) return error.ClaudeAuthFailed;
 }
 
 fn fatal(message: []const u8) noreturn {

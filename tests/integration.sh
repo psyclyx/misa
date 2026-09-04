@@ -16,13 +16,20 @@ grep -F 'saved openai credential' "$work/login-output" >/dev/null
 [ "$(stat -c %a "$work/state/misa")" = 700 ]
 [ "$(stat -c %a "$work/state/misa/auth.json")" = 600 ]
 grep -F 'test-secret' "$work/state/misa/auth.json" >/dev/null
+[ "$(env -u MISA_AUTH_FILE XDG_STATE_HOME="$work/state" "$MISA_BIN" status openai)" = 'logged in' ]
+env -u MISA_AUTH_FILE XDG_STATE_HOME="$work/state" "$MISA_BIN" logout openai
+[ "$(env -u MISA_AUTH_FILE XDG_STATE_HOME="$work/state" "$MISA_BIN" status openai)" = 'logged out' ]
+! grep -F 'test-secret' "$work/state/misa/auth.json" >/dev/null
 mkdir "$work/bin"
 cat >"$work/bin/claude" <<'SH'
 #!/bin/sh
-[ "$1 $2" = "auth login" ]
+[ "$1" = auth ]
+case "$2" in login|logout) ;; status) printf 'claude status\n' ;; *) exit 1 ;; esac
 SH
 chmod +x "$work/bin/claude"
 PATH="$work/bin:$PATH" "$MISA_BIN" login claude
+[ "$(PATH="$work/bin:$PATH" "$MISA_BIN" status claude)" = 'claude status' ]
+PATH="$work/bin:$PATH" "$MISA_BIN" logout claude
 [ ! -e "$work/session-auth.json" ]
 
 # Real provider declarations compose without credentials until they are used.

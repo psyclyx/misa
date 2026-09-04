@@ -35,6 +35,16 @@ pub const Store = struct {
         self.allocator.free(self.path);
     }
 
+    pub fn contains(self: *const Store, id: []const u8) bool {
+        return self.parsed.value.object.get(id) != null;
+    }
+
+    pub fn remove(self: *Store, id: []const u8) !bool {
+        if (!self.parsed.value.object.swapRemove(id)) return false;
+        try self.save();
+        return true;
+    }
+
     pub fn get(self: *const Store, id: []const u8) ?[]const u8 {
         const value = self.parsed.value.object.get(id) orelse return null;
         return switch (value) {

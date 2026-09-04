@@ -195,8 +195,11 @@ p.lib.mkMisa {
 Run `misa login openai` or `misa login anthropic` to enter an API key without
 terminal echo. `misa login openai-codex` uses OpenAI's device flow for a
 ChatGPT subscription, `misa login kimi-coding` uses Kimi's device flow, and
-`misa login openrouter` uses OpenRouter's headless PKCE flow. OAuth access
-credentials are refreshed from their stored refresh tokens. Credentials are
+`misa login openrouter` uses OpenRouter's headless PKCE flow. Use
+`misa status PROVIDER` to inspect login state without exposing credential data
+and `misa logout PROVIDER` to remove it. For `claude`, all three commands are
+delegated to `claude auth`. OAuth access credentials are refreshed from their
+stored refresh tokens. Credentials are
 written atomically with mode `0600` beneath a mode `0700` directory. The
 path is `$MISA_AUTH_FILE`, otherwise `$XDG_STATE_HOME/misa/auth.json`, otherwise
 `$HOME/.local/state/misa/auth.json`. They never belong in regular or Nix
