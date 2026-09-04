@@ -51,6 +51,7 @@ return {
       local argv = {
         executable,
         "--print",
+        "--input-format", "stream-json",
         "--output-format", "stream-json",
         "--verbose",
         "--model", effect.model,
@@ -60,10 +61,12 @@ return {
         "--no-session-persistence",
       }
       if effect.system_prompt then argv[#argv + 1] = "--system-prompt"; argv[#argv + 1] = effect.system_prompt end
-      argv[#argv + 1] = "--"
-      argv[#argv + 1] = transcript(effect.messages)
       return {
         type = "process/run", argv = argv, id = effect.id,
+        stdin_json = {
+          type = "user", message = { role = "user", content = transcript(effect.messages) },
+          parent_tool_use_id = misa.json_null,
+        },
         completion = "provider/claude-complete", stdout_format = "json_lines",
       }
     end)
@@ -83,8 +86,13 @@ return {
         local message = type(result.result) == "string" and result.result or "Claude request failed"
         return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = message } } } }
       end
+      local usage = type(result.usage) == "table" and result.usage or {}
       return { fx = { { type = "dispatch", event = {
         type = "agent/result", id = event.id, content = { { type = "text", text = result.result } },
+        usage = {
+          input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
+          cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
+        },
       } } } }
     end)
   end,

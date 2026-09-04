@@ -96,7 +96,9 @@ normalized to spaces and malformed UTF-8
 is repaired before completion events are dispatched. Completion events include
 `ok`, `status`, `stdout`, `stderr`, and `id`. With
 `stdout_format="json_lines"`, successful output is decoded into an ordered
-`records` array instead of being returned as an opaque string.
+`records` array instead of being returned as an opaque string. `process/run`
+also accepts bounded `stdin` text or one `stdin_json` value; the latter is
+serialized with a trailing newline for JSONL subprocess protocols.
 
 A view is modest semantic data:
 
@@ -162,8 +164,8 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 
 `models` owns selection state and an inline `/model` picker; providers own the
 catalogue entries. `agent` owns normalized conversation history, repeated user
-turns, provider correlation, parallel tool-result collection, and automatic
-continuation after tools. `tool.files` registers `read_file`, `write_file`, and
+turns, provider correlation, parallel tool-result collection, normalized token
+usage accounting, and automatic continuation after tools. `tool.files` registers `read_file`, `write_file`, and
 `edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
 extensions and are not enabled by the harness. `provider.fake` keeps its state under
 `db.providers.fake`; `provider.command` adapts user executables.

@@ -150,8 +150,15 @@ cmp "$work/expected-command-output" "$work/command-output"
 cat >"$work/claude" <<'SH'
 #!/bin/sh
 saw_empty=false
-for arg do [ -z "$arg" ] && saw_empty=true; done
+saw_input=false
+for arg do
+  [ -z "$arg" ] && saw_empty=true
+  [ "$arg" = "stream-json" ] && saw_input=true
+done
 [ "$saw_empty" = true ] || exit 30
+[ "$saw_input" = true ] || exit 31
+input=$(cat)
+case "$input" in *'"type":"user"'*'"content":"Continue this conversation.'*) ;; *) exit 32 ;; esac
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"test"}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"claude result","session_id":"test"}'
 SH

@@ -81,8 +81,14 @@ function misa.protocols.openai(spec)
         content[#content + 1] = { type = "tool_call", id = call.id, name = fn.name, arguments_json = fn.arguments }
       end
     end
+    local raw_usage = type(event.data.usage) == "table" and event.data.usage or {}
+    local details = type(raw_usage.prompt_tokens_details) == "table" and raw_usage.prompt_tokens_details or {}
     return { fx = { { type = "dispatch", event = {
       type = "agent/result", id = event.id, content = content, stop_reason = choice.finish_reason,
+      usage = {
+        input_tokens = raw_usage.prompt_tokens or 0, output_tokens = raw_usage.completion_tokens or 0,
+        cache_read_tokens = details.cached_tokens or 0, cache_write_tokens = 0,
+      },
     } } } }
   end)
 end

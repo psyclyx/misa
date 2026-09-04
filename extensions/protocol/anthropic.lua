@@ -89,8 +89,13 @@ function misa.protocols.anthropic(spec)
     if type(data) ~= "table" or type(data.content) ~= "table" then
       return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = "invalid Anthropic response" } } } }
     end
+    local usage = type(data.usage) == "table" and data.usage or {}
     return { fx = { { type = "dispatch", event = {
       type = "agent/result", id = event.id, content = response_content(data.content), stop_reason = data.stop_reason,
+      usage = {
+        input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
+        cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
+      },
     } } } }
   end)
 end

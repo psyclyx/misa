@@ -69,7 +69,7 @@ return {
       if not event.ok then
         return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = event.message or event.body or ("HTTP " .. tostring(event.status)) } } } }
       end
-      local text, content = {}, {}
+      local text, content, usage = {}, {}, {}
       for _, record in ipairs(event.data or {}) do
         if record.type == "response.output_text.delta" and type(record.delta) == "string" then
           text[#text + 1] = record.delta
@@ -78,12 +78,21 @@ return {
             type = "tool_call", id = record.item.call_id, name = record.item.name,
             arguments_json = record.item.arguments or "{}",
           }
+        elseif record.type == "response.completed" and type(record.response) == "table" and type(record.response.usage) == "table" then
+          usage = record.response.usage
         elseif record.type == "error" then
           return { fx = { { type = "dispatch", event = { type = "agent/error", id = event.id, message = tostring(record.message or "Codex request failed") } } } }
         end
       end
       if #text > 0 then table.insert(content, 1, { type = "text", text = table.concat(text) }) end
-      return { fx = { { type = "dispatch", event = { type = "agent/result", id = event.id, content = content } } } }
+      local details = type(usage.input_tokens_details) == "table" and usage.input_tokens_details or {}
+      return { fx = { { type = "dispatch", event = {
+        type = "agent/result", id = event.id, content = content,
+        usage = {
+          input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
+          cache_read_tokens = details.cached_tokens or 0, cache_write_tokens = 0,
+        },
+      } } } }
     end)
   end,
 }

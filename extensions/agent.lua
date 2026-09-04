@@ -32,6 +32,19 @@ local function request(db)
   }
 end
 
+local function record_usage(agent, usage)
+  if usage == nil then return end
+  assert(type(usage) == "table", "usage must be a table")
+  local normalized = {}
+  for _, name in ipairs({ "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens" }) do
+    local value = usage[name] or 0
+    assert(type(value) == "number" and value >= 0 and value % 1 == 0, name .. " must be a nonnegative integer")
+    normalized[name] = value
+    agent.usage[name] = agent.usage[name] + value
+  end
+  agent.last_usage = normalized
+end
+
 local function tool_result(call_id, text, is_error)
   return { role = "tool", tool_call_id = call_id, content = { { type = "text", text = tostring(text) } }, is_error = is_error == true }
 end
@@ -46,6 +59,7 @@ return {
       db.agent = {
         messages = {}, request_seq = 0, status = "ready", system_prompt = config.system_prompt,
         exit_after_response = #cofx.argv > 0, pending_tools = {}, pending_tool_count = 0,
+        usage = { input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0 },
       }
       if #cofx.argv == 0 then return { db = db } end
       return { db = db, fx = { { type = "dispatch", event = { type = "agent/submit", prompt = table.concat(cofx.argv, " ") } } } }
@@ -63,6 +77,7 @@ return {
       local agent = db.agent
       if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id then return end
       local blocks = content(event.content, "assistant")
+      record_usage(agent, event.usage)
       agent.messages[#agent.messages + 1] = { role = "assistant", content = blocks }
       agent.active_request_id, agent.accepted_request_id = nil, event.id
       local effects, saw_tool = {}, false

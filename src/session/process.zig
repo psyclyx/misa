@@ -8,9 +8,10 @@ pub const Spec = struct {
     completion: []const u8,
     id: []const u8,
     stdout_format: StdoutFormat,
+    stdin: ?[]const u8,
+    stdin_json: ?std.json.Value,
 
     pub fn parse(object: std.json.ObjectMap) !Spec {
-        if (object.get("stdin") != null) return error.UnsupportedProcessStdin;
         const argv = switch (object.get("argv") orelse return error.InvalidEffect) {
             .array => |array| array.items,
             else => return error.InvalidEffect,
@@ -24,11 +25,19 @@ pub const Spec = struct {
             .string => |string| string,
             else => return error.InvalidEffect,
         } else "text";
+        const stdin = if (object.get("stdin")) |value| switch (value) {
+            .string => |string| if (string.len <= 1024 * 1024) string else return error.EffectTooLarge,
+            else => return error.InvalidEffect,
+        } else null;
+        const stdin_json = object.get("stdin_json");
+        if (stdin != null and stdin_json != null) return error.InvalidEffect;
         return .{
             .argv = argv,
             .completion = nonEmptyString(object, "completion") orelse return error.InvalidEffect,
             .id = nonEmptyString(object, "id") orelse return error.InvalidEffect,
             .stdout_format = if (std.mem.eql(u8, format, "text")) .text else if (std.mem.eql(u8, format, "json_lines")) .json_lines else return error.InvalidEffect,
+            .stdin = stdin,
+            .stdin_json = stdin_json,
         };
     }
 };
@@ -49,11 +58,15 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, spec: Spec) !Result {
     defer argv.deinit(allocator);
     for (spec.argv) |arg| try argv.append(allocator, arg.string);
 
-    const captured = std.process.run(allocator, io, .{
-        .argv = argv.items,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-    }) catch |err| {
+    var encoded_stdin: ?[]u8 = null;
+    defer if (encoded_stdin) |value| allocator.free(value);
+    if (spec.stdin_json) |value| {
+        const json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        defer allocator.free(json);
+        encoded_stdin = try std.fmt.allocPrint(allocator, "{s}\n", .{json});
+    }
+    const process_stdin: ?[]const u8 = if (spec.stdin) |value| value else if (encoded_stdin) |value| value else null;
+    const captured = capture(allocator, io, argv.items, process_stdin) catch |err| {
         const stdout = try allocator.dupe(u8, "");
         errdefer allocator.free(stdout);
         return .{
@@ -76,6 +89,36 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, spec: Spec) !Result {
         .stdout = stdout,
         .stderr = try sanitizeOutput(allocator, captured.stderr, 1024 * 1024),
     };
+}
+
+fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin: ?[]const u8) !std.process.RunResult {
+    if (stdin == null) return std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+    });
+    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
+    defer child.kill(io);
+    try child.stdin.?.writeStreamingAll(io, stdin.?);
+    child.stdin.?.close(io);
+    child.stdin = null;
+
+    var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var reader: std.Io.File.MultiReader = undefined;
+    reader.init(allocator, io, buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer reader.deinit();
+    while (reader.fill(64, .none)) |_| {
+        if (reader.reader(0).buffered().len > 1024 * 1024 or reader.reader(1).buffered().len > 1024 * 1024)
+            return error.StreamTooLong;
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |other| return other,
+    }
+    try reader.checkAnyError();
+    const term = try child.wait(io);
+    const stdout = try reader.toOwnedSlice(0);
+    errdefer allocator.free(stdout);
+    return .{ .term = term, .stdout = stdout, .stderr = try reader.toOwnedSlice(1) };
 }
 
 /// Make captured bytes safe for JSON and later semantic presentation.
