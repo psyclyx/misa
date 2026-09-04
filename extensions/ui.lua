@@ -149,6 +149,10 @@ return {
       return { db = db, fx = { { type = "terminal/read" } } }
     end)
 
+    misa.reg_event("ui/redraw", function(db)
+      return { db = db, fx = { { type = "terminal/read" } } }
+    end)
+
     misa.reg_interceptor({
       id = "ui/completion",
       before = function(tx)
@@ -170,7 +174,13 @@ return {
           tx.fx[#tx.fx + 1] = { type = "view/commit", lines = lines_for(tostring(event.message), "error") }
         end
         if agent.status == "ready" then
-          tx.fx[#tx.fx + 1] = agent.exit_after_response and { type = "app/quit" } or { type = "terminal/read" }
+          if agent.exit_after_response then
+            tx.fx[#tx.fx + 1] = { type = "app/quit" }
+          elseif tx.cofx.terminal.interactive then
+            tx.fx[#tx.fx + 1] = { type = "dispatch", event = { type = "ui/redraw" } }
+          else
+            tx.fx[#tx.fx + 1] = { type = "terminal/read" }
+          end
         end
         return tx
       end,
