@@ -2,15 +2,11 @@
 set -eu
 MISA_BIN="$1"
 
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-cat >"$work/config.json" <<'EOF'
-{"extensions":["provider.fake","agent","ui"],"config":{"agent":{"provider":"fake"},"providers":{"fake":{"responses":["installed lookup ok"]}}}}
-EOF
-
-unset MISA_EXTENSION_DIR
-actual="$(MISA_CONFIG="$work/config.json" "$MISA_BIN" smoke)"
-[ "$actual" = 'installed lookup ok' ] || {
-  printf 'installed-layout lookup failed: %s\n' "$actual" >&2
+unset MISA_CONFIG MISA_EXTENSION_DIR
+# A closed non-TTY stdin is an EOF input event, not a session failure.
+[ -z "$("$MISA_BIN" </dev/null)" ]
+actual="$("$MISA_BIN" smoke)"
+[ "$actual" = 'misa is running' ] || {
+  printf 'installed default config/extension lookup failed: %s\n' "$actual" >&2
   exit 1
 }

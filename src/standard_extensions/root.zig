@@ -2,6 +2,8 @@
 const std = @import("std");
 const build_options = @import("misa_build_options");
 
+pub const default_config_path = build_options.default_config_path;
+
 pub const ids = [_][]const u8{
     "agent",
     "provider.fake",

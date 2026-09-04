@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         try extension_argv.append(allocator, arg);
     }
     if (config_path == null) config_path = init.environ_map.get("MISA_CONFIG");
-    const path = config_path orelse fatal("configuration required: pass --config PATH or set MISA_CONFIG");
+    const path = config_path orelse standard_extensions.default_config_path;
 
     const source = std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(16 * 1024 * 1024)) catch |err| {
         std.debug.print("misa: cannot read config '{s}': {s}\n", .{ path, @errorName(err) });

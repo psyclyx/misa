@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
     });
     const standard_extension_options = b.addOptions();
     standard_extension_options.addOption([]const u8, "default_extension_dir", b.getInstallPath(.{ .custom = "share/misa" }, "extensions"));
+    standard_extension_options.addOption([]const u8, "default_config_path", b.getInstallPath(.{ .custom = "share/misa" }, "default.json"));
     const standard_extensions = b.createModule(.{
         .root_source_file = b.path("src/standard_extensions/root.zig"),
         .target = target,
@@ -55,8 +56,10 @@ pub fn build(b: *std.Build) void {
         .install_dir = .{ .custom = "share/misa" },
         .install_subdir = "extensions",
     });
+    b.installFile("config/default.json", "share/misa/default.json");
 
     const run = b.addRunArtifact(exe);
+    run.step.dependOn(b.getInstallStep());
     run.setEnvironmentVariable("MISA_EXTENSION_DIR", b.pathFromRoot("extensions"));
     if (b.args) |args| run.addArgs(args);
     b.step("run", "Run misa").dependOn(&run.step);

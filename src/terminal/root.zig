@@ -344,7 +344,16 @@ pub const Terminal = struct {
 
     pub fn readEvents(self: *Terminal, out: *std.ArrayList(Event)) !void {
         var bytes: [4096]u8 = undefined;
-        const n = try std.Io.File.stdin().readStreaming(self.io, &.{&bytes});
+        const n = std.Io.File.stdin().readStreaming(self.io, &.{&bytes}) catch |err| switch (err) {
+            // Zig's streaming file API reports a closed pipe/file as an error
+            // rather than a zero-length read. Treat it as the input event it is.
+            error.EndOfStream => {
+                try self.decoder.finishEof(self.allocator, out);
+                try out.append(self.allocator, .eof);
+                return;
+            },
+            else => return err,
+        };
         if (n == 0) {
             if (self.interactive) try self.decoder.finish(self.allocator, out) else {
                 try self.decoder.finishEof(self.allocator, out);

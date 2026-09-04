@@ -26,12 +26,17 @@ zig build -Doptimize=ReleaseSafe
 zig build run -- --config config/default.json hello
 ```
 
-A configuration path is required via `--config PATH` or `MISA_CONFIG`.
-Arguments not consumed by that option are exposed as `cofx.argv`. Bare standard IDs use `MISA_EXTENSION_DIR` when set, otherwise the absolute
+Without an override, misa loads the installed `share/misa/default.json`, which
+selects the fake provider, agent, and UI as a runnable smoke-test profile.
+`--config PATH` takes precedence over `MISA_CONFIG`, which takes precedence over
+that installed default. Arguments not consumed by `--config` are exposed as
+`cofx.argv`.
+
+Bare standard IDs use `MISA_EXTENSION_DIR` when set, otherwise the absolute
 `share/misa/extensions` path compiled from `zig build --prefix`. Relocated or
-copied binaries must set `MISA_EXTENSION_DIR`; misa never discovers its own
-executable path. Values containing `/` or ending in `.lua` are literal custom
-paths.
+copied installations must set both `MISA_CONFIG` and `MISA_EXTENSION_DIR`; misa
+never discovers its own executable path. Values containing `/` or ending in
+`.lua` are literal custom paths.
 
 ## Event, coeffect, effect, and view contract
 
