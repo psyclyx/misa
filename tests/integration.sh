@@ -109,7 +109,7 @@ printf '{"extensions":["provider.fake","models","agent","ui","%s"],"config":{"mo
 
 stage=native-tools
 cat >"$work/native-tools.json" <<JSON
-{"extensions":["provider.fake","tool.files","tool.shell","models","agent","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"write-1","name":"write_file","arguments":{"path":"$work/native-tool.txt","content":"alpha"}}],[{"type":"tool_call","id":"edit-1","name":"edit_file","arguments":{"path":"$work/native-tool.txt","old_text":"alpha","new_text":"beta"}}],[{"type":"tool_call","id":"read-1","name":"read_file","arguments":{"path":"$work/native-tool.txt"}}],[{"type":"tool_call","id":"shell-1","name":"shell","arguments":{"command":"printf shell-ok"}}],"tools done"]}}}}
+{"extensions":["provider.fake","tool.files","tool.shell","models","agent","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"write-1","name":"write_file","arguments":{"path":"$work/native-tool.txt","content":"alpha"}}],[{"type":"tool_call","id":"edit-1","name":"edit_file","arguments":{"path":"$work/native-tool.txt","old_text":"alpha","new_text":"beta"}}],[{"type":"tool_call","id":"read-1","name":"read_file","arguments":{"path":"$work/native-tool.txt"}}],[{"type":"tool_call","id":"list-1","name":"list_directory","arguments":{"path":"$work"}}],[{"type":"tool_call","id":"shell-1","name":"shell","arguments":{"command":"printf shell-ok"}}],"tools done"]}}}}
 JSON
 [ "$(MISA_CONFIG="$work/native-tools.json" "$MISA_BIN" use native tools)" = 'tools done' ]
 [ "$(cat "$work/native-tool.txt")" = beta ]
@@ -120,6 +120,7 @@ printf '%s\n' \
   "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"$work/mcp-tool.txt\",\"content\":\"from mcp\"}}}" |
   MISA_CONFIG="$work/native-tools.json" "$MISA_BIN" mcp >"$work/mcp-output"
 grep -F '"name":"read_file"' "$work/mcp-output" >/dev/null
+grep -F '"name":"list_directory"' "$work/mcp-output" >/dev/null
 grep -F '"isError":false' "$work/mcp-output" >/dev/null
 [ "$(cat "$work/mcp-tool.txt")" = 'from mcp' ]
 

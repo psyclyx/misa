@@ -13,6 +13,12 @@ return {
       effect = "tool.files/read",
     })
     misa.reg_tool({
+      name = "list_directory",
+      description = "List one directory. Directory names have a trailing slash.",
+      input_schema = schema({ path = { type = "string", description = "Directory path" } }, { "path" }),
+      effect = "tool.files/list",
+    })
+    misa.reg_tool({
       name = "write_file",
       description = "Create or replace a UTF-8 text file with the exact supplied content.",
       input_schema = schema({
@@ -42,6 +48,12 @@ return {
     misa.reg_fx("tool.files/read", function(effect)
       return {
         type = "file/read", path = argument(effect, "path"),
+        completion = "tool/files-complete", id = effect.tool_call_id,
+      }
+    end)
+    misa.reg_fx("tool.files/list", function(effect)
+      return {
+        type = "file/list", path = argument(effect, "path"),
         completion = "tool/files-complete", id = effect.tool_call_id,
       }
     end)

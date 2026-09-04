@@ -78,6 +78,7 @@ The fixed native effects are:
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>}`
 - `{type="http/request", url=..., json=..., credential=..., completion=..., id=...}`
 - `{type="file/read", path=..., completion=..., id=...}`
+- `{type="file/list", path=..., completion=..., id=...}`
 - `{type="file/write", path=..., content=..., completion=..., id=...}`
 - `{type="file/edit", path=..., content=..., replacement=..., completion=..., id=...}`
 - `{type="json/decode", source=..., completion=..., id=...}`
@@ -166,8 +167,8 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 `models` owns selection state and an inline `/model` picker; providers own the
 catalogue entries. `agent` owns normalized conversation history, repeated user
 turns, provider correlation, parallel tool-result collection, normalized token
-usage accounting, and automatic continuation after tools. `tool.files` registers `read_file`, `write_file`, and
-`edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
+usage accounting, and automatic continuation after tools. `tool.files` registers `read_file`, `list_directory`,
+`write_file`, and `edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
 extensions and are not enabled by the harness. `misa mcp` exposes the same
 Lua-registered schemas and effect translators as an MCP stdio server. The
 Claude provider supplies this bridge through `--mcp-config` whenever tools are
