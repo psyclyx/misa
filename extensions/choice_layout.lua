@@ -50,7 +50,7 @@ return {setup=function(context)
       end
       columns[bank]={id=panel.id,title=panel.title,width=panel_width,x=column_x,y=1+preview_height,rows=rows,active=bank==1}; column_x=column_x+panel_width+2
     end
-    local breadcrumb=session.tree and session.tree.node or ""; local query=breadcrumb..session.query
+    local breadcrumb=session.tree and session.tree.node or ""; local query=(session.input_prefix or "")..breadcrumb..session.query
     return {x=x,y=0,width=width,height=height,available_lines=available,panel_count=#columns,input={x=x,y=0,width=width,title=session.title,text=query,cursor=#query},preview={x=x,y=1,width=width,lines=preview,height=preview_height},columns=columns,panel_y=1+preview_height,panel_height=panel_budget,hints=hints,hint_y=1+preview_height+panel_budget,hint_height=1,targets=targets}
   end
 end}
