@@ -5,6 +5,8 @@
 (fn span [text style action] {: action : style : text})
 
 {:setup (fn []
+          (local setup-fx [])
+
           (fn render-indicators [model context]
             (local source (or model.indicators {}))
             (local keep {})
@@ -68,29 +70,33 @@
                     (tset spans (+ (length spans) 1) key-span)))))
             {:lines (or (and (> (length spans) 0) [{: spans}]) {})})
 
-          (misa.reg_component :default.status.indicators
-                              {:render render-indicators})
+          (table.insert setup-fx
+                        {:type :register/component
+                         :id :default.status.indicators
+                         :value {:render render-indicators}})
           ;; Compatibility for custom profiles using the former metrics role.
-          (misa.reg_component :default.status.metrics
-                              {:render (fn [model]
-                                         (local spans {})
-                                         (each [index metric (ipairs (or model.metrics
-                                                                         {}))]
-                                           (when (> index 1)
+          (table.insert setup-fx
+                        {:type :register/component
+                         :id :default.status.metrics
+                         :value {:render (fn [model]
+                                           (local spans {})
+                                           (each [index metric (ipairs (or model.metrics
+                                                                           {}))]
+                                             (when (> index 1)
+                                               (tset spans (+ (length spans) 1)
+                                                     (span "  " :plain)))
                                              (tset spans (+ (length spans) 1)
-                                                   (span "  " :plain)))
-                                           (tset spans (+ (length spans) 1)
-                                                 (span (tostring (or metric.prefix
-                                                                     ""))
-                                                       :dim))
-                                           (tset spans (+ (length spans) 1)
-                                                 (span " " :plain))
-                                           (tset spans (+ (length spans) 1)
-                                                 (span (tostring (or metric.value
-                                                                     ""))
-                                                       (or metric.style :plain))))
-                                         {:lines (or (and (> (length spans) 0)
-                                                          [{: spans}])
-                                                     {})})})
-          nil)}
-
+                                                   (span (tostring (or metric.prefix
+                                                                       ""))
+                                                         :dim))
+                                             (tset spans (+ (length spans) 1)
+                                                   (span " " :plain))
+                                             (tset spans (+ (length spans) 1)
+                                                   (span (tostring (or metric.value
+                                                                       ""))
+                                                         (or metric.style
+                                                             :plain))))
+                                           {:lines (or (and (> (length spans) 0)
+                                                            [{: spans}])
+                                                       {})})}})
+          {:fx setup-fx})}

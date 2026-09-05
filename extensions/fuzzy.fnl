@@ -15,10 +15,12 @@
   (while (and (<= index (length haystack)) (not result))
     (when (= (haystack:sub index index) (needle:sub at at))
       (set first (or first index))
-      (when previous (set gaps (+ gaps (- index previous 1))))
+      (when previous
+        (set gaps (+ gaps (- index previous 1))))
       (set previous index)
       (set at (+ at 1))
-      (when (> at (length needle)) (set result (+ first (* gaps 2)))))
+      (when (> at (length needle))
+        (set result (+ first (* gaps 2)))))
     (set index (+ index 1)))
   result)
 
@@ -40,19 +42,44 @@
         (< left.ordinal right.ordinal))))
 
 {:setup (fn []
-  (set misa.fuzzy_score score)
-  (fn misa.fuzzy_choices [source query text]
-    (let [ranked []
-          result []]
-      (each [ordinal item (ipairs source)]
-        (let [extra (if (= (type item.search) :string) item.search
-                        (= (type item.search) :table) (table.concat item.search " ")
-                        "")
-              searchable (or (and text (text item))
-                             (.. item.value " " (or item.label "") " "
-                                 (or item.description "") " " extra))
-              rank (if (= query "") 0 (score query searchable))]
-          (when rank (table.insert ranked {: item : ordinal :score rank}))))
-      (table.sort ranked rank-before)
-      (each [_ value (ipairs ranked)] (table.insert result value.item))
-      result)))}
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :fuzzy_score
+                         :value score})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :fuzzy_choices
+                         :value (fn [source query text]
+                                  (let [ranked []
+                                        result []]
+                                    (each [ordinal item (ipairs source)]
+                                      (let [extra (if (= (type item.search)
+                                                         :string)
+                                                      item.search
+                                                      (= (type item.search)
+                                                         :table)
+                                                      (table.concat item.search
+                                                                    " ")
+                                                      "")
+                                            searchable (or (and text
+                                                                (text item))
+                                                           (.. item.value " "
+                                                               (or item.label
+                                                                   "")
+                                                               " "
+                                                               (or item.description
+                                                                   "")
+                                                               " " extra))
+                                            rank (if (= query "") 0
+                                                     (score query searchable))]
+                                        (when rank
+                                          (table.insert ranked
+                                                        {: item
+                                                         : ordinal
+                                                         :score rank}))))
+                                    (table.sort ranked rank-before)
+                                    (each [_ value (ipairs ranked)]
+                                      (table.insert result value.item))
+                                    result))})
+          {:fx setup-fx})}

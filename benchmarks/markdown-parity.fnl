@@ -1,17 +1,18 @@
 (local fennel (require :fennel))
+(local setup (fennel.dofile :benchmarks/setup.fnl))
 (local lua-dofile dofile)
 (fn dofile [path]
   (if (path:match "%.fnl$") (fennel.dofile path) (lua-dofile path)))
 
 (global misa {:json_null {}})
 
-((. (dofile :extensions/json.fnl) :setup))
+(setup (dofile :extensions/json.fnl))
 
 (local encode misa.json.encode)
 
 (fn load [path]
   (global misa {})
-  ((. (dofile path) :setup) {:config {}})
+  (setup (dofile path) {:config {}})
   misa.markdown.parse)
 
 (local (baseline candidate) (values (load (. arg 1)) (load (. arg 2))))
@@ -42,4 +43,3 @@
           (.. "AST differs at case " index)))
 
 (print (.. "byte-identical ASTs: " (length cases)))
-

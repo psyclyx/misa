@@ -29,9 +29,10 @@
   1)
 
 {:setup (fn []
-          (set misa.dialogs true)
-          (misa.reg_event :dialog/open
-                          (fn [db event]
+          {:fx [{:type :register/service :name :dialogs :value true}
+                {:type :register/event
+                 :name :dialog/open
+                 :handler (fn [db event]
                             (assert (not db.dialog) "a dialog is already open")
                             (assert (and (and (and (= (type event.id) :string)
                                                    (not= event.id ""))
@@ -73,9 +74,10 @@
                                      :correlation event.correlation
                                      :id event.id
                                      :type :input/protected}))
-                            {: db : fx}))
-          (misa.reg_event :dialog/update
-                          (fn [db event]
+                            {: db : fx})}
+                {:type :register/event
+                 :name :dialog/update
+                 :handler (fn [db event]
                             (local state db.dialog)
                             (if (or (or (not state) (not= state.id event.id))
                                     (not= state.correlation event.correlation))
@@ -100,29 +102,32 @@
                                   (when (not= event.input nil)
                                     (set state.input_enabled
                                          (= event.input true)))
-                                  {: db :fx [{:type :terminal/read}]}))))
-          (misa.reg_event :dialog/close
-                          (fn [db event]
+                                  {: db :fx [{:type :terminal/read}]})))}
+                {:type :register/event
+                 :name :dialog/close
+                 :handler (fn [db event]
                             (local state db.dialog)
                             (if (or (or (not state) (not= state.id event.id))
                                     (and event.correlation
                                          (not= state.correlation
                                                event.correlation)))
-                                nil (do
-                                     (set db.dialog nil)
-                                     {: db}))))
-          (misa.reg_interceptor {:before (fn [tx]
-                                           (when (and (= tx.event.type
-                                                         :terminal/input)
-                                                      tx.db.dialog)
-                                             (set tx.event
-                                                  {:kind tx.event.kind
-                                                   :text tx.event.text
-                                                   :type :dialog/input}))
-                                           tx)
-                                 :id :dialogs/input})
-          (misa.reg_event :dialog/protected-input
-                          (fn [db event]
+                                nil
+                                (do
+                                  (set db.dialog nil)
+                                  {: db})))}
+                {:type :register/interceptor
+                 :value {:before (fn [tx]
+                                   (when (and (= tx.event.type :terminal/input)
+                                              tx.db.dialog)
+                                     (set tx.event
+                                          {:kind tx.event.kind
+                                           :text tx.event.text
+                                           :type :dialog/input}))
+                                   tx)
+                         :id :dialogs/input}}
+                {:type :register/event
+                 :name :dialog/protected-input
+                 :handler (fn [db event]
                             (local state db.dialog)
                             (if (or (or (or (not state) (not state.protected))
                                         (not= state.id event.id))
@@ -143,9 +148,10 @@
                                                               :cancel)
                                                          :submit)
                                                      event.cancelled)})
-                                      {: db :fx [{:type :terminal/read}]})))))
-          (misa.reg_event :dialog/input
-                          (fn [db event]
+                                      {: db :fx [{:type :terminal/read}]}))))}
+                {:type :register/event
+                 :name :dialog/input
+                 :handler (fn [db event]
                             (local state (assert db.dialog))
                             (if state.protected
                                 {: db :fx [{:type :terminal/read}]}
@@ -227,6 +233,4 @@
                                                                                        action
                                                                                        false)}]
                                                   (lua "return ___antifnl_rtn_1___"))))
-                                          {: db :fx [{:type :terminal/read}]}))))))
-          nil)}
-
+                                          {: db :fx [{:type :terminal/read}]})))))}]})}

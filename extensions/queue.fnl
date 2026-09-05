@@ -33,37 +33,44 @@
                  :type :dispatch}]}))))
 
 {:setup (fn []
-          ;; Editors choose this capability when installed; alternative submission
-          ;; plugins can provide their own event without changing the agent.
-          (set misa.submit_event :queue/submit)
-          (misa.reg_interceptor {:before (fn [tx]
-                                           (local queue tx.db.queue)
-                                           (when (and (and (= tx.event.type
-                                                              :agent/completed)
-                                                           queue)
-                                                      (or (not (empty queue))
-                                                          queue.sending))
-                                             (set tx.event.keep_alive true))
-                                           tx)
-                                 :id :queue/lifecycle})
-          (misa.reg_event :queue/submit
-                          (fn [db event]
+          {:fx [{:type :register/service
+                 :name :submit_event
+                 :value :queue/submit}
+                {:type :register/interceptor
+                 :value {:before (fn [tx]
+                                   (local queue tx.db.queue)
+                                   (when (and (and (= tx.event.type
+                                                      :agent/completed)
+                                                   queue)
+                                              (or (not (empty queue))
+                                                  queue.sending))
+                                     (set tx.event.keep_alive true))
+                                   tx)
+                         :id :queue/lifecycle}}
+                {:type :register/event
+                 :name :queue/submit
+                 :handler (fn [db event]
                             (append (state db) event.prompt event.attachments)
-                            (drain db)))
-          (misa.reg_event :agent/status
-                          (fn [db event]
+                            (drain db))}
+                {:type :register/event
+                 :name :agent/status
+                 :handler (fn [db event]
                             (when (not= event.status :ready)
                               (tset (state db) :sending false))
-                            {: db}))
-          (misa.reg_event :agent/completed
-                          (fn [db] (tset (state db) :sending false) (drain db)))
-          (misa.reg_event :agent/reset
-                          (fn [db]
+                            {: db})}
+                {:type :register/event
+                 :name :agent/completed
+                 :handler (fn [db] (tset (state db) :sending false)
+                            (drain db))}
+                {:type :register/event
+                 :name :agent/reset
+                 :handler (fn [db]
                             (set db.queue
                                  {:attachments {} :pending "" :sending false})
-                            {: db}))
-          (misa.reg_event :queue/take
-                          (fn [db]
+                            {: db})}
+                {:type :register/event
+                 :name :queue/take
+                 :handler (fn [db]
                             (local queue (state db))
                             (if (empty queue) nil
                                 (do
@@ -76,25 +83,26 @@
                                    :fx [{:event {: attachments
                                                  : text
                                                  :type :editor/restore}
-                                         :type :dispatch}]}))))
-          (misa.reg_event :queue/steer
-                          (fn [db event]
+                                         :type :dispatch}]})))}
+                {:type :register/event
+                 :name :queue/steer
+                 :handler (fn [db event]
                             (append (state db) (or event.prompt "")
                                     event.attachments)
                             (if (empty (state db)) nil
                                 (if (ready db (state db)) (drain db)
                                     {: db
                                      :fx [{:event {:type :agent/cancel-active}
-                                           :type :dispatch}]}))))
-          (misa.reg_action {:available (fn [db]
-                                         (and db.queue (not (empty db.queue))))
-                            :event {:type :queue/take}
-                            :id :queue.edit
-                            :keys [:alt+e]
-                            :label "Edit pending message"})
-          (misa.reg_action {:event {:type :editor/steer}
-                            :id :queue.steer
-                            :keys [:alt+enter]
-                            :label "Interrupt and send draft / pending message"})
-          nil)}
-
+                                           :type :dispatch}]})))}
+                {:type :register/action
+                 :value {:available (fn [db]
+                                      (and db.queue (not (empty db.queue))))
+                         :event {:type :queue/take}
+                         :id :queue.edit
+                         :keys [:alt+e]
+                         :label "Edit pending message"}}
+                {:type :register/action
+                 :value {:event {:type :editor/steer}
+                         :id :queue.steer
+                         :keys [:alt+enter]
+                         :label "Interrupt and send draft / pending message"}}]})}

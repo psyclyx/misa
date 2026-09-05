@@ -13,7 +13,7 @@ test "invalid extension and callback contracts report actionable errors" {
         .{ "bad", "unknown standard extension ID 'provider.unknown'" },
         .{ "fail", "exploded" },
         .{ "legacy", "field 'run' is obsolete" },
-        .{ "malformed-setup", "field 'setup' must be a function" },
+        .{ "malformed-setup", "extension setup must be a function" },
         .{ "setup-trace", "setup exploded" },
         .{ "late-effect", "UnknownNativeEffect" },
         .{ "nul-extension", "ExtensionContainsNul" },

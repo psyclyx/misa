@@ -9,9 +9,13 @@
   (when mark (table.insert result mark))
   result)
 
-(local delimiters [["***" :strong_emphasis] ["___" :strong_emphasis]
-                   ["**" :strong] ["__" :strong] ["~~" :strikethrough]
-                   ["*" :emphasis] ["_" :emphasis]])
+(local delimiters [["***" :strong_emphasis]
+                   ["___" :strong_emphasis]
+                   ["**" :strong]
+                   ["__" :strong]
+                   ["~~" :strikethrough]
+                   ["*" :emphasis]
+                   ["_" :emphasis]])
 
 (fn parse-inlines [text marks]
   (local result [])
@@ -19,20 +23,26 @@
   ;; The cursor only advances. Remember the next terminator (or its absence),
   ;; so incomplete markup does not search the same suffix for every opener.
   (local endings {})
+
   (fn closing [delimiter from]
     (var found (. endings delimiter))
     (when (or (= found nil) (and found (< found from)))
       (set found (or (text:find delimiter from true) false))
       (tset endings delimiter found))
     (if found found nil))
+
   (fn emit-plain []
     (when (> (length plain) 0)
-      (table.insert result {:kind :text :marks (marks-copy marks)
-                            :text (table.concat plain)})
+      (table.insert result
+                    {:kind :text
+                     :marks (marks-copy marks)
+                     :text (table.concat plain)})
       (set plain [])))
+
   (fn emit [node]
     (emit-plain)
     (table.insert result node))
+
   (var at 1)
   (while (<= at (length text))
     (local special (text:find "[\\`%[%*_~]" at))
@@ -43,45 +53,76 @@
         (let [char (text:sub at at)
               escaped (and (= char "\\") (text:sub (+ at 1) (+ at 1)))]
           (if (and escaped (not= escaped "") (escaped:match "[%p]"))
-              (do (table.insert plain escaped) (set at (+ at 2)))
+              (do
+                (table.insert plain escaped)
+                (set at (+ at 2)))
               (let [ticks (text:match "^(`+)" at)]
                 (if ticks
                     (let [close (closing ticks (+ at (length ticks)))]
                       (if close
                           (do
-                            (emit {:kind :code :marks (marks-copy marks)
-                                   :text (text:sub (+ at (length ticks)) (- close 1))})
+                            (emit {:kind :code
+                                   :marks (marks-copy marks)
+                                   :text (text:sub (+ at (length ticks))
+                                                   (- close 1))})
                             (set at (+ close (length ticks))))
-                          (do (table.insert plain ticks) (set at (+ at (length ticks))))))
+                          (do
+                            (table.insert plain ticks)
+                            (set at (+ at (length ticks))))))
                     (let [label-end (and (= char "[") (closing "]" (+ at 1)))
                           open (and label-end (+ label-end 1))]
                       (if (and open (= (text:sub open open) "("))
                           (let [close (closing ")" (+ open 1))
-                                target (if close (trim (text:sub (+ open 1) (- close 1))) "")
+                                target (if close
+                                           (trim (text:sub (+ open 1)
+                                                           (- close 1)))
+                                           "")
                                 safe (and (not= target "")
                                           (not (target:find "[%z\001-\031\127-\159]")))]
                             (if (and close safe)
                                 (do
-                                  (emit {:kind :link : target
-                                         :children (parse-inlines (text:sub (+ at 1) (- label-end 1)) marks)})
+                                  (emit {:kind :link
+                                         : target
+                                         :children (parse-inlines (text:sub (+ at
+                                                                               1)
+                                                                            (- label-end
+                                                                               1))
+                                                                  marks)})
                                   (set at (+ close 1)))
-                                (do (table.insert plain char) (set at (+ at 1)))))
-                          (let [(delimiter mark)
-                                (accumulate [(delimiter mark) nil _ choice (ipairs delimiters) &until delimiter]
-                                  (when (= (text:sub at (- (+ at (length (. choice 1))) 1)) (. choice 1))
-                                    (values (. choice 1) (. choice 2))))]
+                                (do
+                                  (table.insert plain char)
+                                  (set at (+ at 1)))))
+                          (let [(delimiter mark) (accumulate [(delimiter mark) nil _ choice (ipairs delimiters)
+                                                              &until delimiter]
+                                                   (when (= (text:sub at
+                                                                      (- (+ at
+                                                                            (length (. choice
+                                                                                       1)))
+                                                                         1))
+                                                            (. choice 1))
+                                                     (values (. choice 1)
+                                                             (. choice 2))))]
                             (if delimiter
-                                (let [close (closing delimiter (+ at (length delimiter)))]
-                                  (if (and close (> close (+ at (length delimiter))))
+                                (let [close (closing delimiter
+                                                     (+ at (length delimiter)))]
+                                  (if (and close
+                                           (> close (+ at (length delimiter))))
                                       (do
                                         (emit-plain)
-                                        (each [_ child (ipairs (parse-inlines
-                                                               (text:sub (+ at (length delimiter)) (- close 1))
-                                                               (marks-copy marks mark)))]
+                                        (each [_ child (ipairs (parse-inlines (text:sub (+ at
+                                                                                           (length delimiter))
+                                                                                        (- close
+                                                                                           1))
+                                                                              (marks-copy marks
+                                                                                          mark)))]
                                           (table.insert result child))
                                         (set at (+ close (length delimiter))))
-                                      (do (table.insert plain delimiter) (set at (+ at (length delimiter))))))
-                                (do (table.insert plain char) (set at (+ at 1)))))))))))))
+                                      (do
+                                        (table.insert plain delimiter)
+                                        (set at (+ at (length delimiter))))))
+                                (do
+                                  (table.insert plain char)
+                                  (set at (+ at 1)))))))))))))
   (emit-plain)
   result)
 
@@ -199,8 +240,7 @@
                       (set index (+ index 1)))
                     (when (<= index (length lines)) (set index (+ index 1)))
                     (add {:kind :code_block
-                          :language (or (and (info:match "^[%w_+#.-]+$")
-                                             info)
+                          :language (or (and (info:match "^[%w_+#.-]+$") info)
                                         "")
                           :text (table.concat body "\n")}))
                   (let [header (split-table raw)
@@ -251,7 +291,9 @@
                                   (set depth (+ depth 1))
                                   (set at after)
                                   (set after (raw:match "^%s*>%s?()" at)))
-                                (add {: depth :inlines (parse-inline (raw:sub at)) :kind :quote})
+                                (add {: depth
+                                      :inlines (parse-inline (raw:sub at))
+                                      :kind :quote})
                                 (set index (+ index 1)))
                               (or bullet ordered)
                               (do
@@ -261,7 +303,9 @@
                                 (when check (set checked (not= check " "))
                                   (set item item-body))
                                 (add {: checked
-                                      :depth (+ (math.floor (/ (length indent) 2)) 1)
+                                      :depth (+ (math.floor (/ (length indent)
+                                                               2))
+                                                1)
                                       :inlines (parse-inline item)
                                       :kind :list_item
                                       :number ordered
@@ -336,16 +380,25 @@
             {: blocks :kind :document : source})))))
 
 {:setup (fn []
+          (local setup-fx [])
           (assert (= misa.markdown nil) "markdown service already installed")
           (local parse (make-parser))
-          (set misa.markdown
-               {:new_document (fn []
-                                (var (source document) nil)
-                                {:update (fn [_ value]
-                                           (local next-source (tostring (or value "")))
-                                           (when (not= next-source source)
-                                             (set document (parse next-source document))
-                                             (set source next-source))
-                                           document)})
-                : parse})
-          nil)}
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :markdown
+                         :value {:new_document (fn []
+                                                 (var (source document) nil)
+                                                 {:update (fn [_ value]
+                                                            (local next-source
+                                                                   (tostring (or value
+                                                                                 "")))
+                                                            (when (not= next-source
+                                                                        source)
+                                                              (set document
+                                                                   (parse next-source
+                                                                          document))
+                                                              (set source
+                                                                   next-source))
+                                                            document)})
+                                 : parse}})
+          {:fx setup-fx})}

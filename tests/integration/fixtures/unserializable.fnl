@@ -1,19 +1,25 @@
 {:setup (fn []
-          (misa.reg_request_options_serializer :test.transport
-                                               {:accepts (fn [name]
-                                                           (= name :known))
-                                                :serialize (fn [target
-                                                                name
-                                                                value]
-                                                             (tset target name
-                                                                   value)
-                                                             true)})
-          (misa.reg_model {:api {:request_options {:unknown {:default :selected}}
-                                 :request_options_serializer :test.transport}
-                           :id :test/model
-                           :model :model
-                           :provider :test})
-          (misa.reg_fx :provider.test
-                       (fn [] (error "blocked request reached provider") nil))
-          nil)}
-
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/request-options-serializer
+                         :id :test.transport
+                         :serializer {:accepts (fn [name]
+                                                 (= name :known))
+                                      :serialize (fn [target name value]
+                                                   (tset target name value)
+                                                   true)}})
+          (table.insert setup-fx
+                        {:type :register/model
+                         :value {:api {:request_options {:unknown {:default :selected}}
+                                       :request_options_serializer :test.transport}
+                                 :id :test/model
+                                 :model :model
+                                 :provider :test}})
+          (table.insert setup-fx
+                        {:type :register/fx
+                         :name :provider.test
+                         :handler (fn []
+                                    (error "blocked request reached provider")
+                                    nil)})
+          nil
+          {:fx setup-fx})}

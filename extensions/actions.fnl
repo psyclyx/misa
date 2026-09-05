@@ -3,8 +3,9 @@
 ;; feature owners register actions and retain all execution behavior.
 
 {:setup (fn []
-          (misa.reg_event :ui/action
-                          (fn [db event]
+          {:fx [{:type :register/event
+                 :name :ui/action
+                 :handler (fn [db event]
                             (local action (misa.action event.action))
                             (if (and action
                                      (or (not action.available)
@@ -13,64 +14,66 @@
                                  :fx [{:event (misa.snapshot action.event)
                                        :type :dispatch}
                                       {:type :terminal/read}]}
-                                {: db :fx [{:type :terminal/read}]})))
-          (misa.reg_keybinding {:action :action_palette
-                                :context :global
-                                :default [:f1]})
-          (misa.reg_action {:binding {:action :action_palette :context :global}
-                            :event {:type :actions/open}
-                            :id :actions.open
-                            :label "Open action palette / key reference"})
-          (misa.reg_interceptor {:before (fn [tx]
-                                           (if (or (not= tx.event.type
-                                                         :terminal/input)
-                                                   tx.db.dialog)
-                                               tx
-                                               (if tx.db.picker
-                                                   (do
-                                                     (when (= (misa.keybinding_action :global
-                                                                                      tx.event)
-                                                              :action_palette)
-                                                       (set tx.event
-                                                            {:type :actions/open}))
-                                                     tx)
-                                                   (do
-                                                     (local editor
-                                                            (or tx.db.editor {}))
-                                                     (local bound
-                                                            (misa.keybinding_action :global
-                                                                                    tx.event))
-                                                     (when bound
-                                                       (each [_ action (ipairs (misa.actions))]
-                                                         (when (and (and (= action.binding.context
-                                                                            :global)
-                                                                         (= action.binding.action
-                                                                            bound))
-                                                                    (or (not action.available)
-                                                                        (action.available tx.db)))
-                                                           (set tx.event
-                                                                (misa.snapshot action.event))
-                                                           (lua "return tx"))))
-                                                     (when (and (and (= tx.event.kind
+                                {: db :fx [{:type :terminal/read}]}))}
+                {:type :register/keybinding
+                 :value {:action :action_palette
+                         :context :global
+                         :default [:f1]}}
+                {:type :register/action
+                 :value {:binding {:action :action_palette :context :global}
+                         :event {:type :actions/open}
+                         :id :actions.open
+                         :label "Open action palette / key reference"}}
+                {:type :register/interceptor
+                 :value {:before (fn [tx]
+                                   (if (or (not= tx.event.type :terminal/input)
+                                           tx.db.dialog)
+                                       tx
+                                       (if tx.db.picker
+                                           (do
+                                             (when (= (misa.keybinding_action :global
+                                                                              tx.event)
+                                                      :action_palette)
+                                               (set tx.event
+                                                    {:type :actions/open}))
+                                             tx)
+                                           (do
+                                             (local editor (or tx.db.editor {}))
+                                             (local bound
+                                                    (misa.keybinding_action :global
+                                                                            tx.event))
+                                             (when bound
+                                               (each [_ action (ipairs (misa.actions))]
+                                                 (when (and (and (= action.binding.context
+                                                                    :global)
+                                                                 (= action.binding.action
+                                                                    bound))
+                                                            (or (not action.available)
+                                                                (action.available tx.db)))
+                                                   (set tx.event
+                                                        (misa.snapshot action.event))
+                                                   (lua "return tx"))))
+                                             (when (and (and (= tx.event.kind
+                                                                :text)
+                                                             (= (tx.event.text:sub 1
+                                                                                   1)
+                                                                ":"))
+                                                        (or (= (or editor.text
+                                                                   "")
+                                                               "")
+                                                            (= editor.mode
+                                                               :normal)))
+                                               (set tx.event
+                                                    {:query (or (and (= tx.event.kind
                                                                         :text)
-                                                                     (= (tx.event.text:sub 1
-                                                                                           1)
-                                                                        ":"))
-                                                                (or (= (or editor.text
-                                                                           "")
-                                                                       "")
-                                                                    (= editor.mode
-                                                                       :normal)))
-                                                       (set tx.event
-                                                            {:query (or (and (= tx.event.kind
-                                                                                :text)
-                                                                             (tx.event.text:sub 2))
-                                                                        "")
-                                                             :type :actions/open}))
-                                                     tx))))
-                                 :id :actions/input})
-          (misa.reg_event :actions/open
-                          (fn [db event]
+                                                                     (tx.event.text:sub 2))
+                                                                "")
+                                                     :type :actions/open}))
+                                             tx))))
+                         :id :actions/input}}
+                {:type :register/event
+                 :name :actions/open
+                 :handler (fn [db event]
                             (if (or (and db.picker (= db.picker.id :actions))
                                     db.dialog)
                                 {: db :fx [{:type :terminal/read}]}
@@ -116,9 +119,10 @@
                                                  :title ": Actions"
                                                  :token (tostring db.action_sequence)
                                                  :type :picker/open}
-                                         :type :dispatch}]}))))
-          (misa.reg_event :actions/selected
-                          (fn [db event]
+                                         :type :dispatch}]})))}
+                {:type :register/event
+                 :name :actions/selected
+                 :handler (fn [db event]
                             (if (or (not= event.picker :actions)
                                     (not= event.picker_token
                                           (tostring db.action_sequence)))
@@ -134,6 +138,4 @@
                                     (table.insert fx 1
                                                   {:event (misa.snapshot action.event)
                                                    :type :dispatch}))
-                                  {: db : fx}))))
-          nil)}
-
+                                  {: db : fx})))}]})}

@@ -108,9 +108,9 @@
     (if (not a)
         (values nil 0)
         (let [(size initial) (if (<= 194 a 223) (values 2 (- a 192))
-                                (<= 224 a 239) (values 3 (- a 224))
-                                (<= 240 a 244) (values 4 (- a 240))
-                                (values 1 a))]
+                                 (<= 224 a 239) (values 3 (- a 224))
+                                 (<= 240 a 244) (values 4 (- a 240))
+                                 (values 1 a))]
           (var cp initial)
           (var valid true)
           (for [index (+ at 1) (- (+ at size) 1) &until (not valid)]
@@ -221,10 +221,12 @@
                        (values (math.max cells (cell-width following)) false
                                (+ next-at following-size)))
                   (= following 8205)
-                  (let [(joined joined-size) (decode text (+ next-at following-size))]
+                  (let [(joined joined-size) (decode text
+                                                     (+ next-at following-size))]
                     (if joined
                         (set (emoji next-at cells)
-                             (values true (+ next-at following-size joined-size)
+                             (values true
+                                     (+ next-at following-size joined-size)
                                      (math.max cells (cell-width joined))))
                         (do
                           (set next-at (+ next-at following-size))
@@ -238,13 +240,15 @@
                     (set next-at (+ next-at following-size)))
                   (and flag (regional following))
                   (do
-                    (set (emoji next-at) (values true (+ next-at following-size)))
+                    (set (emoji next-at)
+                         (values true (+ next-at following-size)))
                     (set done true))
                   (set done true))))
           (values next-at (if emoji (math.max cells 2) cells))))))
 
 (fn boundary-at-or-before [text cursor]
-  (let [target (math.max 0 (math.min (length text)
+  (let [target (math.max 0
+                         (math.min (length text)
                                    (math.floor (or (tonumber cursor) 0))))]
     (var at 1)
     (var previous 0)
@@ -369,7 +373,8 @@
                      (values (- whitespace-start 1) next-at))
                 (<= (+ used cells) room)
                 (set (break-last break-next) (values (- next-at 1) next-at))))
-          (not whitespace) (set whitespace-start nil))
+          (not whitespace)
+          (set whitespace-start nil))
       (if (and (> used 0) (> (+ used cells) room))
           (if (and break-next (> break-next start))
               (do
@@ -378,7 +383,8 @@
                   (while (or (= (text:byte next-start) 32)
                              (= (text:byte next-start) 9))
                     (set next-start (+ next-start 1))))
-                (emit break-last next-start)) (emit (- at 1) at))
+                (emit break-last next-start))
+              (emit (- at 1) at))
           (set (used at) (values (+ used cells) next-at))))
     (when (or (<= start (length text)) (= (length result) 0))
       (tset result (+ (length result) 1) {:first start :last (length text)}))
@@ -557,5 +563,9 @@
             :wrap_ranges wrap-ranges
             :wrap_spans wrap-spans})
 
-{:setup (fn [] (set misa.layout api))}
-
+{:setup (fn []
+          (local setup-fx [])
+          (table.insert setup-fx {:type :register/service
+                                  :name :layout
+                                  :value api})
+          {:fx setup-fx})}

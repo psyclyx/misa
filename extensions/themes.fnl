@@ -3,7 +3,8 @@
 ;; alone resolves those names to the closed native style record.
 
 {:setup (fn [context]
-          (var (entries registrations-sealed) (values {} false))
+          (local setup-fx [])
+          (local entries {})
           (var config (or (and (= (type context.config) :table)
                                context.config.themes)
                           nil))
@@ -257,13 +258,16 @@
                   (tset fallback key (copy-color value)))
                 (if (or (or (= required :italic) (= required :syntax.embedded))
                         (= required :markdown.heading.4))
-                    (set fallback.italic true) (= required :strikethrough)
+                    (set fallback.italic true)
+                    (= required :strikethrough)
                     (set fallback.strikethrough true)
                     (or (or (or (= required :underline) (= required :link))
                             (= required :syntax.variable))
                         (= required :markdown.heading.5))
-                    (set fallback.underline true) (. bold-fallback required)
-                    (set fallback.bold true) (. dim-fallback required)
+                    (set fallback.underline true)
+                    (. bold-fallback required)
+                    (set fallback.bold true)
+                    (. dim-fallback required)
                     (set fallback.dim true))
                 (tset styles required fallback)))
             {: palette : styles})
@@ -273,78 +277,106 @@
               (tset target key (copy-color value)))
             nil)
 
-          (fn misa.reg_theme [id theme]
-            (assert (not registrations-sealed) "theme registrations are sealed")
-            (assert (and (and (= (type id) :string) (not= id ""))
-                         (= (type theme) :table))
-                    "invalid theme")
-            (assert (= (. entries id) nil) (.. "duplicate theme: " id))
-            (tset entries id (normalize-theme theme))
-            nil)
-
-          (fn misa.theme [db]
-            (assert (and (= (type db) :table) (= (type db.themes) :table))
-                    "theme resolution requires initialized db")
-            (assert (. entries db.themes.active)
-                    (.. "unknown theme: " (tostring db.themes.active))))
-
-          (fn misa.theme_style [db tokens]
-            (when (= (type tokens) :string) (set-forcibly! tokens [tokens]))
-            (assert (and (= (type tokens) :table) (> (length tokens) 0))
-                    "span style requires one or more semantic tokens")
-            (local (styles result) (values (. (misa.theme db) :styles) {}))
-            (each [_ name (ipairs tokens)]
-              (assert (and (= (type name) :string) (not= name ""))
-                      "semantic style tokens must be nonempty strings")
-              (merge result
-                     (assert (. styles name)
-                             (.. "theme has no style token: " name))))
-            result)
-
-          (fn misa.swap_theme [db id]
-            (assert (. entries id) (.. "unknown theme: " (tostring id)))
-            (set db.themes.active id)
-            nil)
-
-          (misa.reg_interceptor {:before (fn [tx]
+          (table.insert setup-fx
+                        {:type :register/setup-effect
+                         :name :register/theme
+                         :handler (fn [effect]
+                                    (let [id effect.id
+                                          theme effect.value]
+                                      (assert (and (and (= (type id) :string)
+                                                        (not= id ""))
+                                                   (= (type theme) :table))
+                                              "invalid theme")
+                                      (assert (= (. entries id) nil)
+                                              (.. "duplicate theme: " id))
+                                      (tset entries id (normalize-theme theme))
+                                      nil))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :theme
+                         :value (fn [db]
+                                  (assert (and (= (type db) :table)
+                                               (= (type db.themes) :table))
+                                          "theme resolution requires initialized db")
+                                  (assert (. entries db.themes.active)
+                                          (.. "unknown theme: "
+                                              (tostring db.themes.active))))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :theme_style
+                         :value (fn [db tokens]
+                                  (when (= (type tokens) :string)
+                                    (set-forcibly! tokens [tokens]))
+                                  (assert (and (= (type tokens) :table)
+                                               (> (length tokens) 0))
+                                          "span style requires one or more semantic tokens")
+                                  (local (styles result)
+                                         (values (. (misa.theme db) :styles) {}))
+                                  (each [_ name (ipairs tokens)]
+                                    (assert (and (= (type name) :string)
+                                                 (not= name ""))
+                                            "semantic style tokens must be nonempty strings")
+                                    (merge result
+                                           (assert (. styles name)
+                                                   (.. "theme has no style token: "
+                                                       name))))
+                                  result)})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :swap_theme
+                         :value (fn [db id]
+                                  (assert (. entries id)
+                                          (.. "unknown theme: " (tostring id)))
+                                  (set db.themes.active id)
+                                  nil)})
+          (table.insert setup-fx
+                        {:type :register/interceptor
+                         :value {:before (fn [tx]
                                            (when (= tx.event.type :app/start)
-                                             (set registrations-sealed true)
                                              (when (not tx.db.themes)
                                                (set tx.db.themes
                                                     {:active configured})))
                                            tx)
-                                 :id :themes/initialize})
-          (misa.reg_event :app/start
-                          (fn [db]
-                            (if (= config.persist false) {: db}
-                                {: db
-                                 :fx [{:completion :themes/loaded
-                                       :namespace :ui.theme
-                                       :type :state/load}]})))
-          (misa.reg_event :themes/loaded
-                          (fn [db event]
-                            (if (or (= event.found false)
-                                    (= event.data misa.json_null))
-                                {: db}
-                                (do
-                                  (assert (and (= (type event.data) :table)
-                                               (= (type event.data.active)
-                                                  :string))
-                                          "invalid persisted theme")
-                                  (when (. entries event.data.active)
-                                    (set db.themes.active event.data.active))
-                                  {: db}))))
-          (misa.reg_event :themes/swap
-                          (fn [db event]
-                            (misa.swap_theme db event.theme)
-                            (local fx {})
-                            (when (not= config.persist false)
-                              (tset fx (+ (length fx) 1)
-                                    {:data db.themes
-                                     :namespace :ui.theme
-                                     :type :state/save}))
-                            (tset fx (+ (length fx) 1)
-                                  {:event {:type :ui/redraw} :type :dispatch})
-                            {: db : fx}))
-          nil)}
-
+                                 :id :themes/initialize}})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn [db]
+                                    (if (= config.persist false) {: db}
+                                        {: db
+                                         :fx [{:completion :themes/loaded
+                                               :namespace :ui.theme
+                                               :type :state/load}]}))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :themes/loaded
+                         :handler (fn [db event]
+                                    (if (or (= event.found false)
+                                            (= event.data misa.json_null))
+                                        {: db}
+                                        (do
+                                          (assert (and (= (type event.data)
+                                                          :table)
+                                                       (= (type event.data.active)
+                                                          :string))
+                                                  "invalid persisted theme")
+                                          (when (. entries event.data.active)
+                                            (set db.themes.active
+                                                 event.data.active))
+                                          {: db})))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :themes/swap
+                         :handler (fn [db event]
+                                    (misa.swap_theme db event.theme)
+                                    (local fx {})
+                                    (when (not= config.persist false)
+                                      (tset fx (+ (length fx) 1)
+                                            {:data db.themes
+                                             :namespace :ui.theme
+                                             :type :state/save}))
+                                    (tset fx (+ (length fx) 1)
+                                          {:event {:type :ui/redraw}
+                                           :type :dispatch})
+                                    {: db : fx})})
+          {:fx setup-fx})}

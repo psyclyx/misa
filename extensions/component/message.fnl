@@ -5,8 +5,7 @@
 (fn span [text style link] {: link : style : text})
 
 (fn composed [base modifier]
-  (if (not modifier) base
-      (not= (type base) :table) [base modifier]
+  (if (not modifier) base (not= (type base) :table) [base modifier]
       (let [result []]
         (each [_ token (ipairs base)] (table.insert result token))
         (table.insert result modifier)
@@ -62,7 +61,7 @@
 (fn body-lines [model context style columns prefix]
   (if (= context.markdown false)
       (misa.layout.wrap_spans (misa.markdown_view.plain model.text style)
-                             columns [{:style (rail model) :text prefix}])
+                              columns [{:style (rail model) :text prefix}])
       (markdown-lines model style columns prefix)))
 
 (fn interactive-message [model context style label]
@@ -88,16 +87,26 @@
    :surface (.. :surface. (: (rail model) :gsub "^rail%." ""))})
 
 {:setup (fn []
+          (local setup-fx [])
           (assert misa.layout "component.message requires layout")
           (assert (and misa.markdown_view misa.markdown)
                   "component.message requires markdown and component.markdown")
           ;; One derived document per transcript block, released with its transcript.
           ;; No parser state enters the transactional database or persisted history.
-          (misa.reg_event :app/start (fn [] (set documents {})))
-          (misa.reg_event :transcript/reset (fn [] (set documents {})))
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn [] (set documents {}))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :transcript/reset
+                         :handler (fn [] (set documents {}))})
 
           (fn reg [role render]
-            (misa.reg_component (.. :default. role) {: render}))
+            (table.insert setup-fx
+                          {:type :register/component
+                           :id (.. :default. role)
+                           :value {: render}}))
 
           (local roles
                  [{:id :user :interactive_only true :label :You :style :user}
@@ -120,4 +129,5 @@
                  {:lines (message model context
                                   (or (and (= model.level :error) :error)
                                       :plain)
-                                  nil)})))}
+                                  nil)}))
+          {:fx setup-fx})}

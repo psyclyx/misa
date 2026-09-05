@@ -3,10 +3,13 @@
 ;; services. Assertions inspect the rich transcript itself, never a mock view.
 
 {:setup (fn []
-          (misa.reg_model {:id :fixture/model
-                           :model :model
-                           :pricing {:input 2 :output 8}
-                           :provider :fixture})
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/model
+                         :value {:id :fixture/model
+                                 :model :model
+                                 :pricing {:input 2 :output 8}
+                                 :provider :fixture}})
           (local context {:columns 54 :images true :interactive true})
           (local steps {})
           (var (original anchor) nil)
@@ -229,46 +232,57 @@ Second paragraph with useful words."
                              anchor)
                           "new user message displaced anchored transcript")
                   nil))
-          (misa.reg_interceptor {:before (fn [tx]
+          (table.insert setup-fx
+                        {:type :register/interceptor
+                         :value {:before (fn [tx]
                                            (set tx.cofx.terminal
                                                 {:columns 54
                                                  :images true
                                                  :interactive true
                                                  :lines 24})
                                            tx)
-                                 :id :test/transcript-terminal})
-          (misa.reg_event :app/start
-                          (fn [db]
-                            {: db
-                             :fx [{:event {:index 1
-                                           :type :test/transcript-step}
-                                   :type :dispatch}]}))
-          (misa.reg_event :test/transcript-step
-                          (fn [db event]
-                            (local item (. steps event.index))
-                            (if (not item)
-                                {: db
-                                 :fx [{:lines [{:spans [{:text "transcript interaction"}]}]
-                                       :type :view/commit}
-                                      {:type :app/quit}]}
-                                {: db
-                                 :fx [{:event item.event :type :dispatch}
-                                      {:event {:index event.index
-                                               :type :test/transcript-wait}
-                                       :type :dispatch}]})))
-          (misa.reg_event :test/transcript-wait
-                          (fn [db event]
-                            {: db
-                             :fx [{:event {:index event.index
-                                           :type :test/transcript-check}
-                                   :type :dispatch}]}))
-          (misa.reg_event :test/transcript-check
-                          (fn [db event]
-                            (when (. steps event.index :check)
-                              ((. steps event.index :check) db))
-                            {: db
-                             :fx [{:event {:index (+ event.index 1)
-                                           :type :test/transcript-step}
-                                   :type :dispatch}]}))
-          nil)}
-
+                                 :id :test/transcript-terminal}})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn [db]
+                                    {: db
+                                     :fx [{:event {:index 1
+                                                   :type :test/transcript-step}
+                                           :type :dispatch}]})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :test/transcript-step
+                         :handler (fn [db event]
+                                    (local item (. steps event.index))
+                                    (if (not item)
+                                        {: db
+                                         :fx [{:lines [{:spans [{:text "transcript interaction"}]}]
+                                               :type :view/commit}
+                                              {:type :app/quit}]}
+                                        {: db
+                                         :fx [{:event item.event
+                                               :type :dispatch}
+                                              {:event {:index event.index
+                                                       :type :test/transcript-wait}
+                                               :type :dispatch}]}))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :test/transcript-wait
+                         :handler (fn [db event]
+                                    {: db
+                                     :fx [{:event {:index event.index
+                                                   :type :test/transcript-check}
+                                           :type :dispatch}]})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :test/transcript-check
+                         :handler (fn [db event]
+                                    (when (. steps event.index :check)
+                                      ((. steps event.index :check) db))
+                                    {: db
+                                     :fx [{:event {:index (+ event.index 1)
+                                                   :type :test/transcript-step}
+                                           :type :dispatch}]})})
+          nil
+          {:fx setup-fx})}

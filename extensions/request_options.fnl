@@ -71,7 +71,8 @@
                 (tset problems (+ (length problems) 1)
                       {:option name :reason :not_serializable})
                 (and (not= value nil) (valid option value))
-                (tset result name value) (= option.required true)
+                (tset result name value)
+                (= option.required true)
                 (tset problems (+ (length problems) 1)
                       {:option name
                        :reason (or (and (= value nil) :missing)
@@ -97,6 +98,7 @@
                    :model (or (and model model.id) nil)})))))
 
 {:setup (fn [context]
+          (local setup-fx [])
           (var config (or (and (= (type context.config) :table)
                                context.config.request_options)
                           nil))
@@ -104,53 +106,74 @@
           (local configured (or (and (= (type config.values) :table)
                                      config.values)
                                 config))
-
-          (fn misa.request_option_choices [db name]
-            (local option (. (declarations (selected-model db)) name))
-            (local result {})
-            (each [_ value (ipairs (choices option))]
-              (tset result (+ (length result) 1) value))
-            result)
-
-          (fn misa.request_option_value [db name]
-            (. (reconcile db) :values name))
-
-          (fn misa.request_options_projection [db]
-            (local state (or db.request_options {}))
-            (local ___values___ {})
-            (each [name value (pairs (or state.values {}))]
-              (tset ___values___ name value))
-            {:model_id state.model_id :values ___values___})
-
-          (set misa.reconcile_request_options reconcile)
-          (set misa.prepare_request_options prepare)
-          (misa.reg_event :app/start
-                          (fn [db]
-                            (set db.request_options {: configured :values {}})
-                            (reconcile db)
-                            {: db}))
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :request_option_choices
+                         :value (fn [db name]
+                                  (local option
+                                         (. (declarations (selected-model db))
+                                            name))
+                                  (local result {})
+                                  (each [_ value (ipairs (choices option))]
+                                    (tset result (+ (length result) 1) value))
+                                  result)})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :request_option_value
+                         :value (fn [db name]
+                                  (. (reconcile db) :values name))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :request_options_projection
+                         :value (fn [db]
+                                  (local state (or db.request_options {}))
+                                  (local ___values___ {})
+                                  (each [name value (pairs (or state.values {}))]
+                                    (tset ___values___ name value))
+                                  {:model_id state.model_id
+                                   :values ___values___})})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :reconcile_request_options
+                         :value reconcile})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :prepare_request_options
+                         :value prepare})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn [db]
+                                    (set db.request_options
+                                         {: configured :values {}})
+                                    (reconcile db)
+                                    {: db})})
           (each [_ event-type (ipairs [:model/open
                                        :model/select
                                        :models/provider-availability
                                        :models/update
                                        :models/replace-provider])]
-            (misa.reg_event event-type
-                            (fn [db] (when db.request_options (reconcile db))
-                              {: db})))
-          (misa.reg_event :request-options/select
-                          (fn [db event]
-                            (assert (and (= (type event.name) :string)
-                                         (not= event.name ""))
-                                    "request option name must be nonempty")
-                            (local option
-                                   (. (declarations (selected-model db))
-                                      event.name))
-                            (assert (= (type option) :table)
-                                    "request option is not supported by the selected model")
-                            (assert (valid option event.value)
-                                    "request option value is not supported by the selected model")
-                            (local state (reconcile db))
-                            (tset state.values event.name event.value)
-                            {: db}))
-          nil)}
-
+            (table.insert setup-fx
+                          {:type :register/event
+                           :name event-type
+                           :handler (fn [db]
+                                      (when db.request_options (reconcile db))
+                                      {: db})}))
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :request-options/select
+                         :handler (fn [db event]
+                                    (assert (and (= (type event.name) :string)
+                                                 (not= event.name ""))
+                                            "request option name must be nonempty")
+                                    (local option
+                                           (. (declarations (selected-model db))
+                                              event.name))
+                                    (assert (= (type option) :table)
+                                            "request option is not supported by the selected model")
+                                    (assert (valid option event.value)
+                                            "request option value is not supported by the selected model")
+                                    (local state (reconcile db))
+                                    (tset state.values event.name event.value)
+                                    {: db})})
+          {:fx setup-fx})}

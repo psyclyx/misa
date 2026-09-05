@@ -3,20 +3,33 @@
 ;; cloning, rather than mutating a fake UI model between assertions.
 
 {:setup (fn []
-          (misa.reg_command {:completion :fixture-values
-                             :description "Choice action fixture"
-                             :event :test/fixture
-                             :name :/fixture})
-          (misa.reg_completion :fixture-values {:value :one})
-          (misa.reg_completion :fixture-values {:value :two})
-          (misa.reg_action {:event {:type :test/custom}
-                            :id :test.custom
-                            :keys [:alt+z]
-                            :label "Custom action"})
-          (misa.reg_event :test/custom
-                          (fn [db]
-                            (set db.custom_action true)
-                            {: db :fx [{:type :terminal/read}]}))
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/command
+                         :value {:completion :fixture-values
+                                 :description "Choice action fixture"
+                                 :event :test/fixture
+                                 :name :/fixture}})
+          (table.insert setup-fx
+                        {:type :register/completion
+                         :group :fixture-values
+                         :value {:value :one}})
+          (table.insert setup-fx
+                        {:type :register/completion
+                         :group :fixture-values
+                         :value {:value :two}})
+          (table.insert setup-fx
+                        {:type :register/action
+                         :value {:event {:type :test/custom}
+                                 :id :test.custom
+                                 :keys [:alt+z]
+                                 :label "Custom action"}})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :test/custom
+                         :handler (fn [db]
+                                    (set db.custom_action true)
+                                    {: db :fx [{:type :terminal/read}]})})
           (local steps {})
 
           (fn step [event check]
@@ -25,13 +38,15 @@
 
           (fn input [kind text] {: kind : text :type :terminal/input})
 
-          (misa.reg_interceptor {:before (fn [tx]
+          (table.insert setup-fx
+                        {:type :register/interceptor
+                         :value {:before (fn [tx]
                                            (set tx.cofx.terminal
                                                 {:columns 60
                                                  :interactive true
                                                  :lines 24})
                                            tx)
-                                 :id :interaction/terminal})
+                                 :id :interaction/terminal}})
           (step {:key :alt+z :kind :key :type :terminal/input}
                 (fn [db]
                   (assert db.custom_action
@@ -249,42 +264,53 @@ A paragraph.
                               nil))
           (step (input :escape))
           (step (input :escape) (fn [db] (assert (not db.selection)) nil))
-          (misa.reg_event :app/start
-                          (fn []
-                            {:fx [{:event {:index 1 :type :interaction/step}
-                                   :type :dispatch}]}))
-          (misa.reg_event :interaction/step
-                          (fn [db event]
-                            (local current (. steps event.index))
-                            (if (not current)
-                                {: db
-                                 :fx [{:lines [{:spans [{:text :interaction}]}]
-                                       :type :view/commit}
-                                      {:type :app/quit}]}
-                                {: db
-                                 :fx [{:event current.event :type :dispatch}
-                                      {:event {:index event.index
-                                               :type :interaction/check}
-                                       :type :dispatch}]})))
-          (misa.reg_event :interaction/check
-                          (fn [db event]
-                            ;; Follow-up effects (clipboard/copy, picker/open) are queued after this
-                            ;; transaction; an extra event places the check behind those effects.
-                            {: db
-                             :fx [{:event {:index event.index
-                                           :type :interaction/assert}
-                                   :type :dispatch}]}))
-          (misa.reg_event :interaction/assert
-                          (fn [db event]
-                            (local check (. steps event.index :check))
-                            (when check
-                              (local (ok err) (pcall check db))
-                              (assert ok
-                                      (.. "interaction step " event.index ": "
-                                          (tostring err))))
-                            {: db
-                             :fx [{:event {:index (+ event.index 1)
-                                           :type :interaction/step}
-                                   :type :dispatch}]}))
-          nil)}
-
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn []
+                                    {:fx [{:event {:index 1
+                                                   :type :interaction/step}
+                                           :type :dispatch}]})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :interaction/step
+                         :handler (fn [db event]
+                                    (local current (. steps event.index))
+                                    (if (not current)
+                                        {: db
+                                         :fx [{:lines [{:spans [{:text :interaction}]}]
+                                               :type :view/commit}
+                                              {:type :app/quit}]}
+                                        {: db
+                                         :fx [{:event current.event
+                                               :type :dispatch}
+                                              {:event {:index event.index
+                                                       :type :interaction/check}
+                                               :type :dispatch}]}))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :interaction/check
+                         :handler (fn [db event]
+                                    ;; Follow-up effects (clipboard/copy, picker/open) are queued after this
+                                    ;; transaction; an extra event places the check behind those effects.
+                                    {: db
+                                     :fx [{:event {:index event.index
+                                                   :type :interaction/assert}
+                                           :type :dispatch}]})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :interaction/assert
+                         :handler (fn [db event]
+                                    (local check (. steps event.index :check))
+                                    (when check
+                                      (local (ok err) (pcall check db))
+                                      (assert ok
+                                              (.. "interaction step "
+                                                  event.index ": "
+                                                  (tostring err))))
+                                    {: db
+                                     :fx [{:event {:index (+ event.index 1)
+                                                   :type :interaction/step}
+                                           :type :dispatch}]})})
+          nil
+          {:fx setup-fx})}

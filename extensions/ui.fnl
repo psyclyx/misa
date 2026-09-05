@@ -134,57 +134,100 @@
     (var overlay nil)
     (var exclusive nil)
     (var disabled false)
-    (each [_ layer (ipairs (misa.view_layers db {:available_lines frame.available : terminal}))]
+    (each [_ layer (ipairs (misa.view_layers db
+                                             {:available_lines frame.available
+                                              : terminal}))]
       (when (not exclusive)
         (if layer.exclusive (set exclusive layer)
             (and layer.overlay
-                 (or (not overlay) (> (or layer.priority 0) (or overlay.priority 0))))
-            (set overlay layer)
-            (= layer.dock :input)
-            (do (append dock layer.lines)
-                (set disabled (or disabled layer.input_disabled))))))
+                 (or (not overlay)
+                     (> (or layer.priority 0) (or overlay.priority 0)))) (set overlay
+                                                                                          layer)
+            (= layer.dock :input) (do
+                                    (append dock layer.lines)
+                                    (set disabled
+                                         (or disabled layer.input_disabled))))))
+
     (fn transcript [room]
       {:count room
        :lines (if misa.transcript_window
-                  (misa.transcript_window db {:columns terminal.columns
-                                              :images terminal.images
-                                              :interactive true} room)
+                  (misa.transcript_window db
+                                          {:columns terminal.columns
+                                           :images terminal.images
+                                           :interactive true}
+                                          room)
                   [])})
+
     (if exclusive
-        (compose [header {:count (math.max 0 (- frame.height frame.counts.header))
-                          :cursor exclusive.cursor :lines exclusive.lines}] terminal)
+        (compose [header
+                  {:count (math.max 0 (- frame.height frame.counts.header))
+                   :cursor exclusive.cursor
+                   :lines exclusive.lines}] terminal)
         overlay
         (let [count (math.min (length overlay.lines) frame.available)]
-          (compose [header (transcript (- frame.available count))
-                    {: count :cursor overlay.cursor :lines overlay.lines} status] terminal))
+          (compose [header
+                    (transcript (- frame.available count))
+                    {: count :cursor overlay.cursor :lines overlay.lines}
+                    status] terminal))
         (let [editor (if misa.editor_projection
                          (misa.editor_projection db {: terminal})
                          {:busy true :byte 0 :completions [] :input [] :row 1})
               budgets (input-budgets frame (length editor.input) (length dock))
-              first (math.max 1 (math.min (- editor.row (math.floor (/ budgets.editor 2)))
-                                         (+ (- (length editor.input) budgets.editor) 1)))
-              completion-count (math.min (length editor.completions) budgets.completions)]
+              first (math.max 1
+                              (math.min (- editor.row
+                                           (math.floor (/ budgets.editor 2)))
+                                        (+ (- (length editor.input)
+                                              budgets.editor)
+                                           1)))
+              completion-count (math.min (length editor.completions)
+                                         budgets.completions)]
           (compose [header
                     (transcript (- budgets.remaining completion-count))
                     {:count budgets.dock :lines dock}
-                    {:cursor (when (not disabled) {:byte editor.byte :row (+ (- editor.row first) 1)})
+                    {:cursor (when (not disabled)
+                               {:byte editor.byte
+                                :row (+ (- editor.row first) 1)})
                      :lines (slice editor.input first budgets.editor)}
                     {:count completion-count :lines editor.completions}
                     status] terminal)))))
 
 {:setup (fn []
-  (set misa.ui_bound_frame bound-frame)
-  (fn misa.picker_available_lines [db terminal]
-    (let [frame (chrome db terminal)]
-      (math.max 0 (- frame.height frame.counts.header))))
-  (fn misa.inline_choice_room [db terminal input-count]
-    (let [frame (chrome db terminal)]
-      (if (= frame.height 0) 0
-          (do
-            (var dock-count 0)
-            (each [_ layer (ipairs (misa.view_layers db {:available_lines frame.available : terminal}))]
-              (when (= layer.dock :input)
-                (set dock-count (+ dock-count (length (or layer.lines []))))))
-            (. (input-budgets frame input-count dock-count) :completions)))))
-  (misa.reg_view (fn [db cofx]
-    (if (<= cofx.terminal.lines 0) {:lines []} (project db cofx.terminal)))))}
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :ui_bound_frame
+                         :value bound-frame})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :picker_available_lines
+                         :value (fn [db terminal]
+                                  (let [frame (chrome db terminal)]
+                                    (math.max 0
+                                              (- frame.height
+                                                 frame.counts.header))))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :inline_choice_room
+                         :value (fn [db terminal input-count]
+                                  (let [frame (chrome db terminal)]
+                                    (if (= frame.height 0)
+                                        0
+                                        (do
+                                          (var dock-count 0)
+                                          (each [_ layer (ipairs (misa.view_layers db
+                                                                                   {:available_lines frame.available
+                                                                                    : terminal}))]
+                                            (when (= layer.dock :input)
+                                              (set dock-count
+                                                   (+ dock-count
+                                                      (length (or layer.lines
+                                                                  []))))))
+                                          (. (input-budgets frame input-count
+                                                            dock-count)
+                                             :completions)))))})
+          (table.insert setup-fx
+                        {:type :register/view
+                         :handler (fn [db cofx]
+                                    (if (<= cofx.terminal.lines 0) {:lines []}
+                                        (project db cofx.terminal)))})
+          {:fx setup-fx})}

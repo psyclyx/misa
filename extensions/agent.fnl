@@ -341,9 +341,12 @@
     blocks))
 
 {:setup (fn [context]
-          (misa.reg_command {:description "Reset conversation and token usage"
-                             :event :agent/reset
-                             :name :/clear})
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/command
+                         :value {:description "Reset conversation and token usage"
+                                 :event :agent/reset
+                                 :name :/clear}})
           (var config (or (and (= (type context.config) :table)
                                context.config.agent)
                           nil))
@@ -351,526 +354,616 @@
           (assert (or (= config.system_prompt nil)
                       (= (type config.system_prompt) :string))
                   "config.agent.system_prompt must be a string")
-          (misa.reg_event :app/start
-                          (fn [db _ cofx]
-                            (set db.agent
-                                 {:exit_after_response (> (length cofx.argv) 0)
-                                  :messages {}
-                                  :pending_tool_count 0
-                                  :pending_tools {}
-                                  :request_seq 0
-                                  :status :ready
-                                  :system_prompt config.system_prompt
-                                  :usage {:cache_read_tokens 0
-                                          :cache_write_tokens 0
-                                          :input_tokens 0
-                                          :output_tokens 0}})
-                            (if (= (length cofx.argv) 0) {: db}
-                                (do
-                                  (local prompt (table.concat cofx.argv " "))
-                                  (if (and db.auth_startup
-                                           (not db.auth_startup.ready))
-                                      (do
-                                        (set db.agent.startup_prompt prompt)
-                                        {: db})
-                                      {: db
-                                       :fx [{:event {: prompt
-                                                     :type :agent/submit}
-                                             :type :dispatch}]})))))
-          (misa.reg_event :auth/startup-ready
-                          (fn [db]
-                            (local agent db.agent)
-                            (if (or (not agent) (not agent.startup_prompt)) nil
-                                (do
-                                  (local prompt agent.startup_prompt)
-                                  (local attachments agent.startup_attachments)
-                                  (set (agent.startup_prompt agent.startup_attachments)
-                                       (values nil nil))
-                                  {: db
-                                   :fx [{:event {: attachments
-                                                 : prompt
-                                                 :type :agent/submit}
-                                         :type :dispatch}]}))))
-          (misa.reg_event :agent/cancel-active
-                          (fn [db]
-                            (local agent db.agent)
-                            (if (or (not agent) agent.cancel_requested) {: db}
-                                (do
-                                  (var effects {})
-                                  (if (and (= agent.status :working)
-                                           agent.active_request_id)
-                                      (do
-                                        (set (agent.cancel_requested agent.status)
-                                             (values true :cancelling))
-                                        (set effects
-                                             [{:event {:status :cancelling
-                                                       :type :agent/status}
-                                               :type :dispatch}
-                                              {:id agent.active_request_id
-                                               :type :operation/cancel}]))
-                                      (and (= agent.status :tools)
-                                           (> agent.pending_tool_count 0))
-                                      (do
-                                        (set (agent.cancel_requested agent.status)
-                                             (values true :cancelling))
-                                        (tset effects 1
-                                              {:event {:status :cancelling
-                                                       :type :agent/status}
-                                               :type :dispatch})
-                                        (local ids {})
-                                        (each [id (pairs agent.pending_tools)]
-                                          (tset ids (+ (length ids) 1) id))
-                                        (table.sort ids)
-                                        (each [_ id (ipairs ids)]
-                                          (tset effects (+ (length effects) 1)
-                                                {: id :type :operation/cancel}))))
-                                  {: db :fx effects}))))
-          (misa.reg_event :agent/reset
-                          (fn [db]
-                            (local agent
-                                   (assert db.agent
-                                           "agent state is not initialized"))
-                            (local effects {})
-                            (when agent.active_request_id
-                              (tset effects (+ (length effects) 1)
-                                    {:id agent.active_request_id
-                                     :type :operation/cancel}))
-                            (each [id (pairs agent.pending_tools)]
-                              (tset effects (+ (length effects) 1)
-                                    {: id :type :operation/cancel}))
-                            (set (agent.status agent.active_request_id
-                                               agent.accepted_request_id
-                                               agent.stream
-                                               agent.cancel_requested)
-                                 (values :ready nil nil nil false))
-                            (set (agent.pending_tools agent.pending_tool_count
-                                                      agent.tool_batch)
-                                 (values {} 0 nil))
-                            (set (agent.messages agent.error agent.last_usage)
-                                 (values {} nil {}))
-                            (set agent.usage
-                                 {:cache_read_tokens 0
-                                  :cache_write_tokens 0
-                                  :input_tokens 0
-                                  :output_tokens 0})
-                            (tset effects (+ (length effects) 1)
-                                  {:event {:type :transcript/reset}
-                                   :type :dispatch})
-                            (tset effects (+ (length effects) 1)
-                                  {:event {:last_usage agent.last_usage
-                                           :status :ready
-                                           :type :agent/status
-                                           :usage agent.usage}
-                                   :type :dispatch})
-                            {: db :fx effects}))
-          (misa.reg_event :agent/submit
-                          (fn [db event]
-                            (assert (and (= (type event.prompt) :string)
-                                         (or (not= event.prompt "")
-                                             (> (length (or event.attachments
-                                                            {}))
-                                                0)))
-                                    "agent prompt must be nonempty")
-                            (local agent
-                                   (assert db.agent
-                                           "agent state is not initialized"))
-                            (if (not= agent.status :ready) {: db}
-                                (if (and db.auth_startup
-                                         (not db.auth_startup.ready))
-                                    (do
-                                      (set (agent.startup_prompt agent.startup_attachments)
-                                           (values event.prompt
-                                                   event.attachments))
-                                      {: db})
-                                    (if (not (selected-model db))
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn [db _ cofx]
+                                    (set db.agent
+                                         {:exit_after_response (> (length cofx.argv)
+                                                                  0)
+                                          :messages {}
+                                          :pending_tool_count 0
+                                          :pending_tools {}
+                                          :request_seq 0
+                                          :status :ready
+                                          :system_prompt config.system_prompt
+                                          :usage {:cache_read_tokens 0
+                                                  :cache_write_tokens 0
+                                                  :input_tokens 0
+                                                  :output_tokens 0}})
+                                    (if (= (length cofx.argv) 0) {: db}
                                         (do
-                                          (local configured
-                                                 (and db.models
-                                                      db.models.configured_default))
-                                          (local message
-                                                 (or (and configured
-                                                          (.. "configured model is unavailable: "
-                                                              configured))
-                                                     "no available models; log in to a provider"))
-                                          (local problem
-                                                 {:code :missing_model
-                                                  :kind :request_readiness
-                                                  : message
-                                                  :model configured})
-                                          {: db
-                                           :fx [{:event {:level :error
-                                                         : problem
-                                                         :text message
-                                                         :type :transcript/harness}
-                                                 :type :dispatch}
-                                                {:event {:exit agent.exit_after_response
-                                                         :type :agent/completed}
-                                                 :type :dispatch}]})
-                                        (do
-                                          (local (provider problem)
-                                                 (request db))
-                                          (if problem
-                                              {: db
-                                               :fx (blocked agent problem)}
+                                          (local prompt
+                                                 (table.concat cofx.argv " "))
+                                          (if (and db.auth_startup
+                                                   (not db.auth_startup.ready))
                                               (do
-                                                (local blocks {})
-                                                (when (not= event.prompt "")
-                                                  (tset blocks
-                                                        (+ (length blocks) 1)
-                                                        {:text event.prompt
-                                                         :type :text}))
-                                                (each [_ image (ipairs (or event.attachments
-                                                                           {}))]
-                                                  (assert (and (and (and (and (= image.type
-                                                                                 :image)
-                                                                              (= (type image.source)
-                                                                                 :table))
-                                                                         (= image.source.type
-                                                                            :base64))
-                                                                    (= (type image.source.media_type)
-                                                                       :string))
-                                                               (= (type image.source.data)
-                                                                  :string))
-                                                          "invalid image attachment")
-                                                  (tset blocks
-                                                        (+ (length blocks) 1)
-                                                        image))
-                                                (tset agent.messages
-                                                      (+ (length agent.messages)
-                                                         1)
-                                                      {:content blocks
-                                                       :role :user})
-                                                {: db
-                                                 :fx [{:event {:prompt event.prompt
-                                                               :type :agent/submitted}
-                                                       :type :dispatch}
-                                                      {:event {:attachments event.attachments
-                                                               :text event.prompt
-                                                               :type :transcript/user}
-                                                       :type :dispatch}
-                                                      {:event {:status :working
+                                                (set db.agent.startup_prompt
+                                                     prompt)
+                                                {: db})
+                                              {: db
+                                               :fx [{:event {: prompt
+                                                             :type :agent/submit}
+                                                     :type :dispatch}]}))))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :auth/startup-ready
+                         :handler (fn [db]
+                                    (local agent db.agent)
+                                    (if (or (not agent)
+                                            (not agent.startup_prompt))
+                                        nil
+                                        (do
+                                          (local prompt agent.startup_prompt)
+                                          (local attachments
+                                                 agent.startup_attachments)
+                                          (set (agent.startup_prompt agent.startup_attachments)
+                                               (values nil nil))
+                                          {: db
+                                           :fx [{:event {: attachments
+                                                         : prompt
+                                                         :type :agent/submit}
+                                                 :type :dispatch}]})))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/cancel-active
+                         :handler (fn [db]
+                                    (local agent db.agent)
+                                    (if (or (not agent) agent.cancel_requested)
+                                        {: db}
+                                        (do
+                                          (var effects {})
+                                          (if (and (= agent.status :working)
+                                                   agent.active_request_id)
+                                              (do
+                                                (set (agent.cancel_requested agent.status)
+                                                     (values true :cancelling))
+                                                (set effects
+                                                     [{:event {:status :cancelling
                                                                :type :agent/status}
                                                        :type :dispatch}
-                                                      provider]}))))))))
+                                                      {:id agent.active_request_id
+                                                       :type :operation/cancel}]))
+                                              (and (= agent.status :tools)
+                                                   (> agent.pending_tool_count
+                                                      0))
+                                              (do
+                                                (set (agent.cancel_requested agent.status)
+                                                     (values true :cancelling))
+                                                (tset effects 1
+                                                      {:event {:status :cancelling
+                                                               :type :agent/status}
+                                                       :type :dispatch})
+                                                (local ids {})
+                                                (each [id (pairs agent.pending_tools)]
+                                                  (tset ids (+ (length ids) 1)
+                                                        id))
+                                                (table.sort ids)
+                                                (each [_ id (ipairs ids)]
+                                                  (tset effects
+                                                        (+ (length effects) 1)
+                                                        {: id
+                                                         :type :operation/cancel}))))
+                                          {: db :fx effects})))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/reset
+                         :handler (fn [db]
+                                    (local agent
+                                           (assert db.agent
+                                                   "agent state is not initialized"))
+                                    (local effects {})
+                                    (when agent.active_request_id
+                                      (tset effects (+ (length effects) 1)
+                                            {:id agent.active_request_id
+                                             :type :operation/cancel}))
+                                    (each [id (pairs agent.pending_tools)]
+                                      (tset effects (+ (length effects) 1)
+                                            {: id :type :operation/cancel}))
+                                    (set (agent.status agent.active_request_id
+                                                       agent.accepted_request_id
+                                                       agent.stream
+                                                       agent.cancel_requested)
+                                         (values :ready nil nil nil false))
+                                    (set (agent.pending_tools agent.pending_tool_count
+                                                              agent.tool_batch)
+                                         (values {} 0 nil))
+                                    (set (agent.messages agent.error
+                                                         agent.last_usage)
+                                         (values {} nil {}))
+                                    (set agent.usage
+                                         {:cache_read_tokens 0
+                                          :cache_write_tokens 0
+                                          :input_tokens 0
+                                          :output_tokens 0})
+                                    (tset effects (+ (length effects) 1)
+                                          {:event {:type :transcript/reset}
+                                           :type :dispatch})
+                                    (tset effects (+ (length effects) 1)
+                                          {:event {:last_usage agent.last_usage
+                                                   :status :ready
+                                                   :type :agent/status
+                                                   :usage agent.usage}
+                                           :type :dispatch})
+                                    {: db :fx effects})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/submit
+                         :handler (fn [db event]
+                                    (assert (and (= (type event.prompt) :string)
+                                                 (or (not= event.prompt "")
+                                                     (> (length (or event.attachments
+                                                                    {}))
+                                                        0)))
+                                            "agent prompt must be nonempty")
+                                    (local agent
+                                           (assert db.agent
+                                                   "agent state is not initialized"))
+                                    (if (not= agent.status :ready) {: db}
+                                        (if (and db.auth_startup
+                                                 (not db.auth_startup.ready))
+                                            (do
+                                              (set (agent.startup_prompt agent.startup_attachments)
+                                                   (values event.prompt
+                                                           event.attachments))
+                                              {: db})
+                                            (if (not (selected-model db))
+                                                (do
+                                                  (local configured
+                                                         (and db.models
+                                                              db.models.configured_default))
+                                                  (local message
+                                                         (or (and configured
+                                                                  (.. "configured model is unavailable: "
+                                                                      configured))
+                                                             "no available models; log in to a provider"))
+                                                  (local problem
+                                                         {:code :missing_model
+                                                          :kind :request_readiness
+                                                          : message
+                                                          :model configured})
+                                                  {: db
+                                                   :fx [{:event {:level :error
+                                                                 : problem
+                                                                 :text message
+                                                                 :type :transcript/harness}
+                                                         :type :dispatch}
+                                                        {:event {:exit agent.exit_after_response
+                                                                 :type :agent/completed}
+                                                         :type :dispatch}]})
+                                                (do
+                                                  (local (provider problem)
+                                                         (request db))
+                                                  (if problem
+                                                      {: db
+                                                       :fx (blocked agent
+                                                                    problem)}
+                                                      (do
+                                                        (local blocks {})
+                                                        (when (not= event.prompt
+                                                                    "")
+                                                          (tset blocks
+                                                                (+ (length blocks)
+                                                                   1)
+                                                                {:text event.prompt
+                                                                 :type :text}))
+                                                        (each [_ image (ipairs (or event.attachments
+                                                                                   {}))]
+                                                          (assert (and (and (and (and (= image.type
+                                                                                         :image)
+                                                                                      (= (type image.source)
+                                                                                         :table))
+                                                                                 (= image.source.type
+                                                                                    :base64))
+                                                                            (= (type image.source.media_type)
+                                                                               :string))
+                                                                       (= (type image.source.data)
+                                                                          :string))
+                                                                  "invalid image attachment")
+                                                          (tset blocks
+                                                                (+ (length blocks)
+                                                                   1)
+                                                                image))
+                                                        (tset agent.messages
+                                                              (+ (length agent.messages)
+                                                                 1)
+                                                              {:content blocks
+                                                               :role :user})
+                                                        {: db
+                                                         :fx [{:event {:prompt event.prompt
+                                                                       :type :agent/submitted}
+                                                               :type :dispatch}
+                                                              {:event {:attachments event.attachments
+                                                                       :text event.prompt
+                                                                       :type :transcript/user}
+                                                               :type :dispatch}
+                                                              {:event {:status :working
+                                                                       :type :agent/status}
+                                                               :type :dispatch}
+                                                              provider]})))))))})
           ;; Providers expose one normalized lifecycle. The agent alone correlates,
           ;; assembles, and decides when a response enters conversation history.
-          (misa.reg_event :agent/stream-start
-                          (fn [db event]
-                            (local agent db.agent)
-                            (if (or (or (or (not agent)
-                                            (not= agent.status :working))
-                                        (not= event.id agent.active_request_id))
-                                    agent.stream)
-                                nil
-                                (do
-                                  (set agent.stream
-                                       {:block_seq 0
-                                        :blocks {}
-                                        :id event.id
-                                        :tool_results {}
-                                        :tools {}})
-                                  {: db
-                                   :fx [{:event {:model agent.request_model
-                                                 :response_id event.id
-                                                 :role :assistant
-                                                 :type :transcript/response-start}
-                                         :type :dispatch}]}))))
-          (misa.reg_event :agent/stream-delta
-                          (fn [db event]
-                            (local (agent delta) (values db.agent event.delta))
-                            (local stream (and agent agent.stream))
-                            (if (or (or (or (or (not stream)
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-start
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    (if (or (or (or (not agent)
+                                                    (not= agent.status :working))
+                                                (not= event.id
+                                                      agent.active_request_id))
+                                            agent.stream)
+                                        nil
+                                        (do
+                                          (set agent.stream
+                                               {:block_seq 0
+                                                :blocks {}
+                                                :id event.id
+                                                :tool_results {}
+                                                :tools {}})
+                                          {: db
+                                           :fx [{:event {:model agent.request_model
+                                                         :response_id event.id
+                                                         :role :assistant
+                                                         :type :transcript/response-start}
+                                                 :type :dispatch}]})))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-delta
+                         :handler (fn [db event]
+                                    (local (agent delta)
+                                           (values db.agent event.delta))
+                                    (local stream (and agent agent.stream))
+                                    (if (or (or (or (or (not stream)
+                                                        agent.cancel_requested)
+                                                    (not= event.id
+                                                          agent.active_request_id))
+                                                (not= stream.id event.id))
+                                            (not= (type delta) :table))
+                                        nil
+                                        (do
+                                          (local fx {})
+                                          (fn start [block kind]
+                                            (set stream.block_seq
+                                                 (+ stream.block_seq 1))
+                                            (set block.transcript_id
+                                                 (.. event.id "/"
+                                                     stream.block_seq))
+                                            (tset stream.blocks
+                                                  (+ (length stream.blocks) 1)
+                                                  block)
+                                            (tset fx (+ (length fx) 1)
+                                                  {:event {:block_id block.transcript_id
+                                                           :call_id block.id
+                                                           : kind
+                                                           :name block.name
+                                                           :response_id event.id
+                                                           :type :transcript/block-start}
+                                                   :type :dispatch})
+                                            nil)
+
+                                          (if (or (= delta.type :text)
+                                                  (= delta.type :thinking))
+                                              (do
+                                                (assert (= (type delta.text)
+                                                           :string)
+                                                        "stream text delta must be a string")
+                                                (when (not= delta.text "")
+                                                  (var last
+                                                       (. stream.blocks
+                                                          (length stream.blocks)))
+                                                  (when (or (not last)
+                                                            (not= last.type
+                                                                  delta.type))
+                                                    (set last
+                                                         {:chunks {}
+                                                          :type delta.type})
+                                                    (start last
+                                                           (or (and (= delta.type
+                                                                       :text)
+                                                                    :assistant)
+                                                               :thinking)))
+                                                  (tset last.chunks
+                                                        (+ (length last.chunks)
+                                                           1)
+                                                        delta.text)
+                                                  (tset fx (+ (length fx) 1)
+                                                        {:event {:block_id last.transcript_id
+                                                                 :response_id event.id
+                                                                 :text delta.text
+                                                                 :type :transcript/block-delta}
+                                                         :type :dispatch})))
+                                              (= delta.type :tool_call)
+                                              (do
+                                                ;; Transaction snapshots copy data trees, so retain an index rather
+                                                ;; than a second alias to the mutable block.
+                                                (local key
+                                                       (tostring (or (or delta.index
+                                                                         delta.id)
+                                                                     (+ (length stream.blocks)
+                                                                        1))))
+                                                (local index
+                                                       (. stream.tools key))
+                                                (var block
+                                                     (and index
+                                                          (. stream.blocks
+                                                             index)))
+                                                (when (not block)
+                                                  (set block
+                                                       {:arguments_json_chunks {}
+                                                        :id delta.id
+                                                        :name delta.name
+                                                        :type :tool_call})
+                                                  (start block :tool_call)
+                                                  (tset stream.tools key
+                                                        (length stream.blocks)))
+                                                (when (not= delta.execution nil)
+                                                  (set block.execution
+                                                       delta.execution))
+                                                (when (not= delta.id nil)
+                                                  (set block.id delta.id))
+                                                (when (not= delta.name nil)
+                                                  (set block.name delta.name))
+                                                (when (not= delta.arguments nil)
+                                                  (set (block.arguments block.arguments_json_chunks)
+                                                       (values delta.arguments
+                                                               nil)))
+                                                (when (not= delta.arguments_json
+                                                            nil)
+                                                  (set block.arguments_json_chunks
+                                                       [delta.arguments_json]))
+                                                (when (not= delta.arguments_json_delta
+                                                            nil)
+                                                  (set block.arguments_json_chunks
+                                                       (or block.arguments_json_chunks
+                                                           {}))
+                                                  (tset block.arguments_json_chunks
+                                                        (+ (length block.arguments_json_chunks)
+                                                           1)
+                                                        delta.arguments_json_delta))
+                                                (tset fx (+ (length fx) 1)
+                                                      {:event {:arguments delta.arguments
+                                                               :arguments_json delta.arguments_json
+                                                               :arguments_json_delta delta.arguments_json_delta
+                                                               :block_id block.transcript_id
+                                                               :call_id delta.id
+                                                               :name delta.name
+                                                               :response_id event.id
+                                                               :type :transcript/block-delta}
+                                                       :type :dispatch}))
+                                              (error (.. "unsupported agent stream delta: "
+                                                         (tostring delta.type))))
+                                          {: db : fx})))})
+          ;; CLI providers can own their tool loop through MCP. Observe that work
+          ;; without executing the same tools a second time in the agent.
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-tool-result
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    (local stream (and agent agent.stream))
+                                    (if (or (or (not stream)
                                                 agent.cancel_requested)
                                             (not= event.id
                                                   agent.active_request_id))
-                                        (not= stream.id event.id))
-                                    (not= (type delta) :table))
-                                nil
-                                (do
-                                  (local fx {})
-                                  (fn start [block kind]
-                                    (set stream.block_seq
-                                         (+ stream.block_seq 1))
-                                    (set block.transcript_id
-                                         (.. event.id "/" stream.block_seq))
-                                    (tset stream.blocks
-                                          (+ (length stream.blocks) 1) block)
-                                    (tset fx (+ (length fx) 1)
-                                          {:event {:block_id block.transcript_id
-                                                   :call_id block.id
-                                                   : kind
-                                                   :name block.name
-                                                   :response_id event.id
-                                                   :type :transcript/block-start}
-                                           :type :dispatch})
-                                    nil)
-
-                                  (if (or (= delta.type :text)
-                                          (= delta.type :thinking))
-                                      (do
-                                        (assert (= (type delta.text) :string)
-                                                "stream text delta must be a string")
-                                        (when (not= delta.text "")
-                                          (var last
-                                               (. stream.blocks
-                                                  (length stream.blocks)))
-                                          (when (or (not last)
-                                                    (not= last.type delta.type))
-                                            (set last
-                                                 {:chunks {} :type delta.type})
-                                            (start last
-                                                   (or (and (= delta.type :text)
-                                                            :assistant)
-                                                       :thinking)))
-                                          (tset last.chunks
-                                                (+ (length last.chunks) 1)
-                                                delta.text)
-                                          (tset fx (+ (length fx) 1)
-                                                {:event {:block_id last.transcript_id
-                                                         :response_id event.id
-                                                         :text delta.text
-                                                         :type :transcript/block-delta}
-                                                 :type :dispatch})))
-                                      (= delta.type :tool_call)
-                                      (do
-                                        ;; Transaction snapshots copy data trees, so retain an index rather
-                                        ;; than a second alias to the mutable block.
-                                        (local key
-                                               (tostring (or (or delta.index
-                                                                 delta.id)
-                                                             (+ (length stream.blocks)
-                                                                1))))
-                                        (local index (. stream.tools key))
-                                        (var block
-                                             (and index (. stream.blocks index)))
-                                        (when (not block)
-                                          (set block
-                                               {:arguments_json_chunks {}
-                                                :id delta.id
-                                                :name delta.name
-                                                :type :tool_call})
-                                          (start block :tool_call)
-                                          (tset stream.tools key
-                                                (length stream.blocks)))
-                                        (when (not= delta.execution nil)
-                                          (set block.execution delta.execution))
-                                        (when (not= delta.id nil)
-                                          (set block.id delta.id))
-                                        (when (not= delta.name nil)
-                                          (set block.name delta.name))
-                                        (when (not= delta.arguments nil)
-                                          (set (block.arguments block.arguments_json_chunks)
-                                               (values delta.arguments nil)))
-                                        (when (not= delta.arguments_json nil)
-                                          (set block.arguments_json_chunks
-                                               [delta.arguments_json]))
-                                        (when (not= delta.arguments_json_delta
-                                                    nil)
-                                          (set block.arguments_json_chunks
-                                               (or block.arguments_json_chunks
-                                                   {}))
-                                          (tset block.arguments_json_chunks
-                                                (+ (length block.arguments_json_chunks)
-                                                   1)
-                                                delta.arguments_json_delta))
-                                        (tset fx (+ (length fx) 1)
-                                              {:event {:arguments delta.arguments
-                                                       :arguments_json delta.arguments_json
-                                                       :arguments_json_delta delta.arguments_json_delta
-                                                       :block_id block.transcript_id
-                                                       :call_id delta.id
-                                                       :name delta.name
-                                                       :response_id event.id
-                                                       :type :transcript/block-delta}
-                                               :type :dispatch}))
-                                      (error (.. "unsupported agent stream delta: "
-                                                 (tostring delta.type))))
-                                  {: db : fx}))))
-          ;; CLI providers can own their tool loop through MCP. Observe that work
-          ;; without executing the same tools a second time in the agent.
-          (misa.reg_event :agent/stream-tool-result
-                          (fn [db event]
-                            (local agent db.agent)
-                            (local stream (and agent agent.stream))
-                            (if (or (or (not stream) agent.cancel_requested)
-                                    (not= event.id agent.active_request_id))
-                                nil
-                                (do
-                                  (assert (= (type event.tool_call_id) :string)
-                                          "provider tool result requires a call id")
-                                  (tset stream.tool_results event.tool_call_id
-                                        (tool-result event.tool_call_id
-                                                     (or event.text "")
-                                                     event.is_error))
-                                  {: db
-                                   :fx [{:event {:id event.tool_call_id
-                                                 :is_error (= event.is_error
-                                                              true)
-                                                 :text (or event.text "")
-                                                 :type :transcript/tool-result}
-                                         :type :dispatch}]}))))
-          (misa.reg_event :agent/stream-usage
-                          (fn [db event]
-                            (local agent db.agent)
-                            (local stream (and agent agent.stream))
-                            (if (or (or (not stream) agent.cancel_requested)
-                                    (not= event.id agent.active_request_id))
-                                nil (do
-                                     (set stream.usage (or stream.usage {}))
-                                     (each [_ name (ipairs [:input_tokens
-                                                            :output_tokens
-                                                            :cache_read_tokens
-                                                            :cache_write_tokens
-                                                            :cost_usd
-                                                            :input_includes_cache])]
-                                       (when (and (= (type event.usage) :table)
-                                                  (not= (. event.usage name)
-                                                        nil))
-                                         (tset stream.usage name
-                                               (. event.usage name))))
-                                     (set stream.stop_reason
-                                          (or event.stop_reason
-                                              stream.stop_reason))
-                                     {: db}))))
-          ;; Opaque provider continuation data belongs to the message, not its
-          ;; visible text. Adapters replay only entries from their own protocol.
-          (misa.reg_event :agent/stream-state
-                          (fn [db event]
-                            (local agent db.agent)
-                            (local stream (and agent agent.stream))
-                            (if (or (or (not stream) agent.cancel_requested)
-                                    (not= event.id agent.active_request_id))
-                                nil (do
-                                     (assert (and (= (type event.provider)
-                                                     :string)
-                                                  (= (type event.value) :table))
-                                             "invalid provider continuation state")
-                                     (set stream.provider_state
-                                          (or stream.provider_state {}))
-                                     (tset stream.provider_state
-                                           (+ (length stream.provider_state) 1)
-                                           {:provider event.provider
-                                            :value event.value})
-                                     {: db}))))
-          (misa.reg_event :agent/stream-end
-                          (fn [db event]
-                            (local agent db.agent)
-                            (local stream (and agent agent.stream))
-                            (if (or (or (not stream)
-                                        (not= event.id agent.active_request_id))
-                                    (not= stream.id event.id))
-                                nil
-                                (if agent.cancel_requested
-                                    (cancelled db agent event.id true)
-                                    (if (not= agent.status :working) nil
+                                        nil
                                         (do
-                                          (local blocks (stream-blocks stream))
-                                          (if (not blocks)
-                                              {: db
-                                               :fx [{:event {:id event.id
-                                                             :message "provider ended an incomplete tool call"
-                                                             :type :agent/stream-error}
-                                                     :type :dispatch}]}
-                                              (complete-response db agent
-                                                                 event.id blocks
-                                                                 (or event.usage
-                                                                     stream.usage)
-                                                                 (or event.stop_reason
-                                                                     stream.stop_reason)))))))))
-          ;; Compatibility input is immediately normalized; built-in providers never
-          ;; use this legacy event.
-          (misa.reg_event :agent/result
-                          (fn [db event]
-                            (local agent db.agent)
-                            (if (or (not agent)
-                                    (not= event.id agent.active_request_id))
-                                nil
-                                (if agent.cancel_requested
-                                    (cancelled db agent event.id
-                                               (not= agent.stream nil))
-                                    (if (not= agent.status :working) nil
-                                        (complete-response db agent event.id
-                                                           event.content
-                                                           event.usage
-                                                           event.stop_reason))))))
-          (misa.reg_event :tool/result
-                          (fn [db event]
-                            (local agent db.agent)
-                            ;; Cancellation/reset can race an already queued completion.
-                            (if (or (not agent)
-                                    (not (. agent.pending_tools
-                                            event.tool_call_id)))
-                                nil
-                                (do
-                                  (tset agent.pending_tools event.tool_call_id
-                                        nil)
-                                  (set agent.pending_tool_count
-                                       (- agent.pending_tool_count 1))
-                                  (if agent.cancel_requested
-                                      (do
-                                        (local update
-                                               {:event {:cancelled true
-                                                        :id event.tool_call_id
-                                                        :is_error (= event.is_error
-                                                                     true)
-                                                        :text (or event.text
-                                                                  :Cancelled)
-                                                        :type :transcript/tool-result}
-                                                :type :dispatch})
-                                        (if (= agent.pending_tool_count 0)
-                                            (do
-                                              (local tx
-                                                     (cancelled db agent
-                                                                agent.accepted_request_id
-                                                                true))
-                                              (table.insert tx.fx 1 update)
-                                              tx)
-                                            {: db :fx [update]}))
-                                      (do
-                                        (local result
-                                               (tool-result event.tool_call_id
-                                                            (or event.text "")
-                                                            event.is_error))
-                                        (assert (and agent.tool_batch
-                                                     (not (. agent.tool_batch.results
-                                                             event.tool_call_id)))
-                                                "duplicate tool result")
-                                        (tset agent.tool_batch.results
-                                              event.tool_call_id result)
-                                        (local effects
-                                               [{:event {:id event.tool_call_id
+                                          (assert (= (type event.tool_call_id)
+                                                     :string)
+                                                  "provider tool result requires a call id")
+                                          (tset stream.tool_results
+                                                event.tool_call_id
+                                                (tool-result event.tool_call_id
+                                                             (or event.text "")
+                                                             event.is_error))
+                                          {: db
+                                           :fx [{:event {:id event.tool_call_id
                                                          :is_error (= event.is_error
                                                                       true)
                                                          :text (or event.text
                                                                    "")
                                                          :type :transcript/tool-result}
-                                                 :type :dispatch}])
-                                        (when (= agent.pending_tool_count 0)
-                                          (flush-tool-results agent)
-                                          (local (provider problem)
-                                                 (request db))
-                                          (if problem
-                                              (each [_ effect (ipairs (blocked agent
-                                                                               problem))]
-                                                (tset effects
-                                                      (+ (length effects) 1)
-                                                      effect))
+                                                 :type :dispatch}]})))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-usage
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    (local stream (and agent agent.stream))
+                                    (if (or (or (not stream)
+                                                agent.cancel_requested)
+                                            (not= event.id
+                                                  agent.active_request_id))
+                                        nil
+                                        (do
+                                          (set stream.usage
+                                               (or stream.usage {}))
+                                          (each [_ name (ipairs [:input_tokens
+                                                                 :output_tokens
+                                                                 :cache_read_tokens
+                                                                 :cache_write_tokens
+                                                                 :cost_usd
+                                                                 :input_includes_cache])]
+                                            (when (and (= (type event.usage)
+                                                          :table)
+                                                       (not= (. event.usage
+                                                                name)
+                                                             nil))
+                                              (tset stream.usage name
+                                                    (. event.usage name))))
+                                          (set stream.stop_reason
+                                               (or event.stop_reason
+                                                   stream.stop_reason))
+                                          {: db})))})
+          ;; Opaque provider continuation data belongs to the message, not its
+          ;; visible text. Adapters replay only entries from their own protocol.
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-state
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    (local stream (and agent agent.stream))
+                                    (if (or (or (not stream)
+                                                agent.cancel_requested)
+                                            (not= event.id
+                                                  agent.active_request_id))
+                                        nil
+                                        (do
+                                          (assert (and (= (type event.provider)
+                                                          :string)
+                                                       (= (type event.value)
+                                                          :table))
+                                                  "invalid provider continuation state")
+                                          (set stream.provider_state
+                                               (or stream.provider_state {}))
+                                          (tset stream.provider_state
+                                                (+ (length stream.provider_state)
+                                                   1)
+                                                {:provider event.provider
+                                                 :value event.value})
+                                          {: db})))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-end
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    (local stream (and agent agent.stream))
+                                    (if (or (or (not stream)
+                                                (not= event.id
+                                                      agent.active_request_id))
+                                            (not= stream.id event.id))
+                                        nil
+                                        (if agent.cancel_requested
+                                            (cancelled db agent event.id true)
+                                            (if (not= agent.status :working)
+                                                nil
+                                                (do
+                                                  (local blocks
+                                                         (stream-blocks stream))
+                                                  (if (not blocks)
+                                                      {: db
+                                                       :fx [{:event {:id event.id
+                                                                     :message "provider ended an incomplete tool call"
+                                                                     :type :agent/stream-error}
+                                                             :type :dispatch}]}
+                                                      (complete-response db
+                                                                         agent
+                                                                         event.id
+                                                                         blocks
+                                                                         (or event.usage
+                                                                             stream.usage)
+                                                                         (or event.stop_reason
+                                                                             stream.stop_reason))))))))})
+          ;; Compatibility input is immediately normalized; built-in providers never
+          ;; use this legacy event.
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/result
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    (if (or (not agent)
+                                            (not= event.id
+                                                  agent.active_request_id))
+                                        nil
+                                        (if agent.cancel_requested
+                                            (cancelled db agent event.id
+                                                       (not= agent.stream nil))
+                                            (if (not= agent.status :working)
+                                                nil
+                                                (complete-response db agent
+                                                                   event.id
+                                                                   event.content
+                                                                   event.usage
+                                                                   event.stop_reason)))))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :tool/result
+                         :handler (fn [db event]
+                                    (local agent db.agent)
+                                    ;; Cancellation/reset can race an already queued completion.
+                                    (if (or (not agent)
+                                            (not (. agent.pending_tools
+                                                    event.tool_call_id)))
+                                        nil
+                                        (do
+                                          (tset agent.pending_tools
+                                                event.tool_call_id nil)
+                                          (set agent.pending_tool_count
+                                               (- agent.pending_tool_count 1))
+                                          (if agent.cancel_requested
                                               (do
-                                                (tset effects
-                                                      (+ (length effects) 1)
-                                                      {:event {:status :working
-                                                               :type :agent/status}
-                                                       :type :dispatch})
-                                                (tset effects
-                                                      (+ (length effects) 1)
-                                                      provider))))
-                                        {: db :fx effects}))))))
+                                                (local update
+                                                       {:event {:cancelled true
+                                                                :id event.tool_call_id
+                                                                :is_error (= event.is_error
+                                                                             true)
+                                                                :text (or event.text
+                                                                          :Cancelled)
+                                                                :type :transcript/tool-result}
+                                                        :type :dispatch})
+                                                (if (= agent.pending_tool_count
+                                                       0)
+                                                    (do
+                                                      (local tx
+                                                             (cancelled db
+                                                                        agent
+                                                                        agent.accepted_request_id
+                                                                        true))
+                                                      (table.insert tx.fx 1
+                                                                    update)
+                                                      tx)
+                                                    {: db :fx [update]}))
+                                              (do
+                                                (local result
+                                                       (tool-result event.tool_call_id
+                                                                    (or event.text
+                                                                        "")
+                                                                    event.is_error))
+                                                (assert (and agent.tool_batch
+                                                             (not (. agent.tool_batch.results
+                                                                     event.tool_call_id)))
+                                                        "duplicate tool result")
+                                                (tset agent.tool_batch.results
+                                                      event.tool_call_id result)
+                                                (local effects
+                                                       [{:event {:id event.tool_call_id
+                                                                 :is_error (= event.is_error
+                                                                              true)
+                                                                 :text (or event.text
+                                                                           "")
+                                                                 :type :transcript/tool-result}
+                                                         :type :dispatch}])
+                                                (when (= agent.pending_tool_count
+                                                         0)
+                                                  (flush-tool-results agent)
+                                                  (local (provider problem)
+                                                         (request db))
+                                                  (if problem
+                                                      (each [_ effect (ipairs (blocked agent
+                                                                                       problem))]
+                                                        (tset effects
+                                                              (+ (length effects)
+                                                                 1)
+                                                              effect))
+                                                      (do
+                                                        (tset effects
+                                                              (+ (length effects)
+                                                                 1)
+                                                              {:event {:status :working
+                                                                       :type :agent/status}
+                                                               :type :dispatch})
+                                                        (tset effects
+                                                              (+ (length effects)
+                                                                 1)
+                                                              provider))))
+                                                {: db :fx effects})))))})
 
           (fn stream-error [db event]
             (local agent db.agent)
             (if (or (or (not agent) (not= event.id agent.active_request_id))
                     (and (not= agent.status :working)
-                         (not= agent.status :cancelling))) nil
+                         (not= agent.status :cancelling)))
+                nil
                 (if agent.cancel_requested
                     (cancelled db agent event.id (not= agent.stream nil))
                     (do
@@ -902,7 +995,12 @@
                              :type :dispatch})
                       {: db : fx}))))
 
-          (misa.reg_event :agent/stream-error stream-error)
-          (misa.reg_event :agent/error stream-error)
-          nil)}
-
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/stream-error
+                         :handler stream-error})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :agent/error
+                         :handler stream-error})
+          {:fx setup-fx})}

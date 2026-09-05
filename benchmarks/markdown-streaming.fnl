@@ -1,4 +1,5 @@
 (local fennel (require :fennel))
+(local setup (fennel.dofile :benchmarks/setup.fnl))
 (local lua-dofile dofile)
 (fn dofile [path]
   (if (path:match "%.fnl$") (fennel.dofile path) (lua-dofile path)))
@@ -21,7 +22,7 @@
 
 (fn load [path]
   (global misa {})
-  ((. (dofile path) :setup) {:config {}})
+  (setup (dofile path) {:config {}})
   misa.markdown)
 
 (local (baseline candidate)
@@ -60,8 +61,9 @@ ordinary **bold** [link](https://example.test) and `code`
 
   (fn run [name verify]
     (var (result checksum) (values nil 0))
-    (local stream (if (= name :candidate) (candidate.new_document)
-                      (and (= name :baseline) baseline.new_document) (baseline.new_document)))
+    (local stream
+           (if (= name :candidate) (candidate.new_document)
+               (and (= name :baseline) baseline.new_document) (baseline.new_document)))
     (each [i text (ipairs inputs)]
       (set result (or (and stream (stream:update text))
                       (or (and (= name :full) (candidate.parse text))

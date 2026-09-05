@@ -1,4 +1,5 @@
 (local fennel (require :fennel))
+(local setup (fennel.dofile :benchmarks/setup.fnl))
 (local lua-dofile dofile)
 (fn dofile [path]
   (if (path:match "%.fnl$") (fennel.dofile path) (lua-dofile path)))
@@ -17,13 +18,13 @@
 
 (global misa {:json_null {}})
 
-((. (dofile :extensions/json.fnl) :setup))
+(setup (dofile :extensions/json.fnl))
 
 (local encode misa.json.encode)
 
 (fn load [path]
   (global misa {})
-  ((. (dofile path) :setup) {:config {}})
+  (setup (dofile path) {:config {}})
   misa.markdown.parse)
 
 (local (baseline candidate) (values (load baseline-path) (load candidate-path)))
@@ -70,4 +71,3 @@
     (print (string.format "summary,%s,%s,bytes=%d,n=%d,median_s=%.9f,best_s=%.9f,oracle_distinct=%d"
                           workload.name name (length workload.text) n median
                           (. times name 1) count))))
-

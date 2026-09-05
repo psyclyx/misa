@@ -27,28 +27,37 @@
                        :editor
                        :images
                        :editing])]
-  ((. (dofile (.. :extensions/ name :.fnl)) :setup) context))
+  (misa._setup (dofile (.. :extensions/ name :.fnl)) context))
 
 (var (db native) nil)
 
-(misa.reg_event :app/start (fn [state]
-                             (set state.models
-                                  {:entries [{:id :capture/model
-                                              :model :model
-                                              :provider :capture}]
-                                   :selected :capture/model})
-                             {:db state}))
+(misa._setup_effects {:fx [{:type :register/event
+                            :name :app/start
+                            :handler (fn [state]
+                                       (set state.models
+                                            {:entries [{:id :capture/model
+                                                        :model :model
+                                                        :provider :capture}]
+                                             :selected :capture/model})
+                                       {:db state})}]})
 
-(misa.reg_event :test/read (fn [state] (set db state) nil))
+(misa._setup_effects {:fx [{:type :register/event
+                            :name :test/read
+                            :handler (fn [state] (set db state) nil)}]})
 
-(misa.reg_event :test/attachment
-                (fn [state event]
-                  (set state.editor.attachments event.attachments)
-                  {:db state}))
+(misa._setup_effects {:fx [{:type :register/event
+                            :name :test/attachment
+                            :handler (fn [state event]
+                                       (set state.editor.attachments
+                                            event.attachments)
+                                       {:db state})}]})
 
-(misa.reg_event :test/exit-after-response
-                (fn [state] (set state.agent.exit_after_response true)
-                  {:db state}))
+(misa._setup_effects {:fx [{:type :register/event
+                            :name :test/exit-after-response
+                            :handler (fn [state]
+                                       (set state.agent.exit_after_response
+                                            true)
+                                       {:db state})}]})
 
 (misa._seal context)
 
@@ -229,4 +238,3 @@
 (output "editor queue regressions passed\n")
 
 nil
-

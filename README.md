@@ -123,16 +123,30 @@ Lua extensions remain supported by the same VM boundary.
 
 ## Event, coeffect, effect, and view contract
 
-An extension returns `{ setup = function(context) ... end }`. There is no `run`
-phase. Setup may register:
+An extension returns `{ setup = function(context) ... end }`. Setup returns
+`{fx = {...}}`: an ordered array of registration effects, interpreted before the
+next extension's setup runs. There is no `run` phase or imperative `misa.reg_*` API.
+For example, a Fennel extension can declare an event handler and a shared service:
 
-- `misa.reg_event(type, handler)`: handlers run in registration order and thread
+```fennel
+{:setup (fn [context]
+  {:fx [{:type :register/event :name :app/start
+         :handler (fn [db event cofx]
+                    {:db db :fx [{:type :dispatch
+                                 :event {:type :example/ready}}]})}
+        {:type :register/service :name :example
+         :value {:enabled (. context.config :example)}}]})}
+```
+
+Registration effects use these payloads:
+
+- `{type="register/event", name=type, handler=fn}`: handlers run in registration order and thread
   canonical application `db`. A handler receives `(db, event, cofx)` and returns nil or
   `{db=<table>, fx=<ordered array>}`.
-- `misa.reg_interceptor({id=..., before=fn?, after=fn?})`: before callbacks run
+- `{type="register/interceptor", value={id=..., before=fn?, after=fn?}}`: before callbacks run
   in registration order and after callbacks in reverse. They receive and may
   return `{db,event,cofx,fx}`.
-- `misa.reg_cofx(name, fn)`: derives a policy value. Derivations run in
+- `{type="register/cofx", name=name, handler=fn}`: derives a policy value. Derivations run in
   registration order; a later derivation may read values installed by earlier
   ones. Setup context also includes `host={executable,config_path}` so subprocess
   bridges can reuse the running binary and explicitly selected configuration.
@@ -142,32 +156,44 @@ phase. Setup may register:
   These names are reserved. Native code samples both clocks for every
   transaction; elapsed durations must use `monotonic_ms`, never wall time.
   Configuration and argv are shared immutable inputs by contract.
-- `misa.reg_fx(type, fn)`: translates a Fennel policy effect to one native effect
+- `{type="register/fx", name=type, handler=fn}`: translates a Fennel policy effect to one native effect
   or an ordered array of native effects.
-- `misa.reg_view(fn)`: registers exactly one semantic projection.
-- `misa.reg_view_layer(id,fn)`: contributes an optional semantic overlay layer;
+- `{type="register/view", handler=fn}`: registers exactly one semantic projection.
+- `{type="register/view-layer", id=id, handler=fn}`: contributes an optional semantic overlay layer;
   the highest `priority` wins (default 0), allowing temporary palettes above
   input docks for selection and attachments, and modal dialogs;
   the UI composes layers without knowing plugin-owned state.
-- `misa.reg_model(model)`: adds a provider-owned catalogue entry, including an
+- `{type="register/model", value=model}`: adds a provider-owned catalogue entry, including an
   optional `context_window` and API metadata. `api.request_options` maps generic
   option names to `{choices={...},default=...,required=?}` declarations and
   `api.request_options_serializer` identifies the provider transport serializer.
-- `misa.reg_auth_provider(provider)`: declares an authentication ID, model
+- `{type="register/auth-provider", value=provider}`: declares an authentication ID, model
   provider, native `strategy`, and (for OAuth) trusted endpoint `profile` for
   completion and availability tracking. Native validation rejects drift.
-- `misa.reg_command({name,description,event,completion?,complete?})`: adds a
+- `{type="register/command", value={name,description,event,completion?,complete?}}`: adds a
   generic slash command. `completion` names a shared static candidate group;
   `complete(prefix,db)` supplies dynamic candidates when needed.
-- `misa.reg_completion(group,{value,label?,description?})`: lets any plugin add
+- `{type="register/completion", group=group, value={value,label?,description?}}`: lets any plugin add
   a candidate to a shared completion group. The UI handles filtering, sorting,
   display, and insertion, so providers only declare their authentication ID.
-- `misa.reg_tool(tool)`: adds a semantic tool schema and its effect type.
+- `{type="register/tool", value=tool}`: adds a semantic tool schema and its effect type.
   `misa.models()`, `misa.model(id)`, `misa.auth_providers()`, `misa.commands()`, `misa.command(name)`,
   `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
+- `{type="register/service", name="namespace.member", value=value}` exports a
+  shared service; later extensions can consume it through `misa.namespace.member`.
+- `{type="register/setup-effect", name=type, handler=fn}` declares a plugin-owned
+  setup effect interpreter, such as the component and theme registries. Its name
+  must use the `register/` namespace. Its
+  handler receives the effect and may return `{fx={...}}` to expand it into
+  further setup effects.
 
-Framework registrations are sealed after setup; component, theme, and animation
-registries additionally seal as `app/start` begins. The checked synchronous
+Setup accepts registration effects only. Event transactions accept runtime effects
+only: registrations cannot be emitted by event handlers or runtime effect
+translators. Registrations seal after all extensions have completed setup.
+Perform startup IO through effects from an `app/start` handler. Plugin setup must
+return service declarations rather than assigning fields directly on `misa`.
+Protocol factories such as `misa.protocols.openai(spec)` return `{fx={...}}` for
+composition into a provider extension's setup result. The checked synchronous
 `misa.syntax.highlight(language, source)` native API returns ordered
 `{start_byte=<zero-based>, end_byte=<exclusive>, capture=<semantic name>}`
 ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
@@ -422,8 +448,9 @@ request IDs and promotes a completed assistant response into provider history;
 an interrupted response remains marked in the visible transcript but is not
 replayed to the provider.
 
-`indicators` is a focused registry for semantic status values. Features call
-`misa.reg_indicator({id,label?,icon?,hotkey?,value=function(db)...end})`.
+`indicators` is a focused registry for semantic status values. Features return
+`{type="register/indicator", value={id,label?,icon?,hotkey?,value=function(db)...end}}`
+in their setup effects.
 `config.status.indicators` selects order, label/icon representation, an optional
 structured keybinding reminder, and drop priority. The common component styles the standard
 `label`, `value`, and `keybinding` tokens independently and
@@ -443,13 +470,13 @@ models without reasoning support simply expose no effort value.
 `choices` owns generic choice state and narrowing transitions shared by inline
 completion and overlays. The item contract separates stable `id`, emitted
 `value`, semantic `display`, hidden `search`, optional `preview`, and `path`.
-Choice sources are registered with `misa.reg_choice_source`; any item can narrow
+Choice sources are registered with `{type="register/choice-source", id=id, value=source}`; any item can narrow
 to another source, and empty-query Backspace pops the whole narrowing frame.
 Selected rows retain the standard selected style in every panel; only the
 active leftmost panel receives the `>` focus marker.
 
 Choice views are immutable implementations registered with
-`misa.reg_choice_view`. The built-ins are `all`, `favorites`, `frecency`, and
+`{type="register/choice-view", id=id, value=view}`. The built-ins are `all`, `favorites`, `frecency`, and
 `browse`. Browse shows up to three recent choices above the remaining choices;
 searching produces a single ranked list. `config.choices.recent_limit` adjusts
 that count. Model and argument pickers use Browse beside Favorites by default.
@@ -634,13 +661,14 @@ an argv array such as `["wl-copy"]`, `["xclip", "-selection", "clipboard"]`, or
 `["pbcopy"]` to send copied text to that process's stdin instead. The internal
 register always remains available for editor paste.
 
-Features declare `misa.reg_action({id,label,event,keys?,binding?,available?})` during
-setup; `binding` identifies a configured `{context,action}`, and `available(db)`
+Features return `{type="register/action", value={id,label,event,keys?,binding?,available?}}`
+in setup effects; `binding` identifies a configured `{context,action}`, and `available(db)`
 controls contextual discovery. Without `binding`, an action gets a global
 binding under its ID; `keys` supplies optional defaults. Configure it through
 `config.keybindings.global[id]`. The `actions` extension routes global action
 bindings and supplies the palette.
-`selection` accepts `misa.reg_selection_source(id,function(db) ... end)` returning
+`selection` accepts `{type="register/selection-source", id=id, value=function(db) ... end}`
+in setup effects, with the function returning
 source documents with `{id,label,text,kind,first,last,children}`. Ranges are
 zero-based, half-open byte offsets. `selection_document` derives semantic
 ranges from Markdown and lazily supplies finer ranges; selection policy and

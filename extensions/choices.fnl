@@ -1,6 +1,6 @@
 ;; Generic choice state and transitions shared by inline and overlay presentations.
 
-(var (views sources sealed) (values {} {} false))
+(local (views sources) (values {} {}))
 
 (local key-context :choices)
 
@@ -180,8 +180,8 @@
     (tset positional-actions (.. :alt+ key) (.. :option_ bank "_" slot))))
 
 (fn action [event]
-  (if (= (type event.action) :string) event.action
-      misa.keybinding_action (misa.keybinding_action key-context event)
+  (if (= (type event.action) :string) event.action misa.keybinding_action
+      (misa.keybinding_action key-context event)
       (let [key (or (and (= event.kind :key) event.key)
                     (and (= event.kind :alt) (.. :alt+ (event.text:lower)))
                     event.kind)]
@@ -293,11 +293,15 @@
    :value value.value})
 
 {:setup (fn [context]
-          (set misa.choice_config (or (and (and (= (type context.config) :table)
-                                                (= (type context.config.choices)
-                                                   :table))
-                                           context.config.choices)
-                                      {}))
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_config
+                         :value (or (and (and (= (type context.config) :table)
+                                              (= (type context.config.choices)
+                                                 :table))
+                                         context.config.choices)
+                                    {})})
           (local declarations
                  {:accept [:enter :tab]
                   :cancel [:escape :ctrl_c :ctrl_d :eof]
@@ -309,14 +313,18 @@
                   :previous [:arrow_up]
                   :replace_view [:alt+/]})
           (each [name keys (pairs declarations)]
-            (misa.reg_keybinding {:action name
-                                  :context key-context
-                                  :default keys}))
+            (table.insert setup-fx
+                          {:type :register/keybinding
+                           :value {:action name
+                                   :context key-context
+                                   :default keys}}))
           (each [bank keys (ipairs banks)]
             (each [slot key (ipairs keys)]
-              (misa.reg_keybinding {:action (.. :option_ bank "_" slot)
-                                    :context key-context
-                                    :default [(.. :alt+ key)]})))
+              (table.insert setup-fx
+                            {:type :register/keybinding
+                             :value {:action (.. :option_ bank "_" slot)
+                                     :context key-context
+                                     :default [(.. :alt+ key)]}})))
           (local labels
                  {:accept "Accept choice"
                   :cancel "Cancel choices / back"
@@ -329,83 +337,111 @@
                   :replace_view "Replace choice view"})
           (each [name label (pairs labels)]
             (local action-name name)
-            (misa.reg_action {:available (fn [db]
-                                           (local session
-                                                  (or (and db.picker
-                                                           db.picker.session)
-                                                      (and db.editor
-                                                           db.editor.choice)))
-                                           (and (and (not= session nil)
+            (table.insert setup-fx
+                          {:type :register/action
+                           :value {:available (fn [db]
+                                                (local session
+                                                       (or (and db.picker
+                                                                db.picker.session)
+                                                           (and db.editor
+                                                                db.editor.choice)))
+                                                (and (and (not= session nil)
+                                                          (or (not= action-name
+                                                                    :favorite)
+                                                              (not= session.preference_scope
+                                                                    nil)))
                                                      (or (not= action-name
-                                                               :favorite)
-                                                         (not= session.preference_scope
-                                                               nil)))
-                                                (or (not= action-name
-                                                          :open_overlay)
-                                                    (= db.picker nil))))
-                              :binding {:action name :context key-context}
-                              :event {:action name :type :choices/dispatch}
-                              :id (.. :choices. name)
-                              : label}))
+                                                               :open_overlay)
+                                                         (= db.picker nil))))
+                                   :binding {:action name :context key-context}
+                                   :event {:action name
+                                           :type :choices/dispatch}
+                                   :id (.. :choices. name)
+                                   : label}}))
           ;; Positional targets use the same geometry resolver for keyboard and pointer.
           ;; A stale or hidden button therefore cannot choose a different hidden row.
           (each [bank keys (ipairs banks)]
             (for [slot 1 (length keys)]
               (local name (.. :option_ bank "_" slot))
-              (misa.reg_action {:available (fn [db]
-                                             (or (or (not= db.picker nil)
-                                                     (and db.editor
-                                                          (not= db.editor.choice
-                                                                nil)))
-                                                 false))
-                                :binding {:action name :context key-context}
-                                :event {:action name :type :choices/dispatch}
-                                :id (.. :choices. name)
-                                :label (.. "Choose visible item " bank ":" slot)})))
-          (misa.reg_event :choices/dispatch
-                          (fn [db event]
-                            (if (and (not db.picker)
-                                     (not (and db.editor db.editor.choice)))
-                                {: db :fx [{:type :terminal/read}]}
-                                {: db
-                                 :fx [{:event {:action event.action
-                                               :kind :choice_action
-                                               :type (or (and db.picker
-                                                              :picker/input)
-                                                         :terminal/input)}
-                                       :type :dispatch}]})))
-
-          (fn misa.reg_choice_view [id view]
-            (assert (and (and (and (not sealed) (= (type id) :string))
-                              (not= id ""))
-                         (not (. views id)))
-                    "invalid or duplicate choice view")
-            (tset views id (assert view)))
-
-          (fn misa.reg_choice_source [id source]
-            (assert (and (and (and (not sealed) (= (type id) :string))
-                              (not= id ""))
-                         (not (. sources id)))
-                    "invalid or duplicate choice source")
-            (assert (and (= (type source) :table)
-                         (= (type source.items) :function))
-                    "choice source requires items")
-            (tset sources id source))
-
-          (fn misa.choice_source [id context-value db]
-            (source-spec id context-value db))
-
-          (misa.reg_choice_view :all {:title :All})
-          (misa.reg_choice_view :favorites
-                                {:include (fn [value session db]
+              (table.insert setup-fx
+                            {:type :register/action
+                             :value {:available (fn [db]
+                                                  (or (or (not= db.picker nil)
+                                                          (and db.editor
+                                                               (not= db.editor.choice
+                                                                     nil)))
+                                                      false))
+                                     :binding {:action name
+                                               :context key-context}
+                                     :event {:action name
+                                             :type :choices/dispatch}
+                                     :id (.. :choices. name)
+                                     :label (.. "Choose visible item " bank ":"
+                                                slot)}})))
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :choices/dispatch
+                         :handler (fn [db event]
+                                    (if (and (not db.picker)
+                                             (not (and db.editor
+                                                       db.editor.choice)))
+                                        {: db :fx [{:type :terminal/read}]}
+                                        {: db
+                                         :fx [{:event {:action event.action
+                                                       :kind :choice_action
+                                                       :type (or (and db.picker
+                                                                      :picker/input)
+                                                                 :terminal/input)}
+                                               :type :dispatch}]}))})
+          (table.insert setup-fx
+                        {:type :register/setup-effect
+                         :name :register/choice-view
+                         :handler (fn [effect]
+                                    (let [id effect.id
+                                          view effect.value]
+                                      (assert (and (= (type id) :string)
+                                                   (not= id "")
+                                                   (not (. views id)))
+                                              "invalid or duplicate choice view")
+                                      (tset views id (assert view))))})
+          (table.insert setup-fx
+                        {:type :register/setup-effect
+                         :name :register/choice-source
+                         :handler (fn [effect]
+                                    (let [id effect.id
+                                          source effect.value]
+                                      (assert (and (= (type id) :string)
+                                                   (not= id "")
+                                                   (not (. sources id)))
+                                              "invalid or duplicate choice source")
+                                      (assert (and (= (type source) :table)
+                                                   (= (type source.items)
+                                                      :function))
+                                              "choice source requires items")
+                                      (tset sources id source)))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_source
+                         :value (fn [id context-value db]
+                                  (source-spec id context-value db))})
+          (table.insert setup-fx
+                        {:type :register/choice-view
+                         :id :all
+                         :value {:title :All}})
+          (table.insert setup-fx
+                        {:type :register/choice-view
+                         :id :favorites
+                         :value {:include (fn [value session db]
                                             (local p
                                                    (preference db
                                                                session.preference_scope
                                                                value.id))
                                             (and p (= p.favorite true)))
-                                 :title :Favorites})
-          (misa.reg_choice_view :frecency
-                                {:include (fn [value session db]
+                                 :title :Favorites}})
+          (table.insert setup-fx
+                        {:type :register/choice-view
+                         :id :frecency
+                         :value {:include (fn [value session db]
                                             (local p
                                                    (preference db
                                                                session.preference_scope
@@ -425,11 +461,13 @@
                                                 (or pa.uses 0))
                                              (+ (* (or pb.last 0) 1000000)
                                                 (or pb.uses 0))))
-                                 :title :Recent})
+                                 :title :Recent}})
           ;; Grouping is a view policy. The layout treats section names as ordinary
           ;; row metadata, so extensions can compose other grouped lists the same way.
-          (misa.reg_choice_view :browse
-                                {:project (fn [session match-items db]
+          (table.insert setup-fx
+                        {:type :register/choice-view
+                         :id :browse
+                         :value {:project (fn [session match-items db]
                                             (local all
                                                    (match-items session.items
                                                                 session.query))
@@ -488,116 +526,200 @@
                                                     (when (not (. seen value.id))
                                                       (let [copy (clone value)]
                                                         (set copy.section :All)
-                                                        (table.insert result copy))))
+                                                        (table.insert result
+                                                                      copy))))
                                                   result)))
-                                 :title :Browse})
-          (set misa.choice_session new)
-          (set misa.choice_refresh refresh)
-          (set misa.choice_action action)
-          (set misa.choice_hint hint)
-          (set misa.choice_first_index first)
+                                 :title :Browse}})
+          (table.insert setup-fx {:type :register/service
+                                  :name :choice_session
+                                  :value new})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_refresh
+                         :value refresh})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_action
+                         :value action})
+          (table.insert setup-fx {:type :register/service
+                                  :name :choice_hint
+                                  :value hint})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_first_index
+                         :value first})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_set_items
+                         :value (fn [session source-items db]
+                                  (set session.items (items source-items))
+                                  (refresh session db))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_replace_view
+                         :value (fn [session id db]
+                                  (assert (compatible id session)
+                                          "incompatible choice view")
+                                  (tset session.view_ids 1 id)
+                                  (when session.custom_views
+                                    (tset session.custom_views 1 false))
+                                  (refresh session db))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_registered_views
+                         :value (fn [session]
+                                  (local result {})
+                                  (each [id view (pairs views)]
+                                    (when (compatible id session)
+                                      (tset result (+ (length result) 1)
+                                            {:display (or view.title id)
+                                             : id
+                                             :search id
+                                             :value id})))
+                                  (table.sort result (fn [a b] (< a.id b.id)))
+                                  result)})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_accept
+                         :value (fn [session value db]
+                                  (if value.narrow
+                                      (push-narrow session value.narrow db)
+                                      {:accepted value :consumed true}))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_rows
+                         :value (fn [session db hotkeys]
+                                  (refresh session db)
+                                  (local result {})
+                                  (each [bank panel (ipairs session.panels)]
+                                    (local rows {})
+                                    (each [index value (ipairs panel.items)]
+                                      (tset rows index
+                                            (row value
+                                                 (and (= bank 1)
+                                                      (= index panel.highlight))
+                                                 (= value.value
+                                                    session.selected)
+                                                 (and (and hotkeys
+                                                           (. hotkeys bank))
+                                                      (. hotkeys bank index)))))
+                                    (tset result bank
+                                          {:id panel.id
+                                           : rows
+                                           :title panel.title}))
+                                  result)})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_hotkeys
+                         :value (fn [session visible room]
+                                  (local result {})
+                                  (for [bank 1 (math.min (or visible 0)
+                                                         (length session.panels)
+                                                         (length banks))]
+                                    (tset result bank {})
+                                    (local panel (. session.panels bank))
+                                    (local start (first panel room))
+                                    (for [slot 1 (math.min room 9)]
+                                      (when (. panel.items (- (+ start slot) 1))
+                                        (tset (. result bank)
+                                              (- (+ start slot) 1)
+                                              (hint (.. :option_ bank "_" slot))))))
+                                  result)})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_positional
+                         :value (fn [session name visible room]
+                                  (var result nil)
+                                  (for [bank 1 (math.min (or visible 0)
+                                                         (length session.panels)
+                                                         (length banks))
+                                        &until result]
+                                    (for [slot 1 (math.min (or room 0) 9)
+                                          &until result]
+                                      (when (= name (.. :option_ bank "_" slot))
+                                        (set result
+                                             (. session.panels bank :items
+                                                (- (+ (first (. session.panels
+                                                                bank)
+                                                             room)
+                                                      slot)
+                                                   1))))))
+                                  result)})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :choice_input
+                         :value (fn [session event db]
+                                  (refresh session db)
+                                  (let [panel (. session.panels 1)
+                                        state (. session.view_state
+                                                 (. session.view_ids 1))
+                                        name event.action]
+                                    (fn changed []
+                                      (refresh session db)
+                                      {:consumed true})
 
-          (fn misa.choice_set_items [session source-items db]
-            (set session.items (items source-items))
-            (refresh session db))
-
-          (fn misa.choice_replace_view [session id db]
-            (assert (compatible id session) "incompatible choice view")
-            (tset session.view_ids 1 id)
-            (when session.custom_views (tset session.custom_views 1 false))
-            (refresh session db))
-
-          (fn misa.choice_registered_views [session]
-            (local result {})
-            (each [id view (pairs views)]
-              (when (compatible id session)
-                (tset result (+ (length result) 1)
-                      {:display (or view.title id) : id :search id :value id})))
-            (table.sort result (fn [a b] (< a.id b.id)))
-            result)
-
-          (fn misa.choice_accept [session value db]
-            (if value.narrow (push-narrow session value.narrow db)
-                {:accepted value :consumed true}))
-
-          (fn misa.choice_rows [session db hotkeys]
-            (refresh session db)
-            (local result {})
-            (each [bank panel (ipairs session.panels)]
-              (local rows {})
-              (each [index value (ipairs panel.items)]
-                (tset rows index
-                      (row value (and (= bank 1) (= index panel.highlight))
-                           (= value.value session.selected)
-                           (and (and hotkeys (. hotkeys bank))
-                                (. hotkeys bank index)))))
-              (tset result bank {:id panel.id : rows :title panel.title}))
-            result)
-
-          (fn misa.choice_hotkeys [session visible room]
-            (local result {})
-            (for [bank 1 (math.min (or visible 0) (length session.panels)
-                                   (length banks))]
-              (tset result bank {})
-              (local panel (. session.panels bank))
-              (local start (first panel room))
-              (for [slot 1 (math.min room 9)]
-                (when (. panel.items (- (+ start slot) 1))
-                  (tset (. result bank) (- (+ start slot) 1)
-                        (hint (.. :option_ bank "_" slot))))))
-            result)
-
-          (fn misa.choice_positional [session name visible room]
-            (var result nil)
-            (for [bank 1 (math.min (or visible 0) (length session.panels) (length banks)) &until result]
-              (for [slot 1 (math.min (or room 0) 9) &until result]
-                (when (= name (.. :option_ bank "_" slot))
-                  (set result (. session.panels bank :items
-                                 (- (+ (first (. session.panels bank) room) slot) 1))))))
-            result)
-
-          (fn misa.choice_input [session event db]
-            (refresh session db)
-            (let [panel (. session.panels 1)
-                  state (. session.view_state (. session.view_ids 1))
-                  name event.action]
-              (fn changed []
-                (refresh session db)
-                {:consumed true})
-              (if (and (= event.kind :text) (= (type event.text) :string))
-                  (do (set session.query (.. session.query event.text)) (changed))
-                  (= event.kind :backspace)
-                  (if (not= session.query "")
-                      (do (set session.query (pop-utf8 session.query)) (changed))
-                      (pop-narrow session db) {:consumed true :narrowed true}
-                      {:consumed false})
-                  (and (= name :previous) (> (length panel.items) 0))
-                  (do (set state.highlight (if (<= state.highlight 1)
-                                                (length panel.items)
-                                                (- state.highlight 1)))
-                      (changed))
-                  (and (= name :next) (> (length panel.items) 0))
-                  (do (set state.highlight (if (>= state.highlight (length panel.items))
-                                                1 (+ state.highlight 1)))
-                      (changed))
-                  (= name :cycle)
-                  (do (table.insert session.view_ids (table.remove session.view_ids 1)) (changed))
-                  (= name :cycle_previous)
-                  (do (table.insert session.view_ids 1 (table.remove session.view_ids)) (changed))
-                  (= name :replace_view) {:consumed true :replace_view true}
-                  (= name :open_overlay) {:consumed true :open_overlay true}
-                  (and (= name :favorite) session.preference_scope (> panel.highlight 0))
-                  {:consumed true :favorite (. panel.items panel.highlight :id)}
-                  (= name :cancel)
-                  (if (pop-narrow session db) {:consumed true :narrowed true}
-                      {:consumed true :cancelled true})
-                  (and (= name :accept) (> panel.highlight 0))
-                  (misa.choice_accept session (. panel.items panel.highlight) db)
-                  {:consumed false})))
-
-          (misa.reg_interceptor {:before (fn [tx]
-                                           (when (= tx.event.type :app/start)
-                                             (set sealed true))
-                                           tx)
-                                 :id :choices/seal}))}
-
+                                    (if (and (= event.kind :text)
+                                             (= (type event.text) :string))
+                                        (do
+                                          (set session.query
+                                               (.. session.query event.text))
+                                          (changed))
+                                        (= event.kind :backspace)
+                                        (if (not= session.query "")
+                                            (do
+                                              (set session.query
+                                                   (pop-utf8 session.query))
+                                              (changed))
+                                            (pop-narrow session db)
+                                            {:consumed true :narrowed true}
+                                            {:consumed false})
+                                        (and (= name :previous)
+                                             (> (length panel.items) 0))
+                                        (do
+                                          (set state.highlight
+                                               (if (<= state.highlight 1)
+                                                   (length panel.items)
+                                                   (- state.highlight 1)))
+                                          (changed))
+                                        (and (= name :next)
+                                             (> (length panel.items) 0))
+                                        (do
+                                          (set state.highlight
+                                               (if (>= state.highlight
+                                                       (length panel.items))
+                                                   1
+                                                   (+ state.highlight 1)))
+                                          (changed))
+                                        (= name :cycle)
+                                        (do
+                                          (table.insert session.view_ids
+                                                        (table.remove session.view_ids
+                                                                      1))
+                                          (changed))
+                                        (= name :cycle_previous)
+                                        (do
+                                          (table.insert session.view_ids 1
+                                                        (table.remove session.view_ids))
+                                          (changed))
+                                        (= name :replace_view)
+                                        {:consumed true :replace_view true}
+                                        (= name :open_overlay)
+                                        {:consumed true :open_overlay true}
+                                        (and (= name :favorite)
+                                             session.preference_scope
+                                             (> panel.highlight 0))
+                                        {:consumed true
+                                         :favorite (. panel.items
+                                                      panel.highlight :id)}
+                                        (= name :cancel)
+                                        (if (pop-narrow session db)
+                                            {:consumed true :narrowed true}
+                                            {:consumed true :cancelled true})
+                                        (and (= name :accept)
+                                             (> panel.highlight 0))
+                                        (misa.choice_accept session
+                                                            (. panel.items
+                                                               panel.highlight)
+                                                            db)
+                                        {:consumed false})))})
+          {:fx setup-fx})}

@@ -16,40 +16,47 @@
                        :provider/openai-codex
                        :agent
                        :queue])]
-  ((. (dofile (.. :extensions/ name :.fnl)) :setup) context))
+  (misa._setup (dofile (.. :extensions/ name :.fnl)) context))
 
-(misa.protocols.openai {:id :fixture-chat
-                        :models {}
-                        :url "https://fixture.invalid"})
+(misa._setup_effects (misa.protocols.openai {:id :fixture-chat
+                                             :models {}
+                                             :url "https://fixture.invalid"}))
 
-(misa.protocols.anthropic {:id :fixture-anthropic
-                           :models {}
-                           :url "https://fixture.invalid"})
+(misa._setup_effects (misa.protocols.anthropic {:id :fixture-anthropic
+                                                :models {}
+                                                :url "https://fixture.invalid"}))
 
-(misa.reg_tool {:description "Fixture tool"
-                :effect :capture/tool
-                :input_schema {:properties {:value {:type :string}}
-                               :required [:value]
-                               :type :object}
-                :name :fixture})
+(misa._setup_effects {:fx [{:type :register/tool
+                            :value {:description "Fixture tool"
+                                    :effect :capture/tool
+                                    :input_schema {:properties {:value {:type :string}}
+                                                   :required [:value]
+                                                   :type :object}
+                                    :name :fixture}}]})
 
 (var (snapshot native observed) (values nil {} {}))
 
-(misa.reg_event :test/read (fn [db] (set snapshot db) nil))
+(misa._setup_effects {:fx [{:type :register/event
+                            :name :test/read
+                            :handler (fn [db] (set snapshot db) nil)}]})
 
-(misa.reg_event :app/start (fn [db]
-                             (set db.models
-                                  {:entries [{:id :openai-codex/gpt-5.4
-                                              :model :gpt-5.4
-                                              :provider :openai-codex}]
-                                   :selected :openai-codex/gpt-5.4})
-                             {: db}))
+(misa._setup_effects {:fx [{:type :register/event
+                            :name :app/start
+                            :handler (fn [db]
+                                       (set db.models
+                                            {:entries [{:id :openai-codex/gpt-5.4
+                                                        :model :gpt-5.4
+                                                        :provider :openai-codex}]
+                                             :selected :openai-codex/gpt-5.4})
+                                       {: db})}]})
 
-(misa.reg_interceptor {:before (fn [tx]
-                                 (tset observed (+ (length observed) 1)
-                                       tx.event)
-                                 tx)
-                       :id :observe})
+(misa._setup_effects {:fx [{:type :register/interceptor
+                            :value {:before (fn [tx]
+                                              (tset observed
+                                                    (+ (length observed) 1)
+                                                    tx.event)
+                                              tx)
+                                    :id :observe}}]})
 
 (misa._seal context)
 
@@ -282,4 +289,3 @@
 (output "runtime state regressions passed\n")
 
 nil
-

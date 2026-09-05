@@ -5,8 +5,7 @@
 (fn span [text style] {: style : text})
 
 (fn composed [base modifier]
-  (if (not modifier) base
-      (not= (type base) :table) [base modifier]
+  (if (not modifier) base (not= (type base) :table) [base modifier]
       (let [result []]
         (each [_ token (ipairs base)] (table.insert result token))
         (table.insert result modifier)
@@ -32,7 +31,8 @@
 
 (fn bodies [text style rail prefix source]
   (let [result []
-        normalized (: (: (tostring (or text "")) :gsub "\r\n" "\n") :gsub "\r" "\n")]
+        normalized (: (: (tostring (or text "")) :gsub "\r\n" "\n") :gsub "\r"
+                      "\n")]
     (var offset 0)
     (each [line (: (.. normalized "\n") :gmatch "(.-)\n")]
       (local content (span line style))
@@ -49,6 +49,7 @@
     (tset target (+ (length target) 1) line)))
 
 {:setup (fn []
+          (local setup-fx [])
           (assert misa.layout "component.tool requires layout")
 
           (fn render [model context]
@@ -70,16 +71,22 @@
                         (bodies (tostring (or model.result_detail model.result))
                                 :tool rail "result  "
                                 (not= model.selection_source :args)))
-                fallback (append lines
-                                (bodies (or (and model.collapsed :summary)
-                                            model.text)
-                                        :tool rail)))
+                fallback
+                (append lines (bodies (or (and model.collapsed :summary)
+                                          model.text)
+                                      :tool rail)))
             {:lines (misa.layout.wrap_spans lines (or context.columns 80))
              :surface (or (and context.interactive
                                (or (and model.is_error :surface.error)
                                    :surface.tool))
                           nil)})
 
-          (misa.reg_component :default.transcript.tool_call {: render})
-          (misa.reg_component :default.transcript.tool_result {: render}))}
-
+          (table.insert setup-fx
+                        {:type :register/component
+                         :id :default.transcript.tool_call
+                         :value {: render}})
+          (table.insert setup-fx
+                        {:type :register/component
+                         :id :default.transcript.tool_result
+                         :value {: render}})
+          {:fx setup-fx})}

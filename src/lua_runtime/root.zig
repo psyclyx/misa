@@ -529,28 +529,20 @@ pub const Runtime = struct {
 
     fn callSetup(self: *Runtime) !void {
         for (self.extensions.items, 0..) |extension, index| {
-            _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, extension.ref);
-            _ = c.lua_pushstring(self.state, "setup");
-            _ = c.lua_rawget(self.state, -2);
-            if (c.lua_type(self.state, -1) == c.LUA_TNIL) {
-                self.pop(2);
-                continue;
-            }
-            if (c.lua_type(self.state, -1) != c.LUA_TFUNCTION) {
-                self.setError("extension {d} ({s}) field 'setup' must be a function", .{ index + 1, extension.path });
-                c.lua_settop(self.state, 0);
-                return error.ExtensionRunFailed;
-            }
+            c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+            c.lua_getfield(self.state, -1, "_setup");
+            c.lua_remove(self.state, -2);
             self.pushTraceback();
             c.lua_insert(self.state, -2);
             const error_handler = c.lua_gettop(self.state) - 1;
+            _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, extension.ref);
             _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.context_ref);
-            if (c.lua_pcall(self.state, 1, 0, error_handler) != 0) {
+            if (c.lua_pcall(self.state, 2, 0, error_handler) != 0) {
                 self.setError("extension {d} ({s}) setup: {s}", .{ index + 1, extension.path, self.stackError() });
                 c.lua_settop(self.state, 0);
                 return error.ExtensionRunFailed;
             }
-            self.pop(2);
+            self.pop(1);
         }
     }
 
@@ -601,4 +593,73 @@ test "Fennel loading reports source location and restores stack after failure" {
     try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "missing.fnl") != null);
     try runtime.loadExtension("src/lua_runtime/fixtures/extension.fnl");
     try runtime.setup();
+}
+
+test "setup effects expand in order and remain outside event dispatch" {
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{}, "");
+    defer runtime.deinit();
+    const source =
+        \\local producer = {setup = function()
+        \\  local result = {fx = {{type = "register/service", name = "deferred", value = 7}}}
+        \\  assert(misa.deferred == nil)
+        \\  return result
+        \\end}
+        \\local declaration = producer.setup()
+        \\assert(misa.deferred == nil)
+        \\misa._setup_effects(declaration)
+        \\misa._setup({setup = function()
+        \\  assert(misa.deferred == 7)
+        \\  return {fx = {{type = "register/service", name = "ordered", value = 8}}}
+        \\end}, {})
+        \\misa._setup({setup = function()
+        \\  assert(misa.ordered == 8)
+        \\end}, {})
+        \\assert(misa.reg_event == nil)
+        \\misa._setup({setup = function(context)
+        \\  assert(context.marker == true)
+        \\  return {fx = {
+        \\    {type = "register/setup-effect", name = "register/fixture-expand", handler = function(effect)
+        \\      return {fx = {{type = "register/service", name = "fixture.value", value = effect.value}}}
+        \\    end},
+        \\    {type = "register/fixture-expand", value = 42},
+        \\    {type = "register/action", value = {id = "fixture", label = "Fixture", event = {type = "fixture"}}},
+        \\    {type = "register/fx", name = "fixture/translate", handler = function()
+        \\      return {type = "register/fixture-expand", value = 0}
+        \\    end},
+        \\    {type = "register/event", name = "fixture", handler = function(db)
+        \\      return {db = db, fx = {{type = "fixture/translate"}}}
+        \\    end}
+        \\  }}
+        \\end}, {marker = true})
+        \\assert(misa.fixture.value == 42)
+        \\assert(misa.action("fixture").binding.action == "fixture")
+        \\assert(misa.has_setup_effect("register/fixture-expand"))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "unknown"}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {[2] = {type = "unknown"}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/service", name = "fixture.value", value = 0}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/fx", name = "register/fixture-expand", handler = function() end}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/fx", name = "register/future", handler = function() end}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/setup-effect", name = "fixture/translate", handler = function() end}}}))
+        \\local namespace_ok, namespace_error = pcall(misa._setup_effects, {fx = {{type = "register/setup-effect", name = "dispatch", handler = function() end}}})
+        \\assert(not namespace_ok and tostring(namespace_error):match("register/ namespace"), tostring(namespace_error))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/setup-effect", name = "register/", handler = function() end}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {}, db = {}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {oops = {}}}))
+        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/service", name = "invalid..path", value = 1}}}))
+        \\misa._setup_effects({fx = {{type = "register/setup-effect", name = "register/fixture-recurse", handler = function()
+        \\  return {fx = {{type = "register/fixture-recurse"}}}
+        \\end}}})
+        \\local recursive_ok, recursive_error = pcall(misa._setup_effects, {fx = {{type = "register/fixture-recurse"}}})
+        \\assert(not recursive_ok and tostring(recursive_error):match("too deep"), tostring(recursive_error))
+        \\misa._seal({config = {}, argv = {}})
+        \\assert(not pcall(misa._setup_effects, {fx = {}}))
+        \\local ok, err = pcall(misa._dispatch, {type = "fixture"}, {}, {monotonic_ms = 0, wall_ms = 0})
+        \\assert(not ok and tostring(err):match("setup effects cannot run during event dispatch"), tostring(err))
+    ;
+    try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@setup-effects-test.lua"));
+    if (c.lua_pcall(runtime.state, 0, 0, 0) != 0) {
+        std.debug.print("setup effects test: {s}\n", .{runtime.stackError()});
+        return error.SetupEffectsTestFailed;
+    }
+    runtime.assertStack(0);
 }

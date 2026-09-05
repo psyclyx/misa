@@ -1,4 +1,5 @@
-(assert (and (and (and (= _G.os nil) (= _G.io nil)) (= _G.print nil)) (= _G.debug nil)))
+(assert (and (and (and (= _G.os nil) (= _G.io nil)) (= _G.print nil))
+             (= _G.debug nil)))
 
 (assert (and (and (= (type package) :table) (= package.loadlib nil))
              (= (type require) :function)))
@@ -32,9 +33,12 @@
 (assert (= (. (require :misa.test.module) :answer) 42))
 
 {:setup (fn [context]
+          (local setup-fx [])
           (assert (= context.config.missing misa.json_null))
-          (misa.reg_event :app/start
-                          (fn []
-                            {:fx [{:type :app/quit}]}))
-          nil)}
-
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn []
+                                    {:fx [{:type :app/quit}]})})
+          nil
+          {:fx setup-fx})}

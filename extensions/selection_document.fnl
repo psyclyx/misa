@@ -98,106 +98,134 @@
     rows))
 
 {:setup (fn []
-          (fn misa.selection_document [id label text]
-            (local parsed (and misa.markdown (misa.markdown.parse text)))
-            (local original (source-map text))
-            (local root (node :message label 0 (length text)))
-            (set (root.id root.text) (values id text))
-            (local sections {})
-            (var parent root)
+          {:fx [{:type :register/service
+                 :name :selection_document
+                 :value (fn [id label text]
+                          (local parsed
+                                 (and misa.markdown (misa.markdown.parse text)))
+                          (local original (source-map text))
+                          (local root (node :message label 0 (length text)))
+                          (set (root.id root.text) (values id text))
+                          (local sections {})
+                          (var parent root)
 
-            (fn close [until-level finish]
-              (while (and (> (length sections) 0)
-                          (>= (. sections (length sections) :level) until-level))
-                (local section (table.remove sections))
-                (set section.node.last (math.max section.node.first finish))
-                (set section.content.last
-                     (math.max section.content.first finish)))
-              (set parent (or (and (> (length sections) 0)
-                                   (. sections (length sections) :content))
-                              root))
-              nil)
+                          (fn close [until-level finish]
+                            (while (and (> (length sections) 0)
+                                        (>= (. sections (length sections)
+                                               :level)
+                                            until-level))
+                              (local section (table.remove sections))
+                              (set section.node.last
+                                   (math.max section.node.first finish))
+                              (set section.content.last
+                                   (math.max section.content.first finish)))
+                            (set parent
+                                 (or (and (> (length sections) 0)
+                                          (. sections (length sections)
+                                             :content))
+                                     root))
+                            nil)
 
-            (each [_ block (ipairs (or (and parsed parsed.blocks) {}))]
-              (local (first last)
-                     (values (original block.source_start)
-                             (original block.source_end)))
-              (if (= block.kind :heading)
-                  (do
-                    (close block.level first)
-                    (local title
-                           (: (text:sub (+ first 1) last) :gsub "^%s*#+%s*" ""))
-                    (local section (node :section title first (length text)))
-                    (local heading
-                           (node :heading (.. "Heading: " title) first last))
-                    (var content-start last)
-                    (if (= (text:sub (+ last 1) (+ last 2)) "\r\n")
-                        (set content-start (+ last 2))
-                        (: (text:sub (+ last 1) (+ last 1)) :match "[\r\n]")
-                        (set content-start (+ last 1)))
-                    (local content
-                           (node :content "Section content" content-start
-                                 (length text)))
-                    (set section.children [heading content])
-                    (tset parent.children (+ (length parent.children) 1)
-                          section)
-                    (tset sections (+ (length sections) 1)
-                          {: content :level block.level :node section})
-                    (set parent content))
-                  (not= block.kind :blank)
-                  (do
-                    (local children
-                           (or (and (= block.kind :table)
-                                    (table-rows text first last))
-                               nil))
-                    (var label (block.kind:gsub "_" " "))
-                    (when (not= block.kind :table)
-                      (set label (.. label ": " (excerpt text first last))))
-                    (tset parent.children (+ (length parent.children) 1)
-                          (node block.kind label first last children)))))
-            (close 0 (length text))
-            root)
-
-          ;; Fine selection is derived only when requested, not for every frame.
-
-          (fn misa.selection_children [document current]
-            (if (> (length current.children) 0) current.children
-                (do
-                  (local result {})
-                  (local source document.text)
-                  (local (first last) (values current.first current.last))
-                  (if (= current.kind :character) result
-                      (do
-                        (if (= current.kind :word)
-                            (do
-                              (var at first)
-                              (while (< at last)
-                                (local finish
-                                       (math.min last
-                                                 (misa.layout.next_boundary source
-                                                                            at)))
-                                (tset result (+ (length result) 1)
-                                      (node :character
-                                            (source:sub (+ at 1) finish) at
-                                            finish))
-                                (set at finish)))
-                            (or (or (= current.kind :line)
-                                    (= current.kind :cell))
-                                (= current.kind :heading))
-                            (do
-                              (local text (source:sub (+ first 1) last))
-                              (var at 1)
-                              (while (<= at (length text))
-                                (local (a b) (text:find "%S+" at))
-                                (when (not a) (lua :break))
-                                (tset result (+ (length result) 1)
-                                      (node :word (text:sub a b)
-                                            (- (+ first a) 1) (+ first b)))
-                                (set at (+ b 1))))
-                            (each [_ line (ipairs (lines source first last))]
-                              (tset result (+ (length result) 1)
-                                    (node :line line.text line.first line.last))))
-                        result)))))
-
-          nil)}
-
+                          (each [_ block (ipairs (or (and parsed parsed.blocks)
+                                                     {}))]
+                            (local (first last)
+                                   (values (original block.source_start)
+                                           (original block.source_end)))
+                            (if (= block.kind :heading)
+                                (do
+                                  (close block.level first)
+                                  (local title
+                                         (: (text:sub (+ first 1) last) :gsub
+                                            "^%s*#+%s*" ""))
+                                  (local section
+                                         (node :section title first
+                                               (length text)))
+                                  (local heading
+                                         (node :heading (.. "Heading: " title)
+                                               first last))
+                                  (var content-start last)
+                                  (if (= (text:sub (+ last 1) (+ last 2))
+                                         "\r\n")
+                                      (set content-start (+ last 2))
+                                      (: (text:sub (+ last 1) (+ last 1))
+                                         :match "[\r\n]")
+                                      (set content-start (+ last 1)))
+                                  (local content
+                                         (node :content "Section content"
+                                               content-start (length text)))
+                                  (set section.children [heading content])
+                                  (tset parent.children
+                                        (+ (length parent.children) 1) section)
+                                  (tset sections (+ (length sections) 1)
+                                        {: content
+                                         :level block.level
+                                         :node section})
+                                  (set parent content))
+                                (not= block.kind :blank)
+                                (do
+                                  (local children
+                                         (or (and (= block.kind :table)
+                                                  (table-rows text first last))
+                                             nil))
+                                  (var label (block.kind:gsub "_" " "))
+                                  (when (not= block.kind :table)
+                                    (set label
+                                         (.. label ": "
+                                             (excerpt text first last))))
+                                  (tset parent.children
+                                        (+ (length parent.children) 1)
+                                        (node block.kind label first last
+                                              children)))))
+                          (close 0 (length text))
+                          root)}
+                {:type :register/service
+                 :name :selection_children
+                 :value (fn [document current]
+                          (if (> (length current.children) 0)
+                              current.children
+                              (do
+                                (local result {})
+                                (local source document.text)
+                                (local (first last)
+                                       (values current.first current.last))
+                                (if (= current.kind :character) result
+                                    (do
+                                      (if (= current.kind :word)
+                                          (do
+                                            (var at first)
+                                            (while (< at last)
+                                              (local finish
+                                                     (math.min last
+                                                               (misa.layout.next_boundary source
+                                                                                          at)))
+                                              (tset result
+                                                    (+ (length result) 1)
+                                                    (node :character
+                                                          (source:sub (+ at 1)
+                                                                      finish)
+                                                          at finish))
+                                              (set at finish)))
+                                          (or (or (= current.kind :line)
+                                                  (= current.kind :cell))
+                                              (= current.kind :heading))
+                                          (do
+                                            (local text
+                                                   (source:sub (+ first 1) last))
+                                            (var at 1)
+                                            (while (<= at (length text))
+                                              (local (a b) (text:find "%S+" at))
+                                              (when (not a)
+                                                (lua :break))
+                                              (tset result
+                                                    (+ (length result) 1)
+                                                    (node :word (text:sub a b)
+                                                          (- (+ first a) 1)
+                                                          (+ first b)))
+                                              (set at (+ b 1))))
+                                          (each [_ line (ipairs (lines source
+                                                                       first
+                                                                       last))]
+                                            (tset result (+ (length result) 1)
+                                                  (node :line line.text
+                                                        line.first line.last))))
+                                      result)))))}]})}

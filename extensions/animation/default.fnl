@@ -1,8 +1,11 @@
+;; One terminal cell throughout: activity should not move surrounding text.
 {:setup (fn []
-          ;; One terminal cell throughout: activity should not move surrounding text.
-          (misa.reg_animation :default
-                              {:frames ["·" "•" "●" "•"] :still "…"})
-          (misa.reg_animation :static {:frames ["…"]})
-          (misa.reg_animation :spinner {:frames ["·" "•" "●" "•"]})
-          nil)}
-
+          {:fx [{:type :register/animation
+                 :id :default
+                 :value {:frames ["·" "•" "●" "•"] :still "…"}}
+                {:type :register/animation
+                 :id :static
+                 :value {:frames ["…"]}}
+                {:type :register/animation
+                 :id :spinner
+                 :value {:frames ["·" "•" "●" "•"]}}]})}

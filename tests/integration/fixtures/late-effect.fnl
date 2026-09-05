@@ -1,6 +1,10 @@
 {:setup (fn []
-          (misa.reg_event :app/start
-                          (fn []
-                            {:fx [{:type :app/quit} {:type :not/native}]}))
-          nil)}
-
+          (local setup-fx [])
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn []
+                                    {:fx [{:type :app/quit}
+                                          {:type :not/native}]})})
+          nil
+          {:fx setup-fx})}

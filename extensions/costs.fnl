@@ -63,6 +63,7 @@
               (or (and value.unknown " + ?") "")))))
 
 {:setup (fn [context]
+          (local setup-fx [])
           (var config (or (and (= (type context.config) :table)
                                context.config.costs)
                           {}))
@@ -82,65 +83,102 @@
                         (lua "return (table.unpack or _G.unpack)(___antifnl_rtns_1___)"))))
                   nil)))
 
-          (set misa.cost_estimate estimate)
-          (set misa.cost_format label)
-
-          (fn misa.model_cost_info [db id]
-            (local pricing (model-rates db id))
-            (if (not pricing)
-                {:lines ["Cost: unavailable; configure costs.models for this model"]
-                 :summary "cost unknown"}
-                (do
-                  (local summary
-                         (.. (rate pricing.input) " in / "
-                             (rate pricing.output) " out per 1M"))
-                  (local lines
-                         [(.. "USD per 1M tokens: " (rate pricing.input)
-                              " input · " (rate pricing.output) " output")])
-                  (when (or (not= pricing.cache_read nil)
-                            (not= pricing.cache_write nil))
-                    (tset lines (+ (length lines) 1)
-                          (.. "Cache: " (rate pricing.cache_read) " read · "
-                              (rate pricing.cache_write) " write per 1M")))
-                  (when (and pricing.request (> pricing.request 0))
-                    (tset lines (+ (length lines) 1)
-                          (.. "Per request: " (dollars pricing.request))))
-                  (tset lines (+ (length lines) 1)
-                        "Estimates; reported usage cost takes precedence")
-                  {: lines : pricing : summary})))
-
-          (fn misa.response_cost_projection [db id]
-            (local response (and db.costs (. db.costs.responses id)))
-            (if (not response) nil
-                (do
-                  (local result response.cost)
-                  {:estimated (and result result.estimated)
-                   :model response.model
-                   :text (label result)
-                   :unknown (and result result.unknown)
-                   :usd (and result result.usd)})))
-
-          (fn misa.costs_projection [db]
-            (local state db.costs)
-            (local total {:estimated false :unknown false :usd 0})
-            (var count 0)
-            (each [_ response (pairs (or (and state state.responses) {}))]
-              (when response.cost (set count (+ count 1))
-                (set total.usd (+ total.usd response.cost.usd))
-                (set total.estimated
-                     (or total.estimated response.cost.estimated))
-                (set total.unknown (or total.unknown response.cost.unknown))))
-            (set total.text (label total))
-            (set total.responses count)
-            total)
-
-          (when misa.reg_indicator
-            (misa.reg_indicator {:icon "$"
-                                 :id :cost
-                                 :label :cost
-                                 :value (fn [db]
-                                          (. (misa.costs_projection db) :text))}))
-          (misa.reg_interceptor {:before (fn [tx]
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :cost_estimate
+                         :value estimate})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :cost_format
+                         :value label})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :model_cost_info
+                         :value (fn [db id]
+                                  (local pricing (model-rates db id))
+                                  (if (not pricing)
+                                      {:lines ["Cost: unavailable; configure costs.models for this model"]
+                                       :summary "cost unknown"}
+                                      (do
+                                        (local summary
+                                               (.. (rate pricing.input)
+                                                   " in / "
+                                                   (rate pricing.output)
+                                                   " out per 1M"))
+                                        (local lines
+                                               [(.. "USD per 1M tokens: "
+                                                    (rate pricing.input)
+                                                    " input · "
+                                                    (rate pricing.output)
+                                                    " output")])
+                                        (when (or (not= pricing.cache_read nil)
+                                                  (not= pricing.cache_write nil))
+                                          (tset lines (+ (length lines) 1)
+                                                (.. "Cache: "
+                                                    (rate pricing.cache_read)
+                                                    " read · "
+                                                    (rate pricing.cache_write)
+                                                    " write per 1M")))
+                                        (when (and pricing.request
+                                                   (> pricing.request 0))
+                                          (tset lines (+ (length lines) 1)
+                                                (.. "Per request: "
+                                                    (dollars pricing.request))))
+                                        (tset lines (+ (length lines) 1)
+                                              "Estimates; reported usage cost takes precedence")
+                                        {: lines : pricing : summary})))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :response_cost_projection
+                         :value (fn [db id]
+                                  (local response
+                                         (and db.costs
+                                              (. db.costs.responses id)))
+                                  (if (not response) nil
+                                      (do
+                                        (local result response.cost)
+                                        {:estimated (and result
+                                                         result.estimated)
+                                         :model response.model
+                                         :text (label result)
+                                         :unknown (and result result.unknown)
+                                         :usd (and result result.usd)})))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :costs_projection
+                         :value (fn [db]
+                                  (local state db.costs)
+                                  (local total
+                                         {:estimated false
+                                          :unknown false
+                                          :usd 0})
+                                  (var count 0)
+                                  (each [_ response (pairs (or (and state
+                                                                    state.responses)
+                                                               {}))]
+                                    (when response.cost (set count (+ count 1))
+                                      (set total.usd
+                                           (+ total.usd response.cost.usd))
+                                      (set total.estimated
+                                           (or total.estimated
+                                               response.cost.estimated))
+                                      (set total.unknown
+                                           (or total.unknown
+                                               response.cost.unknown))))
+                                  (set total.text (label total))
+                                  (set total.responses count)
+                                  total)})
+          (when (misa.has_setup_effect :register/indicator)
+            (table.insert setup-fx
+                          {:type :register/indicator
+                           :value {:icon "$"
+                                   :id :cost
+                                   :label :cost
+                                   :value (fn [db]
+                                            (. (misa.costs_projection db) :text))}}))
+          (table.insert setup-fx
+                        {:type :register/interceptor
+                         :value {:before (fn [tx]
                                            (local event tx.event)
                                            (if (or (= event.type :app/start)
                                                    (= event.type
@@ -204,6 +242,5 @@
                                                                          :unknown true
                                                                          :usd 0})))))
                                                        tx)))))
-                                 :id :costs/account})
-          nil)}
-
+                                 :id :costs/account}})
+          {:fx setup-fx})}

@@ -3,6 +3,7 @@
 ;; lifecycle assertions do not depend on wall-clock scheduling.
 
 {:setup (fn [context]
+          (local setup-fx [])
           (local enabled (not= context.config.animations.enabled false))
           (local steps {})
 
@@ -10,7 +11,9 @@
             (tset steps (+ (length steps) 1) {: check : event})
             nil)
 
-          (misa.reg_interceptor {:after (fn [tx]
+          (table.insert setup-fx
+                        {:type :register/interceptor
+                         :value {:after (fn [tx]
                                           (local state
                                                  (or tx.db.test_animation
                                                      {:redraws 0
@@ -42,7 +45,7 @@
                                                         effect))))
                                           (set tx.fx keep)
                                           tx)
-                                 :id :test/animation-effects})
+                                 :id :test/animation-effects}})
 
           (fn counts [db starts stops]
             (assert (= db.test_animation.starts (or (and enabled starts) 0))
@@ -99,27 +102,35 @@
                   nil))
           (step {:status :ready :type :agent/status}
                 (fn [db] (counts db 4 4) nil))
-          (misa.reg_event :app/start
-                          (fn []
-                            {:fx [{:event {:index 1 :type :test/animation-step}
-                                   :type :dispatch}]}))
-          (misa.reg_event :test/animation-step
-                          (fn [db event]
-                            (local current (. steps event.index))
-                            (if (not current)
-                                {:fx [{:lines [{:spans [{:text :animations}]}]
-                                       :type :view/commit}
-                                      {:type :app/quit}]}
-                                {:fx [{:event current.event :type :dispatch}
-                                      {:event {:index event.index
-                                               :type :test/animation-check}
-                                       :type :dispatch}]})))
-          (misa.reg_event :test/animation-check
-                          (fn [db event]
-                            (local check (. steps event.index :check))
-                            (when check (check db))
-                            {:fx [{:event {:index (+ event.index 1)
-                                           :type :test/animation-step}
-                                   :type :dispatch}]}))
-          nil)}
-
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn []
+                                    {:fx [{:event {:index 1
+                                                   :type :test/animation-step}
+                                           :type :dispatch}]})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :test/animation-step
+                         :handler (fn [db event]
+                                    (local current (. steps event.index))
+                                    (if (not current)
+                                        {:fx [{:lines [{:spans [{:text :animations}]}]
+                                               :type :view/commit}
+                                              {:type :app/quit}]}
+                                        {:fx [{:event current.event
+                                               :type :dispatch}
+                                              {:event {:index event.index
+                                                       :type :test/animation-check}
+                                               :type :dispatch}]}))})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :test/animation-check
+                         :handler (fn [db event]
+                                    (local check (. steps event.index :check))
+                                    (when check (check db))
+                                    {:fx [{:event {:index (+ event.index 1)
+                                                   :type :test/animation-step}
+                                           :type :dispatch}]})})
+          nil
+          {:fx setup-fx})}

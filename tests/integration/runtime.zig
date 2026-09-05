@@ -79,9 +79,9 @@ test "explicit Lua extensions remain compatible beside bundled Fennel" {
     // This is deliberately Lua: user extension compatibility is a public contract.
     try h.write("compatibility.lua",
         \\return {setup=function()
-        \\  misa.reg_event("app/start", function()
+        \\  return {fx={{type="register/event", name="app/start", handler=function()
         \\    return {fx={{type="view/commit",lines={{spans={{text="Lua compatibility"}}}}},{type="app/quit"}}}
-        \\  end)
+        \\  end}}}
         \\end}
     );
     try h.config(

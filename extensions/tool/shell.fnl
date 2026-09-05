@@ -1,6 +1,7 @@
 ;; Shell tool policy over Zig's direct process capability.
 
 {:setup (fn [context]
+          (local setup-fx [])
           (var config (or (and (= (type context.config) :table)
                                context.config.tools)
                           nil))
@@ -9,45 +10,53 @@
           (local executable (or config.executable :sh))
           (assert (and (= (type executable) :string) (not= executable ""))
                   "config.tools.shell.executable must be nonempty")
-          (misa.reg_tool {:description "Run a shell command in Misa's working directory and return its captured output."
-                          :effect :tool.shell/run
-                          :input_schema {:additionalProperties false
-                                         :properties {:command {:description "Shell command to execute"
-                                                                :type :string}}
-                                         :required [:command]
-                                         :type :object}
-                          :name :shell})
-          (misa.reg_fx :tool.shell/run
-                       (fn [effect]
-                         (local arguments
-                                (assert (and (= (type effect.arguments) :table)
-                                             effect.arguments)
-                                        "shell arguments must be an object"))
-                         (assert (and (= (type arguments.command) :string)
-                                      (not= arguments.command ""))
-                                 "command must be nonempty")
-                         {:argv [executable :-lc arguments.command]
-                          :completion :tool/shell-complete
-                          :id effect.tool_call_id
-                          :type :process/run}))
-          (misa.reg_event :tool/shell-complete
-                          (fn [_ event]
-                            (var text (or event.stdout ""))
-                            (when (and event.stderr (not= event.stderr ""))
-                              (when (and (not= text "")
-                                         (not= (text:sub (- 1)) "\n"))
-                                (set text (.. text "\n")))
-                              (set text (.. text event.stderr)))
-                            (when (= text "")
-                              (set text
-                                   (or (and event.ok
-                                            "command completed with no output")
-                                       (.. "command exited "
-                                           (tostring event.status)))))
-                            {:fx [{:event {:is_error (not event.ok)
-                                           : text
-                                           :tool_call_id event.id
-                                           :type :tool/result}
-                                   :type :dispatch}]}))
-          nil)}
-
+          (table.insert setup-fx
+                        {:type :register/tool
+                         :value {:description "Run a shell command in Misa's working directory and return its captured output."
+                                 :effect :tool.shell/run
+                                 :input_schema {:additionalProperties false
+                                                :properties {:command {:description "Shell command to execute"
+                                                                       :type :string}}
+                                                :required [:command]
+                                                :type :object}
+                                 :name :shell}})
+          (table.insert setup-fx
+                        {:type :register/fx
+                         :name :tool.shell/run
+                         :handler (fn [effect]
+                                    (local arguments
+                                           (assert (and (= (type effect.arguments)
+                                                           :table)
+                                                        effect.arguments)
+                                                   "shell arguments must be an object"))
+                                    (assert (and (= (type arguments.command)
+                                                    :string)
+                                                 (not= arguments.command ""))
+                                            "command must be nonempty")
+                                    {:argv [executable :-lc arguments.command]
+                                     :completion :tool/shell-complete
+                                     :id effect.tool_call_id
+                                     :type :process/run})})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :tool/shell-complete
+                         :handler (fn [_ event]
+                                    (var text (or event.stdout ""))
+                                    (when (and event.stderr
+                                               (not= event.stderr ""))
+                                      (when (and (not= text "")
+                                                 (not= (text:sub (- 1)) "\n"))
+                                        (set text (.. text "\n")))
+                                      (set text (.. text event.stderr)))
+                                    (when (= text "")
+                                      (set text
+                                           (or (and event.ok
+                                                    "command completed with no output")
+                                               (.. "command exited "
+                                                   (tostring event.status)))))
+                                    {:fx [{:event {:is_error (not event.ok)
+                                                   : text
+                                                   :tool_call_id event.id
+                                                   :type :tool/result}
+                                           :type :dispatch}]})})
+          {:fx setup-fx})}

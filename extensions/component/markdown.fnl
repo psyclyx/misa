@@ -172,41 +172,34 @@
           (each [_ cell (ipairs header)]
             (append result (flow (inline-spans cell base :markdown.table.header)
                                  columns))))
-        result) (let [widths (allocate-columns block columns)
-                           result [(border widths "┌" "┬" "┐" base)]]
-                       (each [row-index row (ipairs block.rows)]
-                         (var (cells height) (values {} 1))
-                         (each [column width (ipairs widths)]
-                           (tset cells column
-                                 (cell-lines (or (. row column) {}) width base
-                                             (= row-index 1)))
-                           (set height
-                                (math.max height (length (. cells column)))))
-                         (for [line-index 1 height]
-                           (local pieces
-                                  [(span "│"
-                                         (compose base :markdown.table.border))])
-                           (each [column width (ipairs widths)]
-                             (tset pieces (+ (length pieces) 1) (span " " base))
-                             (local content
-                                    (. (or (. cells column line-index)
-                                           {:spans [(span "" base)]})
-                                       :spans))
-                             (each [_ item (ipairs (pad-spans content width
-                                                              (. block.align
-                                                                 column)
-                                                              base))]
-                               (tset pieces (+ (length pieces) 1) item))
-                             (tset pieces (+ (length pieces) 1)
-                                   (span " │"
-                                         (compose base :markdown.table.border))))
-                           (tset result (+ (length result) 1) {:spans pieces}))
-                         (when (< row-index (length block.rows))
-                           (tset result (+ (length result) 1)
-                                 (border widths "├" "┼" "┤" base))))
-                       (tset result (+ (length result) 1)
-                             (border widths "└" "┴" "┘" base))
-                       result)))
+        result)
+      (let [widths (allocate-columns block columns)
+            result [(border widths "┌" "┬" "┐" base)]]
+        (each [row-index row (ipairs block.rows)]
+          (var (cells height) (values {} 1))
+          (each [column width (ipairs widths)]
+            (tset cells column
+                  (cell-lines (or (. row column) {}) width base (= row-index 1)))
+            (set height (math.max height (length (. cells column)))))
+          (for [line-index 1 height]
+            (local pieces [(span "│" (compose base :markdown.table.border))])
+            (each [column width (ipairs widths)]
+              (tset pieces (+ (length pieces) 1) (span " " base))
+              (local content (. (or (. cells column line-index)
+                                    {:spans [(span "" base)]})
+                                :spans))
+              (each [_ item (ipairs (pad-spans content width
+                                               (. block.align column) base))]
+                (tset pieces (+ (length pieces) 1) item))
+              (tset pieces (+ (length pieces) 1)
+                    (span " │" (compose base :markdown.table.border))))
+            (tset result (+ (length result) 1) {:spans pieces}))
+          (when (< row-index (length block.rows))
+            (tset result (+ (length result) 1)
+                  (border widths "├" "┼" "┤" base))))
+        (tset result (+ (length result) 1)
+              (border widths "└" "┴" "┘" base))
+        result)))
 
 (fn highlighted-lines [block base]
   (let [source (or block.text "")]
@@ -288,41 +281,56 @@
                             (compose base token))]]
           (append result
                   (flow (inline-spans block.inlines base token) columns prefix
-                        [(span "  " base)]))) (= block.kind :quote)
+                        [(span "  " base)])))
+        (= block.kind :quote)
         (let [rails {}]
           ;; Preserve semantic depth while leaving room for a wide grapheme.
           (for [_ 1 (math.min (math.max 1 (or block.depth 1))
-                             (math.max 0 (math.floor (/ (- columns 2) 2))))]
+                              (math.max 0 (math.floor (/ (- columns 2) 2))))]
             (tset rails (+ (length rails) 1)
                   (span "▏ " (compose base :quote))))
           (append result (flow (inline-spans block.inlines base :quote) columns
-                               rails rails))) (= block.kind :list_item)
+                               rails rails)))
+        (= block.kind :list_item)
         (let [raw-marker (or (and (not= block.checked nil)
-                              (or (and block.checked "☑ ") "☐ "))
-                         (or (and block.ordered
-                                  (.. (tostring (or block.number :1.)) " "))
-                             "• "))
-              marker (if (> columns 2) (misa.layout.take raw-marker (- columns 2)) "")
+                                  (or (and block.checked "☑ ") "☐ "))
+                             (or (and block.ordered
+                                      (.. (tostring (or block.number :1.)) " "))
+                                 "• "))
+              marker (if (> columns 2)
+                         (misa.layout.take raw-marker (- columns 2))
+                         "")
               indent (string.rep " "
-                                 (math.min (* 2 (math.max 0 (- (or block.depth 1) 1)))
-                                           (math.max 0 (- columns (misa.layout.width marker) 2))))
+                                 (math.min (* 2
+                                              (math.max 0
+                                                        (- (or block.depth 1) 1)))
+                                           (math.max 0
+                                                     (- columns
+                                                        (misa.layout.width marker)
+                                                        2))))
               first [(span indent base)
                      (span marker (compose base :markdown.list.marker))]
               rest [(span (.. indent
                               (string.rep " " (misa.layout.width marker)))
                           base)]]
           (append result (flow (inline-spans block.inlines base) columns first
-                               rest))) (= block.kind :list_continuation)
+                               rest)))
+        (= block.kind :list_continuation)
         (let [prefix [(span (string.rep " "
-                                       (math.min (* 2 (math.max 1 (or block.depth 1)))
-                                                 (math.max 0 (- columns 2))))
+                                        (math.min (* 2
+                                                     (math.max 1
+                                                               (or block.depth
+                                                                   1)))
+                                                  (math.max 0 (- columns 2))))
                             base)]]
           (append result (flow (inline-spans block.inlines base) columns prefix
-                               prefix))) (= block.kind :thematic_rule)
+                               prefix)))
+        (= block.kind :thematic_rule)
         (tset result (+ (length result) 1)
               {:spans [(span (string.rep "─" columns)
                              (compose base :markdown.rule))]})
-        (= block.kind :table) (append result (render-table block columns base))
+        (= block.kind :table)
+        (append result (render-table block columns base))
         (= block.kind :code_block)
         (append result (code-block block columns base)))
     (each [_ line (ipairs result)]
@@ -359,28 +367,47 @@
     {:spans [(span line base)]}))
 
 {:setup (fn []
+          (local setup-fx [])
           (assert (and misa.markdown (= (type misa.markdown.parse) :function))
                   "component.markdown requires markdown")
           (assert misa.layout "component.markdown requires layout")
-          (set misa.markdown_view
-               {:new_document
-                (fn []
-                  (local parser (misa.markdown.new_document))
-                  (local blocks (setmetatable {} {:__mode :k}))
-                  (var (previous columns base lines) nil)
-                  {:render
-                   (fn [_ text options]
-                     (local opts (or options {}))
-                     (local document (parser:update text))
-                     (local next-base (style-key opts.base))
-                     (when (or (not= document previous)
-                               (not= opts.columns columns)
-                               (not= next-base base))
-                       (set lines (render document opts blocks))
-                       (set (previous columns base)
-                            (values document opts.columns next-base)))
-                     ;; Semantic lines are read-only; consumers decorate copies.
-                     lines)})
-                : plain
-                : render})
-          nil)}
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :markdown_view
+                         :value {:new_document (fn []
+                                                 (local parser
+                                                        (misa.markdown.new_document))
+                                                 (local blocks
+                                                        (setmetatable {}
+                                                                      {:__mode :k}))
+                                                 (var (previous columns base
+                                                                lines)
+                                                      nil)
+                                                 {:render (fn [_ text options]
+                                                            (local opts
+                                                                   (or options
+                                                                       {}))
+                                                            (local document
+                                                                   (parser:update text))
+                                                            (local next-base
+                                                                   (style-key opts.base))
+                                                            (when (or (not= document
+                                                                            previous)
+                                                                      (not= opts.columns
+                                                                            columns)
+                                                                      (not= next-base
+                                                                            base))
+                                                              (set lines
+                                                                   (render document
+                                                                           opts
+                                                                           blocks))
+                                                              (set (previous columns
+                                                                             base)
+                                                                   (values document
+                                                                           opts.columns
+                                                                           next-base)))
+                                                            ;; Semantic lines are read-only; consumers decorate copies.
+                                                            lines)})
+                                 : plain
+                                 : render}})
+          {:fx setup-fx})}
