@@ -87,7 +87,7 @@ return {setup=function(context)
   end
   misa.reg_event("app/start",function(db,_,cofx)
     state(db); if #cofx.argv~=0 then return {db=db} end; local fx={}
-    if not cofx.terminal.interactive and plain_prompt then fx[#fx+1]={type="view/commit",lines={{spans={{text="misa> enter a prompt:",style="plain"}}}}} end
+    if not cofx.terminal.interactive and plain_prompt then fx[#fx+1]={type="view/commit",lines={{spans={{text="misa> enter a prompt:",style={foreground="default"}}}}}} end
     fx[#fx+1]={type="terminal/read"}; return {db=db,fx=fx}
   end)
   misa.reg_event("agent/status",function(db,event) state(db).busy=event.status~="ready"; return {db=db} end)

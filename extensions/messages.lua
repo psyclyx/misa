@@ -157,6 +157,11 @@ return { setup=function(context)
       elseif model.kind=="tool_call" then role="transcript.tool_call"; model.detail=state.verbose and (model.arguments and describe(model.arguments,0) or printable_text(model.argument_text or table.concat(model.argument_chunks or {}))) or (model.streaming and "streaming" or "summary")
       elseif model.kind=="tool_result" then role="transcript.tool_result"; model.collapsed=not state.verbose
       elseif model.kind=="harness" then role="transcript.harness" end
+      if model.kind=="user" then model.rail="rail.user"
+      elseif model.kind=="assistant" then model.rail="rail.assistant"
+      elseif model.kind=="thinking" then model.rail="rail.thinking"
+      elseif model.kind=="tool_call" or model.kind=="tool_result" then model.rail=model.is_error and "rail.error" or "rail.tool"
+      elseif model.kind=="harness" then model.rail=model.level=="error" and "rail.error" or "rail.harness" end
       if role then local rendered=misa.render_component(db,role,model,context_copy); for _,line in ipairs(rendered.lines or {}) do result[#result+1]=line end end
     end
     return result

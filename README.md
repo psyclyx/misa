@@ -186,15 +186,23 @@ A view is modest semantic data:
 ```lua
 {
   lines = {
-    { spans = { { text = "working", style = "dim" } } }
+    { spans = { { text = "working", style = { foreground = "default", dim = true } } } }
   },
   cursor = { row = 1, byte = 0 } -- or nil
 }
 ```
 
-Native styles are `plain`, `dim`, `bold`, `accent`, `user`, `assistant`, and
-`error`; themes also map component tokens such as `indicator.label`,
-`indicator.value`, and `indicator.hotkey` onto those native styles.
+At the native boundary, `style` is a validated record with optional
+`foreground`, `bold`, `italic`, `dim`, `strikethrough`, and `underline` fields.
+A foreground is `default`, one of the 16 ANSI names (`red`, `bright_blue`, and
+so on), or `{r=0..255,g=0..255,b=0..255}`. Missing style fields inherit the
+reset terminal defaults; truecolor is available to custom themes but the
+shipped theme deliberately uses only terminal default and ANSI colors. Spans
+may also carry `link=<URL>`. Interactive presentation wraps visible linked text
+in OSC 8 open/close sequences; links are limited to 4096 bytes and rejected if
+they contain terminal controls. Noninteractive output emits neither SGR nor
+OSC sequences.
+
 Text must be valid UTF-8 and may not contain controls, ESC, CR, or LF. Cursor
 rows are one-based; `byte` is a zero-based UTF-8 boundary in the concatenated
 spans of that row. Zig alone converts it to a terminal cell column and clamps it
@@ -264,7 +272,15 @@ centralized at the component registry boundary. Custom code calls
 `config.components.roles` (for example, `"picker": "my.picker"`) and dispatch
 `components/swap` with `role` and `implementation` to swap one at runtime.
 `themes`/`theme.default` and `animations`/`animation.default` are independent
-data registries switched with `themes/swap` and `animations/swap`. Animation
+data registries switched with `themes/swap` and `animations/swap`. A theme is
+`{palette={name=<default|ANSI|RGB>},styles={token=<style record>}}`; palette
+names may be used as style foregrounds. A component span names one semantic
+token or an ordered list such as `{"assistant","bold"}`. Theme resolution
+merges those records at the component boundary, so role color and independent
+attributes compose without predeclared combination tokens. `plain`, `label`,
+`value`, and `keybinding` are required standard tokens. The default also
+provides distinct `rail.user`, `rail.assistant`, `rail.thinking`, `rail.tool`,
+and `rail.error` tokens. Animation
 roles are selected with `config.animations.roles`; the service advances their
 transactional ticks using ordinary `timer/start` and `timer/stop` effects.
 Selections live in `db`, so failed transactions roll back; successful swaps persist through
@@ -282,11 +298,11 @@ visible partial blocks without promoting them to provider history. `/verbose`
 or the configurable global `alt+t` binding reprojects the transcript with
 details. Page Up / Page Down (also `alt+k` / `alt+j`) scroll while input and a
 responsive semantic indicator row remain visible below it. Default message roles
-and timestamps occupy a title line above the `▏` body box instead of prefixing
-content. Completed assistant responses show tok/s exactly once, on their final assistant
+and timestamps occupy a title line above the heavier `┃` message rail instead of prefixing
+content. Markdown quotes use the thinner `▏` rail. Completed assistant responses show tok/s exactly once, on their final assistant
 block, and only from provider-reported output tokens and positive native monotonic elapsed time. The boxes render
-bounded headings, emphasis, inline
-and fenced code, lists, quotes, and links as semantic spans. The pure `layout`
+bounded headings, combinable bold/italic/strikethrough emphasis, inline
+and fenced code, lists, quotes, and OSC 8-capable links as semantic spans. The pure `layout`
 service uses the same wcwidth-style combining, modifier, East Asian wide, and
 emoji ranges as the native presenter. It also owns editor grapheme boundaries,
 so combining sequences, emoji ZWJ sequences, and virama-attached marks are never
@@ -319,8 +335,8 @@ replayed to the provider.
 `indicators` is a focused registry for semantic status values. Features call
 `misa.reg_indicator({id,label?,icon?,hotkey?,value=function(db)...end})`.
 `config.status.indicators` selects order, label/icon representation, an optional
-structured keybinding reminder, and drop priority. The common component styles
-`indicator.label`, `indicator.value`, and `indicator.hotkey` independently and
+structured keybinding reminder, and drop priority. The common component styles the standard
+`label`, `value`, and `keybinding` tokens independently and
 removes low-priority items at narrow widths. Standard registrations cover
 activity, model, effort (with its cycle hotkey), session usage, context usage,
 and transcript detail (`summary`/`verbose`). Root composition stays generic.

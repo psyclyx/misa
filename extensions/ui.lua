@@ -9,7 +9,7 @@ end
 local function bound_frame(lines,columns,cursor)
   columns=math.max(1,columns); local result={}
   for _,line in ipairs(lines) do local remaining,spans=columns,{}
-    for _,source in ipairs(line.spans or {}) do if remaining>0 then local text,_,used=misa.layout.take(source.text or "",remaining); spans[#spans+1]={text=text,style=source.style}; remaining=math.max(0,remaining-used) end end
+    for _,source in ipairs(line.spans or {}) do if remaining>0 then local text,_,used=misa.layout.take(source.text or "",remaining); spans[#spans+1]={text=text,style=source.style,link=source.link}; remaining=math.max(0,remaining-used) end end
     result[#result+1]={spans=spans}
   end
   if cursor then local bytes=0; for _,item in ipairs(result[cursor.row] and result[cursor.row].spans or {}) do bytes=bytes+#(item.text or "") end; cursor.byte=math.min(cursor.byte,bytes) end

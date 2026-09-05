@@ -1,24 +1,33 @@
 -- Default transcript visuals: semantic data in, semantic lines out.
-local function span(text, style) return {text=text,style=style} end
+local function span(text, style, link) return {text=text,style=style,link=link} end
+local function composed(base,modifier)
+  if not modifier then return base end
+  if type(base)~="table" then return {base,modifier} end
+  local result={}; for _,token in ipairs(base) do result[#result+1]=token end; result[#result+1]=modifier; return result
+end
 local function plain_lines(text, style)
   local result={}; text=tostring(text or ""):gsub("\r\n","\n"):gsub("\r","\n"); if text:sub(-1)=="\n" then text=text:sub(1,-2) end
   if text=="" then return {{spans={span("",style)}}} end
   for line in (text.."\n"):gmatch("(.-)\n") do result[#result+1]={spans={span(line,style)}} end; return result
 end
 local function inline(text, base)
-  local result,at={},1; local function add(value,style) if value~="" then result[#result+1]=span(value,style or base) end end
+  local result,at={},1
+  local function add(value,modifier,link) if value~="" then result[#result+1]=span(value,composed(base,modifier),link) end end
   while at<=#text do
     local first,last,value=text:find("%*%*(.-)%*%*",at); if first~=at then first=nil end
     if first then add(value,"bold"); at=last+1 else
-      first,last,value=text:find("`([^`]+)`",at); if first~=at then first=nil end
-      if first then add(value,"accent"); at=last+1 else
-        local label,url; first,last,label,url=text:find("%[([^%]]+)%]%(([^%)]+)%)",at); if first~=at then first=nil end
-        if first then add(label,"accent"); add(" ("..url..")","dim"); at=last+1 else
-          first,last,value=text:find("%*([^*]+)%*",at); if first~=at then first=nil end
-          if not first then first,last,value=text:find("_([^_]+)_",at); if first~=at then first=nil end end
-          if first then add(value,"bold"); at=last+1 else
-            local next_mark=#text+1; for _,mark in ipairs({"%*%*","`","%[","%*","_"}) do local found=text:find(mark,at+1); if found and found<next_mark then next_mark=found end end
-            add(text:sub(at,next_mark-1)); at=next_mark
+      first,last,value=text:find("~~(.-)~~",at); if first~=at then first=nil end
+      if first then add(value,"strikethrough"); at=last+1 else
+        first,last,value=text:find("`([^`]+)`",at); if first~=at then first=nil end
+        if first then add(value,"code"); at=last+1 else
+          local label,url; first,last,label,url=text:find("%[([^%]]+)%]%(([^%)]+)%)",at); if first~=at then first=nil end
+          if first then add(label,"link",url); add(" ("..url..")","dim",url); at=last+1 else
+            first,last,value=text:find("%*([^*]+)%*",at); if first~=at then first=nil end
+            if not first then first,last,value=text:find("_([^_]+)_",at); if first~=at then first=nil end end
+            if first then add(value,"italic"); at=last+1 else
+              local next_mark=#text+1; for _,mark in ipairs({"%*%*","~~","`","%[","%*","_"}) do local found=text:find(mark,at+1); if found and found<next_mark then next_mark=found end end
+              add(text:sub(at,next_mark-1)); at=next_mark
+            end
           end
         end
       end
@@ -31,36 +40,37 @@ local function markdown_lines(text,base,enabled)
   local result,fenced={},false; text=tostring(text or ""):gsub("\r\n","\n"):gsub("\r","\n"); if text:sub(-1)=="\n" then text=text:sub(1,-2) end
   for raw in (text.."\n"):gmatch("(.-)\n") do
     if raw:match("^%s*```") then fenced=not fenced
-    elseif fenced then result[#result+1]={spans={span(raw,"accent")}}
+    elseif fenced then result[#result+1]={spans={span(raw,composed(base,"code"))}}
     else
-      local style,content,prefix=base,raw,nil; local hashes,heading=raw:match("^(#+)%s+(.+)$")
-      if hashes then style,content="bold",heading else local quote=raw:match("^%s*>%s?(.*)$")
-        if quote then style,content,prefix="dim",quote,"│ " else local bullet,item=raw:match("^%s*([-*+])%s+(.+)$")
-          if bullet then content,prefix=item,"• " else local number,ordered=raw:match("^%s*(%d+%.)%s+(.+)$"); if number then content,prefix=ordered,number.." " end end
+      local style,content,prefix,prefix_style=base,raw,nil,nil; local hashes,heading=raw:match("^(#+)%s+(.+)$")
+      if hashes then style,content=composed(base,"bold"),heading else local quote=raw:match("^%s*>%s?(.*)$")
+        if quote then style,content,prefix,prefix_style=composed(base,"quote"),quote,"▏ ","quote" else local bullet,item=raw:match("^%s*([-*+])%s+(.+)$")
+          if bullet then content,prefix,prefix_style=item,"• ","accent" else local number,ordered=raw:match("^%s*(%d+%.)%s+(.+)$"); if number then content,prefix,prefix_style=ordered,number.." ","accent" end end
         end
       end
-      local spans=inline(content,style); if prefix then table.insert(spans,1,span(prefix,style=="dim" and "dim" or "accent")) end; result[#result+1]={spans=spans}
+      local spans=inline(content,style); if prefix then table.insert(spans,1,span(prefix,composed(base,prefix_style))) end; result[#result+1]={spans=spans}
     end
   end
   if #result==0 then result[1]={spans={span("",base)}} end; return result
 end
 local function title(model,label,style)
-  local parts={span(label,style or "bold")}
+  local parts={span(label,composed(style or "plain","bold"))}
   if model.timestamp then parts[#parts+1]=span("  "..tostring(model.timestamp),"dim") end
   if model.streaming then parts[#parts+1]=span("  streaming","accent") end
   if model.interrupted then parts[#parts+1]=span("  interrupted","error") end
   if type(model.tokens_per_second)=="number" then parts[#parts+1]=span("  "..string.format("%.1f",model.tokens_per_second).." tok/s","dim") end
   return {spans=parts}
 end
+local function rail(model) return assert(model.rail,"message model requires a semantic rail token") end
 local function message(model,context,style,label)
   if not context.interactive then return plain_lines(model.text,style) end
   local rendered=markdown_lines(model.text,style,context.markdown~=false)
-  rendered=misa.layout.wrap_spans(rendered,context.columns,{{text="▏ ",style="accent"}})
-  if label then table.insert(rendered,1,title(model,label)) end
+  rendered=misa.layout.wrap_spans(rendered,context.columns,{{text="┃ ",style=rail(model)}})
+  if label then table.insert(rendered,1,title(model,label,style)) end
   return rendered
 end
 local function titled(model,label,text,style)
-  return {lines={title(model,label),{spans={span("▏ ","accent"),span(text,style)}}}}
+  return {lines={title(model,label,style),{spans={span("┃ ",rail(model)),span(text,style)}}}}
 end
 return {setup=function()
   assert(misa.layout,"component.message requires layout")

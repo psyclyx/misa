@@ -22,21 +22,15 @@ return {
       assert(type(id) == "string" and id ~= "", "no component configured for role: " .. role)
       return assert(implementations[id], "unknown component for " .. role .. ": " .. id)
     end
-    local native_style = { plain="plain", dim="dim", bold="bold", accent="accent", user="user", assistant="assistant", error="error", thinking="dim", tool="dim",
-      ["choice.prompt"]="accent", ["choice.query"]="plain", ["choice.hint"]="dim", ["choice.view"]="bold", ["choice.view.active"]="accent",
-      ["choice.row"]="plain", ["choice.row.active"]="accent", ["choice.row.selected"]="bold", ["choice.empty"]="dim",
-      ["indicator.label"]="dim", ["indicator.value"]="plain", ["indicator.hotkey"]="dim",
-      ["dialog.title"]="accent", ["dialog.message"]="plain", ["dialog.label"]="dim", ["dialog.value"]="plain",
-      ["dialog.code"]="bold", ["dialog.progress"]="dim", ["dialog.input"]="plain", ["dialog.hint"]="dim" }
     misa.render_component = function(db, role, model, render_context)
       local component = misa.component(db, role)
       local rendered = component.render(misa.snapshot(model), misa.snapshot(render_context or {}))
       assert(type(rendered) == "table", "component render must return a table")
-      -- Components emit semantic tokens and know nothing about the active theme.
-      -- Resolution is centralized at the registry boundary before native validation.
+      -- Components emit semantic tokens (or ordered token lists) and know
+      -- nothing about terminal colors. Resolution composes one native record.
+      assert(misa.theme_style,"components requires the themes service")
       for _, line in ipairs(rendered.lines or {}) do for _, span in ipairs(line.spans or {}) do
-        local fallback = native_style[span.style] or "plain"
-        span.style = misa.theme_token and misa.theme_token(db, span.style, fallback) or fallback
+        span.style = misa.theme_style(db,span.style or "plain")
       end end
       return rendered
     end

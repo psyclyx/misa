@@ -22,10 +22,10 @@ return {setup=function()
     local spans={}
     for i,item in ipairs(source) do if keep[i] then
       if #spans>0 then spans[#spans+1]=span("  ","plain") end
-      spans[#spans+1]=span(tostring(item.label or ""),"indicator.label")
+      spans[#spans+1]=span(tostring(item.label or ""),"label")
       spans[#spans+1]=span(" ","plain")
-      spans[#spans+1]=span(tostring(item.value or ""),"indicator.value")
-      if item.hotkey and item.hotkey~="" then spans[#spans+1]=span(" ","plain"); spans[#spans+1]=span(tostring(item.hotkey),"indicator.hotkey") end
+      spans[#spans+1]=span(tostring(item.value or ""),"value")
+      if item.hotkey and item.hotkey~="" then spans[#spans+1]=span(" ","plain"); spans[#spans+1]=span(tostring(item.hotkey),"keybinding") end
     end end
     return {lines=#spans>0 and {{spans=spans}} or {}}
   end

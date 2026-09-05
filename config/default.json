@@ -89,7 +89,7 @@
         "transcript.harness": "default.transcript.harness"
       }
     },
-    "themes": { "default": "default" },
+    "themes": { "default": "default", "persist": true },
     "animations": { "default": "default" },
     "messages": { "verbose": false, "markdown": true, "max_string": 4000, "max_items": 64, "max_depth": 8 },
     "status": {

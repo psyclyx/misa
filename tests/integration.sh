@@ -34,13 +34,13 @@ PATH="$work/bin:$PATH" "$MISA_BIN" login claude
 [ "$(PATH="$work/bin:$PATH" "$MISA_BIN" status claude)" = 'logged in (max)' ]
 PATH="$work/bin:$PATH" "$MISA_BIN" logout claude
 [ ! -e "$work/session-auth.json" ]
-printf '%s' '{"extensions":["auth","protocol.openai","provider.openai","fuzzy","choices","preferences","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","picker","picker_view","editor","ui"],"config":{"providers":{"openai":{"discover_models":false}}}}' >"$work/auth-ui.json"
+printf '%s' '{"extensions":["auth","protocol.openai","provider.openai","fuzzy","choices","preferences","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","picker","picker_view","editor","ui"],"config":{"providers":{"openai":{"discover_models":false}}}}' >"$work/auth-ui.json"
 [ "$(printf '/status op\t\n' | MISA_CONFIG="$work/auth-ui.json" "$MISA_BIN")" = 'logged out' ]
 [ "$(printf '/status\nopenai\n' | MISA_CONFIG="$work/auth-ui.json" "$MISA_BIN")" = 'logged out' ]
 
 stage=provider-composition
 # Real provider declarations compose without credentials until they are used.
-printf '%s' '{"extensions":["protocol.anthropic","provider.anthropic","provider.kimi","protocol.openai","provider.openai","provider.openrouter","provider.openai-codex","provider.claude","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"anthropic/claude-sonnet-5"}}}' >"$work/providers.json"
+printf '%s' '{"extensions":["protocol.anthropic","provider.anthropic","provider.kimi","protocol.openai","provider.openai","provider.openrouter","provider.openai-codex","provider.claude","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"anthropic/claude-sonnet-5"}}}' >"$work/providers.json"
 provider_output="$(MISA_CONFIG="$work/providers.json" "$MISA_BIN" </dev/null)"
 [ -z "$provider_output" ]
 
@@ -86,7 +86,7 @@ return { setup = function()
     assert(cofx.config.nested.value == 7 and cofx.argv[1] == "original")
     local ok,err=pcall(function() misa.reg_event("late",function() end) end)
     assert(not ok and err:find("sealed"))
-    return {fx={{type="view/commit",lines={{spans={{text=table.concat(db.order,","),style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text=table.concat(db.order,","),style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
   misa.reg_view(function() return {lines={},cursor=nil} end)
 end }
@@ -105,7 +105,7 @@ return {setup=function()
   end)
   misa.reg_event("clock/next",function(_,_,cofx)
     assert(cofx.clock.monotonic_ms>=first,"monotonic coeffect went backwards")
-    return {fx={{type="view/commit",lines={{spans={{text="clock",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="clock",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
@@ -121,24 +121,25 @@ return {setup=function()
   misa.reg_event("app/start",function(db)
     local wide=misa.indicators_projection(db,{columns=80})[1].spans
     local labels,values,hotkeys=0,0,0; for _,item in ipairs(wide) do
-      if item.style=="dim" and item.text=="Important" then labels=labels+1 end
-      if item.style=="plain" and item.text=="yes" then values=values+1 end
-      if item.style=="dim" and item.text=="alt+x" then hotkeys=hotkeys+1 end
+      if item.style.dim==true and item.text=="Important" then labels=labels+1 end
+      if item.style.foreground=="default" and item.text=="yes" then values=values+1 end
+      if item.style.dim==true and item.style.foreground=="cyan" and item.text=="alt+x" then hotkeys=hotkeys+1 end
     end
     assert(labels==1 and values==1 and hotkeys==1,"indicator semantic classes or structured hotkey are missing")
     local narrow=misa.indicators_projection(db,{columns=15})[1].spans; local text=""; for _,item in ipairs(narrow) do text=text..item.text end
     assert(text:find("Important",1,true) and not text:find("Optional",1,true),"indicator priority did not control narrow-width dropping")
-    return {fx={{type="view/commit",lines={{spans={{text="indicators",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="indicators",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
-printf '{"extensions":["keybindings","components","layout","indicators","component.status","%s"],"config":{"status":{"indicators":[{"id":"important","priority":100},{"id":"optional","hotkey":true,"priority":1}]}}}' "$work/indicators.lua" >"$work/indicators.json"
+printf '{"extensions":["keybindings","themes","theme.default","components","layout","indicators","component.status","%s"],"config":{"status":{"indicators":[{"id":"important","priority":100},{"id":"optional","hotkey":true,"priority":1}]}}}' "$work/indicators.lua" >"$work/indicators.json"
 [ "$(MISA_CONFIG="$work/indicators.json" "$MISA_BIN")" = indicators ]
 
 stage=semantic-components
 cat >"$work/semantic-components.lua" <<'LUA'
 return {setup=function()
-  misa.reg_theme("test",{plain="plain"})
+  misa.reg_theme("test",{palette={text="default"},styles={plain={foreground="text"},label={foreground="text"},value={foreground="text"},keybinding={foreground="text"}}})
+  assert(not pcall(function() misa.reg_theme("bad",{palette={oops="orange"},styles={}}) end),"invalid palette color was accepted")
   misa.reg_animation("pulse",{frames={"one","two"}})
   misa.reg_component("test.first",{render=function() return {lines={{spans={{text="first",style="plain"}}}}} end})
   misa.reg_component("test.second",{render=function() return {lines={{spans={{text="swapped",style="plain"}}}}} end})
@@ -168,7 +169,7 @@ return {setup=function()
     db.ticks[name]=db.ticks[name]+1
     if db.ticks.a>0 and db.ticks.b>0 then return {db=db,fx={
       {type="timer/stop",id="a"},{type="timer/stop",id="b"},
-      {type="view/commit",lines={{spans={{text="timers",style="plain"}}}}},{type="app/quit"},
+      {type="view/commit",lines={{spans={{text="timers",style={foreground="default"}}}}}},{type="app/quit"},
     }} end
     return {db=db}
   end
@@ -192,7 +193,7 @@ return {setup=function()
     if event.last_usage==nil then return end
     assert(next(db.agent.last_usage)==nil,"agent last usage survived clear")
     assert(next(db.status.last_usage)==nil,"status context survived clear")
-    return {db=db,fx={{type="view/commit",lines={{spans={{text="cleared",style="plain"}}}}},{type="app/quit"}}}
+    return {db=db,fx={{type="view/commit",lines={{spans={{text="cleared",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
@@ -214,11 +215,11 @@ return {setup=function()
     local picker=misa.render_component(db,"picker",{title="Pick",query="",columns={{id="all",title="Choices",rows={{value="long",label="界界界界 wrapped tail",description="option",marker=">",hotkey="alt+1",active=true}}}},choice_room=1,first_index=function() return 1 end,cycle_hint="right"},{columns=28,available_lines=8})
     local text=""; for _,line in ipairs(picker.lines) do for _,part in ipairs(line.spans) do text=text..part.text end end
     assert(text:find("tail",1,true),"picker option was truncated instead of wrapped")
-    return {fx={{type="view/commit",lines={{spans={{text="unicode layout",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="unicode layout",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.picker","%s"]}' "$work/unicode-layout.lua" >"$work/unicode-layout.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.picker","%s"]}' "$work/unicode-layout.lua" >"$work/unicode-layout.json"
 [ "$(MISA_CONFIG="$work/unicode-layout.json" "$MISA_BIN")" = 'unicode layout' ]
 
 stage=independent-visual-swap
@@ -238,7 +239,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["components","component.status","component.chrome","%s"],"config":{"components":{"persist":false}}}' "$work/visual-swap.lua" >"$work/visual-swap.json"
+printf '{"extensions":["themes","theme.default","components","component.status","component.chrome","%s"],"config":{"components":{"persist":false}}}' "$work/visual-swap.lua" >"$work/visual-swap.json"
 [ "$(MISA_CONFIG="$work/visual-swap.json" "$MISA_BIN")" = 'independent chrome' ]
 
 stage=message-redaction
@@ -250,34 +251,42 @@ return {setup=function()
   misa.reg_event("transcript/tool-call",function(db)
     local args=db.messages.transcript[#db.messages.transcript].arguments
     assert(args.token=="[redacted]" and args.value=="abc… [truncated 3 bytes]")
-    return {fx={{type="view/commit",lines={{spans={{text="redacted",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="redacted",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","%s"],"config":{"messages":{"verbose":true,"max_string":3}}}' "$work/message-redaction.lua" >"$work/message-redaction.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","%s"],"config":{"messages":{"verbose":true,"max_string":3}}}' "$work/message-redaction.lua" >"$work/message-redaction.json"
 [ "$(MISA_CONFIG="$work/message-redaction.json" "$MISA_BIN")" = redacted ]
 
 stage=semantic-transcript
 cat >"$work/semantic-transcript.lua" <<'LUA'
 return {setup=function()
   misa.reg_event("app/start",function() return {fx={
-    {type="dispatch",event={type="transcript/user",text="# Heading with **emphasis** and `code`"}},
+    {type="dispatch",event={type="transcript/user",text="# Heading with **emphasis**, *italics*, ~~gone~~, `code`, and [docs](https://example.test)"}},
     {type="dispatch",event={type="transcript/assistant",content={{type="thinking",text="private"}},request_id="thought"}},
     {type="dispatch",event={type="transcript/tool-call",id="call",name="demo",arguments={value="detail"}}},
     {type="dispatch",event={type="transcript/tool-result",id="call",text="result"}},
   }} end)
   misa.reg_event("transcript/tool-result",function(db)
     local lines=misa.transcript_projection(db,{interactive=true,columns=32})
-    assert(lines[1].spans[1].text=="You" and lines[2].spans[1].text=="▏ ","message title/body separation is missing")
-    local bold=false; for _,line in ipairs(lines) do for _,span in ipairs(line.spans) do if span.style=="bold" then bold=true end end end
-    assert(bold,"markdown did not produce semantic emphasis")
+    assert(lines[1].spans[1].text=="You" and lines[2].spans[1].text=="┃ ","message title/body separation is missing")
+    local bold,italic,strike,linked,rails=false,false,false,false,{}
+    for _,line in ipairs(lines) do for _,span in ipairs(line.spans) do
+      if span.style.bold==true and span.style.foreground=="green" then bold=true end
+      if span.style.italic==true then italic=true end
+      if span.style.strikethrough==true then strike=true end
+      if span.link=="https://example.test" then linked=true end
+      if span.text=="┃ " then rails[span.style.foreground]=true end
+    end end
+    assert(bold and italic and strike and linked,"composed Markdown styles or links are missing")
+    assert(rails.green and rails.magenta and rails.yellow,"semantic message rails did not retain distinct role colors")
     local collapsed=false; for _,line in ipairs(lines) do for _,span in ipairs(line.spans) do if span.text=="Tool result" then collapsed=true end end end
     assert(collapsed,"tool result is not visibly collapsed")
     return {fx={{type="view/commit",lines={{spans={{text="semantic"}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","%s"]}' "$work/semantic-transcript.lua" >"$work/semantic-transcript.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","%s"]}' "$work/semantic-transcript.lua" >"$work/semantic-transcript.json"
 [ "$(MISA_CONFIG="$work/semantic-transcript.json" "$MISA_BIN")" = semantic ]
 
 stage=lua-review-regressions
@@ -298,7 +307,7 @@ return {setup=function()
   end)
   misa.reg_event("terminal/input",function(db,event)
     assert(db.editor.text=="","busy input changed or submitted the editor")
-    if event.kind=="enter" then return {fx={{type="view/commit",lines={{spans={{text="review regressions",style="plain"}}}}},{type="app/quit"}}} end
+    if event.kind=="enter" then return {fx={{type="view/commit",lines={{spans={{text="review regressions",style={foreground="default"}}}}}},{type="app/quit"}}} end
   end)
 end}
 LUA
@@ -316,13 +325,13 @@ return {setup=function()
     local before=transcript[3].detail
     local lines=misa.transcript_projection(db,{interactive=true,columns=80})
     assert(transcript[3].detail==before,"transcript projection mutated its model")
-    local bold=false; for _,line in ipairs(lines) do for _,item in ipairs(line.spans) do if item.text=="bold" and item.style=="bold" then bold=true end end end
+    local bold=false; for _,line in ipairs(lines) do for _,item in ipairs(line.spans) do if item.text=="bold" and item.style.bold==true and item.style.foreground=="blue" then bold=true end end end
     assert(bold,"inline Markdown after ordinary text was not parsed")
-    return {fx={{type="view/commit",lines={{spans={{text="ordered",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="ordered",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","%s"],"config":{"messages":{"verbose":true}}}' "$work/transcript-order.lua" >"$work/transcript-order.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","%s"],"config":{"messages":{"verbose":true}}}' "$work/transcript-order.lua" >"$work/transcript-order.json"
 [ "$(MISA_CONFIG="$work/transcript-order.json" "$MISA_BIN")" = "$(printf 'ordinary **bold**tail\nordered')" ]
 
 cat >"$work/response-metadata.lua" <<'LUA'
@@ -352,7 +361,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","messages","%s"],"config":{"messages":{"verbose":true}}}' "$work/response-metadata.lua" >"$work/response-metadata.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","messages","%s"],"config":{"messages":{"verbose":true}}}' "$work/response-metadata.lua" >"$work/response-metadata.json"
 [ "$(MISA_CONFIG="$work/response-metadata.json" "$MISA_BIN")" = "$(printf 'firstsecond\nmetadata')" ]
 
 cat >"$work/unserializable.lua" <<'LUA'
@@ -362,7 +371,7 @@ return {setup=function()
   misa.reg_fx("provider.test",function() error("blocked request reached provider") end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","agent","choices","editor","ui","%s"],"config":{"models":{"default":"test/model"}}}' "$work/unserializable.lua" >"$work/unserializable.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","agent","choices","editor","ui","%s"],"config":{"models":{"default":"test/model"}}}' "$work/unserializable.lua" >"$work/unserializable.json"
 [ "$(MISA_CONFIG="$work/unserializable.json" "$MISA_BIN" hello)" = 'request options cannot be serialized: unknown' ]
 
 cat >"$work/picker-hints.lua" <<'LUA'
@@ -372,11 +381,11 @@ return {setup=function()
     local layers=misa.view_layers(db,{terminal={columns=80,lines=20},available_lines=18})
     local found=false; for _,line in ipairs(layers[1].lines) do for _,item in ipairs(line.spans) do if item.text:find("alt+z",1,true) then found=true end end end
     assert(found,"configured picker hint disappeared")
-    return {fx={{type="view/commit",lines={{spans={{text="hints",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="hints",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
-printf '{"extensions":["keybindings","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","picker","picker_view","%s"],"config":{"keybindings":{"choices":{"option_1_1":["alt+z"]}}}}' "$work/picker-hints.lua" >"$work/picker-hints.json"
+printf '{"extensions":["keybindings","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","picker","picker_view","%s"],"config":{"keybindings":{"choices":{"option_1_1":["alt+z"]}}}}' "$work/picker-hints.lua" >"$work/picker-hints.json"
 [ "$(MISA_CONFIG="$work/picker-hints.json" "$MISA_BIN")" = hints ]
 
 stage=choice-contracts
@@ -419,7 +428,7 @@ return {setup=function()
     misa.choice_replace_view(ordered,"slash-prefix",db)
     local fresh=misa.choice_session({title="Models",purpose="models",items={{value="vendor/one"}}},db)
     assert(fresh.view_ids[1]=="frecency","view replacement leaked beyond its session")
-    return {fx={{type="view/commit",lines={{spans={{text="choice contracts",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="choice contracts",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA
@@ -463,7 +472,7 @@ printf '{"extensions":["%s"]}' "$work/invalid-state.lua" >"$work/invalid-state-c
 MISA_STATE_FILE="$work/invalid-state.json" MISA_CONFIG="$work/invalid-state-config.json" "$MISA_BIN"
 
 cat >"$work/fake.json" <<'EOF'
-{"extensions":["provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["fake response\n"]}}}}
+{"extensions":["provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["fake response\n"]}}}}
 EOF
 [ "$(MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello world)" = 'fake response' ]
 MISA_CONFIG="$work/fake.json" "$MISA_BIN" hello >"$work/exact-output"
@@ -492,7 +501,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"text","text":"stream "},{"type":"thinking","text":"private"},{"type":"text","text":"works"}],"usage":{"input_tokens":2,"output_tokens":3}}]}}}}' "$work/stream-check.lua" >"$work/stream.json"
+printf '{"extensions":["provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"text","text":"stream "},{"type":"thinking","text":"private"},{"type":"text","text":"works"}],"usage":{"input_tokens":2,"output_tokens":3}}]}}}}' "$work/stream-check.lua" >"$work/stream.json"
 [ "$(MISA_CONFIG="$work/stream.json" "$MISA_BIN" hello)" = 'stream works' ]
 
 cat >"$work/rate-check.lua" <<'LUA'
@@ -512,7 +521,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","messages","%s"]}' "$work/rate-check.lua" >"$work/rate-check.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","messages","%s"]}' "$work/rate-check.lua" >"$work/rate-check.json"
 [ "$(MISA_CONFIG="$work/rate-check.json" "$MISA_BIN")" = rated ]
 
 cat >"$work/interrupted-check.lua" <<'LUA'
@@ -524,7 +533,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"text","text":"partial"}],"error":"stream interrupted"}]}}}}' "$work/interrupted-check.lua" >"$work/interrupted.json"
+printf '{"extensions":["provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"text","text":"partial"}],"error":"stream interrupted"}]}}}}' "$work/interrupted-check.lua" >"$work/interrupted.json"
 [ "$(MISA_CONFIG="$work/interrupted.json" "$MISA_BIN" hello)" = 'stream interrupted' ]
 
 # util-linux script(1) gives the real binary a controlling pseudo-terminal.
@@ -595,27 +604,27 @@ stage=request-options
 # Reasoning controls are derived from fake model metadata rather than a fixed
 # application-wide level list.
 cat >"$work/effort-cycle.json" <<'EOF'
-{"extensions":["keybindings","provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","effort","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"models":[{"id":"fake/default","model":"default","api":{"request_options":{"reasoning_effort":{"choices":["low","medium","high"],"default":"low"}}}}],"expect_request_options":{"reasoning_effort":"medium"},"expect_request_options_exact":true,"responses":["cycled"]}}}}
+{"extensions":["keybindings","provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","effort","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"models":[{"id":"fake/default","model":"default","api":{"request_options":{"reasoning_effort":{"choices":["low","medium","high"],"default":"low"}}}}],"expect_request_options":{"reasoning_effort":"medium"},"expect_request_options_exact":true,"responses":["cycled"]}}}}
 EOF
 [ "$(printf '\033ehello\n' | MISA_CONFIG="$work/effort-cycle.json" "$MISA_BIN")" = cycled ]
 
 # A model switch retains equivalent values, but falls back to the new model's
 # default when the old value is unavailable.
 cat >"$work/effort-fallback.json" <<'EOF'
-{"extensions":["provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","agent","choices","editor","ui"],"config":{"models":{"default":"fake/wide"},"providers":{"fake":{"models":[{"id":"fake/wide","model":"wide","api":{"request_options":{"reasoning_effort":{"choices":["low","high"],"default":"high"}}}},{"id":"fake/narrow","model":"narrow","api":{"request_options":{"reasoning_effort":{"choices":["low","medium"],"default":"medium"}}}}],"expect_request_options":{"reasoning_effort":"medium"},"expect_request_options_exact":true,"responses":["fallback"]}}}}
+{"extensions":["provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","agent","choices","editor","ui"],"config":{"models":{"default":"fake/wide"},"providers":{"fake":{"models":[{"id":"fake/wide","model":"wide","api":{"request_options":{"reasoning_effort":{"choices":["low","high"],"default":"high"}}}},{"id":"fake/narrow","model":"narrow","api":{"request_options":{"reasoning_effort":{"choices":["low","medium"],"default":"medium"}}}}],"expect_request_options":{"reasoning_effort":"medium"},"expect_request_options_exact":true,"responses":["fallback"]}}}}
 EOF
 [ "$(printf '/model fake/narrow\nhello\n' | MISA_CONFIG="$work/effort-fallback.json" "$MISA_BIN")" = fallback ]
 
 # Cycling is a no-op for a model without reasoning support.
 cat >"$work/effort-unsupported.json" <<'EOF'
-{"extensions":["keybindings","provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","effort","agent","choices","editor","ui"],"config":{"models":{"default":"fake/plain"},"providers":{"fake":{"models":[{"id":"fake/plain","model":"plain"}],"expect_request_options":{},"expect_request_options_exact":true,"responses":["plain"]}}}}
+{"extensions":["keybindings","provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","effort","agent","choices","editor","ui"],"config":{"models":{"default":"fake/plain"},"providers":{"fake":{"models":[{"id":"fake/plain","model":"plain"}],"expect_request_options":{},"expect_request_options_exact":true,"responses":["plain"]}}}}
 EOF
 [ "$(printf '\033ehello\n' | MISA_CONFIG="$work/effort-unsupported.json" "$MISA_BIN")" = plain ]
 
 # Missing generic required metadata blocks provider submission and reports a
 # structured request-readiness problem through the harness transcript.
 cat >"$work/required-option.json" <<'EOF'
-{"extensions":["provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","agent","choices","editor","ui"],"config":{"models":{"default":"fake/required"},"providers":{"fake":{"models":[{"id":"fake/required","model":"required","api":{"request_options":{"region":{"required":true,"choices":["east","west"]}}}}],"responses":["must not run"]}}}}
+{"extensions":["provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","request_options","agent","choices","editor","ui"],"config":{"models":{"default":"fake/required"},"providers":{"fake":{"models":[{"id":"fake/required","model":"required","api":{"request_options":{"region":{"required":true,"choices":["east","west"]}}}}],"responses":["must not run"]}}}}
 EOF
 [ "$(MISA_CONFIG="$work/required-option.json" "$MISA_BIN" hello)" = 'required request options are missing: region' ]
 
@@ -628,7 +637,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","editor","ui","%s"]}' "$work/command-completion.lua" >"$work/command-completion.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","editor","ui","%s"]}' "$work/command-completion.lua" >"$work/command-completion.json"
 [ "$(printf 'discard me\003/p\t\n' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" = pong ]
 [ -z "$(printf '\004' | MISA_CONFIG="$work/command-completion.json" "$MISA_BIN")" ]
 
@@ -641,7 +650,7 @@ return {setup=function()
   misa.reg_command({name="/choose",description="inline overlay",event="test/choose",completion="test-values"})
   misa.reg_completion("test-values",{value="alpha"})
   misa.reg_completion("test-values",{value="beta",label="Beta"})
-  local function done(text) return {fx={{type="view/commit",lines={{spans={{text=text,style="plain"}}}}},{type="app/quit"}}} end
+  local function done(text) return {fx={{type="view/commit",lines={{spans={{text=text,style={foreground="default"}}}}}},{type="app/quit"}}} end
   misa.reg_event("test/alpha",function() return done("inline hotkey") end)
   misa.reg_event("test/choose",function(_,event) assert(event.arguments=="beta"); return done("promoted inline") end)
   misa.reg_event("picker/open",function(db,event)
@@ -661,7 +670,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["fuzzy","keybindings","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","picker","picker_view","editor","ui","%s"],"config":{"choices":{"purposes":{"command-completion":["slash-prefix"]}},"keybindings":{"choices":{"open_overlay":["alt+x"],"option_1_1":["alt+z"]}}}}' "$work/inline-choices.lua" >"$work/inline-choices.json"
+printf '{"extensions":["fuzzy","keybindings","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","picker","picker_view","editor","ui","%s"],"config":{"choices":{"purposes":{"command-completion":["slash-prefix"]}},"keybindings":{"choices":{"open_overlay":["alt+x"],"option_1_1":["alt+z"]}}}}' "$work/inline-choices.lua" >"$work/inline-choices.json"
 [ "$(printf '/\033z\n' | MISA_CONFIG="$work/inline-choices.json" "$MISA_BIN")" = 'inline hotkey' ]
 [ "$(printf '/t\b' | MISA_CONFIG="$work/inline-choices.json" "$MISA_BIN")" = 'atomic tree backspace' ]
 [ "$(printf '/choose \033xb\n\n' | MISA_CONFIG="$work/inline-choices.json" "$MISA_BIN")" = 'promoted inline' ]
@@ -690,7 +699,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["keybindings","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","picker","picker_view","editor","ui","%s"]}' "$work/generic-picker.lua" >"$work/generic-picker.json"
+printf '{"extensions":["keybindings","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","choices","picker","picker_view","editor","ui","%s"]}' "$work/generic-picker.lua" >"$work/generic-picker.json"
 [ "$(printf '/choose\nbeta\n' | MISA_CONFIG="$work/generic-picker.json" "$MISA_BIN")" = 'beta/path' ]
 # The second visible panel uses the second positional Alt-key bank, but that
 # bank cannot activate when terminal geometry hides its panel.
@@ -711,7 +720,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["fuzzy","keybindings","choices","preferences","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","picker","picker_view","editor","ui","%s"]}' "$work/generic-command-choice.lua" >"$work/generic-command-choice.json"
+printf '{"extensions":["fuzzy","keybindings","choices","preferences","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","picker","picker_view","editor","ui","%s"]}' "$work/generic-command-choice.lua" >"$work/generic-command-choice.json"
 [ "$(printf '/choose\ntwo beta\n' | MISA_CONFIG="$work/generic-command-choice.json" "$MISA_BIN")" = beta-two ]
 # Favoriting keeps the terminal read live, updates the picker, and persists.
 [ "$(printf '/choose\ntwo beta\033v\n' | MISA_CONFIG="$work/generic-command-choice.json" "$MISA_BIN")" = beta-two ]
@@ -730,7 +739,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["%s","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"]}' "$work/dynamic-models.lua" >"$work/dynamic-models.json"
+printf '{"extensions":["%s","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"]}' "$work/dynamic-models.lua" >"$work/dynamic-models.json"
 [ "$(MISA_CONFIG="$work/dynamic-models.json" "$MISA_BIN" test)" = 'dynamic model' ]
 
 stage=model-picker-filter
@@ -744,7 +753,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["%s","fuzzy","choices","preferences","picker","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","picker_view","messages","models","agent","editor","ui"],"config":{"models":{"default":"picker/vendor/first"}}}' "$work/model-picker-filter.lua" >"$work/model-picker-filter.json"
+printf '{"extensions":["%s","fuzzy","choices","preferences","picker","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","picker_view","messages","models","agent","editor","ui"],"config":{"models":{"default":"picker/vendor/first"}}}' "$work/model-picker-filter.lua" >"$work/model-picker-filter.json"
 # Empty command invocation is intercepted generically, orderless fuzzy search
 # highlights independently of the currently selected model, then resumes it.
 [ "$(printf '/model\nsecond picker\nhello\n' | MISA_CONFIG="$work/model-picker-filter.json" "$MISA_BIN")" = 'picked vendor/second' ]
@@ -756,7 +765,7 @@ return {setup=function()
   misa.reg_model({id="private/model",provider="private",model="model",label="Private model"})
 end}
 LUA
-printf '{"extensions":["%s","auth","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"private/model"}}}' "$work/unavailable-models.lua" >"$work/unavailable-models.json"
+printf '{"extensions":["%s","auth","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"private/model"}}}' "$work/unavailable-models.lua" >"$work/unavailable-models.json"
 [ "$(printf 'hello\n' | MISA_AUTH_FILE="$work/missing-auth.json" MISA_CONFIG="$work/unavailable-models.json" "$MISA_BIN")" = 'configured model is unavailable: private/model' ]
 
 stage=agent-tool-loop
@@ -771,7 +780,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["json","provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"tool_call","index":0,"id":"call-1","name":"echo","arguments_json_delta":"{\\\"value\\\":\\\"from "},{"type":"tool_call","index":0,"arguments_json_delta":"tool\\\"}"}]},"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
+printf '{"extensions":["json","provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui","%s"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"tool_call","index":0,"id":"call-1","name":"echo","arguments_json_delta":"{\\\"value\\\":\\\"from "},{"type":"tool_call","index":0,"arguments_json_delta":"tool\\\"}"}]},"after tool"]}}}}' "$work/tool.lua" >"$work/tool-loop.json"
 [ "$(MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" use tool)" = 'after tool' ]
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"value":"from tool"}}}' |
   MISA_CONFIG="$work/tool-loop.json" "$MISA_BIN" mcp >"$work/mcp-custom-output"
@@ -818,12 +827,12 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["json","protocol.openai","protocol.anthropic","%s","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"alpha/model"}}}' "$work/cross-provider.lua" >"$work/cross-provider.json"
+printf '{"extensions":["json","protocol.openai","protocol.anthropic","%s","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"alpha/model"}}}' "$work/cross-provider.lua" >"$work/cross-provider.json"
 [ "$(MISA_CONFIG="$work/cross-provider.json" "$MISA_BIN" replay)" = "portable replay" ]
 
 stage=native-tools
 cat >"$work/native-tools.json" <<JSON
-{"extensions":["provider.fake","tool.files","tool.shell","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"write-1","name":"write_file","arguments":{"path":"$work/native-tool.txt","content":"alpha"}}],[{"type":"tool_call","id":"edit-1","name":"edit_file","arguments":{"path":"$work/native-tool.txt","old_text":"alpha","new_text":"beta"}}],[{"type":"tool_call","id":"read-1","name":"read_file","arguments":{"path":"$work/native-tool.txt"}}],[{"type":"tool_call","id":"list-1","name":"list_directory","arguments":{"path":"$work"}}],[{"type":"tool_call","id":"shell-1","name":"shell","arguments":{"command":"printf shell-ok"}}],"tools done"]}}}}
+{"extensions":["provider.fake","tool.files","tool.shell","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[[{"type":"tool_call","id":"write-1","name":"write_file","arguments":{"path":"$work/native-tool.txt","content":"alpha"}}],[{"type":"tool_call","id":"edit-1","name":"edit_file","arguments":{"path":"$work/native-tool.txt","old_text":"alpha","new_text":"beta"}}],[{"type":"tool_call","id":"read-1","name":"read_file","arguments":{"path":"$work/native-tool.txt"}}],[{"type":"tool_call","id":"list-1","name":"list_directory","arguments":{"path":"$work"}}],[{"type":"tool_call","id":"shell-1","name":"shell","arguments":{"command":"printf shell-ok"}}],"tools done"]}}}}
 JSON
 [ "$(MISA_CONFIG="$work/native-tools.json" "$MISA_BIN" use native tools)" = 'tools done' ]
 [ "$(cat "$work/native-tool.txt")" = beta ]
@@ -865,7 +874,7 @@ return {setup=function()
   end)
 end}
 LUA
-printf '{"extensions":["components","layout","component.message","messages","models","agent","%s"],"config":{"models":{"default":"cancel/model"}}}' "$work/cancel-tools.lua" >"$work/cancel-tools.json"
+printf '{"extensions":["themes","theme.default","components","layout","component.message","messages","models","agent","%s"],"config":{"models":{"default":"cancel/model"}}}' "$work/cancel-tools.lua" >"$work/cancel-tools.json"
 [ "$(MISA_CONFIG="$work/cancel-tools.json" "$MISA_BIN" cancel)" = "$(printf 'Cancelled\ncancel tools')" ]
 
 printf '%s\n' \
@@ -882,14 +891,14 @@ grep -F '"isError":false' "$work/mcp-output" >/dev/null
 stage=ui-order
 # Completion does not depend on ui being registered after agent/provider.
 cat >"$work/ui-first.json" <<'EOF'
-{"extensions":["ui","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","agent","models","choices","editor","provider.fake"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["ui first"]}}}}
+{"extensions":["ui","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","agent","models","choices","editor","provider.fake"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["ui first"]}}}}
 EOF
 [ "$(MISA_CONFIG="$work/ui-first.json" "$MISA_BIN" hello)" = 'ui first' ]
 
 # Provider-originated message strings are normalized at the transcript boundary,
 # even when they did not pass through the process-output sanitizer.
 cat >"$work/message-controls.json" <<'EOF'
-{"extensions":["provider.fake","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["ok\tred\u001b[31m!\u001b[0m\u0001\u0085"]}}}}
+{"extensions":["provider.fake","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":["ok\tred\u001b[31m!\u001b[0m\u0001\u0085"]}}}}
 EOF
 [ "$(MISA_CONFIG="$work/message-controls.json" "$MISA_BIN" hello)" = 'ok red!' ]
 
@@ -901,7 +910,7 @@ for prompt do :; done
 printf '%s\n' "$prompt"
 SH
 chmod +x "$work/echo-prompt"
-printf '{"extensions":["provider.command","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"command/default"},"providers":{"command":{"argv":["%s"]}}}}' "$work/echo-prompt" >"$work/editor.json"
+printf '{"extensions":["provider.command","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"command/default"},"providers":{"command":{"argv":["%s"]}}}}' "$work/echo-prompt" >"$work/editor.json"
 printf 'ac\033[Db\033[D\033[Cd\n' | MISA_CONFIG="$work/editor.json" "$MISA_BIN" >"$work/editor-output"
 printf 'abdc\n' >"$work/expected-editor-output"
 cmp "$work/expected-editor-output" "$work/editor-output"
@@ -943,7 +952,7 @@ printf 'result\t%s:\377\n' "$2"
 SH
 chmod +x "$work/provider"
 cat >"$work/command.json" <<EOF
-{"extensions":["provider.command","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"command/default"},"providers":{"command":{"argv":["$work/provider","fixed;word"]}}}}
+{"extensions":["provider.command","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"command/default"},"providers":{"command":{"argv":["$work/provider","fixed;word"]}}}}
 EOF
 (cd "$work" && MISA_CONFIG="$work/command.json" "$MISA_BIN" '$(touch SHOULD_NOT_EXIST);' "it's" literal >"$work/command-output" && [ ! -e SHOULD_NOT_EXIST ])
 printf 'result $(touch SHOULD_NOT_EXIST); it'"'"'s literal:�\n' >"$work/expected-command-output"
@@ -987,7 +996,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"d
 sleep 3
 SH
 chmod +x "$work/claude"
-printf '{"extensions":["provider.claude","tool.files","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"claude/claude-sonnet-5"},"providers":{"claude":{"max_plan":true,"executable":"%s","mcp_command":"%s","mcp_arguments":["mcp","--config","%s"]}}}}' "$work/claude" "$MISA_BIN" "$work/claude.json" >"$work/claude.json"
+printf '{"extensions":["provider.claude","tool.files","themes","theme.default","components","layout","component.message","component.editor","component.picker","component.status","component.chrome","messages","models","agent","choices","editor","ui"],"config":{"models":{"default":"claude/claude-sonnet-5"},"providers":{"claude":{"max_plan":true,"executable":"%s","mcp_command":"%s","mcp_arguments":["mcp","--config","%s"]}}}}' "$work/claude" "$MISA_BIN" "$work/claude.json" >"$work/claude.json"
 claude_started=$(date +%s)
 claude_output="$(MISA_CONFIG="$work/claude.json" "$MISA_BIN" hello)"
 claude_elapsed=$(($(date +%s) - claude_started))
@@ -1004,7 +1013,7 @@ return {setup=function()
       return {db=db,fx={{type="dispatch",event={type="dialog/open",id="two",correlation="b",completion="dialog/done",kind="modal",title="Input",message="paste",input=true,actions={{id="submit",label="submit"}}}},{type="dispatch",event={type="dialog/input",kind="text",text="code"}},{type="dispatch",event={type="dialog/input",kind="enter"}}}}
     end
     assert(not event.cancelled and event.value=="code" and event.action=="submit" and db.dialog==nil,"submit lifecycle failed")
-    return {fx={{type="view/commit",lines={{spans={{text="dialogs",style="plain"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="dialogs",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
   misa.reg_event("dialog/opened-test",function() end)
   misa.reg_event("dialog/begin-cancel",function() return {fx={{type="dispatch",event={type="dialog/input",kind="escape"}}}} end)
@@ -1023,7 +1032,7 @@ return {setup=function(context)
   misa.reg_event("app/start",function(db,event,cofx)
     assert(cofx.config.value==42 and cofx.argv[1]=='arg')
     assert(cofx.terminal.interactive == false and cofx.terminal.columns == 37 and cofx.terminal.lines == 11)
-    return {fx={{type="view/commit",lines={{spans={{text="plain",style="accent"}}}}},{type="app/quit"}}}
+    return {fx={{type="view/commit",lines={{spans={{text="plain",style={foreground="cyan"}}}}}},{type="app/quit"}}}
   end)
 end}
 LUA

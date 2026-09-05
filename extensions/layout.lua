@@ -112,7 +112,7 @@ local function fit(text, columns)
   return head .. string.rep(" ", math.max(0, columns - cells))
 end
 local function clone_spans(spans)
-  local result = {}; for _, span in ipairs(spans or {}) do result[#result + 1] = {text=span.text or "",style=span.style} end; return result
+  local result = {}; for _, span in ipairs(spans or {}) do result[#result + 1] = {text=span.text or "",style=span.style,link=span.link} end; return result
 end
 local function wrap_spans(lines, columns, prefix)
   columns = math.max(1, math.floor(tonumber(columns) or 1)); local prefix_spans = type(prefix) == "table" and prefix or {}
@@ -123,11 +123,11 @@ local function wrap_spans(lines, columns, prefix)
     local function flush() result[#result + 1] = {spans=current}; current, used = clone_spans(prefix_spans), 0 end
     for _, source in ipairs(line.spans or {}) do
       local rest = source.text or ""
-      if rest == "" and #current == #prefix_spans then current[#current + 1] = {text="",style=source.style} end
+      if rest == "" and #current == #prefix_spans then current[#current + 1] = {text="",style=source.style,link=source.link} end
       while rest ~= "" do
         if used >= room then flush() end
         local piece, remaining, cells = take(rest, room - used)
-        current[#current + 1] = {text=piece,style=source.style}; rest, used = remaining, used + cells
+        current[#current + 1] = {text=piece,style=source.style,link=source.link}; rest, used = remaining, used + cells
         if rest ~= "" and used >= room then flush() end
       end
     end
