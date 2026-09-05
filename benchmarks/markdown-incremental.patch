@@ -1,0 +1,93 @@
+--- baseline/markdown.lua
++++ extensions/markdown.lua
+@@ -30,6 +30,13 @@
+     while at<=#text do
+       if count>=limits.max_inlines then plain[#plain+1]=text:sub(at); at=#text+1
+       else
++        -- Copy ordinary runs in one operation. The active paragraph may still
++        -- need reinterpretation when a delimiter arrives; its plain text should
++        -- not pay the Lua grammar-dispatch cost once per byte.
++        local special=text:find("[\\`%[%*_~]",at)
++        if special~=at then
++          local after=special or (#text+1); plain[#plain+1]=text:sub(at,after-1); at=after
++        else
+         local escaped=text:sub(at,at)=="\\" and text:sub(at+1,at+1) or nil
+         if escaped and escaped~="" and escaped:match("[%p]") then plain[#plain+1]=escaped; at=at+2
+         else
+@@ -63,6 +70,7 @@
+             end
+           end
+         end
++        end
+       end
+     end
+     emit_plain(); return result
+@@ -101,13 +109,26 @@
+ 
+ local function make_parser(limits)
+   local parse_inline=inline_parser(limits)
+-  return function(value)
++  return function(value,previous,previous_source_truncated)
+     local source=tostring(value or ""):gsub("\r\n","\n"):gsub("\r","\n")
+     local truncated; source,truncated=utf8_prefix(source,limits.max_source_bytes)
+-    local lines={}; for line in (source.."\n"):gmatch("(.-)\n") do lines[#lines+1]=line end
++    local source_truncated=truncated
++    if previous and source==previous.source and source_truncated==previous_source_truncated then return previous,source_truncated end
++    -- Appending can change the final block and its predecessor (a partial
++    -- separator can become a table, or cease to terminate a paragraph). Earlier
++    -- blocks are immutable. Keep them, including their source coordinates and
++    -- list context, and run the very same parser over the uncertain suffix.
++    local blocks,start={},0
++    local appended=previous and source:sub(1,#previous.source)==previous.source
++    if appended then
++      local retained=math.max(0,#previous.blocks-2)
++      for i=1,retained do blocks[i]=previous.blocks[i] end
++      start=previous.blocks[retained+1] and previous.blocks[retained+1].source_start or 0
++    end
++    local lines={}; for line in (source:sub(start+1).."\n"):gmatch("(.-)\n") do lines[#lines+1]=line end
+     if source:sub(-1)=="\n" then table.remove(lines) end
+-    local offsets,offset={},0; for i,line in ipairs(lines) do offsets[i]=offset; offset=offset+#line+1 end
+-    local blocks,index={},1
++    local offsets,offset={},start; for i,line in ipairs(lines) do offsets[i]=offset; offset=offset+#line+1 end
++    local index=1
+     local function add(block) if #blocks<limits.max_blocks then blocks[#blocks+1]=block; return true end; truncated=true; return false end
+     while index<=#lines and #blocks<limits.max_blocks do
+       local source_index,block_count=index,#blocks
+@@ -164,10 +185,15 @@
+       for block_index=block_count+1,#blocks do
+         blocks[block_index].source_start=offsets[source_index]
+         blocks[block_index].source_end=math.min(#source,(offsets[index] or (#source+1))-1)
++        local old=appended and previous.blocks[block_index]
++        local block=blocks[block_index]
++        -- A conservatively reparsed neighbor often remains unchanged. Keep its
++        -- identity too, so downstream layout/highlighting need not repeat.
++        if old and old.kind==block.kind and old.source_start==block.source_start and old.source_end==block.source_end then blocks[block_index]=old end
+       end
+     end
+     if index<=#lines then truncated=true end
+-    return {kind="document",source=source,blocks=blocks,truncated=truncated or nil}
++    return {kind="document",source=source,blocks=blocks,truncated=truncated or nil},source_truncated
+   end
+ end
+ 
+@@ -181,8 +207,19 @@
+     max_inline_depth=integer(config.max_inline_depth,defaults.max_inline_depth,2,32),
+     max_link_bytes=integer(config.max_link_bytes,defaults.max_link_bytes,64,4096),
+   }
++  local parse=make_parser(limits)
+   misa.markdown={
+-    parse=make_parser(limits),limits=limits,
++    parse=function(value) local document=parse(value); return document end,limits=limits,
++    -- Owned derived state, independent of transactions and view policy. Returned
++    -- documents are read-only snapshots; updates never mutate previous trees.
++    new_document=function()
++      local source,document,source_truncated
++      return {update=function(_,value)
++        value=tostring(value or "")
++        if value~=source then document,source_truncated=parse(value,document,source_truncated); source=value end
++        return document
++      end}
++    end,
+     bound=function(value) return utf8_prefix(tostring(value or ""),limits.max_source_bytes) end,
+   }
+ end}
