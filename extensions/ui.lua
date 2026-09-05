@@ -7,15 +7,30 @@ local function slice(lines,first,count)
   local result={}; for index=math.max(1,first),math.min(#lines,first+count-1) do result[#result+1]=lines[index] end; return result
 end
 local function bound_frame(lines,columns,cursor)
-  columns=math.max(1,columns); local result={}
-  for _,line in ipairs(lines) do local remaining,spans=columns,{}
-    for _,source in ipairs(line.spans or {}) do if remaining>0 then local text,_,used=misa.layout.take(source.text or "",remaining); spans[#spans+1]={text=text,style=source.style,link=source.link}; remaining=math.max(0,remaining-used) end end
+  -- The native presenter reserves the final terminal column. Clip the whole
+  -- semantic line before projecting its byte boundary through spans: graphemes
+  -- may cross style/link boundaries and must never be partially retained.
+  local budget=math.max(0,math.floor(tonumber(columns) or 1)-1); local result={}
+  for _,line in ipairs(lines) do
+    local full=""; for _,source in ipairs(line.spans or {}) do full=full..(source.text or "") end
+    local _,visible_end=misa.layout.clip(full,budget); local spans,offset={},0
+    for _,source in ipairs(line.spans or {}) do
+      local text=source.text or ""; local count=math.min(#text,math.max(0,visible_end-offset))
+      if count>0 or (#text==0 and offset<=visible_end) then spans[#spans+1]={text=text:sub(1,count),style=source.style,link=source.link} end
+      offset=offset+#text
+    end
     result[#result+1]={spans=spans}
   end
-  if cursor then local bytes=0; for _,item in ipairs(result[cursor.row] and result[cursor.row].spans or {}) do bytes=bytes+#(item.text or "") end; cursor.byte=math.min(cursor.byte,bytes) end
-  return {lines=result,cursor=cursor}
+  local bounded_cursor
+  if cursor then
+    local source=lines[cursor.row]; local full=""; for _,item in ipairs(source and source.spans or {}) do full=full..(item.text or "") end
+    local _,visible_end=misa.layout.clip(full,budget)
+    bounded_cursor={row=cursor.row,byte=math.min(misa.layout.boundary_at_or_before(full,cursor.byte),visible_end)}
+  end
+  return {lines=result,cursor=bounded_cursor}
 end
 return {setup=function()
+  misa.ui_bound_frame=bound_frame
   misa.picker_available_lines=function(db,terminal)
     local height=math.max(0,terminal.lines); local header=misa.render_component(db,"root.header",{}).lines
     return math.max(0,height-(height>=4 and math.min(2,#header) or 0))

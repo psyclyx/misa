@@ -9,6 +9,19 @@ return {
     local ansi = {black=true,red=true,green=true,yellow=true,blue=true,magenta=true,cyan=true,white=true,
       bright_black=true,bright_red=true,bright_green=true,bright_yellow=true,bright_blue=true,bright_magenta=true,bright_cyan=true,bright_white=true}
     local attributes = {bold=true,italic=true,dim=true,strikethrough=true,underline=true}
+    -- Closed contract emitted by the bundled component/Markdown suite. Themes
+    -- may override any role; omitted roles are deliberately composed from
+    -- `plain` plus a presentation-neutral semantic modifier.
+    local standard_tokens={
+      "plain","dim","bold","italic","strikethrough","underline","accent","code","link","quote",
+      "markdown.heading.1","markdown.heading.2","markdown.heading.3","markdown.heading.4","markdown.heading.5","markdown.heading.6","markdown.list.marker","markdown.rule","markdown.table.border","markdown.table.header","markdown.code.label","markdown.code.border",
+      "syntax.comment","syntax.string","syntax.number","syntax.keyword","syntax.type","syntax.function","syntax.constant","syntax.variable","syntax.property","syntax.tag","syntax.attribute","syntax.operator","syntax.punctuation","syntax.escape","syntax.embedded",
+      "user","assistant","thinking","tool","pending","error","tool.pending","tool.success","tool.error","tool.cancelled","rail.user","rail.assistant","rail.thinking","rail.tool","rail.error","rail.harness",
+      "label","value","keybinding","choice.prompt","choice.query","choice.hint","choice.view","choice.view.active","choice.row","choice.row.active","choice.row.selected","choice.empty","choice.preview",
+      "dialog.title","dialog.message","dialog.label","dialog.value","dialog.code","dialog.progress","dialog.input","dialog.hint",
+    }
+    local dim_fallback={dim=true,quote=true,thinking=true,pending=true,label=true,["choice.hint"]=true,["choice.empty"]=true,["choice.preview"]=true,["dialog.label"]=true,["dialog.progress"]=true,["dialog.hint"]=true,["tool.pending"]=true,["tool.cancelled"]=true,["rail.harness"]=true,["syntax.comment"]=true,["syntax.punctuation"]=true,["markdown.rule"]=true,["markdown.table.border"]=true,["markdown.code.border"]=true}
+    local bold_fallback={bold=true,error=true,["tool.error"]=true,["rail.error"]=true,["choice.view"]=true,["choice.view.active"]=true,["choice.row.selected"]=true,["dialog.title"]=true,["dialog.code"]=true,["markdown.heading.1"]=true,["markdown.heading.2"]=true,["markdown.heading.3"]=true,["markdown.list.marker"]=true,["markdown.table.header"]=true,["markdown.code.label"]=true,["syntax.keyword"]=true,["syntax.operator"]=true,["syntax.escape"]=true}
 
     local function rgb(value)
       if type(value) ~= "table" then return nil end
@@ -47,7 +60,16 @@ return {
       local styles={}; for name,style in pairs(theme.styles) do
         assert(type(name)=="string" and name~="","style token must be nonempty"); styles[name]=normalize_style(style,palette,name)
       end
-      for _,required in ipairs({"plain","label","value","keybinding"}) do assert(styles[required],"theme is missing standard token: "..required) end
+      assert(styles.plain,"theme is missing foundation token: plain")
+      for _,required in ipairs(standard_tokens) do if not styles[required] then
+        local fallback={}; for key,value in pairs(styles.plain) do fallback[key]=copy_color(value) end
+        if required=="italic" or required=="syntax.embedded" or required=="markdown.heading.4" then fallback.italic=true
+        elseif required=="strikethrough" then fallback.strikethrough=true
+        elseif required=="underline" or required=="link" or required=="syntax.variable" or required=="markdown.heading.5" then fallback.underline=true
+        elseif bold_fallback[required] then fallback.bold=true
+        elseif dim_fallback[required] then fallback.dim=true end
+        styles[required]=fallback
+      end end
       return {palette=palette,styles=styles}
     end
     local function merge(target,source)

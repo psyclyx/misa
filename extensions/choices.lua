@@ -70,17 +70,23 @@ end
 local function first(panel,room) if room<=0 or #panel.items<=room then return 1 end; return math.max(1,math.min(panel.highlight-math.floor(room/2),#panel.items-room+1)) end
 local function source_spec(id,context,db) local source=assert(sources[id],"unknown choice source: "..tostring(id)); local spec=source.items(context,db) or {}; if spec.items then return spec end; return {items=spec} end
 local function apply_spec(session,spec,db)
-  session.title=spec.title or session.title; session.purpose=spec.purpose or session.purpose; session.items=items(spec.items or {}); session.query=spec.query or ""; session.input_prefix=spec.input_prefix or ""; session.selected=spec.selected~=misa.json_null and spec.selected or nil; session.preference_scope=spec.preference_scope or session.preference_scope; session.tree={node=spec.tree_node or ""}; session.view_state={}
+  session.title=spec.title or session.title; session.purpose=spec.purpose or session.purpose; session.items=items(spec.items or {}); session.query=spec.query or ""; session.input_prefix=spec.input_prefix or ""
+  if spec.selected==misa.json_null then session.selected=nil else session.selected=spec.selected end
+  session.preference_scope=spec.preference_scope; session.tree={node=spec.tree_node or ""}; session.view_state={}
   session.view_ids=spec.views and clone(spec.views) or configured(session.purpose); session.custom_views=nil; return refresh(session,db)
 end
+local frame_keys={"title","purpose","items","query","input_prefix","selected","preference_scope","tree","view_ids","custom_views","view_state"}
+local absent={}
 local function push_narrow(session,narrow,db)
-  session.stack[#session.stack+1]={title=session.title,purpose=session.purpose,items=session.items,query=session.query,input_prefix=session.input_prefix,selected=session.selected,preference_scope=session.preference_scope,tree=session.tree,view_ids=session.view_ids,custom_views=session.custom_views,view_state=session.view_state}
+  local frame={}; for _,key in ipairs(frame_keys) do frame[key]=session[key]==nil and absent or session[key] end
+  session.stack[#session.stack+1]=frame
   local spec=narrow.source and source_spec(narrow.source,narrow.context,db) or narrow
   apply_spec(session,spec,db); return {consumed=true,narrowed=true}
 end
 local function pop_narrow(session,db)
   local frame=table.remove(session.stack); if not frame then return false end
-  for key,value in pairs(frame) do session[key]=value end; refresh(session,db); return true
+  for _,key in ipairs(frame_keys) do if frame[key]==absent then session[key]=nil else session[key]=frame[key] end end
+  refresh(session,db); return true
 end
 local function new(spec,db)
   assert(type(spec)=="table" and type(spec.title)=="string" and spec.title~="","choice session requires a title")

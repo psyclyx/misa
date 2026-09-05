@@ -106,6 +106,17 @@ local function take(text, columns)
   end
   return text:sub(1, at - 1), text:sub(at), cells
 end
+-- Strict clipping differs from wrapping's take(): a too-wide first grapheme is
+-- omitted rather than overflowing. Segmentation is over the complete semantic
+-- line, so callers can project the returned byte boundary through style spans.
+local function clip(text, columns)
+  columns=math.max(0,math.floor(tonumber(columns) or 0)); local at,cells=1,0
+  while at<=#text do local next_at,cluster_cells=cluster(text,at)
+    if cells+cluster_cells>columns then break end
+    cells,at=cells+cluster_cells,next_at
+  end
+  return text:sub(1,at-1),at-1,cells
+end
 local function fit(text, columns)
   columns = math.max(0, math.floor(tonumber(columns) or 0)); if columns == 0 then return "" end
   local head, _, cells = take(tostring(text or ""), columns)
@@ -138,8 +149,22 @@ end
 -- Wrap editable text into physical rows and project its global UTF-8 byte
 -- cursor onto the resulting row. Prompt bytes are part of each semantic row,
 -- so the native presenter can continue to own byte-to-cell conversion.
+local function normalize_newlines(text,cursor)
+  text=tostring(text or ""); cursor=math.max(0,math.min(#text,math.floor(tonumber(cursor) or 0)))
+  local pieces,mapped,at,bytes={},nil,1,0
+  while at<=#text do
+    if mapped==nil and at-1>=cursor then mapped=bytes end
+    if text:byte(at)==13 then
+      local size=text:byte(at+1)==10 and 2 or 1; pieces[#pieces+1]="\n"; bytes=bytes+1; at=at+size
+      if mapped==nil and at-1>=cursor then mapped=bytes end
+    else
+      local _,size=decode(text,at); pieces[#pieces+1]=text:sub(at,at+size-1); bytes=bytes+size; at=at+size
+    end
+  end
+  return table.concat(pieces),mapped or bytes
+end
 local function wrap_input(text, columns, cursor, prompt, text_style, prompt_style)
-  text=tostring(text or ""):gsub("\r\n","\n"):gsub("\r","\n")
+  text,cursor=normalize_newlines(text,cursor)
   columns=math.max(1,math.floor(tonumber(columns) or 1)); cursor=boundary_at_or_before(text,cursor)
   -- Preserve two cells for a potentially-wide grapheme whenever possible;
   -- on tiny terminals the prompt yields before editable content does.
@@ -177,6 +202,6 @@ local function columns(total, minimum, maximum, gap)
   for index=1,count do widths[index] = base + (index <= extra and 1 or 0) end
   return widths
 end
-local api = {width=width,take=take,fit=fit,wrap_spans=wrap_spans,wrap_input=wrap_input,columns=columns,cell_width=cell_width,
+local api = {width=width,take=take,clip=clip,fit=fit,wrap_spans=wrap_spans,wrap_input=wrap_input,columns=columns,cell_width=cell_width,
   boundary_at_or_before=boundary_at_or_before,previous_boundary=previous_boundary,next_boundary=next_boundary}
 return {setup=function() misa.layout=api end}

@@ -7,6 +7,9 @@ pub const default_grammar_dir = options.default_grammar_dir;
 pub const max_source_bytes: usize = 1024 * 1024;
 pub const max_language_bytes: usize = 64;
 const max_parsers: usize = 32;
+pub const max_ast_depth: usize = 512;
+pub const max_ast_nodes: usize = 250_000;
+pub const max_ast_work: usize = 1_000_000;
 
 pub const Capture = struct {
     start_byte: u32,
@@ -34,7 +37,10 @@ pub const Highlighter = struct {
     entries: std.ArrayList(Entry) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, grammar_dir: []const u8) !Highlighter {
-        return .{ .allocator = allocator, .grammar_dir = try allocator.dupe(u8, grammar_dir) };
+        var result: Highlighter = .{ .allocator = allocator, .grammar_dir = try allocator.dupe(u8, grammar_dir) };
+        errdefer allocator.free(result.grammar_dir);
+        try result.entries.ensureTotalCapacity(allocator, max_parsers);
+        return result;
     }
 
     pub fn deinit(self: *Highlighter) void {
@@ -55,13 +61,25 @@ pub const Highlighter = struct {
 
         var captures: std.ArrayList(Capture) = .empty;
         errdefer captures.deinit(allocator);
-        try walk(c.ts_tree_root_node(tree), null, &captures, allocator);
+        walk(c.ts_tree_root_node(tree), &captures, allocator) catch |err| switch (err) {
+            error.SyntaxTooComplex => {
+                captures.clearRetainingCapacity();
+                return captures.toOwnedSlice(allocator);
+            },
+            else => return err,
+        };
         return captures.toOwnedSlice(allocator);
     }
 
     fn getParser(self: *Highlighter, name: []const u8) !?*c.TSParser {
-        for (self.entries.items) |entry| if (std.mem.eql(u8, entry.name, name)) return entry.parser;
-        if (self.entries.items.len >= max_parsers or self.grammar_dir.len == 0) return null;
+        for (self.entries.items, 0..) |entry, index| if (std.mem.eql(u8, entry.name, name)) {
+            // Oldest is at index zero. Promote every hit so grammar use over a
+            // long session is bounded by memory, never by a permanent cutoff.
+            const promoted = self.entries.orderedRemove(index);
+            self.entries.appendAssumeCapacity(promoted);
+            return promoted.parser;
+        };
+        if (self.grammar_dir.len == 0) return null;
 
         const filename = try std.fmt.allocPrint(self.allocator, "{s}.so", .{name});
         defer self.allocator.free(filename);
@@ -83,31 +101,52 @@ pub const Highlighter = struct {
         if (!c.ts_parser_set_language(parser_ptr, language)) return null;
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
-        try self.entries.append(self.allocator, .{ .name = owned_name, .library = library, .parser = parser_ptr });
+        if (self.entries.items.len == max_parsers) {
+            var evicted = self.entries.orderedRemove(0);
+            evicted.deinit(self.allocator);
+        }
+        self.entries.appendAssumeCapacity(.{ .name = owned_name, .library = library, .parser = parser_ptr });
         keep_library = true;
         keep_parser = true;
         return parser_ptr;
     }
 };
 
-fn walk(node: c.TSNode, inherited: ?[]const u8, captures: *std.ArrayList(Capture), allocator: std.mem.Allocator) !void {
-    const node_type = std.mem.span(c.ts_node_type(node));
-    const own = classify(node_type);
-    const child_count = c.ts_node_child_count(node);
-    if (child_count == 0) {
-        const semantic = if (inherited) |outer|
-            if (std.mem.eql(u8, outer, names.string) and own != null and std.mem.eql(u8, own.?, names.escape)) own else outer
-        else
-            own orelse classifyContext(node);
-        if (semantic) |capture| {
-            const start = c.ts_node_start_byte(node);
-            const end = c.ts_node_end_byte(node);
-            if (end > start) try captures.append(allocator, .{ .start_byte = start, .end_byte = end, .capture = capture });
+fn walk(root: c.TSNode, captures: *std.ArrayList(Capture), allocator: std.mem.Allocator) !void {
+    const Pending = struct { node: c.TSNode, inherited: ?[]const u8, depth: usize };
+    var pending: std.ArrayList(Pending) = .empty;
+    defer pending.deinit(allocator);
+    try pending.append(allocator, .{ .node = root, .inherited = null, .depth = 0 });
+    var nodes: usize = 0;
+    var work: usize = 1;
+    while (pending.pop()) |current| {
+        nodes += 1;
+        if (nodes > max_ast_nodes or current.depth > max_ast_depth) return error.SyntaxTooComplex;
+        const node_type = std.mem.span(c.ts_node_type(current.node));
+        const own = classify(node_type);
+        const child_count: usize = c.ts_node_child_count(current.node);
+        if (child_count == 0) {
+            const semantic = if (current.inherited) |outer|
+                if (std.mem.eql(u8, outer, names.string) and own != null and std.mem.eql(u8, own.?, names.escape)) own else outer
+            else
+                own orelse classifyContext(current.node);
+            if (semantic) |capture| {
+                const start = c.ts_node_start_byte(current.node);
+                const end = c.ts_node_end_byte(current.node);
+                if (end > start) try captures.append(allocator, .{ .start_byte = start, .end_byte = end, .capture = capture });
+            }
+            continue;
         }
-        return;
+        if (child_count > max_ast_work -| work) return error.SyntaxTooComplex;
+        work += child_count;
+        const child_inherited = current.inherited orelse if (own) |semantic| if (isLexical(semantic)) semantic else null else null;
+        // LIFO reverse insertion preserves tree-sitter's source order.
+        var index = child_count;
+        while (index != 0) {
+            index -= 1;
+            try pending.append(allocator, .{ .node = c.ts_node_child(current.node, @intCast(index)), .inherited = child_inherited, .depth = current.depth + 1 });
+        }
     }
-    const child_inherited = inherited orelse if (own) |semantic| if (isLexical(semantic)) semantic else null else null;
-    for (0..child_count) |index| try walk(c.ts_node_child(node, @intCast(index)), child_inherited, captures, allocator);
 }
 
 fn isLexical(semantic: []const u8) bool {
@@ -224,6 +263,56 @@ test "absent and unknown grammars gracefully fall back" {
     const oversized = try std.testing.allocator.alloc(u8, max_source_bytes + 1);
     defer std.testing.allocator.free(oversized);
     try std.testing.expectError(error.SourceTooLarge, highlighter.highlight(std.testing.allocator, "python", oversized));
+}
+
+test "parser cache evicts least recently used grammars instead of freezing" {
+    if (default_grammar_dir.len == 0) return error.SkipZigTest;
+    var highlighter = try Highlighter.init(std.testing.allocator, default_grammar_dir);
+    defer highlighter.deinit();
+    var directory = try std.Io.Dir.openDirAbsolute(std.testing.io, default_grammar_dir, .{ .iterate = true });
+    defer directory.close(std.testing.io);
+    var iterator = directory.iterate();
+    var first: ?[]u8 = null;
+    defer if (first) |name| std.testing.allocator.free(name);
+    var second: ?[]u8 = null;
+    defer if (second) |name| std.testing.allocator.free(name);
+    var loaded: usize = 0;
+    while (try iterator.next(std.testing.io)) |file| {
+        if (!std.mem.endsWith(u8, file.name, ".so")) continue;
+        const name = file.name[0 .. file.name.len - 3];
+        if (canonicalLanguage(name) == null) continue;
+        if (try highlighter.getParser(name) != null) {
+            loaded += 1;
+            if (first == null) first = try std.testing.allocator.dupe(u8, name) else if (second == null) second = try std.testing.allocator.dupe(u8, name);
+            if (loaded == max_parsers) try std.testing.expect(try highlighter.getParser(first.?) != null);
+            if (loaded == max_parsers + 1) break;
+        }
+    }
+    if (loaded <= max_parsers) return error.SkipZigTest;
+    try std.testing.expectEqual(max_parsers, highlighter.entries.items.len);
+    var retained_first = false;
+    for (highlighter.entries.items) |entry| {
+        retained_first = retained_first or std.mem.eql(u8, entry.name, first.?);
+        try std.testing.expect(!std.mem.eql(u8, entry.name, second.?));
+    }
+    try std.testing.expect(retained_first);
+    try std.testing.expect(try highlighter.getParser(second.?) != null);
+    try std.testing.expectEqual(max_parsers, highlighter.entries.items.len);
+    try std.testing.expectEqualStrings(second.?, highlighter.entries.items[highlighter.entries.items.len - 1].name);
+}
+
+test "bundled grammar complexity limit falls back without recursion" {
+    if (default_grammar_dir.len == 0) return error.SkipZigTest;
+    var highlighter = try Highlighter.init(std.testing.allocator, default_grammar_dir);
+    defer highlighter.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendNTimes(std.testing.allocator, '(', max_ast_depth + 32);
+    try source.append(std.testing.allocator, '1');
+    try source.appendNTimes(std.testing.allocator, ')', max_ast_depth + 32);
+    const captures = try highlighter.highlight(std.testing.allocator, "python", source.items);
+    defer std.testing.allocator.free(captures);
+    try std.testing.expectEqual(@as(usize, 0), captures.len);
 }
 
 test "bundled grammar produces ordered semantic captures" {
