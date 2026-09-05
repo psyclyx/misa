@@ -49,6 +49,8 @@ assert
     dialogView = "dialog_view";
     components = "components";
     layout = "layout";
+    markdown = "markdown";
+    componentMarkdown = "component.markdown";
     componentMessage = "component.message";
     componentEditor = "component.editor";
     componentPicker = "component.picker";
@@ -109,6 +111,8 @@ assert builtins.pathExists ../extensions/animations.lua;
 assert builtins.pathExists ../extensions/animation/default.lua;
 assert builtins.pathExists ../extensions/components.lua;
 assert builtins.pathExists ../extensions/layout.lua;
+assert builtins.pathExists ../extensions/markdown.lua;
+assert builtins.pathExists ../extensions/component/markdown.lua;
 assert builtins.pathExists ../extensions/component/message.lua;
 assert builtins.pathExists ../extensions/component/editor.lua;
 assert builtins.pathExists ../extensions/component/picker.lua;

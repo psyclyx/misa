@@ -8,6 +8,8 @@
   dialogView = "dialog_view";
   components = "components";
   layout = "layout";
+  markdown = "markdown";
+  componentMarkdown = "component.markdown";
   componentMessage = "component.message";
   componentEditor = "component.editor";
   componentPicker = "component.picker";

@@ -23,6 +23,8 @@
     "animation.default",
     "components",
     "layout",
+    "markdown",
+    "component.markdown",
     "indicators",
     "component.message",
     "component.editor",
@@ -91,6 +93,7 @@
     },
     "themes": { "default": "default", "persist": true },
     "animations": { "default": "default" },
+    "markdown": { "max_source_bytes": 262144, "max_blocks": 4096, "max_inlines": 16384, "max_inline_depth": 12, "max_link_bytes": 4096 },
     "messages": { "verbose": false, "markdown": true, "max_string": 4000, "max_items": 64, "max_depth": 8 },
     "status": {
       "indicators": [
