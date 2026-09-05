@@ -39,6 +39,7 @@ adapters precede the API providers that use them:
     "markdown",
     "component.markdown",
     "indicators",
+    "component.tool",
     "component.message",
     "component.editor",
     "component.picker",
@@ -264,7 +265,7 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 
 The application UI is split at semantic boundaries. `components` resolves
 visual roles to registered implementations. The independently loadable
-`component.message`, `component.markdown`, `component.editor`, `component.picker`, `component.status`,
+`component.message`, `component.tool`, `component.markdown`, `component.editor`, `component.picker`, `component.status`,
 `component.chrome`, and `component.dialog` plugins provide the default roles; none owns behavior or
 depends on a theme. `layout` provides pure terminal-cell width, fitting,
 semantic-span wrapping, and responsive-column primitives. Theme resolution is
@@ -294,8 +295,11 @@ section to disable persistence. These registries contain no input or agent behav
 authentication, and harness entries. The root managed view reprojects those
 models. Stable `transcript/response-*` and `transcript/block-*` lifecycle events
 append stream chunks without repeatedly copying accumulated responses, then
-compact each block once at finalization. Thinking and tool-call blocks are
-visible while streaming and remain summarized by default. Interruption marks
+compact each block once at finalization. Thinking and active assistant blocks
+carry pending indicators. Tool calls remain one correlated section from pending
+through success, error, or cancellation: their result updates the matching call
+in place, while unmatched custom results may fall back to a standalone section.
+Interruption marks
 visible partial blocks without promoting them to provider history. `/verbose`
 or the configurable global `alt+t` binding reprojects the transcript with
 details. Page Up / Page Down (also `alt+k` / `alt+j`) scroll while input and a
@@ -304,14 +308,18 @@ and timestamps occupy a title line above the heavier `┃` message rail instead 
 content. Markdown quotes use the thinner `▏` rail. Completed assistant responses show tok/s exactly once, on their final assistant
 block, and only from provider-reported output tokens and positive native monotonic elapsed time. The focused `markdown`
 extension performs a bounded, pure parse into semantic blocks and inlines; `component.markdown` turns that data into
-terminal flow, while `component.message` supplies only titles and the outer message rail. Rendering includes visibly graded
+terminal flow, while `component.message` supplies only message titles and the outer message rail. The reusable `component.tool`
+owns tool name/description, arguments, pending state, result, and lifecycle colors. Rendering includes visibly graded
 streaming headings, composable emphasis, Unicode task checkboxes, nested lists and continuations, thematic rules,
 quotes, responsive bordered tables, inline/fenced code, and OSC 8-capable links. Fenced languages are labeled and use
 `misa.syntax.highlight` when their grammar is installed, with unknown grammars rendered plainly. The pure `layout`
 service uses the same wcwidth-style combining, modifier, East Asian wide, and
 emoji ranges as the native presenter. It also owns editor grapheme boundaries,
 so combining sequences, emoji ZWJ sequences, and virama-attached marks are never
-split by Left, Right, or Backspace. Message spans and picker options therefore
+split by Left, Right, Backspace, or width wrapping. The editor input component
+maps its logical UTF-8 cursor to a prompt-prefixed physical wrapped row/byte;
+root composition windows those rows around the cursor, including on narrow
+terminals and across explicit newlines. Message spans and picker options likewise
 wrap on grapheme/UTF-8 boundaries using terminal cells rather than bytes or scalar count.
 Set `config.messages.markdown` to `false` (or `plain` to `true`) for literal text.
 `config.markdown` bounds parsing with `max_source_bytes`, `max_blocks`, `max_inlines`, `max_inline_depth`, and
@@ -409,6 +417,9 @@ than committed to terminal scrollback. `/clear` resets the in-memory conversatio
 transcript, and usage. `agent` owns normalized conversation history,
 repeated user turns, provider correlation, parallel tool-result collection,
 normalized token usage accounting, and automatic continuation after tools.
+Parallel results update their transcript sections immediately, but enter provider
+history in the original assistant call order; continuation is emitted once after
+all calls settle.
 HTTP SSE and process JSONL transports expose the same start/data/end lifecycle
 and coalesce at most 32 records per queued transaction; records and complete
 responses are bounded. Transport workers publish into a bounded native queue,
@@ -467,7 +478,7 @@ let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
   extensions = with p.lib.standardExtensions; [
     json providerFake fuzzy keybindings choices preferences
-    themes themeDefault animations animationDefault components layout markdown componentMarkdown indicators dialogs dialogView componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
+    themes themeDefault animations animationDefault components layout markdown componentMarkdown indicators dialogs dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
     messages status picker pickerView models requestOptions effort agent editor ui
   ];
   config = {
@@ -509,7 +520,7 @@ cannot grant themselves destinations. `misa login claude` delegates to `claude a
 continues to own and refresh its existing subscription credentials.
 
 API provider lists include their protocol explicitly, for example
-`[ "json", "protocol.anthropic", "provider.anthropic", "components", "layout", "markdown", "component.markdown", "component.message", "component.editor", "component.picker", "component.status", "component.chrome",
+`[ "json", "protocol.anthropic", "provider.anthropic", "components", "layout", "markdown", "component.markdown", "component.tool", "component.message", "component.editor", "component.picker", "component.status", "component.chrome",
 "messages", "models", "request_options", "effort", "agent", "choices", "editor", "ui" ]` (add `picker` and `picker_view` when
 overlay choices are needed).
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use

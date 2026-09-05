@@ -96,6 +96,14 @@ local function find_block(db,response_model,id)
   local blocks=db.messages.blocks
   for index=response_model.block_start,response_model.block_start+response_model.block_count-1 do if blocks[index] and blocks[index].id==id then return blocks[index] end end
 end
+local function find_tool_section(db,call_id)
+  for index=#db.messages.blocks,1,-1 do local block=db.messages.blocks[index]
+    if block.kind=="tool_call" and block.call_id==call_id and block.result==nil then return block end
+  end
+end
+local function tool_description(name)
+  local tool=misa.tool and misa.tool(name); return tool and printable_text(tool.description) or nil
+end
 local function append_delta(block,value,policy)
   value=printable_text(tostring(value or "")); if value=="" or block.truncated then return end
   local remaining=policy.max_string-(block.byte_count or 0)
@@ -107,7 +115,7 @@ end
 local function finish_block(block, event, policy)
   if block.chunks then block.text=table.concat(block.chunks); block.chunks=nil end
   if event and event.arguments~=nil then block.arguments=copy_structural(event.arguments,policy,0) end
-  if event and event.name~=nil then block.name=printable_text(tostring(event.name)) end
+  if event and event.name~=nil then block.name=printable_text(tostring(event.name)); if block.kind=="tool_call" then block.description=tool_description(block.name) end end
   if event and event.call_id~=nil then block.call_id=printable_text(tostring(event.call_id)) end
   if block.arguments~=nil then block.argument_chunks=nil; block.argument_text=nil
   elseif block.argument_chunks then block.argument_text=table.concat(block.argument_chunks); block.argument_chunks=nil end
@@ -154,7 +162,9 @@ return { setup=function(context)
       if model.kind=="user" then role="transcript.user"
       elseif model.kind=="assistant" then role="transcript.assistant"
       elseif model.kind=="thinking" then role=state.verbose and "transcript.thinking" or "transcript.thinking_collapsed"; model.summary=model.streaming and "streaming" or "summary"
-      elseif model.kind=="tool_call" then role="transcript.tool_call"; model.detail=state.verbose and (model.arguments and describe(model.arguments,0) or printable_text(model.argument_text or table.concat(model.argument_chunks or {}))) or (model.streaming and "streaming" or "summary")
+      elseif model.kind=="tool_call" then
+        role="transcript.tool_call"; model.detail=state.verbose and (model.arguments and describe(model.arguments,0) or printable_text(model.argument_text or table.concat(model.argument_chunks or {}))) or "summary"
+        model.result_detail=state.verbose and model.result or (model.result~=nil and "summary" or nil)
       elseif model.kind=="tool_result" then role="transcript.tool_result"; model.collapsed=not state.verbose
       elseif model.kind=="harness" then role="transcript.harness" end
       if model.kind=="user" then model.rail="rail.user"
@@ -182,7 +192,7 @@ return { setup=function(context)
     assert(type(event.block_id)=="string" and event.block_id~="" and not find_block(db,owner,event.block_id),"invalid transcript block ID")
     local kind=assert(event.kind,"transcript block kind is missing"); local block={id=event.block_id,kind=kind,streaming=true,interrupted=false}
     if kind=="assistant" or kind=="thinking" then block.chunks={}; block.byte_count=0
-    elseif kind=="tool_call" then block.name=printable_text(tostring(event.name or "tool")); block.call_id=event.call_id; block.argument_chunks={}; block.argument_bytes=0
+    elseif kind=="tool_call" then block.name=printable_text(tostring(event.name or "tool")); block.description=tool_description(block.name); block.call_id=event.call_id; block.status="pending"; block.argument_chunks={}; block.argument_bytes=0
     else error("unsupported streaming transcript block: "..tostring(kind)) end
     append_block(db,owner,block); return {db=db}
   end)
@@ -233,15 +243,26 @@ return { setup=function(context)
     return model
   end
   misa.reg_event("transcript/user",function(db,event,cofx) local model=standalone(db,"user",event.text,event,cofx); return {db=db,fx=noninteractive_commit(db,"transcript.user",model,cofx,markdown)} end)
-  misa.reg_event("transcript/tool-result",function(db,event,cofx) standalone(db,"tool_result",event.text,event,cofx); return {db=db} end)
+  misa.reg_event("transcript/tool-result",function(db,event,cofx)
+    local section=find_tool_section(db,event.id)
+    if section then
+      section.result=copy_structural(tostring(event.text or ""),policy,0); section.is_error=event.is_error==true
+      section.status=event.cancelled==true and "cancelled" or (section.is_error and "error" or "success"); section.streaming=false; db.messages.scroll=0
+    else
+      local fallback=standalone(db,"tool_result",event.text,event,cofx); fallback.status=event.cancelled==true and "cancelled" or (event.is_error and "error" or "success")
+    end
+    return {db=db}
+  end)
   misa.reg_event("transcript/harness",function(db,event,cofx) local model=standalone(db,"harness",event.text,event,cofx); return {db=db,fx=noninteractive_commit(db,"transcript.harness",model,cofx,markdown)} end)
-  misa.reg_event("transcript/tool-call",function(db,event,cofx) local model=standalone(db,"tool_call","",event,cofx); model.call_id=event.id; model.name=printable_text(tostring(event.name or "tool")); model.arguments=copy_structural(event.arguments or event.arguments_json or {},policy,0); return {db=db} end)
+  misa.reg_event("transcript/tool-call",function(db,event,cofx) local model=standalone(db,"tool_call","",event,cofx); model.call_id=event.id; model.name=printable_text(tostring(event.name or "tool")); model.description=tool_description(model.name); model.status="pending"; model.arguments=copy_structural(event.arguments or event.arguments_json or {},policy,0); return {db=db} end)
   -- Compatibility completion input for custom agents. It is normalized once
   -- into the same response/block lifecycle rather than maintained as a shadow.
   misa.reg_event("transcript/assistant",function(db,event,cofx)
     local id=event.request_id or ("legacy-"..tostring(db.messages.next_id+1)); local owner=append_response(db,id,"assistant",cofx,"complete")
     local output={}; for index,source in ipairs(event.content or {}) do local kind=source.type=="text" and "assistant" or source.type
-      local block={id=id.."/"..index,kind=kind,streaming=false,text=source.text and copy_structural(source.text,policy,0),call_id=source.id,name=source.name,arguments=source.arguments and copy_structural(source.arguments,policy,0)}; append_block(db,owner,block); if kind=="assistant" then output[#output+1]=block.text end end
+      local block={id=id.."/"..index,kind=kind,streaming=false,text=source.text and copy_structural(source.text,policy,0),call_id=source.id,name=source.name,arguments=source.arguments and copy_structural(source.arguments,policy,0)}
+      if kind=="tool_call" then block.status="pending"; block.description=tool_description(block.name) end
+      append_block(db,owner,block); if kind=="assistant" then output[#output+1]=block.text end end
     local fx={}; if #output>0 then for _,effect in ipairs(noninteractive_commit(db,"transcript.assistant",{text=table.concat(output,""),timestamp=timestamp(owner.started_wall_ms)},cofx,markdown)) do fx[#fx+1]=effect end end; return {db=db,fx=fx}
   end)
   misa.reg_event("transcript/interrupted",function(db,event,cofx)

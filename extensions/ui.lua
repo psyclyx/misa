@@ -46,7 +46,7 @@ return {setup=function()
     local remaining=math.max(0,height-header_count-status_count-#editor_lines); local completion_count=math.min(#editor.completions,5,math.floor(remaining/3)); remaining=remaining-completion_count
     local transcript=misa.transcript_window and misa.transcript_window(db,{interactive=true,columns=cofx.terminal.columns},remaining) or {}
     local lines={}; append(lines,header,header_count); append(lines,transcript); local input_offset=#lines; append(lines,editor_lines); append(lines,editor.completions,#lines+completion_count); append(lines,status,status_count>0 and #lines+status_count or #lines)
-    local cursor; if not editor.busy then cursor={row=math.max(1,math.min(height,input_offset+(editor.row-editor_first+1))),byte=editor.byte+((editor.row==1) and 2 or 0)} end
+    local cursor; if not editor.busy then cursor={row=math.max(1,math.min(height,input_offset+(editor.row-editor_first+1))),byte=editor.byte} end
     return bound_frame(lines,cofx.terminal.columns,cursor)
   end)
 end}

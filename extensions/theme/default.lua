@@ -3,7 +3,7 @@ return { setup = function()
     palette = {
       text = "default", muted = "bright_black", accent = "cyan",
       user = "green", assistant = "blue", thinking = "magenta",
-      tool = "yellow", error = "bright_red",
+      tool = "yellow", success = "green", error = "bright_red", cancelled = "bright_black",
     },
     styles = {
       plain = { foreground = "text" },
@@ -30,7 +30,9 @@ return { setup = function()
 
       user = { foreground = "user" }, assistant = { foreground = "assistant" },
       thinking = { foreground = "thinking", dim = true }, tool = { foreground = "tool" },
-      error = { foreground = "error", bold = true },
+      pending = { foreground = "accent", dim = true }, error = { foreground = "error", bold = true },
+      ["tool.pending"] = { foreground = "accent", dim = true }, ["tool.success"] = { foreground = "success" },
+      ["tool.error"] = { foreground = "error", bold = true }, ["tool.cancelled"] = { foreground = "cancelled", dim = true },
       ["rail.user"] = { foreground = "user" }, ["rail.assistant"] = { foreground = "assistant" },
       ["rail.thinking"] = { foreground = "thinking" }, ["rail.tool"] = { foreground = "tool" },
       ["rail.error"] = { foreground = "error", bold = true }, ["rail.harness"] = { foreground = "muted" },

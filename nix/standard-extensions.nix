@@ -10,6 +10,7 @@
   layout = "layout";
   markdown = "markdown";
   componentMarkdown = "component.markdown";
+  componentTool = "component.tool";
   componentMessage = "component.message";
   componentEditor = "component.editor";
   componentPicker = "component.picker";

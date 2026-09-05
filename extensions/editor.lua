@@ -10,11 +10,6 @@ local function state(db)
   return editor
 end
 local function command_input(text) local name,args=text:match("^(%S+)%s*(.-)%s*$"); return name and misa.command(name),args end
-local function position(text,cursor)
-  local prefix=text:sub(1,cursor); local row,start=1,0
-  for index in prefix:gmatch("()\n") do row,start=row+1,index end
-  return row,cursor-start
-end
 local function command_items()
   local result={}; for _,command in ipairs(misa.commands()) do result[#result+1]={value=command.name,label=command.name,description=command.description,search=command.search} end
   return result
@@ -78,12 +73,12 @@ return {setup=function(context)
   assert(misa.choice_session and misa.layout and misa.layout.previous_boundary,"editor requires choices and layout")
   local config=type(context.config)=="table" and context.config.ui or nil; local plain_prompt=type(config)=="table" and config.plain_prompt==true
   misa.editor_projection=function(db,projection_context)
-    local editor=assert(db.editor,"editor state is not initialized"); local row,byte=position(editor.text,editor.cursor); local rows={}
-    local input=misa.render_component(db,"editor.input",{text=editor.text}).lines
+    local editor=assert(db.editor,"editor state is not initialized"); local rows={}
     local terminal=projection_context and projection_context.terminal
-    local room=terminal and misa.inline_choice_room and misa.inline_choice_room(db,terminal,#input) or 5
+    local input=misa.render_component(db,"editor.input",{text=editor.text,cursor=editor.cursor},{columns=terminal and terminal.columns or 80})
+    local room=terminal and misa.inline_choice_room and misa.inline_choice_room(db,terminal,#input.lines) or 5
     if editor.choice and not editor.choice_overlay then rows=visible_rows(editor,db,room) end
-    return {busy=editor.busy,row=row,byte=byte,input=input,completions=misa.render_component(db,"editor.completions",{rows=rows}).lines}
+    return {busy=editor.busy,row=input.cursor.row,byte=input.cursor.byte,input=input.lines,completions=misa.render_component(db,"editor.completions",{rows=rows}).lines}
   end
   misa.reg_event("app/start",function(db,_,cofx)
     state(db); if #cofx.argv~=0 then return {db=db} end; local fx={}
@@ -120,7 +115,7 @@ return {setup=function(context)
     local action=misa.choice_action(event)
     if event.kind=="enter" and submit_exact_choice(editor) then action=nil end
     if editor.choice and (action or event.kind=="text" or event.kind=="backspace") then
-      local input_count=#misa.render_component(db,"editor.input",{text=editor.text}).lines
+      local input_count=#misa.render_component(db,"editor.input",{text=editor.text,cursor=editor.cursor},{columns=cofx.terminal.columns}).lines
       local room=misa.inline_choice_room and misa.inline_choice_room(db,cofx.terminal,input_count) or 5
       local item=misa.choice_positional(editor.choice,action,room>0 and 1 or 0,room)
       local result=item and misa.choice_accept(editor.choice,item,db) or misa.choice_input(editor.choice,{kind=event.kind,text=event.text,action=action},db)

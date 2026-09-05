@@ -69,6 +69,14 @@ local function tool_result(call_id, text, is_error)
   return { role = "tool", tool_call_id = call_id, content = { { type = "text", text = tostring(text) } }, is_error = is_error == true }
 end
 
+local function flush_tool_results(agent)
+  local batch=assert(agent.tool_batch,"tool result batch is missing")
+  for _,call_id in ipairs(batch.order) do
+    agent.messages[#agent.messages+1]=assert(batch.results[call_id],"tool result is missing: "..call_id)
+  end
+  agent.tool_batch=nil
+end
+
 local function normalize_tool_arguments(blocks)
   local failures = {}
   for _, block in ipairs(blocks) do
@@ -97,6 +105,7 @@ local function complete_response(db, agent, id, blocks, usage, stop_reason)
   agent.messages[#agent.messages + 1] = { role = "assistant", content = blocks }
   agent.active_request_id, agent.accepted_request_id, agent.stream = nil, id, nil
   local effects, saw_tool = {}, false
+  agent.tool_batch=nil
   if stream then
     for _, block in ipairs(blocks) do effects[#effects + 1] = { type = "dispatch", event = {
       type = "transcript/block-end", response_id = id, block_id = block.transcript_id,
@@ -110,6 +119,9 @@ local function complete_response(db, agent, id, blocks, usage, stop_reason)
   for _, block in ipairs(blocks) do
     if block.type == "tool_call" then
       saw_tool = true
+      if not agent.tool_batch then agent.tool_batch={order={},results={}} end
+      assert(not agent.tool_batch.results[block.id],"duplicate tool call id")
+      agent.tool_batch.order[#agent.tool_batch.order+1]=block.id
       local tool = misa.tool(block.name)
       if tool then
         assert(not agent.pending_tools[block.id], "duplicate tool call id")
@@ -124,7 +136,7 @@ local function complete_response(db, agent, id, blocks, usage, stop_reason)
         end
       else
         local message = "unknown tool: " .. block.name
-        agent.messages[#agent.messages + 1] = tool_result(block.id, message, true)
+        agent.tool_batch.results[block.id] = tool_result(block.id, message, true)
         effects[#effects + 1] = { type = "dispatch", event = { type = "transcript/tool-result", id = block.id, text = message, is_error = true } }
       end
     end
@@ -133,6 +145,7 @@ local function complete_response(db, agent, id, blocks, usage, stop_reason)
     agent.status = "tools"
     effects[#effects + 1] = { type = "dispatch", event = { type = "agent/status", status = "tools" } }
   elseif saw_tool then
+    flush_tool_results(agent)
     local provider, problem = request(db)
     if problem then for _, effect in ipairs(blocked(agent, problem)) do effects[#effects + 1] = effect end
     else
@@ -150,7 +163,7 @@ end
 local function cancelled(db,agent,id,interrupt_response)
   local response_id=id or agent.active_request_id or agent.accepted_request_id
   agent.error,agent.status,agent.active_request_id,agent.stream,agent.cancel_requested=nil,"ready",nil,nil,false
-  agent.pending_tools,agent.pending_tool_count={},0
+  agent.pending_tools,agent.pending_tool_count,agent.tool_batch={},0,nil
   local effects={}
   if interrupt_response and response_id then effects[#effects+1]={type="dispatch",event={type="transcript/response-interrupted",response_id=response_id}} end
   effects[#effects+1]={type="dispatch",event={type="transcript/harness",text="Cancelled",level="warning"}}
@@ -338,14 +351,18 @@ return {
       agent.pending_tools[event.tool_call_id] = nil
       agent.pending_tool_count = agent.pending_tool_count - 1
       if agent.cancel_requested then
-        if agent.pending_tool_count==0 then return cancelled(db,agent,agent.accepted_request_id,true) end
-        return {db=db}
+        local update={type="dispatch",event={type="transcript/tool-result",id=event.tool_call_id,text=event.text or "Cancelled",is_error=event.is_error==true,cancelled=true}}
+        if agent.pending_tool_count==0 then local tx=cancelled(db,agent,agent.accepted_request_id,true); table.insert(tx.fx,1,update); return tx end
+        return {db=db,fx={update}}
       end
-      agent.messages[#agent.messages + 1] = tool_result(event.tool_call_id, event.text or "", event.is_error)
+      local result=tool_result(event.tool_call_id,event.text or "",event.is_error)
+      assert(agent.tool_batch and not agent.tool_batch.results[event.tool_call_id],"duplicate tool result")
+      agent.tool_batch.results[event.tool_call_id]=result
       local effects = { { type = "dispatch", event = {
         type = "transcript/tool-result", id = event.tool_call_id, text = event.text or "", is_error = event.is_error == true,
       } } }
       if agent.pending_tool_count == 0 then
+        flush_tool_results(agent)
         local provider, problem = request(db)
         if problem then
           for _, effect in ipairs(blocked(agent, problem)) do effects[#effects + 1] = effect end

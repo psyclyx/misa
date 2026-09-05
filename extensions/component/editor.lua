@@ -1,12 +1,9 @@
 -- Default editor visuals.
 local function span(text,style) return {text=text,style=style} end
-local function lines(text)
-  local result={}; text=tostring(text or ""):gsub("\r\n","\n"):gsub("\r","\n")
-  for line in (text.."\n"):gmatch("(.-)\n") do result[#result+1]={spans={span(line,"user")}} end; return result
-end
 return {setup=function()
-  misa.reg_component("default.editor.input",{render=function(model)
-    local rendered=lines(model.text); table.insert(rendered[1].spans,1,span("> ","accent")); return {lines=rendered}
+  assert(misa.layout and misa.layout.wrap_input,"component.editor requires wrapped input layout")
+  misa.reg_component("default.editor.input",{render=function(model,context)
+    return misa.layout.wrap_input(model.text,context.columns or 80,model.cursor or #(model.text or ""),"> ","user","accent")
   end})
   misa.reg_component("default.editor.completions",{render=function(model)
     local rendered={}; for _,row in ipairs(model.rows or {}) do rendered[#rendered+1]={spans={

@@ -14,6 +14,7 @@ pub const ids = [_][]const u8{
     "layout",
     "markdown",
     "component.markdown",
+    "component.tool",
     "component.message",
     "component.editor",
     "component.picker",
@@ -71,6 +72,7 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "layout")) return "layout.lua";
     if (std.mem.eql(u8, id, "markdown")) return "markdown.lua";
     if (std.mem.eql(u8, id, "component.markdown")) return "component/markdown.lua";
+    if (std.mem.eql(u8, id, "component.tool")) return "component/tool.lua";
     if (std.mem.eql(u8, id, "component.message")) return "component/message.lua";
     if (std.mem.eql(u8, id, "component.editor")) return "component/editor.lua";
     if (std.mem.eql(u8, id, "component.picker")) return "component/picker.lua";
@@ -135,6 +137,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("layout.lua", catalogPath("layout").?);
     try std.testing.expectEqualStrings("markdown.lua", catalogPath("markdown").?);
     try std.testing.expectEqualStrings("component/markdown.lua", catalogPath("component.markdown").?);
+    try std.testing.expectEqualStrings("component/tool.lua", catalogPath("component.tool").?);
     try std.testing.expectEqualStrings("component/message.lua", catalogPath("component.message").?);
     try std.testing.expectEqualStrings("component/editor.lua", catalogPath("component.editor").?);
     try std.testing.expectEqualStrings("component/picker.lua", catalogPath("component.picker").?);
@@ -174,7 +177,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
     try std.testing.expectEqualStrings("tool/files.lua", catalogPath("tool.files").?);
     try std.testing.expectEqualStrings("tool/shell.lua", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 45), ids.len);
+    try std.testing.expectEqual(@as(usize, 46), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {

@@ -9,7 +9,7 @@ end
 local function title(model,label,style)
   local parts={span(label,composed(style or "plain","bold"))}
   if model.timestamp then parts[#parts+1]=span("  "..tostring(model.timestamp),"dim") end
-  if model.streaming then parts[#parts+1]=span("  streaming","accent") end
+  if model.streaming then parts[#parts+1]=span("  pending","pending") end
   if model.interrupted then parts[#parts+1]=span("  interrupted","error") end
   if type(model.tokens_per_second)=="number" then parts[#parts+1]=span("  "..string.format("%.1f",model.tokens_per_second).." tok/s","dim") end
   return {spans=parts}
@@ -37,7 +37,5 @@ return {setup=function()
   reg("transcript.assistant",function(model,context) return {lines=message(model,context,"assistant","Assistant")} end)
   reg("transcript.thinking",function(model,context) return {lines=message(model,context,"thinking","Thinking")} end)
   reg("transcript.thinking_collapsed",function(model) return titled(model,"Thinking",tostring(model.summary or "summary"),"thinking") end)
-  reg("transcript.tool_call",function(model) return titled(model,"Tool · "..tostring(model.name or "tool"),tostring(model.detail or "summary"),"tool") end)
-  reg("transcript.tool_result",function(model,context) if model.collapsed then return titled(model,model.is_error and "Tool error" or "Tool result","summary",model.is_error and "error" or "tool") end return {lines=message(model,context,model.is_error and "error" or "tool",model.is_error and "Tool error" or "Tool result")} end)
   reg("transcript.harness",function(model,context) return {lines=message(model,context,model.level=="error" and "error" or "plain",nil)} end)
 end}

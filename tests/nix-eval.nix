@@ -51,6 +51,7 @@ assert
     layout = "layout";
     markdown = "markdown";
     componentMarkdown = "component.markdown";
+    componentTool = "component.tool";
     componentMessage = "component.message";
     componentEditor = "component.editor";
     componentPicker = "component.picker";
@@ -113,6 +114,7 @@ assert builtins.pathExists ../extensions/components.lua;
 assert builtins.pathExists ../extensions/layout.lua;
 assert builtins.pathExists ../extensions/markdown.lua;
 assert builtins.pathExists ../extensions/component/markdown.lua;
+assert builtins.pathExists ../extensions/component/tool.lua;
 assert builtins.pathExists ../extensions/component/message.lua;
 assert builtins.pathExists ../extensions/component/editor.lua;
 assert builtins.pathExists ../extensions/component/picker.lua;

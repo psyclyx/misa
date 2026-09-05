@@ -135,6 +135,40 @@ local function wrap_spans(lines, columns, prefix)
   end
   return result
 end
+-- Wrap editable text into physical rows and project its global UTF-8 byte
+-- cursor onto the resulting row. Prompt bytes are part of each semantic row,
+-- so the native presenter can continue to own byte-to-cell conversion.
+local function wrap_input(text, columns, cursor, prompt, text_style, prompt_style)
+  text=tostring(text or ""):gsub("\r\n","\n"):gsub("\r","\n")
+  columns=math.max(1,math.floor(tonumber(columns) or 1)); cursor=boundary_at_or_before(text,cursor)
+  -- Preserve two cells for a potentially-wide grapheme whenever possible;
+  -- on tiny terminals the prompt yields before editable content does.
+  prompt=tostring(prompt or ""); local prompt_room=math.max(0,columns-2)
+  prompt=prompt_room==0 and "" or take(prompt,prompt_room); local prompt_cells=width(prompt); local room=math.max(1,columns-prompt_cells)
+  local continuation=string.rep(" ",prompt_cells); local rows,mapped={},nil
+  local line_start=0
+  while true do
+    local newline=text:find("\n",line_start+1,true); local line_end=newline and newline-1 or #text
+    local value=text:sub(line_start+1,line_end); local segments={}; local at,segment_start,used=1,1,0
+    while at<=#value do
+      local next_at,cells=cluster(value,at)
+      if used>0 and used+cells>room then segments[#segments+1]={first=segment_start,last=at-1}; segment_start,used=at,0 end
+      used=used+cells; at=next_at
+    end
+    segments[#segments+1]={first=segment_start,last=#value}
+    for index,segment in ipairs(segments) do
+      local prefix=(#rows==0) and prompt or continuation; local piece=value:sub(segment.first,segment.last)
+      rows[#rows+1]={spans={{text=prefix,style=prompt_style},{text=piece,style=text_style}}}
+      local first_byte=line_start+segment.first-1; local last_byte=line_start+segment.last
+      -- Prefer the following physical row at a soft-wrap boundary. This keeps
+      -- an insertion cursor off the unusable cell just beyond the right edge.
+      if cursor>=first_byte and cursor<=last_byte then mapped={row=#rows,byte=#prefix+(cursor-first_byte)} end
+    end
+    if not newline then break end
+    line_start=newline
+  end
+  return {lines=rows,cursor=mapped or {row=#rows,byte=#((rows[#rows].spans[1].text or "")..(rows[#rows].spans[2].text or ""))}}
+end
 local function columns(total, minimum, maximum, gap)
   total, minimum, maximum, gap = math.max(1,math.floor(total)), math.max(1,math.floor(minimum)), math.max(1,math.floor(maximum)), math.max(0,math.floor(gap or 0))
   local count = math.max(1, math.min(maximum, math.floor((total + gap) / (minimum + gap))))
@@ -143,6 +177,6 @@ local function columns(total, minimum, maximum, gap)
   for index=1,count do widths[index] = base + (index <= extra and 1 or 0) end
   return widths
 end
-local api = {width=width,take=take,fit=fit,wrap_spans=wrap_spans,columns=columns,cell_width=cell_width,
+local api = {width=width,take=take,fit=fit,wrap_spans=wrap_spans,wrap_input=wrap_input,columns=columns,cell_width=cell_width,
   boundary_at_or_before=boundary_at_or_before,previous_boundary=previous_boundary,next_boundary=next_boundary}
 return {setup=function() misa.layout=api end}

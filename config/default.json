@@ -26,6 +26,7 @@
     "markdown",
     "component.markdown",
     "indicators",
+    "component.tool",
     "component.message",
     "component.editor",
     "component.picker",
