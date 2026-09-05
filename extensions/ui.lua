@@ -33,13 +33,22 @@ return {setup=function()
   misa.reg_view(function(db,cofx)
     local height=math.max(0,cofx.terminal.lines); if height==0 then return {lines={}} end
     local header=misa.render_component(db,"root.header",{}).lines; local header_count=height>=4 and math.min(2,#header) or 0
-    local layer_cofx={terminal=cofx.terminal,available_lines=math.max(0,height-header_count)}
-    for _,layer in ipairs(misa.view_layers(db,layer_cofx)) do if layer.exclusive then
-      local lines={}; append(lines,header,header_count); local offset=#lines; append(lines,layer.lines,height)
-      local cursor=layer.cursor and {row=math.min(height,offset+layer.cursor.row),byte=layer.cursor.byte} or nil
-      return bound_frame(lines,cofx.terminal.columns,cursor)
-    end end
     local status=misa.status_projection and misa.status_projection(db,{columns=cofx.terminal.columns}) or {}; local status_count=(#status>0 and height>=2) and 1 or 0
+    local layer_cofx={terminal=cofx.terminal,available_lines=math.max(0,height-header_count-status_count)}; local overlay
+    for _,layer in ipairs(misa.view_layers(db,layer_cofx)) do
+      if layer.exclusive then
+        local lines={}; append(lines,header,header_count); local offset=#lines; append(lines,layer.lines,height)
+        local cursor=layer.cursor and {row=math.min(height,offset+layer.cursor.row),byte=layer.cursor.byte} or nil
+        return bound_frame(lines,cofx.terminal.columns,cursor)
+      elseif layer.overlay and not overlay then overlay=layer end
+    end
+    if overlay then
+      local overlay_count=math.min(#overlay.lines,math.max(0,height-header_count-status_count)); local transcript_room=math.max(0,height-header_count-status_count-overlay_count)
+      local transcript=misa.transcript_window and misa.transcript_window(db,{interactive=true,columns=cofx.terminal.columns},transcript_room) or {}
+      local lines={}; append(lines,header,header_count); append(lines,transcript,transcript_room); local offset=#lines; append(lines,overlay.lines,offset+overlay_count); append(lines,status,status_count>0 and #lines+status_count or #lines)
+      local cursor=overlay.cursor and {row=math.min(height,offset+overlay.cursor.row),byte=overlay.cursor.byte} or nil
+      return bound_frame(lines,cofx.terminal.columns,cursor)
+    end
     local editor=misa.editor_projection and misa.editor_projection(db,{terminal=cofx.terminal}) or {busy=true,row=1,byte=0,input={},completions={}}
     local editor_budget=math.min(#editor.input,math.max(1,math.floor(height/2)),math.max(1,height-header_count-status_count))
     local editor_first=math.max(1,math.min(editor.row-math.floor(editor_budget/2),#editor.input-editor_budget+1)); local editor_lines=slice(editor.input,editor_first,editor_budget)

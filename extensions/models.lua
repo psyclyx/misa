@@ -41,7 +41,11 @@ return {
         for _, model in ipairs(db.models and db.models.entries or {}) do
           local label = model.label
           if label == nil or label == "" then label = model.id end
-          result[#result + 1] = { value=model.id, label=label, search={model.id,model.label or "",model.model or "",model.provider or ""} }
+          local api=model.api or {}; local metadata={title=model.id,provider=model.provider,model=model.model}
+          if model.label and model.label~="" then metadata.name=model.label end
+          if model.context_window then metadata.context_window=model.context_window end
+          if api.request_options then metadata.request_options="available" end
+          result[#result + 1] = { id=model.id, value=model.id, display={label=label,description=model.provider}, path=model.id, search={model.id,model.label or "",model.model or "",model.provider or ""}, preview=metadata }
         end
         return result
       end,

@@ -16,11 +16,12 @@ return {setup=function()
       input_line={spans={span("> ","dialog.label"),span(model.input or "","dialog.input")}}
       lines[#lines+1]=input_line
     end
-    local hints={}
-    for _,hint in ipairs(model.hints or {}) do hints[#hints+1]=tostring(hint) end
-    for _,action in ipairs(model.actions or {}) do hints[#hints+1]=action.label end
-    if model.cancellable then hints[#hints+1]="esc cancel" end
-    if #hints>0 then lines[#lines+1]={spans={span(table.concat(hints,"    "),"dialog.hint")}} end
+    local hints={}; for _,hint in ipairs(model.hints or {}) do hints[#hints+1]={text=tostring(hint)} end
+    for _,action in ipairs(model.actions or {}) do hints[#hints+1]={text=action.label} end
+    if model.cancellable then hints[#hints+1]={key="escape",label="cancel"} end
+    if #hints>0 then local spans={}; for index,hint in ipairs(hints) do if index>1 then spans[#spans+1]=span("    ","dialog.hint") end
+      if hint.key and misa.render_keybinding then for _,key_span in ipairs(misa.render_keybinding(hint.key)) do spans[#spans+1]=key_span end; spans[#spans+1]=span(" "..hint.label,"dialog.hint") else spans[#spans+1]=span(hint.text,"dialog.hint") end end
+      lines[#lines+1]={spans=spans} end
     while #lines>context.available_lines do table.remove(lines,math.min(#lines,math.max(2,#lines-1))) end
     if input_line then for row,line in ipairs(lines) do if line==input_line then cursor={row=row,byte=2+#(model.input or "")} end end end
     return {lines=lines,cursor=cursor,exclusive=true}

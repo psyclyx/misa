@@ -43,7 +43,7 @@ return { setup = function()
       ["choice.hint"] = { foreground = "text", dim = true }, ["choice.view"] = { bold = true },
       ["choice.view.active"] = { foreground = "accent", bold = true }, ["choice.row"] = { foreground = "text" },
       ["choice.row.active"] = { foreground = "accent" }, ["choice.row.selected"] = { bold = true },
-      ["choice.empty"] = { foreground = "text", dim = true },
+      ["choice.empty"] = { foreground = "text", dim = true }, ["choice.preview"] = { foreground = "text", dim = true },
       ["dialog.title"] = { foreground = "accent", bold = true }, ["dialog.message"] = { foreground = "text" },
       ["dialog.label"] = { foreground = "text", dim = true }, ["dialog.value"] = { foreground = "text" },
       ["dialog.code"] = { foreground = "accent", bold = true }, ["dialog.progress"] = { foreground = "text", dim = true },

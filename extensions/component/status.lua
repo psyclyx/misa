@@ -6,7 +6,7 @@ return {setup=function()
     local source=model.indicators or {}; local keep={}; for i=1,#source do keep[i]=true end
     local function item_width(item)
       local width=misa.layout.width(tostring(item.label or "").." "..tostring(item.value or ""))
-      if item.hotkey and item.hotkey~="" then width=width+1+misa.layout.width(tostring(item.hotkey)) end
+      if item.hotkey and item.hotkey~="" then local rendered=""; for _,token in ipairs(misa.keybinding_tokens and misa.keybinding_tokens(item.hotkey) or {{text=item.hotkey}}) do rendered=rendered..token.text end; width=width+1+misa.layout.width(rendered) end
       return width
     end
     local function total()
@@ -25,7 +25,7 @@ return {setup=function()
       spans[#spans+1]=span(tostring(item.label or ""),"label")
       spans[#spans+1]=span(" ","plain")
       spans[#spans+1]=span(tostring(item.value or ""),"value")
-      if item.hotkey and item.hotkey~="" then spans[#spans+1]=span(" ","plain"); spans[#spans+1]=span(tostring(item.hotkey),"keybinding") end
+      if item.hotkey and item.hotkey~="" then spans[#spans+1]=span(" ","plain"); for _,key_span in ipairs(misa.render_keybinding and misa.render_keybinding(item.hotkey) or {span(tostring(item.hotkey),"keybinding")}) do spans[#spans+1]=key_span end end
     end end
     return {lines=#spans>0 and {{spans=spans}} or {}}
   end

@@ -28,6 +28,8 @@ adapters precede the API providers that use them:
     "tool.shell",
     "fuzzy",
     "keybindings",
+    "commands",
+    "choice_tree",
     "choices",
     "preferences",
     "themes",
@@ -36,6 +38,7 @@ adapters precede the API providers that use them:
     "animation.default",
     "components",
     "layout",
+    "choice_layout",
     "markdown",
     "component.markdown",
     "indicators",
@@ -50,6 +53,7 @@ adapters precede the API providers that use them:
     "picker",
     "picker_view",
     "models",
+    "omnipicker",
     "request_options",
     "effort",
     "agent",
@@ -163,8 +167,8 @@ The fixed native effects are:
 - `{type="timer/start", interval_ms=<10..60000>, completion=..., id=...}` / `{type="timer/stop", id=...}`
 - `{type="operation/cancel", id=...}`
 - `{type="auth/command", action=..., provider=..., strategy=..., profile=...,
-  completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
-  correlation=..., action=..., value=...}`
+completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
+correlation=..., action=..., value=...}`
 - `{type="state/load", namespace=..., completion=...}` / `{type="state/save", namespace=..., data=...}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
@@ -364,13 +368,13 @@ only the selected model's declared choices, and the configurable global
 retain an equivalent value when supported, otherwise use the new model default;
 models without reasoning support simply expose no effort value.
 
-`choices` owns generic choice sessions: query text, fuzzy filtering, highlight,
-view navigation, and acceptance are shared by inline slash completion and
-searchable overlays. Items have semantic display fields (`label` and
-`description`) plus an optional `search` string or string array, so aliases and
-model names can remain searchable without being rendered. Sessions project the
-same marker/hotkey/label/value/description/selected/active row model on both
-surfaces.
+`choices` owns generic choice state and narrowing transitions shared by inline
+completion and overlays. The item contract separates stable `id`, emitted
+`value`, semantic `display`, hidden `search`, optional `preview`, and `path`.
+Choice sources are registered with `misa.reg_choice_source`; any item can narrow
+to another source, and empty-query Backspace pops the whole narrowing frame.
+Selected rows retain the standard selected style in every panel; only the
+active leftmost panel receives the `>` focus marker.
 
 Choice views are immutable implementations registered with
 `misa.reg_choice_view`. The built-ins are `all`, `favorites`, `frecency`, and the
@@ -378,16 +382,18 @@ opt-in `slash-prefix` tree. `config.choices.purposes` maps a purpose to its
 ordered visible views; the active view is always the leftmost and Right Arrow
 rotates the order. The tree is available to model sessions through view
 replacement but is not an extra default model column. It groups prefixes at
-common `/`, `.`, and `:` delimiters, searches every descendant's full hidden
-value/label/search fields, enters a unique group while typing, and makes
-Backspace return to the parent node atomically when the node query is empty.
+common `/`, `.`, and `:` delimiters. Tree rows render ID/path substrings rather
+than friendly labels while searches still include friendly names and
+descriptions. Expansion is explicit and appends a visible breadcrumb;
+Backspace returns to its parent atomically when the node query is empty.
 
 Inline and overlay sessions resolve the same `keybindings.choices` actions and
-positional banks. Overlay panel count, wrapped row viewport, and hotkey targets
-come from one shared choice-layout projection used by both picker input and
-`picker_view`. Tab or Enter accepts, only banks and slots actually rendered on
-screen activate, and configured positional keys are rendered as row hints on both
-surfaces. `open_overlay` (default `alt+space`) promotes the current inline
+positional banks. `choice_layout` is the single projection for responsive
+preferred/min/max overlay bounds, preview and panel allocation, shared hints,
+and positional targets. The picker component only renders that projection.
+Overlays remain bounded, nonexclusive regions of the managed root: query input
+comes first, then semantic preview, panels, and the shared key reference below
+the panels. All key hints use structured tokens and render Alt as `⌥`. `open_overlay` (default `alt+space`) promotes the current inline
 session without resetting its query, highlight, or tree node. `replace_view`
 (default `alt+/`) opens the nested `picker-picker`; replacing the active view is
 kept only for that choice session and never changes purpose defaults.
@@ -395,10 +401,14 @@ kept only for that choice session and never changes purpose defaults.
 `dialogs` owns correlated modal/progress/alert lifecycle, actions, cancellation,
 and optional text input; `dialog_view` projects that state through the replaceable
 `dialog` component role. Dialog data and hints are generic—providers do not own
-UI paths or rendering. `picker` is only the overlay adapter and `picker_view` owns its visual
-projection. Extensions open it with semantic items and receive the chosen value
-through an event. `models` owns only model catalogue, availability, and
-selection policy; its `/model` command has no model-specific picker behavior.
+UI paths or rendering. `picker` is only the overlay lifecycle adapter and
+`picker_view` renders the centralized projection. `commands` normalizes every
+typed, picked, or replayed command into one canonical invocation and records
+recent invocations generically. `omnipicker` (global `alt+/`, also used by the
+slash menu) composes commands with those recents; commands with completion
+narrow to argument choices before emitting that same canonical event.
+`models` owns only model catalogue, availability, rich metadata preview, and
+selection policy; `/model` has no model-specific picker behavior.
 Type in the picker to filter provider-qualified IDs, labels, or model names,
 then use the arrow keys and Enter to select. Models from providers that are not logged in
 are hidden. OpenAI, Anthropic, OpenRouter, and Kimi catalogues are loaded from
@@ -477,9 +487,9 @@ symbol.
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
   extensions = with p.lib.standardExtensions; [
-    json providerFake fuzzy keybindings choices preferences
-    themes themeDefault animations animationDefault components layout markdown componentMarkdown indicators dialogs dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
-    messages status picker pickerView models requestOptions effort agent editor ui
+    json providerFake fuzzy keybindings commands choiceTree choices preferences
+    themes themeDefault animations animationDefault components layout choiceLayout markdown componentMarkdown indicators dialogs dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
+    messages status picker pickerView models omnipicker requestOptions effort agent editor ui
   ];
   config = {
     models.default = "fake/default";
@@ -521,8 +531,7 @@ continues to own and refresh its existing subscription credentials.
 
 API provider lists include their protocol explicitly, for example
 `[ "json", "protocol.anthropic", "provider.anthropic", "components", "layout", "markdown", "component.markdown", "component.tool", "component.message", "component.editor", "component.picker", "component.status", "component.chrome",
-"messages", "models", "request_options", "effort", "agent", "choices", "editor", "ui" ]` (add `picker` and `picker_view` when
-overlay choices are needed).
+"messages", "models", "request_options", "effort", "agent", "commands", "choice_tree", "choices", "choice_layout", "editor", "ui" ]` (add `picker`, `picker_view`, and `omnipicker` when overlay choices are needed).
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
 `protocol.anthropic`. ChatGPT subscription access is the separate
 `provider.openai-codex` extension and its Codex Responses protocol.

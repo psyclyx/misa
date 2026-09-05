@@ -26,11 +26,12 @@ local function sync_choice(editor,db)
     editor.choice=misa.choice_session({title=command.name:sub(2),purpose=command.choice_purpose or "command",items=items,query=args,selected=command.selected and command.selected(db) or nil,preference_scope=command.preference_scope},db)
     editor.choice_kind,editor.choice_command="argument",command.name
   else
-    editor.choice=misa.choice_session({title="Commands",purpose="command-completion",items=command_items(),query=editor.text:sub(2),tree_node="/"},db)
+    editor.choice=misa.omnipicker_session and misa.omnipicker_session(db,editor.text:sub(2)) or misa.choice_session({title="Commands",purpose="command-completion",items=command_items(),query=editor.text:sub(2),tree_node="/"},db)
     editor.choice_kind,editor.choice_command="command",nil
   end
 end
 local function choice_text(editor)
+  if editor.choice.input_prefix and editor.choice.input_prefix~="" then return editor.choice.input_prefix..editor.choice.query end
   if editor.choice_kind=="argument" then return editor.choice_command.." "..editor.choice.query end
   return editor.choice.tree.node..editor.choice.query
 end
@@ -119,7 +120,9 @@ return {setup=function(context)
       local room=misa.inline_choice_room and misa.inline_choice_room(db,cofx.terminal,input_count) or 5
       local item=misa.choice_positional(editor.choice,action,room>0 and 1 or 0,room)
       local result=item and misa.choice_accept(editor.choice,item,db) or misa.choice_input(editor.choice,{kind=event.kind,text=event.text,action=action},db)
-      if result.accepted then accept_choice(editor,result.accepted); return {db=db,fx={{type="terminal/read"}}}
+      if result.accepted then
+        if result.accepted.invocation and misa.command_invocation then local invocation=assert(misa.command_invocation(result.accepted.invocation)); editor.text,editor.cursor,editor.dismissed_choice="",0,nil; clear_choice(editor); return {db=db,fx={{type="dispatch",event=invocation}}} end
+        accept_choice(editor,result.accepted); return {db=db,fx={{type="terminal/read"}}}
       elseif result.open_overlay or result.replace_view then
         if misa.picker then return {db=db,fx={overlay_effect(editor,result.replace_view)}} end
       elseif result.tree_changed then sync_text_from_choice(editor); if editor.text=="" then clear_choice(editor) end; return {db=db,fx={{type="terminal/read"}}}

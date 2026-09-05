@@ -37,6 +37,17 @@ return {
       return type(keys) == "table" and keys[1] or nil
     end
 
+    local symbols={alt="⌥",ctrl="⌃",shift="⇧",enter="↵",tab="⇥",escape="esc",arrow_up="↑",arrow_down="↓",arrow_left="←",arrow_right="→",space="space"}
+    misa.keybinding_tokens=function(key)
+      local result={}; for part in tostring(key or ""):gmatch("[^+]+") do result[#result+1]={kind="key",text=symbols[part] or part} end; return result
+    end
+    misa.render_keybinding=function(key)
+      local spans={}; for index,token in ipairs(misa.keybinding_tokens(key)) do if index>1 then spans[#spans+1]={text="+",style="keybinding"} end; spans[#spans+1]={text=token.text,style="keybinding",token=token.kind} end; return spans
+    end
+    misa.render_keybinding_reference=function(entries)
+      local spans={}; for index,entry in ipairs(entries or {}) do if index>1 then spans[#spans+1]={text="   ",style="plain"} end; for _,span in ipairs(misa.render_keybinding(entry.key)) do spans[#spans+1]=span end; spans[#spans+1]={text=" "..entry.label,style="choice.hint"} end; return spans
+    end
+
     -- The native decoder already distinguishes standalone Escape from Alt
     -- chords. Normalizing only completed Alt events avoids swallowing Escape
     -- while waiting for a byte that may never arrive.

@@ -8,9 +8,9 @@ local function definitions(event)
   return result
 end
 local function finish(state,item,cancelled)
-  local event={type=state.completion,picker=state.id,picker_token=state.token,value=item and item.value or misa.json_null,cancelled=cancelled==true}
+  local event={type=state.completion,picker=state.id,picker_token=state.token,value=item and item.value or misa.json_null,choice_id=item and item.id or nil,cancelled=cancelled==true}
   local fx={{type="dispatch",event=event}}
-  if item and state.session.preference_scope then fx[#fx+1]={type="dispatch",event={type="choice/used",scope=state.session.preference_scope,value=item.value}} end
+  if item and state.session.preference_scope then fx[#fx+1]={type="dispatch",event={type="choice/used",scope=state.session.preference_scope,value=item.id}} end
   return fx
 end
 local function open_state(event,db,parent)
@@ -31,7 +31,7 @@ local function view_picker(parent,db)
   return open_state({id="picker-picker",token=parent.token..":views",title="Choose view",completion="picker/replace-view",items=misa.choice_registered_views(parent.session),views={"all"}},db,parent)
 end
 return {setup=function()
-  assert(misa.choice_session and misa.choice_action and misa.choice_picker_layout,"picker requires choices")
+  assert(misa.choice_session and misa.choice_action and misa.choice_picker_layout,"picker requires choices and choice_layout")
   misa.picker=true
   misa.reg_event("picker/open",function(db,event)
     assert(not db.picker,"a picker is already open")

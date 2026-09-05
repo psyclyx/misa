@@ -15,6 +15,8 @@
     "fuzzy",
     "keybindings",
     "dialogs",
+    "commands",
+    "choice_tree",
     "choices",
     "preferences",
     "themes",
@@ -23,6 +25,7 @@
     "animation.default",
     "components",
     "layout",
+    "choice_layout",
     "markdown",
     "component.markdown",
     "indicators",
@@ -39,6 +42,7 @@
     "picker",
     "picker_view",
     "models",
+    "omnipicker",
     "request_options",
     "effort",
     "agent",
@@ -48,6 +52,7 @@
   "config": {
     "models": { "default": "claude/claude-sonnet-5" },
     "choices": {
+      "overlay": { "preferred_width": 84, "min_width": 28, "max_width": 100, "preferred_height": 14, "min_height": 4, "max_height": 18 },
       "purposes": {
         "command-completion": ["slash-prefix"],
         "command": ["favorites", "frecency", "all"],
@@ -60,7 +65,8 @@
         "toggle_verbose": ["alt+t"],
         "transcript_up": ["page_up", "alt+k"],
         "transcript_down": ["page_down", "alt+j"],
-        "cycle_effort": ["alt+e"]
+        "cycle_effort": ["alt+e"],
+        "open_omnipicker": ["alt+/"]
       },
       "choices": {
         "accept": ["enter", "tab"],

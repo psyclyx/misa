@@ -4,6 +4,10 @@
   animationDefault = "animation.default";
   auth = "auth";
   choices = "choices";
+  choiceTree = "choice_tree";
+  choiceLayout = "choice_layout";
+  commands = "commands";
+  omnipicker = "omnipicker";
   dialogs = "dialogs";
   dialogView = "dialog_view";
   components = "components";

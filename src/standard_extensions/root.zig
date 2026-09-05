@@ -8,6 +8,10 @@ pub const ids = [_][]const u8{
     "agent",
     "auth",
     "choices",
+    "choice_tree",
+    "choice_layout",
+    "commands",
+    "omnipicker",
     "dialogs",
     "dialog_view",
     "components",
@@ -66,6 +70,10 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "agent")) return "agent.lua";
     if (std.mem.eql(u8, id, "auth")) return "auth.lua";
     if (std.mem.eql(u8, id, "choices")) return "choices.lua";
+    if (std.mem.eql(u8, id, "choice_tree")) return "choice_tree.lua";
+    if (std.mem.eql(u8, id, "choice_layout")) return "choice_layout.lua";
+    if (std.mem.eql(u8, id, "commands")) return "commands.lua";
+    if (std.mem.eql(u8, id, "omnipicker")) return "omnipicker.lua";
     if (std.mem.eql(u8, id, "dialogs")) return "dialogs.lua";
     if (std.mem.eql(u8, id, "dialog_view")) return "dialog_view.lua";
     if (std.mem.eql(u8, id, "components")) return "components.lua";
@@ -131,6 +139,10 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("agent.lua", catalogPath("agent").?);
     try std.testing.expectEqualStrings("auth.lua", catalogPath("auth").?);
     try std.testing.expectEqualStrings("choices.lua", catalogPath("choices").?);
+    try std.testing.expectEqualStrings("choice_tree.lua", catalogPath("choice_tree").?);
+    try std.testing.expectEqualStrings("choice_layout.lua", catalogPath("choice_layout").?);
+    try std.testing.expectEqualStrings("commands.lua", catalogPath("commands").?);
+    try std.testing.expectEqualStrings("omnipicker.lua", catalogPath("omnipicker").?);
     try std.testing.expectEqualStrings("dialogs.lua", catalogPath("dialogs").?);
     try std.testing.expectEqualStrings("dialog_view.lua", catalogPath("dialog_view").?);
     try std.testing.expectEqualStrings("components.lua", catalogPath("components").?);
@@ -177,7 +189,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
     try std.testing.expectEqualStrings("tool/files.lua", catalogPath("tool.files").?);
     try std.testing.expectEqualStrings("tool/shell.lua", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 46), ids.len);
+    try std.testing.expectEqual(@as(usize, 50), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {
