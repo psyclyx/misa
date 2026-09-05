@@ -34,7 +34,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, runtime: *lua.Runtime) !voi
             try writeInitialize(allocator, io, object, id.?);
         } else if (std.mem.eql(u8, method, "ping")) {
             try writeResultPrefix(allocator, io, id.?);
-            try std.Io.File.stdout().writeStreamingAll(io, "{}\n");
+            try std.Io.File.stdout().writeStreamingAll(io, "{}}\n");
         } else if (std.mem.eql(u8, method, "tools/list")) {
             try writeTools(allocator, io, runtime, id.?);
         } else if (std.mem.eql(u8, method, "tools/call")) {
@@ -104,7 +104,9 @@ fn writeInitialize(allocator: std.mem.Allocator, io: std.Io, request: std.json.O
         .id = id,
         .result = .{
             .protocolVersion = version,
-            .capabilities = .{ .tools = .{} },
+            // An empty tuple serializes as []; MCP capability declarations
+            // are objects, and strict clients reject an array here.
+            .capabilities = .{ .tools = struct {}{} },
             .serverInfo = .{ .name = "misa", .version = "0.1.0" },
         },
     }, .{});
