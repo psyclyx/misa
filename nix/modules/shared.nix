@@ -27,12 +27,12 @@ in
     extensions = lib.mkOption {
       type = lib.types.listOf (lib.types.either (lib.types.enum standardIds) lib.types.path);
       default = [ ];
-      description = "Ordered standard extension IDs and custom Lua extension path values.";
+      description = "Ordered standard extension IDs and custom Fennel or Lua extension path values.";
     };
     config = lib.mkOption {
       type = lib.types.json;
       default = { };
-      description = "Free-form JSON-serializable configuration exposed to Lua.";
+      description = "Free-form JSON-serializable configuration exposed to Fennel policy.";
     };
   };
 

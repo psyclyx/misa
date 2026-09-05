@@ -1,10 +1,23 @@
 {
+  costs = "costs";
+  history = "history";
+  queue = "queue";
+  queueView = "queue_view";
+  images = "images";
+  attachments = "attachments";
+  componentImage = "component.image";
+
+  actions = "actions";
+  clipboard = "clipboard";
+  selectionDocument = "selection_document";
+  selection = "selection";
+  componentSelection = "component.selection";
+  editing = "editing";
   agent = "agent";
   animations = "animations";
   animationDefault = "animation.default";
   auth = "auth";
   choices = "choices";
-  choiceTree = "choice_tree";
   choiceLayout = "choice_layout";
   commands = "commands";
   omnipicker = "omnipicker";

@@ -1,0 +1,3 @@
+#!/bin/sh
+for prompt do :; done
+printf '%s\n' "$prompt"

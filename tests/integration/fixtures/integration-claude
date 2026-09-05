@@ -1,0 +1,32 @@
+#!/bin/sh
+saw_empty=false
+saw_input=false
+saw_mcp=false
+saw_model=false
+saw_partial=false
+expect_mcp=false
+expect_model=false
+for arg do
+  [ -z "$arg" ] && saw_empty=true
+  [ "$arg" = "stream-json" ] && saw_input=true
+  [ "$arg" = "--include-partial-messages" ] && saw_partial=true
+  if [ "$expect_mcp" = true ]; then case "$arg" in *'"mcpServers"'*'"misa"'*) saw_mcp=true ;; esac; expect_mcp=false; fi
+  if [ "$expect_model" = true ]; then [ "$arg" = "claude-sonnet-5" ] && saw_model=true; expect_model=false; fi
+  [ "$arg" = "--mcp-config" ] && expect_mcp=true
+  [ "$arg" = "--model" ] && expect_model=true
+done
+[ "$saw_empty" = true ] || exit 30
+[ "$saw_input" = true ] || exit 31
+[ "$saw_mcp" = true ] || exit 33
+[ "$saw_model" = true ] || exit 34
+[ "$saw_partial" = true ] || exit 35
+input=$(cat)
+case "$input" in *'"type":"user"'*) ;; *) exit 32 ;; esac
+case "$input" in *'"content":"Continue this conversation.'*) ;; *) exit 32 ;; esac
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"test"}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"claude "}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"result"}}}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"claude result"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"duplicate fallback","session_id":"test"}'
+# A semantic result must make Misa kill us rather than waiting for process EOF.
+sleep 3

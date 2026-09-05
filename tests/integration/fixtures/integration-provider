@@ -1,0 +1,7 @@
+#!/bin/sh
+[ "$#" -eq 2 ] || exit 20
+[ "$1" = "fixed;word" ] || exit 21
+[ "$2" = '$(touch SHOULD_NOT_EXIST); it'"'"'s literal' ] || exit 22
+# Exercise the full command-provider completion and view/commit path with
+# output bytes that semantic terminal lines cannot accept unsanitized.
+printf 'result\t%s:\377\n' "$2"

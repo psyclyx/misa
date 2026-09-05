@@ -5,17 +5,27 @@ pub const Event = union(enum) {
     text: []u8,
     alt: []u8,
     enter,
+    shift_enter,
+    alt_enter,
     backspace,
     tab,
+    f1,
     arrow_up,
     arrow_down,
     arrow_left,
     arrow_right,
     page_up,
     page_down,
+    wheel_up,
+    wheel_down,
+    mouse: struct { row: usize, column: usize },
     escape,
     ctrl_c,
     ctrl_d,
+    ctrl_r,
+    ctrl_p,
+    ctrl_n,
+    ctrl_v,
     eof,
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
@@ -64,10 +74,52 @@ pub const Decoder = struct {
             }
             const p = self.pending.items;
             if (p[0] == 0x1b) {
+                if (std.mem.startsWith(u8, p, "\x1b[<")) {
+                    const end = std.mem.indexOfAnyPos(u8, p, 3, "Mm") orelse {
+                        if (p.len > 64) self.consume(p.len);
+                        return;
+                    };
+                    var fields = std.mem.splitScalar(u8, p[3..end], ';');
+                    const button = std.fmt.parseInt(usize, fields.next() orelse "", 10) catch 999;
+                    const column = std.fmt.parseInt(usize, fields.next() orelse "", 10) catch 0;
+                    const row = std.fmt.parseInt(usize, fields.next() orelse "", 10) catch 0;
+                    if (fields.next() == null and row > 0 and column > 0 and p[end] == 'M') {
+                        if (button & 64 != 0 and button & 3 <= 1 and button < 128) {
+                            try out.append(allocator, if (button & 1 == 0) .wheel_up else .wheel_down);
+                        } else if (button & 35 == 0) try out.append(allocator, .{ .mouse = .{ .row = row, .column = column } });
+                    }
+                    self.consume(end + 1);
+                    continue;
+                }
+                if (std.mem.startsWith(u8, p, "\x1b[") and p.len > 2 and std.ascii.isDigit(p[2])) {
+                    var end: usize = 2;
+                    while (end < p.len and (std.ascii.isDigit(p[end]) or p[end] == ';' or p[end] == ':')) : (end += 1) {}
+                    if (end == p.len) return;
+                    if (p[end] == 'u') {
+                        try appendExtendedKey(allocator, out, p[2..end]);
+                        self.consume(end + 1);
+                        continue;
+                    }
+                    const arrow: ?Event = switch (p[end]) {
+                        'A' => .arrow_up,
+                        'B' => .arrow_down,
+                        'C' => .arrow_right,
+                        'D' => .arrow_left,
+                        else => null,
+                    };
+                    if (arrow) |event| {
+                        try out.append(allocator, event);
+                        self.consume(end + 1);
+                        continue;
+                    }
+                }
                 const sequences = [_]struct { bytes: []const u8, event: Event }{
-                    .{ .bytes = "\x1b[A", .event = .arrow_up },    .{ .bytes = "\x1b[B", .event = .arrow_down },
-                    .{ .bytes = "\x1b[C", .event = .arrow_right }, .{ .bytes = "\x1b[D", .event = .arrow_left },
-                    .{ .bytes = "\x1b[5~", .event = .page_up },    .{ .bytes = "\x1b[6~", .event = .page_down },
+                    .{ .bytes = "\x1b[13;2u", .event = .shift_enter }, .{ .bytes = "\x1b[27;2;13~", .event = .shift_enter },
+                    .{ .bytes = "\x1b[13;3u", .event = .alt_enter },   .{ .bytes = "\x1b\r", .event = .alt_enter },
+                    .{ .bytes = "\x1bOP", .event = .f1 },              .{ .bytes = "\x1b[11~", .event = .f1 },
+                    .{ .bytes = "\x1b[A", .event = .arrow_up },        .{ .bytes = "\x1b[B", .event = .arrow_down },
+                    .{ .bytes = "\x1b[C", .event = .arrow_right },     .{ .bytes = "\x1b[D", .event = .arrow_left },
+                    .{ .bytes = "\x1b[5~", .event = .page_up },        .{ .bytes = "\x1b[6~", .event = .page_down },
                 };
                 if (std.mem.startsWith(u8, p, "\x1b[200~")) {
                     if (p.len < 6) return;
@@ -101,9 +153,19 @@ pub const Decoder = struct {
                 continue;
             }
             const byte = p[0];
+            if (byte == 16 or byte == 14 or byte == 22) {
+                self.consume(1);
+                try out.append(allocator, if (byte == 16) .ctrl_p else if (byte == 14) .ctrl_n else .ctrl_v);
+                continue;
+            }
             if (byte == 3) {
                 self.consume(1);
                 try out.append(allocator, .ctrl_c);
+                continue;
+            }
+            if (byte == 18) {
+                self.consume(1);
+                try out.append(allocator, .ctrl_r);
                 continue;
             }
             if (byte == 4) {
@@ -161,6 +223,11 @@ pub const Decoder = struct {
     /// decoded remainder rather than remaining pending forever.
     pub fn finish(self: *Decoder, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) !void {
         if (self.paste) return;
+        // Partial mouse reports are transport data, never editor text.
+        if (std.mem.startsWith(u8, self.pending.items, "\x1b[<")) {
+            self.pending.clearRetainingCapacity();
+            return;
+        }
         if (self.pending.items.len > 0 and self.pending.items[0] == 0x1b) {
             self.consume(1);
             try out.append(allocator, .escape);
@@ -360,4 +427,87 @@ test "decoder timeout resolves partial escape sequences and normalizes CRLF" {
     try std.testing.expect(events.items[3] == .enter);
     try std.testing.expect(events.items[4] == .enter);
     try std.testing.expect(events.items[5] == .enter);
+}
+
+test "decoder accepts fragmented F1 encodings" {
+    var decoder: Decoder = .{};
+    defer decoder.deinit(std.testing.allocator);
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(std.testing.allocator);
+        events.deinit(std.testing.allocator);
+    }
+    try decoder.feed(std.testing.allocator, "\x1bO", &events);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try decoder.feed(std.testing.allocator, "P\x1b[11", &events);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try decoder.feed(std.testing.allocator, "~", &events);
+    try std.testing.expectEqual(@as(usize, 2), events.items.len);
+    for (events.items) |event| try std.testing.expect(event == .f1);
+    try decoder.feed(std.testing.allocator, "\x12", &events);
+    try std.testing.expect(events.items[2] == .ctrl_r);
+}
+
+fn appendExtendedKey(allocator: std.mem.Allocator, out: *std.ArrayList(Event), encoded: []const u8) !void {
+    var fields = std.mem.splitScalar(u8, encoded, ';');
+    var codes = std.mem.splitScalar(u8, fields.next() orelse return, ':');
+    const code = std.fmt.parseInt(u21, codes.next() orelse return, 10) catch return;
+    var modifiers = std.mem.splitScalar(u8, fields.next() orelse "1", ':');
+    const modifier = std.fmt.parseInt(u8, modifiers.next() orelse "1", 10) catch return;
+    if (modifiers.next()) |kind| if (std.mem.eql(u8, kind, "3")) return; // release
+    if (modifier == 0) return;
+    const flags = modifier - 1;
+    if (code == 13) {
+        try out.append(allocator, if (flags & 2 != 0) .alt_enter else if (flags & 1 != 0) .shift_enter else .enter);
+        return;
+    }
+    if (flags & 4 != 0) {
+        const event: ?Event = switch (code) {
+            'c', 'C' => .ctrl_c,
+            'd', 'D' => .ctrl_d,
+            'r', 'R' => .ctrl_r,
+            'p', 'P' => .ctrl_p,
+            'n', 'N' => .ctrl_n,
+            'v', 'V' => .ctrl_v,
+            else => null,
+        };
+        if (event) |value| try out.append(allocator, value);
+        return;
+    }
+    const special: ?Event = switch (code) {
+        27 => .escape,
+        9 => .tab,
+        127 => .backspace,
+        else => null,
+    };
+    if (special) |event| {
+        try out.append(allocator, event);
+        return;
+    }
+    if (code < 32 or (code >= 127 and code <= 159) or (code >= 57344 and code <= 63743)) return;
+    var bytes: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(code, &bytes) catch return;
+    if (flags & 2 != 0) try appendOwned(allocator, out, .alt, bytes[0..len]) else try appendOwned(allocator, out, .text, bytes[0..len]);
+}
+
+test "fragmented SGR mouse and modified keyboard reports never leak text" {
+    var decoder: Decoder = .{};
+    defer decoder.deinit(std.testing.allocator);
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(std.testing.allocator);
+        events.deinit(std.testing.allocator);
+    }
+    try decoder.feed(std.testing.allocator, "\x1b[<0;12;", &events);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try decoder.feed(std.testing.allocator, "3M\x1b[<0;12;3m\x1b[<64;12;3M\x1b[<65;12;3M\x1b[13;2", &events);
+    try std.testing.expectEqual(@as(usize, 3), events.items.len);
+    try std.testing.expectEqual(@as(usize, 12), events.items[0].mouse.column);
+    try std.testing.expectEqual(@as(usize, 3), events.items[0].mouse.row);
+    try std.testing.expect(events.items[1] == .wheel_up and events.items[2] == .wheel_down);
+    try decoder.feed(std.testing.allocator, "u\x1b[13;3u\x1b[112;5u\x1b[27u", &events);
+    try std.testing.expect(events.items[3] == .shift_enter and events.items[4] == .alt_enter and events.items[5] == .ctrl_p and events.items[6] == .escape);
+    try decoder.feed(std.testing.allocator, "\x1b[<0;", &events);
+    try decoder.finish(std.testing.allocator, &events);
+    try std.testing.expectEqual(@as(usize, 7), events.items.len);
 }

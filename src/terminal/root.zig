@@ -3,6 +3,8 @@ const std = @import("std");
 const posix = std.posix;
 const input = @import("input.zig");
 const presenter = @import("presenter.zig");
+const hit_map = @import("hit_map.zig");
+const images = @import("images.zig");
 
 pub const Event = input.Event;
 pub const Decoder = input.Decoder;
@@ -17,15 +19,20 @@ pub const Dimensions = struct { columns: usize = 80, lines: usize = 24 };
 
 pub const PreparedPresentation = struct {
     bytes: std.ArrayList(u8) = .empty,
+    actions: hit_map.Map = .{},
+    graphics: images.Plan = .{},
 
     pub fn deinit(self: *PreparedPresentation, allocator: std.mem.Allocator) void {
         self.bytes.deinit(allocator);
+        self.actions.deinit(allocator);
+        self.graphics.deinit(allocator);
     }
 };
 
+const frame_end = "\x1b[?7h\x1b[?2026l";
 const show_cursor = "\x1b[?25h";
-const enter_managed_screen = "\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J";
-const leave_managed_screen = "\x1b[?25h\x1b[?1049l";
+const enter_managed_screen = "\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[>1u";
+const leave_managed_screen = "\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l";
 
 const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM };
 const SignalState = struct {
@@ -88,6 +95,9 @@ pub const Terminal = struct {
     active_handoff: ?u64 = null,
     decoder: Decoder = .{},
     last_frame: std.ArrayList(u8) = .empty,
+    presented_actions: hit_map.Map = .{},
+    images_supported: bool = false,
+    image_cache: images.Cache = .{},
 
     pub const HandoffLease = struct { generation: u64 };
 
@@ -104,6 +114,7 @@ pub const Terminal = struct {
             .allocator = allocator,
             .io = io,
             .interactive = interactive,
+            .images_supported = interactive and images.supported(environ),
             .dimensions = if (output_tty) queryDimensions(io) catch dimensions(environ) else dimensions(environ),
         };
         if (interactive) {
@@ -159,7 +170,7 @@ pub const Terminal = struct {
             }
         }
         if (self.screen_active) {
-            try self.writeAll(leave_managed_screen);
+            try self.leaveScreen();
             self.screen_active = false;
             signal_state.screen_active.store(false, .release);
         }
@@ -187,7 +198,7 @@ pub const Terminal = struct {
             self.screen_active = true;
             signal_state.screen_active.store(true, .release);
             // Alternate-screen contents are unspecified after resume.
-            if (self.last_frame.items.len != 0) self.writeAll(self.last_frame.items) catch |err| {
+            if (self.last_frame.items.len != 0) self.replayFrame() catch |err| {
                 self.writeAll(leave_managed_screen) catch {};
                 self.screen_active = false;
                 signal_state.screen_active.store(false, .release);
@@ -201,9 +212,37 @@ pub const Terminal = struct {
         return !self.interactive or self.screen_active;
     }
 
+    /// Drop unread bytes when protected input cannot be completed. Reapply
+    /// the current raw mode with TCSAFLUSH to discard the tty input queue too.
+    pub fn discardInput(self: *Terminal) void {
+        std.crypto.secureZero(u8, self.decoder.pending.allocatedSlice());
+        self.decoder.pending.clearRetainingCapacity();
+        self.decoder.paste = false;
+        self.decoder.paste_cr = false;
+        if (self.interactive) if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, rawMode(saved)) catch {};
+    }
+
+    /// Copy through the terminal's clipboard protocol. Keep terminal ownership
+    /// and encoding here so arbitrary copied text cannot inject escape codes.
+    pub fn copyToClipboard(self: *Terminal, text: []const u8) !void {
+        if (!self.interactive or !self.screen_active) return;
+        const encoder = std.base64.standard.Encoder;
+        const encoded = try self.allocator.alloc(u8, encoder.calcSize(text.len));
+        defer self.allocator.free(encoded);
+        _ = encoder.encode(encoded, text);
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
+        try buffer.appendSlice(self.allocator, "\x1b]52;c;");
+        try buffer.appendSlice(self.allocator, encoded);
+        try buffer.appendSlice(self.allocator, "\x1b\\");
+        try self.writeAll(buffer.items);
+    }
+
     pub fn deinit(self: *Terminal) void {
         if (self.interactive) {
-            if (self.screen_active) self.writeAll(leave_managed_screen) catch {} else self.writeAll(show_cursor) catch {};
+            if (self.screen_active) self.leaveScreen() catch {
+                self.writeAll(leave_managed_screen) catch {};
+            } else self.writeAll(show_cursor) catch {};
             self.screen_active = false;
             signal_state.screen_active.store(false, .release);
             if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
@@ -211,6 +250,8 @@ pub const Terminal = struct {
         }
         self.decoder.deinit(self.allocator);
         self.last_frame.deinit(self.allocator);
+        self.presented_actions.deinit(self.allocator);
+        self.image_cache.deinit(self.allocator);
     }
 
     fn restoreSignals(self: *Terminal) void {
@@ -245,15 +286,34 @@ pub const Terminal = struct {
         if (self.interactive) try appendScreenPrelude(&prepared.bytes, self.allocator);
         const rows = try appendView(&prepared.bytes, self.allocator, view, self.dimensions.columns, self.dimensions.lines, self.interactive, false);
         _ = try cursorRow(view, rows);
+        prepared.actions = try hit_map.build(self.allocator, view, self.dimensions.columns);
+        if (self.images_supported) prepared.graphics = try images.prepare(self.allocator, &self.image_cache, view, self.dimensions.columns, self.dimensions.lines);
+        if (self.interactive) try prepared.bytes.appendSlice(self.allocator, frame_end);
         return prepared;
     }
 
-    pub fn present(self: *Terminal, prepared: *const PreparedPresentation) !void {
+    pub fn present(self: *Terminal, prepared: *PreparedPresentation) !void {
         if (!self.interactive) return;
         if (!self.screen_active) return error.TerminalSuspended;
-        try self.writeAll(prepared.bytes.items);
+        var actions = try prepared.actions.clone(self.allocator);
+        errdefer actions.deinit(self.allocator);
+        try self.last_frame.ensureTotalCapacity(self.allocator, prepared.bytes.items.len);
+        if (!std.mem.eql(u8, self.last_frame.items, prepared.bytes.items) or prepared.graphics.changed) {
+            var output: std.ArrayList(u8) = .empty;
+            defer output.deinit(self.allocator);
+            try appendFrame(&output, self.allocator, prepared.bytes.items, prepared.graphics.bytes.items);
+            try self.writeAll(output.items);
+        }
+        prepared.graphics.commit(&self.image_cache, self.allocator);
         self.last_frame.clearRetainingCapacity();
-        try self.last_frame.appendSlice(self.allocator, prepared.bytes.items);
+        self.last_frame.appendSliceAssumeCapacity(prepared.bytes.items);
+        self.presented_actions.deinit(self.allocator);
+        self.presented_actions = actions;
+    }
+
+    pub fn actionAt(self: *const Terminal, row: usize, column: usize) ?[]const u8 {
+        if (!self.interactive or !self.screen_active) return null;
+        return self.presented_actions.at(row, column);
     }
 
     pub fn commit(self: *Terminal, lines: std.json.Value) !void {
@@ -263,7 +323,14 @@ pub const Terminal = struct {
         if (self.interactive) try appendScreenPrelude(&buffer, self.allocator);
         const rows = try appendLines(&buffer, self.allocator, lines, self.dimensions.columns, self.interactive, !self.interactive, false);
         if (self.interactive and rows > self.dimensions.lines) return error.InvalidView;
+        if (self.interactive) {
+            try self.image_cache.delete(&buffer, self.allocator);
+            try buffer.appendSlice(self.allocator, frame_end);
+        }
         try self.writeAll(buffer.items);
+        self.last_frame.clearRetainingCapacity();
+        self.image_cache.deinit(self.allocator);
+        self.presented_actions.deinit(self.allocator);
     }
 
     /// Readiness probe used while native work is active, so the session never
@@ -326,10 +393,35 @@ pub const Terminal = struct {
         try self.decoder.feed(self.allocator, bytes[0..n], out);
     }
 
+    fn replayFrame(self: *Terminal) !void {
+        var graphics: std.ArrayList(u8) = .empty;
+        defer graphics.deinit(self.allocator);
+        try self.image_cache.replay(&graphics, self.allocator);
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+        try appendFrame(&output, self.allocator, self.last_frame.items, graphics.items);
+        try self.writeAll(output.items);
+    }
+
+    fn leaveScreen(self: *Terminal) !void {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+        try self.image_cache.delete(&output, self.allocator);
+        try output.appendSlice(self.allocator, leave_managed_screen);
+        try self.writeAll(output.items);
+    }
+
     fn writeAll(self: *Terminal, bytes: []const u8) !void {
         try std.Io.File.stdout().writeStreamingAll(self.io, bytes);
     }
 };
+
+fn appendFrame(out: *std.ArrayList(u8), allocator: std.mem.Allocator, frame: []const u8, graphics: []const u8) !void {
+    std.debug.assert(std.mem.endsWith(u8, frame, frame_end));
+    try out.appendSlice(allocator, frame[0 .. frame.len - frame_end.len]);
+    try out.appendSlice(allocator, graphics);
+    try out.appendSlice(allocator, frame_end);
+}
 
 const StreamEnd = enum { timeout, eof };
 
@@ -357,8 +449,8 @@ fn parseDimension(value: ?[]const u8, fallback: usize) usize {
 }
 
 test "managed screen lifetime and frames use distinct control sequences" {
-    try std.testing.expectEqualStrings("\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J", enter_managed_screen);
-    try std.testing.expectEqualStrings("\x1b[?25h\x1b[?1049l", leave_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[>1u", enter_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l", leave_managed_screen);
     try std.testing.expect(std.mem.indexOf(u8, enter_managed_screen, leave_managed_screen) == null);
 }
 
@@ -389,7 +481,7 @@ test "terminal presentation validation uses instance width and cursor limit" {
     var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"abcdefghijklmnopq\"}]}],\"cursor\":{\"row\":1,\"byte\":15}}", .{});
     defer valid.deinit();
     var prepared = try narrow.preparePresentation(valid.value);
-    try std.testing.expect(std.mem.startsWith(u8, prepared.bytes.items, "\x1b[?25l\x1b[H\x1b[2J"));
+    try std.testing.expect(std.mem.startsWith(u8, prepared.bytes.items, "\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[H"));
     prepared.deinit(std.testing.allocator);
 
     var too_tall = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[]},{\"spans\":[]}]}", .{});
@@ -412,4 +504,32 @@ test "terminal presentation validation uses instance width and cursor limit" {
     defer plain_limit.deinit();
     prepared = try narrow.preparePresentation(plain_limit.value);
     prepared.deinit(std.testing.allocator);
+}
+
+test "click actions belong to shown frames, including visually identical updates" {
+    const allocator = std.testing.allocator;
+    var terminal: Terminal = .{ .allocator = allocator, .io = undefined, .interactive = true, .screen_active = true, .dimensions = .{} };
+    defer {
+        terminal.interactive = false;
+        terminal.deinit();
+    }
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"lines\":[{\"spans\":[{\"text\":\"click\",\"action\":\"old\"}]}]}", .{});
+    defer parsed.deinit();
+    var old = try terminal.preparePresentation(parsed.value);
+    defer old.deinit(allocator);
+    // Avoid stdout in this unit test; the equal-byte presentation still must
+    // commit its semantic hit map.
+    try terminal.last_frame.appendSlice(allocator, old.bytes.items);
+    try terminal.present(&old);
+    try std.testing.expectEqualStrings("old", terminal.actionAt(1, 1).?);
+    parsed.value.object.getPtr("lines").?.array.items[0].object.getPtr("spans").?.array.items[0].object.getPtr("action").?.* = .{ .string = "new" };
+    var next = try terminal.preparePresentation(parsed.value);
+    defer next.deinit(allocator);
+    try std.testing.expectEqualStrings("old", terminal.actionAt(1, 1).?);
+    terminal.screen_active = false;
+    try std.testing.expectError(error.TerminalSuspended, terminal.present(&next));
+    try std.testing.expectEqualStrings("old", terminal.presented_actions.at(1, 1).?);
+    terminal.screen_active = true;
+    try terminal.present(&next);
+    try std.testing.expectEqualStrings("new", terminal.actionAt(1, 1).?);
 }

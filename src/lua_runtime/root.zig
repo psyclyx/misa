@@ -7,7 +7,8 @@ const c = @cImport({
     @cInclude("lualib.h");
 });
 
-const framework = @embedFile("framework.lua");
+const framework = @embedFile("framework.fnl");
+const fennel = @embedFile("vendor/fennel.lua");
 pub const max_nesting_depth: usize = 128;
 
 const Extension = struct { ref: c_int, path: []u8 };
@@ -49,6 +50,7 @@ fn pushLuaError(state: *c.lua_State, message: []const u8) c_int {
 
 pub const TerminalInfo = struct {
     interactive: bool,
+    images: bool = false,
     columns: usize,
     lines: usize,
 };
@@ -87,6 +89,7 @@ pub const Runtime = struct {
     context_ref: c_int = c.LUA_NOREF,
     json_null_ref: c_int = c.LUA_NOREF,
     traceback_ref: c_int = c.LUA_NOREF,
+    fennel_dofile_ref: c_int = c.LUA_NOREF,
     extensions: std.ArrayList(Extension) = .empty,
     terminal_info: ?TerminalInfo = null,
     error_buffer: [2048]u8 = undefined,
@@ -105,17 +108,8 @@ pub const Runtime = struct {
         errdefer self.deinit();
         c.luaL_openlibs(state);
 
-        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "debug");
-        c.lua_getfield(state, -1, "traceback");
-        c.lua_remove(state, -2);
-        self.traceback_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
-
-        self.pushTraceback();
-        if (c.luaL_loadbuffer(state, framework.ptr, framework.len, "@framework.lua") != 0 or c.lua_pcall(state, 0, 0, 1) != 0) {
-            self.failLua("initializing misa API");
-            return error.LuaInitializationFailed;
-        }
-        self.pop(1);
+        try self.initializeFennel();
+        self.assertStack(0);
         c.lua_getfield(state, c.LUA_GLOBALSINDEX, "misa");
         c.lua_getfield(state, -1, "json_null");
         c.lua_remove(state, -2);
@@ -123,6 +117,62 @@ pub const Runtime = struct {
         self.installSyntaxApi();
         try self.setContext(config, argv);
         return self;
+    }
+
+    /// Bootstrap the bundled compiler, register its require searcher, and
+    /// evaluate the framework with source maps retained for Fennel tracebacks.
+    fn initializeFennel(self: *Runtime) !void {
+        const state = self.state;
+        if (c.luaL_loadbuffer(state, fennel.ptr, fennel.len, "@fennel.lua") != 0) {
+            self.failLua("loading bundled Fennel compiler");
+            return error.LuaInitializationFailed;
+        }
+        // The compiler needs IO/debug even after policy removes those globals.
+        // Its private environment captures the libraries; _G still denotes the
+        // policy environment used to compile and execute extension code.
+        c.lua_createtable(state, 0, 64);
+        c.lua_pushnil(state);
+        while (c.lua_next(state, c.LUA_GLOBALSINDEX) != 0) {
+            c.lua_pushvalue(state, -2);
+            c.lua_pushvalue(state, -2);
+            c.lua_rawset(state, 2);
+            self.pop(1);
+        }
+        _ = c.lua_setfenv(state, 1);
+        if (c.lua_pcall(state, 0, 1, 0) != 0) {
+            self.failLua("initializing bundled Fennel compiler");
+            return error.LuaInitializationFailed;
+        }
+        // Keep the compiler available through the conventional require API.
+        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "package");
+        c.lua_getfield(state, -1, "loaded");
+        c.lua_pushvalue(state, 1);
+        c.lua_setfield(state, -2, "fennel");
+        self.pop(2);
+        c.lua_getfield(state, 1, "traceback");
+        self.traceback_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
+        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "debug");
+        self.pushTraceback();
+        c.lua_setfield(state, -2, "traceback");
+        self.pop(1);
+        c.lua_getfield(state, 1, "dofile");
+        self.fennel_dofile_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
+        self.pushTraceback();
+        c.lua_getfield(state, 1, "eval");
+        _ = c.lua_pushlstring(state, framework.ptr, framework.len);
+        c.lua_createtable(state, 0, 1);
+        _ = c.lua_pushstring(state, "framework.fnl");
+        c.lua_setfield(state, -2, "filename");
+        if (c.lua_pcall(state, 2, 0, 2) != 0) {
+            self.failLua("initializing misa API");
+            return error.LuaInitializationFailed;
+        }
+        c.lua_getfield(state, 1, "install");
+        if (c.lua_pcall(state, 0, 0, 2) != 0) {
+            self.failLua("installing Fennel module searcher");
+            return error.LuaInitializationFailed;
+        }
+        self.pop(2);
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -140,7 +190,15 @@ pub const Runtime = struct {
         defer self.allocator.free(path_z);
 
         self.pushTraceback();
-        if (c.luaL_loadfile(self.state, path_z.ptr) != 0 or c.lua_pcall(self.state, 0, 1, 1) != 0) {
+        const status = if (std.mem.endsWith(u8, path, ".fnl")) blk: {
+            _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.fennel_dofile_ref);
+            _ = c.lua_pushlstring(self.state, path.ptr, path.len);
+            break :blk c.lua_pcall(self.state, 1, 1, 1);
+        } else blk: {
+            const loaded = c.luaL_loadfile(self.state, path_z.ptr);
+            break :blk if (loaded != 0) loaded else c.lua_pcall(self.state, 0, 1, 1);
+        };
+        if (status != 0) {
             self.failLua(path);
             c.lua_settop(self.state, 0);
             return error.ExtensionLoadFailed;
@@ -318,6 +376,19 @@ pub const Runtime = struct {
         self.pop(1);
     }
 
+    /// Process identity for extensions that spawn another instance of the
+    /// current application, preserving its explicitly selected configuration.
+    pub fn setHostInfo(self: *Runtime, executable: []const u8, config_path: []const u8) void {
+        c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.context_ref);
+        c.lua_createtable(self.state, 0, 2);
+        _ = c.lua_pushlstring(self.state, executable.ptr, executable.len);
+        c.lua_setfield(self.state, -2, "executable");
+        _ = c.lua_pushlstring(self.state, config_path.ptr, config_path.len);
+        c.lua_setfield(self.state, -2, "config_path");
+        c.lua_setfield(self.state, -2, "host");
+        self.pop(1);
+    }
+
     fn setContext(self: *Runtime, config: std.json.Value, argv: anytype) !void {
         c.lua_createtable(self.state, 0, 2);
         try self.pushJson(config, 0);
@@ -335,6 +406,8 @@ pub const Runtime = struct {
         c.lua_createtable(self.state, 0, 3);
         c.lua_pushboolean(self.state, @intFromBool(info.interactive));
         c.lua_setfield(self.state, -2, "interactive");
+        c.lua_pushboolean(self.state, @intFromBool(info.images));
+        c.lua_setfield(self.state, -2, "images");
         c.lua_pushnumber(self.state, @floatFromInt(info.columns));
         c.lua_setfield(self.state, -2, "columns");
         c.lua_pushnumber(self.state, @floatFromInt(info.lines));
@@ -510,3 +583,22 @@ pub const Runtime = struct {
         std.debug.assert(c.lua_gettop(self.state) == count);
     }
 };
+
+test "bundled Fennel loads extensions after framework restrictions" {
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{}, "");
+    defer runtime.deinit();
+    try runtime.loadExtension("src/lua_runtime/fixtures/extension.fnl");
+    try runtime.setup();
+}
+
+test "Fennel loading reports source location and restores stack after failure" {
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{}, "");
+    defer runtime.deinit();
+    try std.testing.expectError(error.ExtensionLoadFailed, runtime.loadExtension("src/lua_runtime/fixtures/failure.fnl"));
+    try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "failure.fnl:2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "Fennel fixture failed") != null);
+    try std.testing.expectError(error.ExtensionLoadFailed, runtime.loadExtension("src/lua_runtime/fixtures/missing.fnl"));
+    try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "missing.fnl") != null);
+    try runtime.loadExtension("src/lua_runtime/fixtures/extension.fnl");
+    try runtime.setup();
+}

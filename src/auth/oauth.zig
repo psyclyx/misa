@@ -1,5 +1,6 @@
 //! OAuth device and PKCE flows for subscription providers.
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const Credential = struct {
     access: []u8,
@@ -35,6 +36,7 @@ pub const Prompt = struct {
     progress: ?[]const u8 = null,
     cancellable: bool = true,
     input: bool = false,
+    protected: bool = false,
     hints: []const []const u8 = &.{},
 };
 
@@ -53,6 +55,7 @@ pub fn loginKimi(allocator: std.mem.Allocator, io: std.Io, authorization_url: []
     const interval = positiveInteger(object, "interval") orelse 5;
     const expires_in = positiveInteger(object, "expires_in") orelse 900;
     try interaction.emit(.{ .correlation = "device", .title = "Authorize device", .message = "Open the URL and enter the code. This screen remains active while authorization is checked.", .url = verification, .code = user_code, .progress = "Waiting for authorization…" });
+    _ = try launchBrowser(io, verification);
 
     var elapsed: i64 = 0;
     while (elapsed < expires_in) : (elapsed += interval) {
@@ -92,6 +95,7 @@ pub fn loginOpenAI(allocator: std.mem.Allocator, io: std.Io, interaction: anytyp
     const user_code = string(object, "user_code") orelse return error.InvalidOAuthResponse;
     const interval = positiveInteger(object, "interval") orelse 5;
     try interaction.emit(.{ .correlation = "device", .title = "Authorize device", .message = "Open the URL and enter the code. This screen remains active while authorization is checked.", .url = "https://auth.openai.com/codex/device", .code = user_code, .progress = "Waiting for authorization…" });
+    _ = try launchBrowser(io, "https://auth.openai.com/codex/device");
 
     var elapsed: i64 = 0;
     while (elapsed < 900) : (elapsed += interval) {
@@ -264,7 +268,7 @@ fn launchBrowser(io: std.Io, url: []const u8) !bool {
         success: std.atomic.Value(bool) = .init(false),
         fn run(self: *@This(), task_io: std.Io, target: []const u8) std.Io.Cancelable!void {
             defer self.done.store(true, .release);
-            var child = std.process.spawn(task_io, .{ .argv = &.{ "xdg-open", target } }) catch |err| {
+            var child = std.process.spawn(task_io, .{ .argv = &.{ if (builtin.os.tag == .macos) "open" else "xdg-open", target }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch |err| {
                 if (err == error.Canceled) return error.Canceled;
                 return;
             };

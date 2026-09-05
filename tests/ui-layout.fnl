@@ -1,0 +1,50 @@
+;; Root layout contracts across short/tall terminals, wrapped inputs, docks,
+;; and modal layers. Completion targets must match the rows users can see.
+(local fennel (require :fennel))
+(fn lines [count label]
+  (let [result []]
+    (for [_ 1 count] (table.insert result {:spans [{:text label}]}))
+    result))
+(var view nil)
+(var layers [])
+(var inputs 0)
+(var completion-count 0)
+(set _G.misa
+  {:render_component (fn [] {:lines (lines 2 :header)})
+   :status_projection (fn [] (lines 1 :status))
+   :view_layers (fn [] layers)
+   :reg_view (fn [render] (set view render))
+   :editor_projection (fn [] {:input (lines inputs :input)
+                             :completions (lines completion-count :completion)
+                             :row inputs :byte 0})
+   :transcript_window (fn [_db _context count] (lines count :transcript))})
+((. (fennel.dofile :extensions/layout.fnl) :setup))
+((. (fennel.dofile :extensions/ui.fnl) :setup))
+(for [height 1 60]
+  (for [count 1 20]
+    (for [dock 0 8]
+      (set inputs count)
+      (set completion-count 100)
+      (set layers [{:dock :input :lines (lines dock :dock)}])
+      (let [terminal {:lines height :columns 80}
+            room (_G.misa.inline_choice_room {} terminal count)
+            frame (view {} {: terminal})]
+        (assert (<= (length frame.lines) height) "frame exceeds viewport")
+        (assert (<= 1 frame.cursor.row (length frame.lines)) "input cursor exceeds frame")
+        (var completions 0)
+        (each [_ line (ipairs frame.lines)]
+          (when (= (. line.spans 1 :text) :completion)
+            (set completions (+ completions 1))))
+        (assert (= completions room) "positional keys disagree with visible completion rows")))))
+(for [height 1 30]
+  (for [count 0 40]
+    (each [_ kind (ipairs [:overlay :exclusive])]
+      (set layers [{kind true :lines (lines count :layer)
+                    :cursor (when (> count 0) {:row count :byte 0})}])
+      (let [frame (view {} {:terminal {:lines height :columns 80}})]
+        (assert (<= (length frame.lines) height) "layer exceeds viewport")
+        (when frame.cursor
+          (assert (<= 1 frame.cursor.row (length frame.lines)) "layer cursor exceeds frame"))))))
+(assert (= (length (. (view {} {:terminal {:lines 0 :columns 80}}) :lines)) 0)
+        "zero-height terminal emitted content")
+(print "layout contracts passed")

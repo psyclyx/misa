@@ -1,0 +1,1 @@
+{"extensions":["provider.command"],"config":{"providers":{"command":{"argv":["bad\u0000arg"]}}}}

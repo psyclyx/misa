@@ -2,11 +2,13 @@
 const std = @import("std");
 const auth = @import("misa_auth");
 const file = @import("misa_file");
+const image = @import("misa_image");
 const http = @import("http.zig");
 const process = @import("misa_process");
 const state = @import("misa_state");
 const terminal = @import("misa_terminal");
 const timer = @import("timer.zig");
+const protected_input = @import("protected_input.zig");
 
 pub const JsonDecode = struct { source: []const u8, completion: []const u8, id: []const u8 };
 pub const StateLoad = struct { namespace: []const u8, completion: []const u8 };
@@ -19,11 +21,14 @@ pub const FinishOperation = struct { id: []const u8 };
 pub const Effect = union(enum) {
     dispatch: std.json.Value,
     terminal_read,
+    clipboard_write: []const u8,
+    input_protected: protected_input.Spec,
     view_commit: std.json.Value,
     app_quit,
     process_run: process.Spec,
     http_request: http.Spec,
     file: file.Spec,
+    image: image.Spec,
     json_decode: JsonDecode,
     auth_command: AuthCommand,
     auth_respond: AuthRespond,
@@ -50,6 +55,16 @@ pub const Effect = union(enum) {
             return .{ .dispatch = event };
         }
         if (std.mem.eql(u8, kind, "terminal/read")) return .terminal_read;
+        if (std.mem.eql(u8, kind, "input/protected")) return .{ .input_protected = .{
+            .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            .correlation = nonEmptyStringField(object, "correlation") orelse return error.InvalidEffect,
+            .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+        } };
+        if (std.mem.eql(u8, kind, "clipboard/write")) {
+            const text = stringField(object, "text") orelse return error.InvalidEffect;
+            if (text.len > 1024 * 1024) return error.InvalidEffect;
+            return .{ .clipboard_write = text };
+        }
         if (std.mem.eql(u8, kind, "view/commit")) {
             const lines = object.get("lines") orelse return error.InvalidEffect;
             try terminal.validateLines(lines);
@@ -76,6 +91,7 @@ pub const Effect = union(enum) {
         } };
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
         if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
+        if (std.mem.startsWith(u8, kind, "image/")) return .{ .image = try .parse(kind, object) };
         if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
         if (std.mem.eql(u8, kind, "auth/command")) {
             const action_name = nonEmptyStringField(object, "action") orelse return error.InvalidEffect;
@@ -133,6 +149,13 @@ fn nonEmptyStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8
 }
 
 test "validation covers the whole native contract" {
+    var clipboard = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"clipboard/write\",\"text\":\"line one\\nline two\"}", .{});
+    defer clipboard.deinit();
+    try std.testing.expectEqualStrings("line one\nline two", (try Effect.parse(clipboard.value)).clipboard_write);
+    const oversized = try std.testing.allocator.alloc(u8, 1024 * 1024 + 1);
+    defer std.testing.allocator.free(oversized);
+    try clipboard.value.object.put(std.testing.allocator, "text", .{ .string = oversized });
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(clipboard.value));
     var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\",\"arg\"],\"completion\":\"done\",\"id\":\"1\"}", .{});
     defer valid.deinit();
     _ = try Effect.parse(valid.value);

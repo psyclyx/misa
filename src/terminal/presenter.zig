@@ -5,11 +5,11 @@ const cell_width = @import("width.zig");
 pub fn appendScreenPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
     // Every frame starts with a hidden cursor. A semantic cursor explicitly
     // shows it again after positioning; cursor-less/busy frames remain hidden.
-    try out.appendSlice(allocator, "\x1b[?25l\x1b[H\x1b[2J");
+    try out.appendSlice(allocator, "\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[H");
 }
 
 pub fn usableColumns(columns: usize) usize {
-    return columns -| 1;
+    return columns;
 }
 
 const ansi_foregrounds = std.StaticStringMap(u8).initComptime(.{
@@ -19,9 +19,10 @@ const ansi_foregrounds = std.StaticStringMap(u8).initComptime(.{
     .{ "bright_blue", 94 },  .{ "bright_magenta", 95 }, .{ "bright_cyan", 96 },  .{ "bright_white", 97 },
 });
 
-const Foreground = union(enum) { default, ansi: u8, rgb: struct { r: u8, g: u8, b: u8 } };
+const Color = union(enum) { default, ansi: u8, rgb: struct { r: u8, g: u8, b: u8 } };
 const Style = struct {
-    foreground: ?Foreground = null,
+    foreground: ?Color = null,
+    background: ?Color = null,
     bold: bool = false,
     italic: bool = false,
     dim: bool = false,
@@ -38,7 +39,7 @@ fn parseByte(value: ?std.json.Value) !u8 {
     return @intCast(integer);
 }
 
-fn parseForeground(value: std.json.Value) !Foreground {
+fn parseColor(value: std.json.Value) !Color {
     return switch (value) {
         .string => |name| if (std.mem.eql(u8, name, "default")) .default else if (ansi_foregrounds.get(name)) |code| .{ .ansi = code } else error.InvalidView,
         .object => |object| blk: {
@@ -59,7 +60,7 @@ fn parseStyle(value: ?std.json.Value) !Style {
     while (iterator.next()) |entry| {
         const name = entry.key_ptr.*;
         const field = entry.value_ptr.*;
-        if (std.mem.eql(u8, name, "foreground")) style.foreground = try parseForeground(field) else if (std.mem.eql(u8, name, "bold")) style.bold = switch (field) {
+        if (std.mem.eql(u8, name, "foreground")) style.foreground = try parseColor(field) else if (std.mem.eql(u8, name, "background")) style.background = try parseColor(field) else if (std.mem.eql(u8, name, "bold")) style.bold = switch (field) {
             .bool => |enabled| enabled,
             else => return error.InvalidView,
         } else if (std.mem.eql(u8, name, "italic")) style.italic = switch (field) {
@@ -90,6 +91,11 @@ fn appendStyle(out: *std.ArrayList(u8), allocator: std.mem.Allocator, style: Sty
         .default => try out.appendSlice(allocator, ";39"),
         .ansi => |code| try out.print(allocator, ";{d}", .{code}),
         .rgb => |rgb| try out.print(allocator, ";38;2;{d};{d};{d}", .{ rgb.r, rgb.g, rgb.b }),
+    };
+    if (style.background) |background| switch (background) {
+        .default => try out.appendSlice(allocator, ";49"),
+        .ansi => |code| try out.print(allocator, ";{d}", .{code + 10}),
+        .rgb => |rgb| try out.print(allocator, ";48;2;{d};{d};{d}", .{ rgb.r, rgb.g, rgb.b }),
     };
     try out.append(allocator, 'm');
 }
@@ -125,6 +131,7 @@ pub fn appendView(out: *std.ArrayList(u8), allocator: std.mem.Allocator, view: s
     const lines = object.get("lines") orelse return error.InvalidView;
     const row_count = try appendLines(out, allocator, lines, columns, ansi, final_newline, true);
     if (row_count > max_lines) return error.InvalidView;
+    if (ansi and row_count < max_lines) try out.print(allocator, "\x1b[{d};1H\x1b[J", .{row_count + 1});
     if (try resolveCursor(object.get("cursor"), lines, row_count, columns, max_lines)) |cursor| {
         if (ansi and row_count != 0) try out.print(allocator, "\x1b[{d};{d}H\x1b[?25h", .{ cursor.row, cursor.column });
     }
@@ -205,6 +212,7 @@ pub fn appendLines(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value:
     };
     const limit = usableColumns(columns);
     for (lines, 0..) |line, line_index| {
+        if (ansi) try out.appendSlice(allocator, "\x1b[0m\x1b[2K");
         const object = switch (line) {
             .object => |o| o,
             else => return error.InvalidView,
@@ -269,7 +277,7 @@ pub fn appendLines(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value:
             span_start += text.len;
         }
         if (ansi) try out.appendSlice(allocator, "\x1b[0m");
-        if (line_index + 1 < lines.len or final_newline) try out.appendSlice(allocator, "\n");
+        if (line_index + 1 < lines.len or final_newline) try out.appendSlice(allocator, if (ansi) "\r\n" else "\n");
     }
     return lines.len;
 }
@@ -306,13 +314,13 @@ pub fn renderForTest(allocator: std.mem.Allocator, view: std.json.Value, commit:
 
 test "one-column terminals saturate without underflow" {
     try std.testing.expectEqual(@as(usize, 0), usableColumns(0));
-    try std.testing.expectEqual(@as(usize, 0), usableColumns(1));
+    try std.testing.expectEqual(@as(usize, 1), usableColumns(1));
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"x\"}]}],\"cursor\":{\"row\":1,\"byte\":0}}", .{});
     defer parsed.deinit();
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
     _ = try appendView(&out, std.testing.allocator, parsed.value, 1, 1, true, false);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "x") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "x") != null);
     try std.testing.expect(std.mem.endsWith(u8, out.items, "\x1b[1;1H\x1b[?25h"));
 }
 
@@ -321,7 +329,7 @@ test "presenter redraws the viewport absolutely and honors cursor" {
     defer parsed.deinit();
     const frame = try renderForTest(std.testing.allocator, parsed.value, false);
     defer std.testing.allocator.free(frame);
-    try std.testing.expect(std.mem.startsWith(u8, frame, "\x1b[?25l\x1b[H\x1b[2J"));
+    try std.testing.expect(std.mem.startsWith(u8, frame, "\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[H"));
     try std.testing.expect(std.mem.endsWith(u8, frame, "\x1b[1;3H\x1b[?25h"));
     try std.testing.expect(std.mem.indexOf(u8, frame, "?1049") == null);
 }
@@ -335,7 +343,7 @@ test "presenter converts semantic UTF-8 byte cursors across spans" {
     var narrow: std.ArrayList(u8) = .empty;
     defer narrow.deinit(std.testing.allocator);
     _ = try appendView(&narrow, std.testing.allocator, parsed.value, 4, 24, true, false);
-    try std.testing.expect(std.mem.endsWith(u8, narrow.items, "\x1b[1;3H\x1b[?25h"));
+    try std.testing.expect(std.mem.endsWith(u8, narrow.items, "\x1b[1;4H\x1b[?25h"));
 
     var split = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"é\"}]}],\"cursor\":{\"row\":1,\"byte\":1}}", .{});
     defer split.deinit();
@@ -355,7 +363,7 @@ test "graphemes cross styling spans and cursor cannot split them" {
     defer clipped.deinit();
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
-    _ = try appendView(&out, std.testing.allocator, clipped.value, 4, 24, false, false);
+    _ = try appendView(&out, std.testing.allocator, clipped.value, 3, 24, false, false);
     try std.testing.expectEqualStrings("a👩‍💻", out.items);
 }
 
@@ -376,12 +384,29 @@ test "presenter composes style attributes and bounds OSC 8 links" {
     try std.testing.expectError(error.InvalidView, renderForTest(std.testing.allocator, legacy.value, false));
 }
 
+test "background colors compose with foreground and disappear in plain output" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"lines":[{"spans":[{"text":"surface","style":{"foreground":"default","background":{"r":24,"g":32,"b":29}}},{"text":"ansi","style":{"background":"blue"}},{"text":"reset","style":{"background":"default"}}]}]}
+    , .{});
+    defer parsed.deinit();
+    const rich = try renderForTest(allocator, parsed.value, false);
+    defer allocator.free(rich);
+    try std.testing.expect(std.mem.indexOf(u8, rich, "\x1b[0;39;48;2;24;32;29m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rich, "\x1b[0;44m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rich, "\x1b[0;49m") != null);
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(allocator);
+    _ = try appendView(&plain, allocator, parsed.value, 80, 24, false, false);
+    try std.testing.expectEqualStrings("surfaceansireset", plain.items);
+}
+
 test "cursor visibility and emoji clusters are explicit at the right edge" {
     var busy = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"busy\"}]}],\"cursor\":null}", .{});
     defer busy.deinit();
     const hidden = try renderForTest(std.testing.allocator, busy.value, false);
     defer std.testing.allocator.free(hidden);
-    try std.testing.expect(std.mem.startsWith(u8, hidden, "\x1b[?25l"));
+    try std.testing.expect(std.mem.startsWith(u8, hidden, "\x1b[?2026h\x1b[?25l"));
     try std.testing.expect(std.mem.indexOf(u8, hidden, "\x1b[?25h") == null);
 
     var emoji = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"a👩‍💻x\"}]}],\"cursor\":{\"row\":1,\"byte\":12}}", .{});

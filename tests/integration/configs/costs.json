@@ -1,0 +1,1 @@
+{"extensions": ["commands", "choices", "models", "costs", "@ROOT@/tests/costs.fnl"], "config": {"themes": {"persist": false}, "components": {"persist": false}, "history": {"persist": false}, "clipboard": {}, "messages": {"max_string": 20000}}}

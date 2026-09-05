@@ -1,8 +1,8 @@
 # misa
 
 misa is a small event-driven coding-agent harness built with Zig 0.16,
-system LuaJIT, and system tree-sitter. The TUI uses only the Zig standard
-library.
+system LuaJIT, bundled Fennel 1.6.0, and system tree-sitter. Terminal presentation uses Zig; bounded
+image decoding uses system libpng and libjpeg-turbo.
 
 No extensions are enabled implicitly: `{}` is valid and produces no output.
 The shipped extensions include `models`, `agent`, `auth`, `ui`, protocol adapters,
@@ -28,8 +28,10 @@ adapters precede the API providers that use them:
     "tool.shell",
     "fuzzy",
     "keybindings",
+    "actions",
+    "clipboard",
+    "dialogs",
     "commands",
-    "choice_tree",
     "choices",
     "preferences",
     "themes",
@@ -40,7 +42,10 @@ adapters precede the API providers that use them:
     "layout",
     "choice_layout",
     "markdown",
+    "selection_document",
+    "selection",
     "component.markdown",
+    "component.image",
     "indicators",
     "component.tool",
     "component.message",
@@ -48,20 +53,32 @@ adapters precede the API providers that use them:
     "component.picker",
     "component.status",
     "component.chrome",
+    "component.dialog",
+    "component.selection",
+    "dialog_view",
     "messages",
     "status",
     "picker",
     "picker_view",
     "models",
+    "costs",
     "omnipicker",
     "request_options",
     "effort",
     "agent",
+    "queue",
+    "queue_view",
     "editor",
+    "images",
+    "attachments",
+    "history",
+    "editing",
     "ui"
   ],
   "config": {
-    "models": { "default": "claude/claude-sonnet-5" }
+    "models": {
+      "default": "claude/claude-sonnet-5"
+    }
   }
 }
 ```
@@ -69,10 +86,23 @@ adapters precede the API providers that use them:
 ```sh
 zig build
 zig build test
+zig build test-integration
 zig build test-nix
 zig build -Doptimize=ReleaseSafe
 zig build run -- --config config/default.json hello
 ```
+
+Use `nix-shell -A shell` for the pinned development dependencies. `zig build test`
+runs native unit tests and the named Zig integration cases in `tests/integration/`.
+The suite owns temporary configurations, child processes, deadlines, and output
+assertions; extension fixtures live in `tests/integration/fixtures/*.fnl`.
+Run standalone policy tests with `tools/fennel tests/runtime-state.fnl`. The same
+runner supports the Fennel benchmark scripts and uses the bundled compiler.
+
+Optional
+terminal-protocol regressions run with `python3 tests/ghostty-input.py
+zig-out/bin/misa` and `python3 tests/settled-frames.py zig-out/bin/misa`. They
+use a PTY and local provider fixtures, with no account or network dependency.
 
 Without an override, misa loads the installed `share/misa/default.json`, which
 selects all shipped real providers, Claude Code by default, coding tools, model
@@ -86,7 +116,10 @@ Bare standard IDs use `MISA_EXTENSION_DIR` when set, otherwise the absolute
 `share/misa/extensions` path compiled from `zig build --prefix`. Relocated or
 copied installations must set both `MISA_CONFIG` and `MISA_EXTENSION_DIR`; misa
 never discovers its own executable path. Values containing `/` or ending in
-`.lua` are literal custom paths.
+`.fnl` or `.lua` are literal custom paths. Standard extensions and the embedded
+event framework are written in Fennel. The compiler is embedded in the executable;
+loading installed or custom Fennel extensions requires no external compiler.
+Lua extensions remain supported by the same VM boundary.
 
 ## Event, coeffect, effect, and view contract
 
@@ -94,23 +127,27 @@ An extension returns `{ setup = function(context) ... end }`. There is no `run`
 phase. Setup may register:
 
 - `misa.reg_event(type, handler)`: handlers run in registration order and thread
-  canonical Lua `db`. A handler receives `(db, event, cofx)` and returns nil or
+  canonical application `db`. A handler receives `(db, event, cofx)` and returns nil or
   `{db=<table>, fx=<ordered array>}`.
 - `misa.reg_interceptor({id=..., before=fn?, after=fn?})`: before callbacks run
   in registration order and after callbacks in reverse. They receive and may
   return `{db,event,cofx,fx}`.
 - `misa.reg_cofx(name, fn)`: derives a policy value. Derivations run in
   registration order; a later derivation may read values installed by earlier
-  ones. Base coeffects always include `config`, `argv`,
-  `terminal={interactive=<bool>,columns=<integer>,lines=<integer>}`, and
+  ones. Setup context also includes `host={executable,config_path}` so subprocess
+  bridges can reuse the running binary and explicitly selected configuration.
+  Base coeffects always include `config`, `argv`,
+  `terminal={interactive=<bool>,images=<bool>,columns=<integer>,lines=<integer>}`, and
   `clock={wall_ms=<Unix epoch milliseconds>,monotonic_ms=<monotonic milliseconds>}`.
   These names are reserved. Native code samples both clocks for every
   transaction; elapsed durations must use `monotonic_ms`, never wall time.
   Configuration and argv are shared immutable inputs by contract.
-- `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
+- `misa.reg_fx(type, fn)`: translates a Fennel policy effect to one native effect
   or an ordered array of native effects.
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
 - `misa.reg_view_layer(id,fn)`: contributes an optional semantic overlay layer;
+  the highest `priority` wins (default 0), allowing temporary palettes above
+  input docks for selection and attachments, and modal dialogs;
   the UI composes layers without knowing plugin-owned state.
 - `misa.reg_model(model)`: adds a provider-owned catalogue entry, including an
   optional `context_window` and API metadata. `api.request_options` maps generic
@@ -164,6 +201,10 @@ The fixed native effects are:
 - `{type="file/edit", path=..., content=..., replacement=..., completion=..., id=...}`
 - `{type="json/decode", source=..., completion=..., id=...}`
 - `{type="terminal/read"}`
+- `{type="clipboard/write", text=<up to 1 MiB>}`
+- `{type="image/load", path=..., id=..., completion=...}`
+- `{type="image/paste", argv=<optional clipboard command>, id=..., completion=...}`
+- `{type="input/protected", id=..., correlation=..., completion=...}`
 - `{type="timer/start", interval_ms=<10..60000>, completion=..., id=...}` / `{type="timer/stop", id=...}`
 - `{type="operation/cancel", id=...}`
 - `{type="auth/command", action=..., provider=..., strategy=..., profile=...,
@@ -174,10 +215,10 @@ correlation=..., action=..., value=...}`
 - `{type="app/quit"}`
 
 Unknown native effects fail the session. `http/request` injects credentials by
-ID inside Zig, so secret bytes never cross into Lua policy. `process/run` invokes direct argv,
+ID inside Zig, so secret bytes never cross into Fennel policy. `process/run` invokes direct argv,
 never a shell, captures stdout and stderr with 1 MiB bounds, and never inherits
 the terminal output. The shell tool explicitly translates its command to
-`{"sh", "-lc", command}` in Lua; filesystem and process isolation are concerns
+`["sh" "-lc" command]` in Fennel; filesystem and process isolation are concerns
 of the environment launching Misa, not of the tool extension. File effects use
 paths exactly as supplied and bound file content to 1 MiB. Captured tabs are
 normalized to spaces and malformed UTF-8
@@ -188,27 +229,29 @@ is repaired before completion events are dispatched. Completion events include
 also accepts bounded `stdin` text or one `stdin_json` value; the latter is
 serialized with a trailing newline for JSONL subprocess protocols.
 
-A view is modest semantic data:
+A view is modest semantic data. The root UI composes ordered region descriptors
+with shared height budgets and cursor placement. Dialog fields, transcript roles,
+and tool status styles are data tables interpreted by their component owners:
 
-```lua
-{
-  lines = {
-    { spans = { { text = "working", style = { foreground = "default", dim = true } } } }
-  },
-  cursor = { row = 1, byte = 0 } -- or nil
-}
+
+```fennel
+{:lines [{:spans [{:text "working"
+                   :style {:foreground :default :dim true}}]}]
+ :cursor {:row 1 :byte 0}} ; or nil cursor
 ```
 
 At the native boundary, `style` is a validated record with optional
-`foreground`, `bold`, `italic`, `dim`, `strikethrough`, and `underline` fields.
-A foreground is `default`, one of the 16 ANSI names (`red`, `bright_blue`, and
+`foreground`, `background`, `bold`, `italic`, `dim`, `strikethrough`, and `underline` fields.
+A color is `default`, one of the 16 ANSI names (`red`, `bright_blue`, and
 so on), or `{r=0..255,g=0..255,b=0..255}`. Missing style fields inherit the
-reset terminal defaults; truecolor is available to custom themes but the
-shipped theme deliberately uses only terminal default and ANSI colors. Spans
+reset terminal defaults. The shipped theme uses terminal-default body text,
+RGB accents and muted RGB message backgrounds. Spans
 may also carry `link=<URL>`. Interactive presentation wraps visible linked text
 in OSC 8 open/close sequences; links are limited to 4096 bytes and rejected if
 they contain terminal controls. Noninteractive output emits neither SGR nor
-OSC sequences.
+OSC sequences. Spans may independently carry `action=<registered action ID>`;
+the native cell hit map dispatches clicks through the ordinary action registry.
+Hit targets update only when their frame is successfully presented.
 
 Text must be valid UTF-8 and may not contain controls, ESC, CR, or LF. Cursor
 rows are one-based; `byte` is a zero-based UTF-8 boundary in the concatenated
@@ -221,8 +264,8 @@ output strips styles.
 `src/session/root.zig` owns a non-reentrant FIFO event loop and parses effects
 once into a closed native union; `src/capability/process.zig` owns direct
 process execution and captured-output normalization, while
-`src/capability/file.zig` owns bounded file operations. Lua owns canonical application
-state. A transaction is fully validated before Lua policy state is committed. Views
+`src/capability/file.zig` owns bounded file operations. Fennel owns canonical application
+state. A transaction is fully validated before Fennel policy state is committed. Views
 are deadline-coalesced and the latest prepared frame is retained during terminal
 handoff. Potentially blocking HTTP, process, authentication, file, credential,
 and persistent-state work runs in cancellable native workers and reports
@@ -235,14 +278,18 @@ owns tty/raw-mode lifetime, exclusive generation-checked handoff, and all stdout
 `terminal/presenter.zig`, and `terminal/width.zig` own their respective pure
 mechanisms. Raw mode is always restored with `defer`.
 
-The inline presenter never enters the alternate screen and never clears the
-screen or scrollback. Immutable commits use real newlines and are forgotten.
-Only the mutable frame at the bottom is erased/repainted with CR, relative
-movement, and per-row erase-line sequences; final cleanup erases only those
-owned rows. Live logical lines are conservatively clipped to one physical row
-before the final terminal column, while immutable commits may wrap naturally.
+The interactive presenter owns an alternate screen and repaints bounded
+semantic frames using absolute cursor positioning. Leaving Misa or temporarily
+handing the terminal to an external CLI restores the previous screen. The
+transcript remains in application state and supports scrolling and structural
+selection. Live frames use the full terminal width with autowrap temporarily
+disabled; plain committed output may wrap naturally. The presenter encloses
+text, image placement, row clearing, and cursor changes in synchronized-output
+sequences. It presents only settled synchronous dispatch chains, at a 16 ms
+coalescing cadence, and skips identical frames. Components need no refresh or
+synchronization logic. Unsupported terminals retain the buffered-write fallback.
 The installed default sets `config.ui.plain_prompt = true`, causing the standard
-UI to commit one plain startup prompt before reading stdin when inline mode is
+UI to commit one plain startup prompt before reading stdin when interactive mode is
 unavailable; other profiles can opt into the same fallback behavior.
 Cell measurement uses local wcwidth-style zero-width combining/modifier ranges
 and known East Asian wide/emoji ranges; other printable codepoints are one cell.
@@ -256,9 +303,9 @@ stdout pumping run concurrently, while Lua transactions remain serialized.
 Bracketed paste, fragmented UTF-8, Enter, backspace, arrows, Page Up/Down,
 Escape, Ctrl-C, and EOF are decoded. Decoder, presenter,
 and installed-layout behavior are covered without third-party
-test dependencies. There is no PTY integration test: Zig's standard library
-does not provide a portable POSIX PTY constructor, and misa does not add an
-OS-specific helper or external dependency for one. Zig 0.16 no longer
+test dependencies. The integration suite also exercises resize and cancellation
+through a PTY on supported platforms; the optional Python regressions cover
+Ghostty input and settled frames. Zig 0.16 no longer
 exports `std.posix.read/write/isatty`; misa uses the corresponding
 `std.Io.File` portable abstractions. Raw mode uses portable termios with a read
 timeout, and POSIX signal actions restore it before chaining/defaulting normal
@@ -281,15 +328,24 @@ centralized at the component registry boundary. Custom code calls
 `themes`/`theme.default` and `animations`/`animation.default` are independent
 data registries switched with `themes/swap` and `animations/swap`. A theme is
 `{palette={name=<default|ANSI|RGB>},styles={token=<style record>}}`; palette
-names may be used as style foregrounds. A component span names one semantic
+names may be used as style foregrounds or backgrounds. A component span names one semantic
 token or an ordered list such as `{"assistant","bold"}`. Theme resolution
 merges those records at the component boundary, so role color and independent
 attributes compose without predeclared combination tokens. `plain`, `label`,
 `value`, and `keybinding` are required standard tokens. The default also
 provides distinct `rail.user`, `rail.assistant`, `rail.thinking`, `rail.tool`,
-and `rail.error` tokens. Animation
+and `rail.error` tokens. Components may set `surface="surface.assistant"`
+on a rendered result or individual line: the registry applies that style under
+every span and fills the row to the available width. The default `surface.*`
+tokens provide muted backgrounds; body text uses the terminal's default foreground.
+Animation
 roles are selected with `config.animations.roles`; the service advances their
 transactional ticks using ordinary `timer/start` and `timer/stop` effects.
+The default activity indicator uses a fixed-width dot pulse every 160 ms while
+the agent is working. Idle and single-frame animations schedule no ticks.
+Set `config.animations.enabled=false` for a static indicator, or adjust
+`interval_ms`. Custom animations register `frames` and an optional `still` frame
+for disabled motion; the built-in `static` animation can also be selected per role.
 Selections live in `db`, so failed transactions roll back; successful swaps persist through
 the generic state service. Set `persist = false` in the corresponding config
 section to disable persistence. These registries contain no input or agent behavior.
@@ -304,14 +360,14 @@ carry pending indicators. Tool calls remain one correlated section from pending
 through success, error, or cancellation: their result updates the matching call
 in place, while unmatched custom results may fall back to a standalone section.
 Interruption marks
-visible partial blocks without promoting them to provider history. `/verbose`
+visible partial blocks without promoting them to provider history. The `:transcript.detail` action
 or the configurable global `alt+t` binding reprojects the transcript with
 details. Page Up / Page Down (also `alt+k` / `alt+j`) scroll while input and a
 responsive semantic indicator row remain visible below it. Default message roles
 and timestamps occupy a title line above the heavier `┃` message rail instead of prefixing
 content. Markdown quotes use the thinner `▏` rail. Completed assistant responses show tok/s exactly once, on their final assistant
 block, and only from provider-reported output tokens and positive native monotonic elapsed time. The focused `markdown`
-extension performs a bounded, pure parse into semantic blocks and inlines; `component.markdown` turns that data into
+extension performs a pure parse into semantic blocks and inlines; `component.markdown` turns that data into
 terminal flow, while `component.message` supplies only message titles and the outer message rail. The reusable `component.tool`
 owns tool name/description, arguments, pending state, result, and lifecycle colors. Rendering includes visibly graded
 streaming headings, composable emphasis, Unicode task checkboxes, nested lists and continuations, thematic rules,
@@ -326,9 +382,25 @@ root composition windows those rows around the cursor, including on narrow
 terminals and across explicit newlines. Message spans and picker options likewise
 wrap on grapheme/UTF-8 boundaries using terminal cells rather than bytes or scalar count.
 Set `config.messages.markdown` to `false` (or `plain` to `true`) for literal text.
-`config.markdown` bounds parsing with `max_source_bytes`, `max_blocks`, `max_inlines`, `max_inline_depth`, and
-`max_link_bytes`; over-limit source is safely truncated and visibly marked. `config.messages` also controls initial `verbose` and structural `redact_keys`,
-`max_string`, `max_items`, and `max_depth` limits. Headless output remains plain.
+Markdown has no source-byte, block-count, inline-count, depth, or link-length
+cutoff, and long messages retain their formatting. Assistant and user text is
+retained in full, including streaming chunks. `config.messages` controls initial `verbose`
+and the tool-preview `redact_keys`, `max_string`, `max_items`, and `max_depth`
+limits. Headless output remains plain.
+For streaming, `misa.markdown.new_document():update(text)` retains completed
+blocks and reparses the final two blocks, where appended syntax can change the
+interpretation. Replacements rebuild the document; unchanged normalized source
+reuses it. The unfinished block can still reflow, and a large unfinished fence,
+table, or paragraph is reparsed as a unit. Ordinary inline text is scanned in runs;
+terminator searches retain their next match or failure so malformed openers do
+not repeatedly search the same suffix. Quote prefixes and highlighted code lines
+are scanned by source offset. Deep list/quote indentation is fitted to the
+viewport without changing the parsed depth or hiding the body.
+`misa.markdown_view.new_document():render(text, options)` adds per-block layout
+reuse keyed by width and semantic styles. Both APIs return read-only derived
+snapshots. Default message components keep these documents for the transcript's
+lifetime and copy cached bodies before applying titles, rails, and theme colors.
+Animation-only redraws therefore reuse parsing, highlighting, and body layout.
 `agent` emits explicit stable response/block start, delta, end, and interruption
 `transcript/*` events plus `agent/status` and `agent/usage`; visual extensions do
 not inspect or reconstruct shadows from its private orchestration state. UI cancellation
@@ -364,7 +436,7 @@ from the active model's `api.request_options` metadata. Required options without
 values block a request before the user turn is recorded and emit a structured
 harness problem. `effort` is the reasoning-effort affordance: `/effort` lists
 only the selected model's declared choices, and the configurable global
-`cycle_effort` binding (default `alt+e`) cycles those choices. Model switches
+`cycle_effort` binding (default `alt+f`) cycles those choices. Model switches
 retain an equivalent value when supported, otherwise use the new model default;
 models without reasoning support simply expose no effort value.
 
@@ -377,15 +449,19 @@ Selected rows retain the standard selected style in every panel; only the
 active leftmost panel receives the `>` focus marker.
 
 Choice views are immutable implementations registered with
-`misa.reg_choice_view`. The built-ins are `all`, `favorites`, `frecency`, and the
-opt-in `slash-prefix` tree. `config.choices.purposes` maps a purpose to its
-ordered visible views; the active view is always the leftmost and Right Arrow
-rotates the order. The tree is available to model sessions through view
-replacement but is not an extra default model column. It groups prefixes at
-common `/`, `.`, and `:` delimiters. Tree rows render ID/path substrings rather
-than friendly labels while searches still include friendly names and
-descriptions. Expansion is explicit and appends a visible breadcrumb;
-Backspace returns to its parent atomically when the node query is empty.
+`misa.reg_choice_view`. The built-ins are `all`, `favorites`, `frecency`, and
+`browse`. Browse shows up to three recent choices above the remaining choices;
+searching produces a single ranked list. `config.choices.recent_limit` adjusts
+that count. Model and argument pickers use Browse beside Favorites by default.
+`config.choices.purposes` maps a purpose to ordered views; Right Arrow rotates
+the active view to the left. Extensions can supply their own projections and
+section labels, replace individual components, or replace the picker entirely.
+Overlays use the terminal width with two cells of left/right padding by default;
+`config.choices.overlay` supports padding and optional preferred/min/max bounds.
+A visible range reports hidden results. Wrapped rows and their hotkeys share
+one measured projection. A choice taller than the available space keeps a
+selectable representation with an explicit ellipsis. Input docks participate in
+inline geometry, so positional hotkeys refer to the rows actually displayed.
 
 Inline and overlay sessions resolve the same `keybindings.choices` actions and
 positional banks. `choice_layout` is the single projection for responsive
@@ -394,17 +470,27 @@ and positional targets. The picker component only renders that projection.
 Overlays remain bounded, nonexclusive regions of the managed root: query input
 comes first, then semantic preview, panels, and the shared key reference below
 the panels. All key hints use structured tokens and render Alt as `⌥`. `open_overlay` (default `alt+space`) promotes the current inline
-session without resetting its query, highlight, or tree node. `replace_view`
+session without resetting its query, highlight, or narrowing context. `replace_view`
 (default `alt+/`) opens the nested `picker-picker`; replacing the active view is
 kept only for that choice session and never changes purpose defaults.
 
 `dialogs` owns correlated modal/progress/alert lifecycle, actions, cancellation,
-and optional text input; `dialog_view` projects that state through the replaceable
+and optional text input. Tab or Left/Right selects among multiple actions.
+A protected dialog starts `input/protected` for a waiting native operation and
+correlation. Its bounded 64 KiB buffer stays native; Lua receives only length,
+submission/cancellation, and capacity-error metadata. Buffered input is held
+until capture is installed and scrubbed if the operation fails or is cancelled,
+so a pasted key cannot fall through into a conversation.
+`dialog_view` projects that state through the replaceable
 `dialog` component role. Dialog data and hints are generic—providers do not own
-UI paths or rendering. `picker` is only the overlay lifecycle adapter and
+UI paths or rendering. Default dialogs are compact overlays that retain the
+transcript, with clickable URLs and wrapped input. `picker` is only the overlay lifecycle adapter and
 `picker_view` renders the centralized projection. `commands` normalizes every
 typed, picked, or replayed command into one canonical invocation and records
-recent invocations generically. `omnipicker` (global `alt+/`, also used by the
+recent invocations in the generic `commands` preference scope. Canonical strings
+(such as `/model vendor/model`) are also favorite IDs. Usage is recorded once
+per invocation, including typed commands; replay and registered commands share
+the same identity. `omnipicker` (global `alt+/`, also used by the
 slash menu) composes commands with those recents; commands with completion
 narrow to argument choices before emitting that same canonical event.
 `models` owns only model catalogue, availability, rich metadata preview, and
@@ -417,7 +503,7 @@ fallback lists for those providers. Set a provider's `discover_models`
 to `false` and provide an explicit `models` list to keep a fixed catalogue. The
 editor discovers registered slash commands and argument candidates, displays
 the same semantic choice rows as the overlay, and delegates filtering,
-highlight, tree navigation, configured hotkeys, and acceptance to its inline
+highlight, narrowing, configured hotkeys, and acceptance to its inline
 choice session. Login commands
 automatically complete authentication providers contributed by enabled
 provider plugins; `/model` completes the current dynamic model catalogue. Its live startup banner
@@ -438,9 +524,9 @@ interleaves terminal reads with stream batches. Slow policy handling therefore
 applies backpressure instead of growing the session queue, and Ctrl-C can cancel
 the active socket or child promptly without invoking Lua from an I/O thread.
 `tool.files` registers `read_file`, `list_directory`, `write_file`, and
-`edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Lua
+`edit_file`; `tool.shell` registers `shell`. They are ordinary explicit Fennel
 extensions and are not enabled by the harness. `misa mcp` exposes the same
-Lua-registered schemas and effect translators as an MCP stdio server. The
+Extension-registered schemas and effect translators as an MCP stdio server. The
 Claude provider supplies this bridge through `--mcp-config` whenever tools are
 registered, while retaining `--tools ""` so Claude's own tools remain disabled.
 The MCP child inherits `MISA_CONFIG`; configurations selected with `--config`
@@ -465,6 +551,101 @@ those consumers never traverse feature-private state. `ui` owns only root
 composition. Interactive sessions return to the editor after each response;
 explicit argv remains a single headless turn.
 
+`costs` exposes model rates, response totals, and a session status indicator.
+Provider-reported USD takes precedence over estimates; missing prices remain
+explicitly unknown. Dynamic provider metadata supplies prices where available.
+`config.costs.models["provider/model-id"]` overrides `input`, `output`,
+`cache_read`, and `cache_write` rates in USD per million tokens, plus optional
+`request` in USD per request. A response snapshots its model rates when it
+starts. Selectors always display canonical `provider/model-id`; friendly model
+names remain searchable. Enter and Space after `/model` enter the same inline
+argument choices, and accepting a model executes the command.
+
+The default theme inherits terminal body text and base background. Choose
+`config.themes.appearance = "light"` for light terminal backgrounds (default
+`"dark"`); `themes.palette` overrides named colors using `#rrggbb`, terminal
+colors, or RGB records, and `themes.styles` overrides semantic styles. Message
+surfaces, rails, accents, syntax colors, and selection are separate tokens.
+
+## Keyboard interaction
+
+The default profile starts in insert mode. Escape enters normal mode; `i`/`a`
+resume insertion, `I`/`A` use the start/end of the line, and `o`/`O` open a line.
+`h j k l`, `w b e`, `0 $`, and `g G` navigate; `d`/`c`/`y` combine with motions,
+with `dd`/`cc`/`yy` selecting a line. `v` selects graphemes and `V` selects lines;
+`y` copies, `x` deletes, `p` pastes the internal register, and `u`/`U` undo/redo.
+Enter submits; Shift-Enter inserts a newline (including Ghostty CSI-u input).
+The prompt shows insert (`┌`), normal (`◆`), or visual (`◇`)
+mode, and continuations share a vertical rail. Set `config.editing.mode` to
+`"plain"` to disable modal editing, or replace the `editing` extension. Bindings
+are configurable under `config.keybindings["editor.normal"]`.
+
+`history` records accepted submissions, deduplicating consecutive identical
+prompts. Ctrl-P/N or Alt-P/N move backward/forward through history; Up/Down do
+so at the first/last input line in insert mode. Moving forward past the newest
+entry restores the original draft, cursor, and attachments. Ctrl-R opens fuzzy
+history search with global deduplication, newest first. Search selection restores
+the input for editing. Configure `history.persist`, `history.max_entries`
+(default 500), and `history.max_bytes` (default 65536).
+
+You can keep typing while the model responds. Enter appends to one pending
+message, separating submissions with newlines; completion sends that message.
+Alt-E brings it back into the draft, preserving any existing draft and images.
+Alt-Enter interrupts and sends the pending message together with the draft.
+Ctrl-C interrupts while preserving the draft. Effort cycling uses Alt-F.
+`queue` owns scheduling, `queue_view` owns its dock, and the editor targets the
+installed submission capability. These plugins can be replaced independently.
+
+Ctrl-V pastes a PNG/JPEG image from the system clipboard; `/image <path>` loads
+a file. Ghostty, Kitty, and WezTerm receive bounded inline previews through the
+[Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/); other terminals show attachment metadata. Images keep
+the original bytes for provider requests. Clipboard I/O and decoding run in
+native workers, bounded to 8 MiB compressed, 16 million decoded pixels, and a
+480×320 preview. Linux uses `wl-paste` or `xclip`; macOS uses `osascript`.
+`config.images.clipboard_command` can replace acquisition with an argv array.
+`images` owns acquisition policy, `attachments` composes the draft, and the
+`attachment.image` component owns preview geometry. Terminal image caching and
+synchronization are separate native mechanisms. Multiplexer image passthrough
+is not enabled.
+
+Start input with `:` (no leading whitespace), press F1, or press `:` in normal
+mode to open the action palette. It searches registered UI actions and shows
+the configured keybinding beside each action. Actions operate on the interface:
+editing, transcript navigation/detail, selection, and opening views. Slash
+commands operate on the session: model/effort selection, authentication, and
+conversation reset. `/` stays discoverable through command and argument
+completion; selecting a nonterminal command narrows directly to its arguments.
+
+Alt-S enters structural transcript selection. `j`/`k` select siblings, `l`
+narrows, and `h` widens. A message can narrow to sections, a section's heading
+or content, paragraphs, code blocks, tables, rows, cells, lines, words, and
+individual graphemes. The selected range is highlighted in the existing rich
+transcript; a small input dock shows its path and keys. `y` copies its exact
+source, including Markdown syntax; Escape returns to the editor. The selected
+source is frozen so streaming cannot move the range before copying. F1 remains
+available. The `selection` component role renders the dock independently of
+transcript decoration. Page Up/Down, Alt-K/J, and the mouse wheel scroll the
+transcript; its viewport stays anchored while new content arrives.
+
+`clipboard` separates copying from selection. Its default `clipboard/write`
+native effect sends OSC 52 to an interactive terminal (up to 1 MiB); terminal
+clipboard support must be enabled. Configure `config.clipboard.command` with
+an argv array such as `["wl-copy"]`, `["xclip", "-selection", "clipboard"]`, or
+`["pbcopy"]` to send copied text to that process's stdin instead. The internal
+register always remains available for editor paste.
+
+Features declare `misa.reg_action({id,label,event,keys?,binding?,available?})` during
+setup; `binding` identifies a configured `{context,action}`, and `available(db)`
+controls contextual discovery. Without `binding`, an action gets a global
+binding under its ID; `keys` supplies optional defaults. Configure it through
+`config.keybindings.global[id]`. The `actions` extension routes global action
+bindings and supplies the palette.
+`selection` accepts `misa.reg_selection_source(id,function(db) ... end)` returning
+source documents with `{id,label,text,kind,first,last,children}`. Ranges are
+zero-based, half-open byte offsets. `selection_document` derives semantic
+ranges from Markdown and lazily supplies finer ranges; selection policy and
+rendering can both be replaced independently.
+
 ## Nix
 
 The package and development shell include every grammar from the pinned
@@ -487,7 +668,6 @@ symbol.
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
   extensions = with p.lib.standardExtensions; [
-    json providerFake fuzzy keybindings commands choiceTree choices preferences
     themes themeDefault animations animationDefault components layout choiceLayout markdown componentMarkdown indicators dialogs dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
     messages status picker pickerView models omnipicker requestOptions effort agent editor ui
   ];
@@ -503,12 +683,20 @@ p.lib.mkMisa {
 Run `misa login openai` or `misa login anthropic` to enter an API key without
 terminal echo. `misa login openai-codex` uses OpenAI's device flow for a
 ChatGPT subscription, `misa login kimi-coding` uses Kimi's device flow, and
-`misa login openrouter` uses OpenRouter's PKCE flow. In the managed UI, device OAuth remains on the alternate screen with URL, code, progress, and cancellation. OpenRouter uses a temporary loopback callback with state validation and falls back to a pasted-code dialog when callback setup or browser launch is unavailable. Use
+`misa login openrouter` uses OpenRouter's PKCE flow. Device OAuth opens the browser
+using `xdg-open` on Linux or `open` on macOS; the managed UI retains the transcript
+behind a popup with a clickable URL, code, progress, and cancellation. The URL
+remains available if browser launch fails. OpenRouter uses a temporary loopback
+callback with state validation and falls back to a pasted-code dialog when
+callback setup or browser launch is unavailable. Use
 `misa status PROVIDER` to inspect login state without exposing credential data
 and `misa logout PROVIDER` to remove it. The `auth` extension provides the same
 flows inside the TUI as `/login PROVIDER`, `/status PROVIDER`, and
 `/logout PROVIDER`. For `claude`, all three commands are
-delegated to `claude auth`. API-key and Claude login explicitly announce the temporary terminal handoff before leaving the managed screen. OAuth access credentials are refreshed from their
+delegated to `claude auth`. Interactive API-key login uses the ordinary popup
+with masked native input. CLI login still hands the terminal to Claude and
+returns automatically; logout does not need a handoff. OAuth access credentials
+are refreshed from their
 stored refresh tokens. Credential mutex acquisition is cancellable and refresh
 network I/O never holds a mutex. A refreshed token is published with a
 process/interprocess-locked compare-and-swap over credential generation, refresh
@@ -531,7 +719,7 @@ continues to own and refresh its existing subscription credentials.
 
 API provider lists include their protocol explicitly, for example
 `[ "json", "protocol.anthropic", "provider.anthropic", "components", "layout", "markdown", "component.markdown", "component.tool", "component.message", "component.editor", "component.picker", "component.status", "component.chrome",
-"messages", "models", "request_options", "effort", "agent", "commands", "choice_tree", "choices", "choice_layout", "editor", "ui" ]` (add `picker`, `picker_view`, and `omnipicker` when overlay choices are needed).
+"messages", "models", "request_options", "effort", "agent", "commands",  "choices", "choice_layout", "editor", "ui" ]` (add `picker`, `picker_view`, and `omnipicker` when overlay choices are needed).
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
 `protocol.anthropic`. ChatGPT subscription access is the separate
 `provider.openai-codex` extension and its Codex Responses protocol.

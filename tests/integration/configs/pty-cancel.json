@@ -1,0 +1,1 @@
+{"extensions":["@ROOT@/tests/integration/fixtures/pty.fnl"],"config":{"cancel":true,"pid":"@WORK@/child.pid"}}

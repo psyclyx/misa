@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run Fennel sources with the same bundled compiler used by misa.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export MISA_FENNEL_COMPILER="$root/src/lua_runtime/vendor/fennel.lua"
+exec luajit -e '
+local exit, stderr = os.exit, io.stderr
+local environment = {}
+for key, value in pairs(_G) do environment[key] = value end
+local compiler = setfenv(assert(loadfile(os.getenv("MISA_FENNEL_COMPILER"))), environment)()
+package.loaded.fennel = compiler
+debug.traceback = compiler.traceback
+compiler.install()
+local ok, err = xpcall(function() compiler.dofile((assert(arg[0], "expected a Fennel source path"))) end, compiler.traceback)
+if not ok then stderr:write(tostring(err), "\n") end
+exit(ok and 0 or 1)
+' "$@"

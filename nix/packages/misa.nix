@@ -4,6 +4,7 @@
   stdenv,
   zig_0_16,
   pkg-config,
+  makeWrapper,
   luajit,
 }:
 let
@@ -17,10 +18,13 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     zig_0_16
     pkg-config
+    makeWrapper
   ];
   buildInputs = [
     luajit
     pkgs.tree-sitter
+    pkgs.libpng
+    pkgs.libjpeg
   ];
 
   buildPhase = ''
@@ -37,6 +41,15 @@ stdenv.mkDerivation {
     runHook postCheck
   '';
   dontInstall = true;
+  postFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
+    wrapProgram "$out/bin/misa" --prefix PATH : ${
+      lib.makeBinPath [
+        pkgs.wl-clipboard
+        pkgs.xclip
+        pkgs.xdg-utils
+      ]
+    }
+  '';
 
   passthru.treeSitterGrammars = treeSitterGrammars;
 

@@ -1,0 +1,2 @@
+{:setup "not a function"}
+

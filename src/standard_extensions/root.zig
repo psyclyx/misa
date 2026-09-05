@@ -5,10 +5,24 @@ const build_options = @import("misa_build_options");
 pub const default_config_path = build_options.default_config_path;
 
 pub const ids = [_][]const u8{
+    "costs",
+    "history",
+    "queue",
+    "queue_view",
+    "images",
+    "attachments",
+    "component.image",
+
+    "actions",
+    "clipboard",
+    "selection_document",
+    "selection",
+    "component.selection",
+    "editing",
     "agent",
     "auth",
     "choices",
-    "choice_tree",
+
     "choice_layout",
     "commands",
     "omnipicker",
@@ -63,60 +77,73 @@ pub const ResolveError = error{
 } || std.mem.Allocator.Error;
 
 pub fn isLiteralPath(value: []const u8) bool {
-    return std.mem.indexOfScalar(u8, value, '/') != null or std.mem.endsWith(u8, value, ".lua");
+    return std.mem.indexOfScalar(u8, value, '/') != null or std.mem.endsWith(u8, value, ".fnl") or std.mem.endsWith(u8, value, ".lua");
 }
 
 pub fn catalogPath(id: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, id, "agent")) return "agent.lua";
-    if (std.mem.eql(u8, id, "auth")) return "auth.lua";
-    if (std.mem.eql(u8, id, "choices")) return "choices.lua";
-    if (std.mem.eql(u8, id, "choice_tree")) return "choice_tree.lua";
-    if (std.mem.eql(u8, id, "choice_layout")) return "choice_layout.lua";
-    if (std.mem.eql(u8, id, "commands")) return "commands.lua";
-    if (std.mem.eql(u8, id, "omnipicker")) return "omnipicker.lua";
-    if (std.mem.eql(u8, id, "dialogs")) return "dialogs.lua";
-    if (std.mem.eql(u8, id, "dialog_view")) return "dialog_view.lua";
-    if (std.mem.eql(u8, id, "components")) return "components.lua";
-    if (std.mem.eql(u8, id, "layout")) return "layout.lua";
-    if (std.mem.eql(u8, id, "markdown")) return "markdown.lua";
-    if (std.mem.eql(u8, id, "component.markdown")) return "component/markdown.lua";
-    if (std.mem.eql(u8, id, "component.tool")) return "component/tool.lua";
-    if (std.mem.eql(u8, id, "component.message")) return "component/message.lua";
-    if (std.mem.eql(u8, id, "component.editor")) return "component/editor.lua";
-    if (std.mem.eql(u8, id, "component.picker")) return "component/picker.lua";
-    if (std.mem.eql(u8, id, "component.status")) return "component/status.lua";
-    if (std.mem.eql(u8, id, "component.chrome")) return "component/chrome.lua";
-    if (std.mem.eql(u8, id, "component.dialog")) return "component/dialog.lua";
-    if (std.mem.eql(u8, id, "editor")) return "editor.lua";
-    if (std.mem.eql(u8, id, "fuzzy")) return "fuzzy.lua";
-    if (std.mem.eql(u8, id, "keybindings")) return "keybindings.lua";
-    if (std.mem.eql(u8, id, "indicators")) return "indicators.lua";
-    if (std.mem.eql(u8, id, "json")) return "json.lua";
-    if (std.mem.eql(u8, id, "messages")) return "messages.lua";
-    if (std.mem.eql(u8, id, "models")) return "models.lua";
-    if (std.mem.eql(u8, id, "picker")) return "picker.lua";
-    if (std.mem.eql(u8, id, "picker_view")) return "picker_view.lua";
-    if (std.mem.eql(u8, id, "preferences")) return "preferences.lua";
-    if (std.mem.eql(u8, id, "request_options")) return "request_options.lua";
-    if (std.mem.eql(u8, id, "effort")) return "effort.lua";
-    if (std.mem.eql(u8, id, "status")) return "status.lua";
-    if (std.mem.eql(u8, id, "themes")) return "themes.lua";
-    if (std.mem.eql(u8, id, "theme.default")) return "theme/default.lua";
-    if (std.mem.eql(u8, id, "animations")) return "animations.lua";
-    if (std.mem.eql(u8, id, "animation.default")) return "animation/default.lua";
-    if (std.mem.eql(u8, id, "provider.fake")) return "provider/fake.lua";
-    if (std.mem.eql(u8, id, "provider.command")) return "provider/command.lua";
-    if (std.mem.eql(u8, id, "provider.claude")) return "provider/claude.lua";
-    if (std.mem.eql(u8, id, "protocol.anthropic")) return "protocol/anthropic.lua";
-    if (std.mem.eql(u8, id, "provider.anthropic")) return "provider/anthropic.lua";
-    if (std.mem.eql(u8, id, "provider.kimi")) return "provider/kimi.lua";
-    if (std.mem.eql(u8, id, "protocol.openai")) return "protocol/openai.lua";
-    if (std.mem.eql(u8, id, "provider.openai")) return "provider/openai.lua";
-    if (std.mem.eql(u8, id, "provider.openai-codex")) return "provider/openai-codex.lua";
-    if (std.mem.eql(u8, id, "provider.openrouter")) return "provider/openrouter.lua";
-    if (std.mem.eql(u8, id, "tool.files")) return "tool/files.lua";
-    if (std.mem.eql(u8, id, "tool.shell")) return "tool/shell.lua";
-    if (std.mem.eql(u8, id, "ui")) return "ui.lua";
+    if (std.mem.eql(u8, id, "actions")) return "actions.fnl";
+    if (std.mem.eql(u8, id, "clipboard")) return "clipboard.fnl";
+    if (std.mem.eql(u8, id, "selection_document")) return "selection_document.fnl";
+    if (std.mem.eql(u8, id, "selection")) return "selection.fnl";
+    if (std.mem.eql(u8, id, "component.selection")) return "component/selection.fnl";
+    if (std.mem.eql(u8, id, "editing")) return "editing.fnl";
+    if (std.mem.eql(u8, id, "costs")) return "costs.fnl";
+    if (std.mem.eql(u8, id, "history")) return "history.fnl";
+    if (std.mem.eql(u8, id, "queue")) return "queue.fnl";
+    if (std.mem.eql(u8, id, "queue_view")) return "queue_view.fnl";
+    if (std.mem.eql(u8, id, "images")) return "images.fnl";
+    if (std.mem.eql(u8, id, "attachments")) return "attachments.fnl";
+    if (std.mem.eql(u8, id, "component.image")) return "component/image.fnl";
+
+    if (std.mem.eql(u8, id, "agent")) return "agent.fnl";
+    if (std.mem.eql(u8, id, "auth")) return "auth.fnl";
+    if (std.mem.eql(u8, id, "choices")) return "choices.fnl";
+    if (std.mem.eql(u8, id, "choice_layout")) return "choice_layout.fnl";
+    if (std.mem.eql(u8, id, "commands")) return "commands.fnl";
+    if (std.mem.eql(u8, id, "omnipicker")) return "omnipicker.fnl";
+    if (std.mem.eql(u8, id, "dialogs")) return "dialogs.fnl";
+    if (std.mem.eql(u8, id, "dialog_view")) return "dialog_view.fnl";
+    if (std.mem.eql(u8, id, "components")) return "components.fnl";
+    if (std.mem.eql(u8, id, "layout")) return "layout.fnl";
+    if (std.mem.eql(u8, id, "markdown")) return "markdown.fnl";
+    if (std.mem.eql(u8, id, "component.markdown")) return "component/markdown.fnl";
+    if (std.mem.eql(u8, id, "component.tool")) return "component/tool.fnl";
+    if (std.mem.eql(u8, id, "component.message")) return "component/message.fnl";
+    if (std.mem.eql(u8, id, "component.editor")) return "component/editor.fnl";
+    if (std.mem.eql(u8, id, "component.picker")) return "component/picker.fnl";
+    if (std.mem.eql(u8, id, "component.status")) return "component/status.fnl";
+    if (std.mem.eql(u8, id, "component.chrome")) return "component/chrome.fnl";
+    if (std.mem.eql(u8, id, "component.dialog")) return "component/dialog.fnl";
+    if (std.mem.eql(u8, id, "editor")) return "editor.fnl";
+    if (std.mem.eql(u8, id, "fuzzy")) return "fuzzy.fnl";
+    if (std.mem.eql(u8, id, "keybindings")) return "keybindings.fnl";
+    if (std.mem.eql(u8, id, "indicators")) return "indicators.fnl";
+    if (std.mem.eql(u8, id, "json")) return "json.fnl";
+    if (std.mem.eql(u8, id, "messages")) return "messages.fnl";
+    if (std.mem.eql(u8, id, "models")) return "models.fnl";
+    if (std.mem.eql(u8, id, "picker")) return "picker.fnl";
+    if (std.mem.eql(u8, id, "picker_view")) return "picker_view.fnl";
+    if (std.mem.eql(u8, id, "preferences")) return "preferences.fnl";
+    if (std.mem.eql(u8, id, "request_options")) return "request_options.fnl";
+    if (std.mem.eql(u8, id, "effort")) return "effort.fnl";
+    if (std.mem.eql(u8, id, "status")) return "status.fnl";
+    if (std.mem.eql(u8, id, "themes")) return "themes.fnl";
+    if (std.mem.eql(u8, id, "theme.default")) return "theme/default.fnl";
+    if (std.mem.eql(u8, id, "animations")) return "animations.fnl";
+    if (std.mem.eql(u8, id, "animation.default")) return "animation/default.fnl";
+    if (std.mem.eql(u8, id, "provider.fake")) return "provider/fake.fnl";
+    if (std.mem.eql(u8, id, "provider.command")) return "provider/command.fnl";
+    if (std.mem.eql(u8, id, "provider.claude")) return "provider/claude.fnl";
+    if (std.mem.eql(u8, id, "protocol.anthropic")) return "protocol/anthropic.fnl";
+    if (std.mem.eql(u8, id, "provider.anthropic")) return "provider/anthropic.fnl";
+    if (std.mem.eql(u8, id, "provider.kimi")) return "provider/kimi.fnl";
+    if (std.mem.eql(u8, id, "protocol.openai")) return "protocol/openai.fnl";
+    if (std.mem.eql(u8, id, "provider.openai")) return "provider/openai.fnl";
+    if (std.mem.eql(u8, id, "provider.openai-codex")) return "provider/openai-codex.fnl";
+    if (std.mem.eql(u8, id, "provider.openrouter")) return "provider/openrouter.fnl";
+    if (std.mem.eql(u8, id, "tool.files")) return "tool/files.fnl";
+    if (std.mem.eql(u8, id, "tool.shell")) return "tool/shell.fnl";
+    if (std.mem.eql(u8, id, "ui")) return "ui.fnl";
     return null;
 }
 
@@ -136,75 +163,80 @@ pub fn resolve(
 }
 
 test "catalog accepts exact IDs only" {
-    try std.testing.expectEqualStrings("agent.lua", catalogPath("agent").?);
-    try std.testing.expectEqualStrings("auth.lua", catalogPath("auth").?);
-    try std.testing.expectEqualStrings("choices.lua", catalogPath("choices").?);
-    try std.testing.expectEqualStrings("choice_tree.lua", catalogPath("choice_tree").?);
-    try std.testing.expectEqualStrings("choice_layout.lua", catalogPath("choice_layout").?);
-    try std.testing.expectEqualStrings("commands.lua", catalogPath("commands").?);
-    try std.testing.expectEqualStrings("omnipicker.lua", catalogPath("omnipicker").?);
-    try std.testing.expectEqualStrings("dialogs.lua", catalogPath("dialogs").?);
-    try std.testing.expectEqualStrings("dialog_view.lua", catalogPath("dialog_view").?);
-    try std.testing.expectEqualStrings("components.lua", catalogPath("components").?);
-    try std.testing.expectEqualStrings("layout.lua", catalogPath("layout").?);
-    try std.testing.expectEqualStrings("markdown.lua", catalogPath("markdown").?);
-    try std.testing.expectEqualStrings("component/markdown.lua", catalogPath("component.markdown").?);
-    try std.testing.expectEqualStrings("component/tool.lua", catalogPath("component.tool").?);
-    try std.testing.expectEqualStrings("component/message.lua", catalogPath("component.message").?);
-    try std.testing.expectEqualStrings("component/editor.lua", catalogPath("component.editor").?);
-    try std.testing.expectEqualStrings("component/picker.lua", catalogPath("component.picker").?);
-    try std.testing.expectEqualStrings("component/status.lua", catalogPath("component.status").?);
-    try std.testing.expectEqualStrings("component/chrome.lua", catalogPath("component.chrome").?);
-    try std.testing.expectEqualStrings("component/dialog.lua", catalogPath("component.dialog").?);
+    try std.testing.expectEqualStrings("agent.fnl", catalogPath("agent").?);
+    try std.testing.expectEqualStrings("auth.fnl", catalogPath("auth").?);
+    try std.testing.expectEqualStrings("choices.fnl", catalogPath("choices").?);
+    try std.testing.expectEqualStrings("choice_layout.fnl", catalogPath("choice_layout").?);
+    try std.testing.expectEqualStrings("commands.fnl", catalogPath("commands").?);
+    try std.testing.expectEqualStrings("omnipicker.fnl", catalogPath("omnipicker").?);
+    try std.testing.expectEqualStrings("dialogs.fnl", catalogPath("dialogs").?);
+    try std.testing.expectEqualStrings("dialog_view.fnl", catalogPath("dialog_view").?);
+    try std.testing.expectEqualStrings("components.fnl", catalogPath("components").?);
+    try std.testing.expectEqualStrings("layout.fnl", catalogPath("layout").?);
+    try std.testing.expectEqualStrings("markdown.fnl", catalogPath("markdown").?);
+    try std.testing.expectEqualStrings("component/markdown.fnl", catalogPath("component.markdown").?);
+    try std.testing.expectEqualStrings("component/tool.fnl", catalogPath("component.tool").?);
+    try std.testing.expectEqualStrings("component/message.fnl", catalogPath("component.message").?);
+    try std.testing.expectEqualStrings("component/editor.fnl", catalogPath("component.editor").?);
+    try std.testing.expectEqualStrings("component/picker.fnl", catalogPath("component.picker").?);
+    try std.testing.expectEqualStrings("component/status.fnl", catalogPath("component.status").?);
+    try std.testing.expectEqualStrings("component/chrome.fnl", catalogPath("component.chrome").?);
+    try std.testing.expectEqualStrings("component/dialog.fnl", catalogPath("component.dialog").?);
     try std.testing.expect(catalogPath("component.default") == null);
-    try std.testing.expectEqualStrings("editor.lua", catalogPath("editor").?);
-    try std.testing.expectEqualStrings("fuzzy.lua", catalogPath("fuzzy").?);
-    try std.testing.expectEqualStrings("keybindings.lua", catalogPath("keybindings").?);
-    try std.testing.expectEqualStrings("indicators.lua", catalogPath("indicators").?);
-    try std.testing.expectEqualStrings("json.lua", catalogPath("json").?);
-    try std.testing.expectEqualStrings("messages.lua", catalogPath("messages").?);
-    try std.testing.expectEqualStrings("models.lua", catalogPath("models").?);
-    try std.testing.expectEqualStrings("picker.lua", catalogPath("picker").?);
-    try std.testing.expectEqualStrings("picker_view.lua", catalogPath("picker_view").?);
-    try std.testing.expectEqualStrings("preferences.lua", catalogPath("preferences").?);
-    try std.testing.expectEqualStrings("request_options.lua", catalogPath("request_options").?);
-    try std.testing.expectEqualStrings("effort.lua", catalogPath("effort").?);
-    try std.testing.expectEqualStrings("status.lua", catalogPath("status").?);
-    try std.testing.expectEqualStrings("themes.lua", catalogPath("themes").?);
-    try std.testing.expectEqualStrings("theme/default.lua", catalogPath("theme.default").?);
-    try std.testing.expectEqualStrings("animations.lua", catalogPath("animations").?);
-    try std.testing.expectEqualStrings("animation/default.lua", catalogPath("animation.default").?);
-    try std.testing.expectEqualStrings("provider/fake.lua", catalogPath("provider.fake").?);
-    try std.testing.expectEqualStrings("provider/command.lua", catalogPath("provider.command").?);
-    try std.testing.expectEqualStrings("provider/claude.lua", catalogPath("provider.claude").?);
-    try std.testing.expectEqualStrings("protocol/anthropic.lua", catalogPath("protocol.anthropic").?);
-    try std.testing.expectEqualStrings("provider/anthropic.lua", catalogPath("provider.anthropic").?);
-    try std.testing.expectEqualStrings("provider/kimi.lua", catalogPath("provider.kimi").?);
-    try std.testing.expectEqualStrings("protocol/openai.lua", catalogPath("protocol.openai").?);
-    try std.testing.expectEqualStrings("provider/openai.lua", catalogPath("provider.openai").?);
-    try std.testing.expectEqualStrings("provider/openai-codex.lua", catalogPath("provider.openai-codex").?);
-    try std.testing.expectEqualStrings("provider/openrouter.lua", catalogPath("provider.openrouter").?);
+    try std.testing.expectEqualStrings("editor.fnl", catalogPath("editor").?);
+    try std.testing.expectEqualStrings("fuzzy.fnl", catalogPath("fuzzy").?);
+    try std.testing.expectEqualStrings("keybindings.fnl", catalogPath("keybindings").?);
+    try std.testing.expectEqualStrings("indicators.fnl", catalogPath("indicators").?);
+    try std.testing.expectEqualStrings("json.fnl", catalogPath("json").?);
+    try std.testing.expectEqualStrings("messages.fnl", catalogPath("messages").?);
+    try std.testing.expectEqualStrings("models.fnl", catalogPath("models").?);
+    try std.testing.expectEqualStrings("picker.fnl", catalogPath("picker").?);
+    try std.testing.expectEqualStrings("picker_view.fnl", catalogPath("picker_view").?);
+    try std.testing.expectEqualStrings("preferences.fnl", catalogPath("preferences").?);
+    try std.testing.expectEqualStrings("request_options.fnl", catalogPath("request_options").?);
+    try std.testing.expectEqualStrings("effort.fnl", catalogPath("effort").?);
+    try std.testing.expectEqualStrings("status.fnl", catalogPath("status").?);
+    try std.testing.expectEqualStrings("themes.fnl", catalogPath("themes").?);
+    try std.testing.expectEqualStrings("theme/default.fnl", catalogPath("theme.default").?);
+    try std.testing.expectEqualStrings("animations.fnl", catalogPath("animations").?);
+    try std.testing.expectEqualStrings("animation/default.fnl", catalogPath("animation.default").?);
+    try std.testing.expectEqualStrings("provider/fake.fnl", catalogPath("provider.fake").?);
+    try std.testing.expectEqualStrings("provider/command.fnl", catalogPath("provider.command").?);
+    try std.testing.expectEqualStrings("provider/claude.fnl", catalogPath("provider.claude").?);
+    try std.testing.expectEqualStrings("protocol/anthropic.fnl", catalogPath("protocol.anthropic").?);
+    try std.testing.expectEqualStrings("provider/anthropic.fnl", catalogPath("provider.anthropic").?);
+    try std.testing.expectEqualStrings("provider/kimi.fnl", catalogPath("provider.kimi").?);
+    try std.testing.expectEqualStrings("protocol/openai.fnl", catalogPath("protocol.openai").?);
+    try std.testing.expectEqualStrings("provider/openai.fnl", catalogPath("provider.openai").?);
+    try std.testing.expectEqualStrings("provider/openai-codex.fnl", catalogPath("provider.openai-codex").?);
+    try std.testing.expectEqualStrings("provider/openrouter.fnl", catalogPath("provider.openrouter").?);
     try std.testing.expect(catalogPath("provider") == null);
     try std.testing.expect(catalogPath("Agent") == null);
-    try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
-    try std.testing.expectEqualStrings("tool/files.lua", catalogPath("tool.files").?);
-    try std.testing.expectEqualStrings("tool/shell.lua", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 50), ids.len);
+    try std.testing.expectEqualStrings("ui.fnl", catalogPath("ui").?);
+    try std.testing.expectEqualStrings("tool/files.fnl", catalogPath("tool.files").?);
+    try std.testing.expectEqualStrings("tool/shell.fnl", catalogPath("tool.shell").?);
+    try std.testing.expectEqual(@as(usize, 62), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {
     const allocator = std.testing.allocator;
-    const literal = try resolve(allocator, "custom/x.lua", null);
+    const literal = try resolve(allocator, "custom/x.fnl", null);
     defer allocator.free(literal);
-    try std.testing.expectEqualStrings("custom/x.lua", literal);
+    try std.testing.expectEqualStrings("custom/x.fnl", literal);
 
     const env_path = try resolve(allocator, "provider.fake", "/source/extensions");
     defer allocator.free(env_path);
-    try std.testing.expectEqualStrings("/source/extensions/provider/fake.lua", env_path);
+    try std.testing.expectEqualStrings("/source/extensions/provider/fake.fnl", env_path);
 
     const installed = try resolve(allocator, "agent", null);
     defer allocator.free(installed);
-    try std.testing.expect(std.mem.endsWith(u8, installed, "/share/misa/extensions/agent.lua"));
+    try std.testing.expect(std.mem.endsWith(u8, installed, "/share/misa/extensions/agent.fnl"));
     try std.testing.expectError(error.UnknownStandardExtension, resolve(allocator, "unknown", null));
-    try std.testing.expectError(error.ExtensionPathContainsNul, resolve(allocator, "bad\x00.lua", null));
+    try std.testing.expectError(error.ExtensionPathContainsNul, resolve(allocator, "bad\x00.fnl", null));
+}
+
+test "resolver preserves legacy Lua extension paths" {
+    const path = try resolve(std.testing.allocator, "custom.lua", null);
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("custom.lua", path);
 }

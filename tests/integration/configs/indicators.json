@@ -1,0 +1,1 @@
+{"extensions":["keybindings","themes","theme.default","components","layout","indicators","component.status","@ROOT@/tests/integration/fixtures/indicators.fnl"],"config":{"status":{"indicators":[{"id":"important","priority":100},{"id":"optional","hotkey":true,"priority":1}]}}}

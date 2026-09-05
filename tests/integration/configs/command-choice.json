@@ -1,0 +1,1 @@
+{"extensions":["fuzzy","keybindings","commands","choices","preferences","themes","theme.default","components","layout","choice_layout","component.editor","component.picker","picker","editor","@ROOT@/tests/command-choice.fnl"],"config":{"preferences":{"persist":false}}}

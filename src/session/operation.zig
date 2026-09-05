@@ -3,6 +3,7 @@ const std = @import("std");
 const posix = std.posix;
 const auth = @import("misa_auth");
 const file = @import("misa_file");
+const image = @import("misa_image");
 const process = @import("misa_process");
 const http = @import("http.zig");
 const channel = @import("operation/channel.zig");
@@ -66,6 +67,13 @@ pub const Owner = struct {
         self.startPrepared(task);
     }
 
+    pub fn startImage(self: *Owner, source: image.Spec, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(source.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createImage(self.allocator, self.io, self.wakeup, source, environ);
+        self.startPrepared(task);
+    }
+
     pub fn startStateLoad(self: *Owner, namespace: []const u8, completion: []const u8, environ: *const std.process.Environ.Map) !void {
         try self.startState(namespace, completion, null, environ);
     }
@@ -82,10 +90,10 @@ pub const Owner = struct {
         self.startPrepared(task);
     }
 
-    pub fn startAuth(self: *Owner, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64) !void {
+    pub fn startAuth(self: *Owner, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool) !void {
         try self.ensureUnique(id);
         try self.active.ensureUnusedCapacity(self.allocator, 1);
-        const task = try Task.createAuth(self.allocator, self.io, self.wakeup, action, declaration, completion, interaction, id, environ, terminal_lease);
+        const task = try Task.createAuth(self.allocator, self.io, self.wakeup, action, declaration, completion, interaction, id, environ, terminal_lease, managed_input);
         self.startPrepared(task);
     }
 
@@ -124,6 +132,11 @@ pub const Owner = struct {
         try self.active.items[index].respond(correlation, action, value);
     }
 
+    pub fn expectsInput(self: *Owner, id: []const u8, correlation: []const u8) bool {
+        const index = self.find(id) orelse return false;
+        return self.active.items[index].expectsInput(correlation);
+    }
+
     pub fn cancel(self: *Owner, id: []const u8) !?Item {
         const index = self.find(id) orelse return null;
         return self.removeCanceled(index, "Canceled", false);
@@ -144,7 +157,7 @@ pub const Owner = struct {
         if (self.find(id) != null) return error.DuplicateOperationId;
     }
 
-    fn find(self: *const Owner, id: []const u8) ?usize {
+    pub fn find(self: *const Owner, id: []const u8) ?usize {
         for (self.active.items, 0..) |task, index| if (std.mem.eql(u8, task.id, id)) return index;
         return null;
     }
@@ -205,4 +218,41 @@ test "operations run concurrently and semantic finish kills a sleeping process" 
     defer std.testing.allocator.free(finished.json);
     try std.testing.expect(std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds - finish_started < 500 * std.time.ns_per_ms);
     try std.testing.expect(!owner.isActive());
+}
+
+test "image operations load files and configured clipboard commands asynchronously" {
+    const a = std.testing.allocator;
+    const encoded = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGM4kSLyH4QBE+sEf0CWJyAAAAAASUVORK5CYII=";
+    const bytes = try a.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
+    defer a.free(bytes);
+    try std.base64.standard.Decoder.decode(bytes, encoded);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sample.png", .data = bytes });
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/sample.png", .{tmp.sub_path});
+    defer a.free(path);
+    var environ = std.process.Environ.Map.init(a);
+    defer environ.deinit();
+    var owner = try Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    try owner.startImage(.{ .path = path, .completion = "image/loaded", .id = "file" }, &environ);
+    const argv = [_]std.json.Value{ .{ .string = "cat" }, .{ .string = path } };
+    try owner.startImage(.{ .argv = &argv, .completion = "image/loaded", .id = "clipboard" }, &environ);
+    var completed: usize = 0;
+    while (completed < 2) {
+        if (try owner.pop(std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds)) |item| {
+            defer a.free(item.json);
+            var parsed = try std.json.parseFromSlice(std.json.Value, a, item.json, .{});
+            defer parsed.deinit();
+            const event = parsed.value.object;
+            if (!event.get("ok").?.bool) std.debug.print("image outcome: {s}\n", .{item.json});
+            try std.testing.expect(event.get("ok").?.bool);
+            const data = event.get("data").?.object;
+            try std.testing.expectEqualStrings(encoded, data.get("data").?.string);
+            try std.testing.expectEqual(@as(i64, 2), data.get("width").?.integer);
+            try std.testing.expectEqualStrings("rgba", data.get("preview").?.object.get("format").?.string);
+            try std.testing.expectEqualStrings("yGQU/8hkFP8=", data.get("preview").?.object.get("data").?.string);
+            completed += 1;
+        } else std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
+    }
 }

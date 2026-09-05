@@ -391,6 +391,7 @@ pub const Interaction = struct {
     context: *anyopaque,
     emitFn: *const fn (*anyopaque, oauth.Prompt) anyerror!void,
     inputFn: *const fn (*anyopaque, []const u8) anyerror![]const u8,
+    protected_input: bool = false,
     pub fn emit(self: Interaction, prompt: oauth.Prompt) !void {
         try self.emitFn(self.context, prompt);
     }
@@ -402,7 +403,10 @@ pub const Interaction = struct {
 pub fn commandTerminal(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, action: Action, provider: []const u8) !CommandResult {
     const declaration: Declaration = if (std.mem.eql(u8, provider, "openai")) .{ .provider = provider, .strategy = .api_key } else if (std.mem.eql(u8, provider, "anthropic")) .{ .provider = provider, .strategy = .api_key } else if (std.mem.eql(u8, provider, "claude")) .{ .provider = provider, .strategy = .cli_handoff } else if (std.mem.eql(u8, provider, "openrouter")) .{ .provider = provider, .strategy = .loopback_pkce, .profile_id = "default" } else if (std.mem.eql(u8, provider, "openai-codex")) .{ .provider = provider, .strategy = .device_oauth, .profile_id = "default", .authorization_url = "https://auth.openai.com/api/accounts/deviceauth/usercode", .token_url = "https://auth.openai.com/oauth/token" } else if (std.mem.eql(u8, provider, "kimi-coding")) .{ .provider = provider, .strategy = .device_oauth, .profile_id = "global", .authorization_url = "https://auth.kimi.ai/api/oauth/device_authorization", .token_url = "https://auth.kimi.ai/api/oauth/token", .api_base = "https://api.kimi.ai/coding/v1" } else return error.UnknownProvider;
     var context = TerminalInteraction{ .allocator = allocator, .io = io };
-    defer if (context.owned_input) |value| allocator.free(value);
+    defer if (context.owned_input) |value| {
+        std.crypto.secureZero(u8, value);
+        allocator.free(value);
+    };
     return command(allocator, io, environ, action, declaration, .{ .context = &context, .emitFn = TerminalInteraction.emit, .inputFn = TerminalInteraction.input });
 }
 const TerminalInteraction = struct {
@@ -427,7 +431,7 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     const provider = declaration.provider;
     if (std.mem.eql(u8, provider, "claude")) {
         if (action == .status) return claudeStatus(allocator, io);
-        try claudeAuth(io, @tagName(action));
+        try claudeAuth(allocator, io, @tagName(action));
         return .{ .logged_in = action != .logout };
     }
     if (!managedProvider(provider)) return error.UnknownProvider;
@@ -457,11 +461,21 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
         defer credential.deinit(allocator);
         try store.putOAuth(provider, credential.access, credential.refresh, credential.expires, credential.account_id);
     } else {
-        const secret = try readSecret(allocator, io, "API key: ");
-        defer allocator.free(secret);
-        try store.put(provider, secret);
+        if (interaction.protected_input) {
+            try interaction.emit(.{ .correlation = "api-key", .kind = "modal", .title = "API key", .message = "Enter your API key. Characters are hidden.", .input = true, .protected = true });
+            const secret = try interaction.input("api-key");
+            if (secret.len == 0) return error.EmptyCredential;
+            try store.put(provider, secret);
+        } else {
+            const secret = try readSecret(allocator, io, "API key: ");
+            defer {
+                std.crypto.secureZero(u8, secret);
+                allocator.free(secret);
+            }
+            try store.put(provider, secret);
+        }
     }
-    std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
+    if (!interaction.protected_input) std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
     return .{ .logged_in = true };
 }
 
@@ -498,7 +512,18 @@ fn claudeStatus(allocator: std.mem.Allocator, io: std.Io) !CommandResult {
     return .{ .logged_in = logged_in, .subscription_type = subscription };
 }
 
-fn claudeAuth(io: std.Io, action: []const u8) !void {
+fn claudeAuth(allocator: std.mem.Allocator, io: std.Io, action: []const u8) !void {
+    if (std.mem.eql(u8, action, "logout")) {
+        const result = try std.process.run(allocator, io, .{
+            .argv = &.{ "claude", "auth", action },
+            .stdout_limit = .limited(64 * 1024),
+            .stderr_limit = .limited(64 * 1024),
+        });
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        if (result.term != .exited or result.term.exited != 0) return error.ClaudeAuthFailed;
+        return;
+    }
     var child = try std.process.spawn(io, .{ .argv = &.{ "claude", "auth", action } });
     defer child.kill(io);
     const term = try child.wait(io);

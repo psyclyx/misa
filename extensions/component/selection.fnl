@@ -1,0 +1,29 @@
+;; Selection status belongs beside the input; the transcript remains the view.
+
+{:setup (fn []
+          (misa.reg_component :default.selection
+                              {:render (fn [model context]
+                                         (local path
+                                                (: (table.concat (or model.path
+                                                                     {})
+                                                                 " / ")
+                                                   :gsub "[\r\n]" " "))
+                                         (local lines
+                                                [{:spans [{:style :label
+                                                           :text (misa.layout.clip (.. (or (and model.copied
+                                                                                                "Copied · ")
+                                                                                           "Select · ")
+                                                                                       path)
+                                                                                   (or context.columns
+                                                                                       80))}]}
+                                                 {:spans (misa.render_keybinding_reference model.hints)}])
+                                         (while (> (length lines)
+                                                   (math.max 0
+                                                             (or context.available_lines
+                                                                 (length lines))))
+                                           (table.remove lines))
+                                         {:dock :input
+                                          :input_disabled true
+                                          : lines})})
+          nil)}
+

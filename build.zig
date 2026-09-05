@@ -25,6 +25,15 @@ pub fn build(b: *std.Build) void {
     syntax.addOptions("misa_syntax_options", syntax_options);
     syntax.linkSystemLibrary("tree-sitter", .{ .use_pkg_config = .force });
 
+    const image = b.createModule(.{
+        .root_source_file = b.path("src/image/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    image.linkSystemLibrary("libpng", .{ .use_pkg_config = .force });
+    image.linkSystemLibrary("libturbojpeg", .{ .use_pkg_config = .force });
+
     const standard_extension_options = b.addOptions();
     standard_extension_options.addOption([]const u8, "default_extension_dir", b.getInstallPath(.{ .custom = "share/misa" }, "extensions"));
     standard_extension_options.addOption([]const u8, "default_config_path", b.getInstallPath(.{ .custom = "share/misa" }, "default.json"));
@@ -68,6 +77,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     session.addImport("misa_auth", auth);
+    session.addImport("misa_image", image);
     session.addImport("misa_file", file_effect);
     session.addImport("misa_lua_runtime", lua_runtime);
     session.addImport("misa_process", process_effect);
@@ -129,14 +139,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     operation_test_module.addImport("misa_auth", auth);
+    operation_test_module.addImport("misa_image", image);
     operation_test_module.addImport("misa_file", file_effect);
     operation_test_module.addImport("misa_process", process_effect);
     operation_test_module.addImport("misa_state", state);
     const operation_unit = b.addTest(.{ .root_module = operation_test_module });
+    const runtime_unit = b.addTest(.{ .root_module = lua_runtime });
     const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const process_unit = b.addTest(.{ .root_module = process_effect });
     const state_unit = b.addTest(.{ .root_module = state });
+    const image_unit = b.addTest(.{ .root_module = image });
     const syntax_unit = b.addTest(.{ .root_module = syntax });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
     const session_unit = b.addTest(.{ .root_module = session });
@@ -144,24 +157,31 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(auth_unit).step);
     test_step.dependOn(&b.addRunArtifact(oauth_unit).step);
     test_step.dependOn(&b.addRunArtifact(operation_unit).step);
+    test_step.dependOn(&b.addRunArtifact(runtime_unit).step);
     test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
     test_step.dependOn(&b.addRunArtifact(process_unit).step);
     test_step.dependOn(&b.addRunArtifact(state_unit).step);
+    test_step.dependOn(&b.addRunArtifact(image_unit).step);
     test_step.dependOn(&b.addRunArtifact(syntax_unit).step);
     test_step.dependOn(&b.addRunArtifact(terminal_unit).step);
     test_step.dependOn(&b.addRunArtifact(session_unit).step);
 
-    const integration = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/integration.sh") });
-    integration.addFileArg(exe.getEmittedBin());
-    integration.setEnvironmentVariable("MISA_EXTENSION_DIR", b.pathFromRoot("extensions"));
+    const integration_options = b.addOptions();
+    integration_options.addOption([]const u8, "source_root", b.pathFromRoot("."));
+    integration_options.addOptionPath("binary", exe.getEmittedBin());
+    integration_options.addOption([]const u8, "installed_binary", b.getInstallPath(.bin, "misa"));
+    const integration_module = b.createModule(.{
+        .root_source_file = b.path("tests/integration/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    integration_module.addOptions("integration_options", integration_options);
+    const integration_tests = b.addTest(.{ .root_module = integration_module });
+    const integration = b.addRunArtifact(integration_tests);
+    integration.step.dependOn(b.getInstallStep());
     test_step.dependOn(&integration.step);
-
-    // Exercise the actual install layout with source-tree overrides absent.
-    const installed_smoke = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/installed-layout.sh") });
-    installed_smoke.addArg(b.getInstallPath(.bin, "misa"));
-    installed_smoke.step.dependOn(b.getInstallStep());
-    test_step.dependOn(&installed_smoke.step);
+    b.step("test-integration", "Run isolated application integration cases").dependOn(&integration.step);
 
     // Nix is intentionally opt-in rather than part of normal package checks.
     const nix_eval = b.addSystemCommand(&.{ "nix-instantiate", "--eval", "--strict", b.pathFromRoot("tests/nix-eval.nix") });

@@ -2,6 +2,7 @@
 const std = @import("std");
 const auth = @import("misa_auth");
 const file = @import("misa_file");
+const image = @import("misa_image");
 const process = @import("misa_process");
 const state = @import("misa_state");
 const http = @import("../http.zig");
@@ -9,10 +10,11 @@ const buffered_records = @import("../buffered_records.zig");
 const channel_module = @import("channel.zig");
 const result_json = @import("result_json.zig");
 
-const AuthSpec = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64 };
+const AuthSpec = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool };
 const StateSpec = struct { namespace: []const u8, completion: []const u8, id: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map };
 const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
-const Kind = union(enum) { http: HttpSpec, process: process.Spec, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
+const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
+const Kind = union(enum) { image: ImageSpec, http: HttpSpec, process: process.Spec, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
 
 pub const Task = struct {
     pub const max_records_per_event = 32;
@@ -33,6 +35,7 @@ pub const Task = struct {
     response_correlation: ?[]u8 = null,
     response_action: ?[]u8 = null,
     response_value: ?[]u8 = null,
+    response_expected: ?[]const u8 = null,
     started_ns: i96 = 0,
     timeouts: http.Spec.Timeouts = .{},
     timeout_kind: enum { http, process, none } = .http,
@@ -106,6 +109,23 @@ pub const Task = struct {
         return task;
     }
 
+    pub fn createImage(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: image.Spec, environ: *const std.process.Environ.Map) !*Task {
+        const task = try create(owner_allocator, io, wakeup);
+        errdefer task.destroy();
+        const a = task.arena.allocator();
+        const argv = try a.alloc(std.json.Value, source.argv.len);
+        for (source.argv, argv) |arg, *copy| copy.* = .{ .string = try a.dupe(u8, arg.string) };
+        const spec: image.Spec = .{
+            .path = if (source.path) |path| try a.dupe(u8, path) else null,
+            .argv = argv,
+            .id = try a.dupe(u8, source.id),
+            .completion = try a.dupe(u8, source.completion),
+        };
+        task.kind = .{ .image = .{ .spec = spec, .environ = environ } };
+        try task.prepare(spec.completion, spec.id, .{ .first_byte_ms = 10_000, .idle_ms = 10_000, .overall_ms = 15_000 });
+        return task;
+    }
+
     pub fn createState(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, namespace: []const u8, completion: []const u8, serial: u64, data: ?std.json.Value, environ: *const std.process.Environ.Map) !*Task {
         const task = try create(owner_allocator, io, wakeup);
         errdefer task.destroy();
@@ -116,17 +136,18 @@ pub const Task = struct {
         return task;
     }
 
-    pub fn createAuth(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64) !*Task {
+    pub fn createAuth(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool) !*Task {
         const task = try create(owner_allocator, io, wakeup);
         errdefer task.destroy();
         const a = task.arena.allocator();
-        const spec: AuthSpec = .{ .action = action, .declaration = try cloneDeclaration(a, declaration), .completion = try a.dupe(u8, completion), .interaction = try a.dupe(u8, interaction), .id = try a.dupe(u8, id), .environ = environ, .terminal_lease = terminal_lease };
+        const spec: AuthSpec = .{ .action = action, .declaration = try cloneDeclaration(a, declaration), .completion = try a.dupe(u8, completion), .interaction = try a.dupe(u8, interaction), .id = try a.dupe(u8, id), .environ = environ, .terminal_lease = terminal_lease, .managed_input = managed_input };
         task.kind = .{ .auth = spec };
         try task.prepare(spec.completion, spec.id, .{ .first_byte_ms = 900_000, .idle_ms = 900_000, .overall_ms = 900_000 });
         return task;
     }
 
     pub fn destroy(self: *Task) void {
+        if (self.response_value) |bytes| std.crypto.secureZero(u8, bytes);
         self.records.discard();
         if (self.fallback) |json| self.owner_allocator.free(json);
         self.arena.deinit();
@@ -181,10 +202,17 @@ pub const Task = struct {
         try self.response_mutex.lock(self.io);
         defer self.response_mutex.unlock(self.io);
         if (self.response_value != null) return error.InteractionAlreadyAnswered;
+        if (self.response_expected == null or !std.mem.eql(u8, self.response_expected.?, correlation)) return error.InteractionCorrelationMismatch;
         self.response_correlation = try self.arena.allocator().dupe(u8, correlation);
         self.response_action = try self.arena.allocator().dupe(u8, action);
         self.response_value = try self.arena.allocator().dupe(u8, value);
         self.response_ready.signal(self.io);
+    }
+
+    pub fn expectsInput(self: *Task, correlation: []const u8) bool {
+        self.response_mutex.lockUncancelable(self.io);
+        defer self.response_mutex.unlock(self.io);
+        return self.response_value == null and self.response_expected != null and std.mem.eql(u8, self.response_expected.?, correlation);
     }
 
     pub fn popRecord(self: *Task) !?result_json.Item {
@@ -245,6 +273,7 @@ pub const Task = struct {
             .http => |request| if (request.spec.response_format == .sse_json_stream) .http_stream else .ordinary,
             .process => |spec| if (spec.stdout_format == .json_lines_stream) .process_stream else .ordinary,
             .file => .file,
+            .image => .ordinary,
             .state_load => |spec| .{ .state_load = spec.namespace },
             .state_save => .state_save,
         };
@@ -274,7 +303,12 @@ pub const Task = struct {
 
     fn emitInteraction(context: *anyopaque, prompt: auth.oauth.Prompt) anyerror!void {
         const self: *Task = @ptrCast(@alignCast(context));
-        const json = try std.json.Stringify.valueAlloc(self.owner_allocator, .{ .type = self.kind.auth.interaction, .id = self.id, .phase = "interaction", .correlation = prompt.correlation, .kind = prompt.kind, .title = prompt.title, .message = prompt.message, .url = prompt.url, .code = prompt.code, .progress = prompt.progress, .cancellable = prompt.cancellable, .input = prompt.input, .hints = prompt.hints, .actions = if (prompt.input) &.{.{ .id = "submit", .label = "enter submit", .primary = true }} else &.{} }, .{});
+        if (prompt.input) {
+            try self.response_mutex.lock(self.io);
+            defer self.response_mutex.unlock(self.io);
+            self.response_expected = try self.arena.allocator().dupe(u8, prompt.correlation);
+        }
+        const json = try std.json.Stringify.valueAlloc(self.owner_allocator, .{ .type = self.kind.auth.interaction, .id = self.id, .phase = "interaction", .correlation = prompt.correlation, .kind = prompt.kind, .title = prompt.title, .message = prompt.message, .url = prompt.url, .code = prompt.code, .progress = prompt.progress, .cancellable = prompt.cancellable, .input = prompt.input, .protected = prompt.protected, .hints = prompt.hints, .actions = if (prompt.input) &.{.{ .id = "submit", .label = "enter submit", .primary = true }} else &.{} }, .{});
         errdefer self.owner_allocator.free(json);
         try self.records.push(.{ .event = json });
     }
@@ -294,6 +328,14 @@ pub const Task = struct {
             self.records.wakeup.notify();
         }
         switch (self.kind) {
+            .image => |request| {
+                const value = image.run(self.arena.allocator(), self.io, request.spec, request.environ) catch |err| {
+                    if (err == error.Canceled) return error.Canceled;
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                self.result = .{ .ok = true, .data = value, .message = null };
+            },
             .http => |request| if (request.spec.response_format == .sse_json_stream) {
                 var store = if (request.spec.credential != null) auth.Store.init(self.arena.allocator(), self.io, request.environ) catch |err| {
                     self.result = .{ .message = @errorName(err) };
@@ -393,7 +435,7 @@ pub const Task = struct {
                 self.result = .{ .ok = true, .message = null };
             },
             .auth => |spec| {
-                const command_result = auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction }) catch |err| {
+                const command_result = auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction, .protected_input = spec.managed_input }) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     self.result = .{ .message = @errorName(err) };
                     return;
@@ -426,7 +468,7 @@ fn cloneFile(a: std.mem.Allocator, source: file.Spec) !file.Spec {
 test "task publishes correlated auth interaction events" {
     const wakeup = try channel_module.Wakeup.init();
     defer wakeup.deinit();
-    const task = try Task.createAuth(std.testing.allocator, std.testing.io, wakeup, .login, .{ .provider = "openai-codex", .strategy = .device_oauth, .profile_id = "default", .authorization_url = "https://auth.openai.com/api/accounts/deviceauth/usercode", .token_url = "https://auth.openai.com/oauth/token" }, "auth/complete", "auth/interaction", "login:openai", undefined, null);
+    const task = try Task.createAuth(std.testing.allocator, std.testing.io, wakeup, .login, .{ .provider = "openai-codex", .strategy = .device_oauth, .profile_id = "default", .authorization_url = "https://auth.openai.com/api/accounts/deviceauth/usercode", .token_url = "https://auth.openai.com/oauth/token" }, "auth/complete", "auth/interaction", "login:openai", undefined, null, true);
     defer task.destroy();
     try Task.emitInteraction(task, .{ .correlation = "device", .title = "Authorize device", .message = "Waiting", .url = "https://example.test", .code = "ABCD", .progress = "Polling" });
     const item = (try task.popRecord()).?;

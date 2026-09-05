@@ -84,6 +84,10 @@ pub fn main(init: std.process.Init) !void {
     };
     defer runtime.deinit();
 
+    const executable_path = try std.process.executablePathAlloc(init.io, allocator);
+    defer allocator.free(executable_path);
+    runtime.setHostInfo(executable_path, path);
+
     const extension_dir = init.environ_map.get("MISA_EXTENSION_DIR");
 
     for (0..config.extensions.len) |extension_index| {
@@ -136,6 +140,7 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
     defer terminal.deinit();
     runtime.setTerminalInfo(.{
         .interactive = terminal.interactive,
+        .images = terminal.images_supported,
         .columns = if (terminal.interactive) terminal_module.usableColumns(terminal.dimensions.columns) else terminal.dimensions.columns,
         .lines = terminal.dimensions.lines,
     });
