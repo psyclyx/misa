@@ -38,14 +38,22 @@ return {
     end
 
     local symbols={alt="⌥",ctrl="⌃",shift="⇧",enter="↵",tab="⇥",escape="esc",arrow_up="↑",arrow_down="↓",arrow_left="←",arrow_right="→",space="space"}
+    local modifiers={alt=true,ctrl=true,shift=true}
     misa.keybinding_tokens=function(key)
-      local result={}; for part in tostring(key or ""):gmatch("[^+]+") do result[#result+1]={kind="key",text=symbols[part] or part} end; return result
+      local result={}; for part in tostring(key or ""):gmatch("[^+]+") do
+        local text=symbols[part] or part
+        if #text==1 and text:match("%l") then text=text:upper() end
+        result[#result+1]={kind=modifiers[part] and "modifier" or "key",text=text}
+      end; return result
+    end
+    misa.keybinding_text=function(key)
+      local parts={}; for _,token in ipairs(misa.keybinding_tokens(key)) do parts[#parts+1]=token.text end; return table.concat(parts)
     end
     misa.render_keybinding=function(key)
-      local spans={}; for index,token in ipairs(misa.keybinding_tokens(key)) do if index>1 then spans[#spans+1]={text="+",style="keybinding"} end; spans[#spans+1]={text=token.text,style="keybinding",token=token.kind} end; return spans
+      local spans={}; for _,token in ipairs(misa.keybinding_tokens(key)) do spans[#spans+1]={text=token.text,style="keybinding",token=token.kind} end; return spans
     end
     misa.render_keybinding_reference=function(entries)
-      local spans={}; for index,entry in ipairs(entries or {}) do if index>1 then spans[#spans+1]={text="   ",style="plain"} end; for _,span in ipairs(misa.render_keybinding(entry.key)) do spans[#spans+1]=span end; spans[#spans+1]={text=" "..entry.label,style="choice.hint"} end; return spans
+      local spans={}; for index,entry in ipairs(entries or {}) do if index>1 then spans[#spans+1]={text="   ",style="plain"} end; for _,span in ipairs(misa.render_keybinding(entry.key)) do spans[#spans+1]=span end; spans[#spans+1]={text=" "..entry.label,style="label"} end; return spans
     end
 
     -- The native decoder already distinguishes standalone Escape from Alt

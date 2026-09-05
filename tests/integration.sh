@@ -125,7 +125,7 @@ return {setup=function()
       if item.style.foreground=="default" and item.text=="yes" then values=values+1 end
       if item.style.dim==true and item.style.foreground=="cyan" then hotkey_text=hotkey_text..item.text end
     end
-    assert(labels==1 and values==1 and hotkey_text=="⌥+x","indicator semantic classes or structured hotkey are missing")
+    assert(labels==1 and values==1 and hotkey_text=="⌥X","indicator semantic classes or structured hotkey are missing")
     local narrow=misa.indicators_projection(db,{columns=15})[1].spans; local text=""; for _,item in ipairs(narrow) do text=text..item.text end
     assert(text:find("Important",1,true) and not text:find("Optional",1,true),"indicator priority did not control narrow-width dropping")
     return {fx={{type="view/commit",lines={{spans={{text="indicators",style={foreground="default"}}}}}},{type="app/quit"}}}
@@ -438,7 +438,7 @@ return {setup=function()
   misa.reg_event("app/start",function() return {fx={{type="dispatch",event={type="picker/open",id="hints",token="hints:1",title="Hints",completion="hints/done",items={{value="one",label="One"}}}}}} end)
   misa.reg_event("picker/open",function(db)
     local layers=misa.view_layers(db,{terminal={columns=80,lines=20},available_lines=18})
-    local found=false; for _,line in ipairs(layers[1].lines) do local text=""; for _,item in ipairs(line.spans) do text=text..item.text end; if text:find("⌥+z",1,true) then found=true end end
+    local found=false; for _,line in ipairs(layers[1].lines) do local text=""; for _,item in ipairs(line.spans) do text=text..item.text end; if text:find("⌥Z",1,true) then found=true end end
     assert(found,"configured picker hint disappeared")
     return {fx={{type="view/commit",lines={{spans={{text="hints",style={foreground="default"}}}}}},{type="app/quit"}}}
   end)
@@ -732,7 +732,7 @@ return {setup=function()
   misa.reg_event("terminal/input",function(db,event)
     if event.kind=="text" and event.text=="/" then
       local projection=misa.editor_projection(db); local hinted=false
-      for _,line in ipairs(projection.completions) do local text=""; for _,span in ipairs(line.spans) do text=text..span.text end; if text:find("⌥+z",1,true) then hinted=true end end
+      for _,line in ipairs(projection.completions) do local text=""; for _,span in ipairs(line.spans) do text=text..span.text end; if text:find("⌥Z",1,true) then hinted=true end end
       assert(hinted,"inline configured positional hint disappeared")
     elseif event.kind=="backspace" and db.editor.text=="/" then
       return done("atomic tree backspace")

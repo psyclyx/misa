@@ -39,7 +39,7 @@ return {setup=function(context)
     for bank,panel_width in ipairs(widths) do
       local panel=session.panels[bank]; local start=misa.choice_first_index(panel,9); local rows,used={},1
       for index=start,math.min(#panel.items,start+8) do
-        local model=all[bank].rows[index]; local hotkey=model.hotkey or ""; if misa.keybinding_tokens and hotkey~="" then hotkey=""; for _,token in ipairs(misa.keybinding_tokens(model.hotkey)) do hotkey=hotkey..token.text.."+" end end
+        local model=all[bank].rows[index]; local hotkey=model.hotkey or ""; if misa.keybinding_text and hotkey~="" then hotkey=misa.keybinding_text(hotkey) end
         local text=(model.marker or " ").." "..hotkey..model.label..(model.description and (" — "..model.description) or "")
         local row_height=#misa.layout.wrap_spans({{spans={{text=text}}}},panel_width)
         -- `used` includes the panel title. A row and its positional target are
