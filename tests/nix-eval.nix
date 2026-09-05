@@ -2,6 +2,7 @@ let
   npins = import ../npins;
   pkgs = import npins.nixpkgs { };
   project = import ../default.nix { inherit pkgs; };
+  allTreeSitterGrammars = pkgs.tree-sitter.withPlugins (_: pkgs.tree-sitter-grammars.allGrammars);
   inherit (project) lib;
   standard = lib.standardExtensions;
   custom = ../extensions/agent.lua;
@@ -145,6 +146,7 @@ assert builtins.pathExists ../extensions/ui.lua;
 # Instantiate both the package and configured wrapper without recursively
 # building either from this evaluation-only test.
 assert pkgs.lib.hasSuffix ".drv" project.packages.misa.drvPath;
+assert project.packages.misa.treeSitterGrammars.outPath == allTreeSitterGrammars.outPath;
 assert pkgs.lib.hasSuffix ".drv" configured.drvPath;
 assert configured.unwrapped.outPath == project.packages.misa.outPath;
 true

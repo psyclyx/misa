@@ -14,6 +14,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const syntax_options = b.addOptions();
+    syntax_options.addOption([]const u8, "default_grammar_dir", b.option([]const u8, "tree-sitter-dir", "Directory containing tree-sitter <language>.so grammars") orelse "");
+    const syntax = b.createModule(.{
+        .root_source_file = b.path("src/syntax/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    syntax.addOptions("misa_syntax_options", syntax_options);
+    syntax.linkSystemLibrary("tree-sitter", .{ .use_pkg_config = .force });
+
     const standard_extension_options = b.addOptions();
     standard_extension_options.addOption([]const u8, "default_extension_dir", b.getInstallPath(.{ .custom = "share/misa" }, "extensions"));
     standard_extension_options.addOption([]const u8, "default_config_path", b.getInstallPath(.{ .custom = "share/misa" }, "default.json"));
@@ -30,6 +41,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     lua_runtime.linkSystemLibrary("luajit", .{ .use_pkg_config = .force });
+    lua_runtime.addImport("misa_syntax", syntax);
     const terminal = b.createModule(.{
         .root_source_file = b.path("src/terminal/root.zig"),
         .target = target,
@@ -81,6 +93,7 @@ pub fn build(b: *std.Build) void {
     main_module.addImport("misa_mcp", mcp);
     main_module.addImport("misa_standard_extensions", standard_extensions);
     main_module.addImport("misa_state", state);
+    main_module.addImport("misa_syntax", syntax);
     main_module.addImport("misa_terminal", terminal);
     main_module.addImport("misa_session", session);
 
@@ -124,6 +137,7 @@ pub fn build(b: *std.Build) void {
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const process_unit = b.addTest(.{ .root_module = process_effect });
     const state_unit = b.addTest(.{ .root_module = state });
+    const syntax_unit = b.addTest(.{ .root_module = syntax });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
     const session_unit = b.addTest(.{ .root_module = session });
     const test_step = b.step("test", "Run unit and integration tests");
@@ -134,6 +148,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
     test_step.dependOn(&b.addRunArtifact(process_unit).step);
     test_step.dependOn(&b.addRunArtifact(state_unit).step);
+    test_step.dependOn(&b.addRunArtifact(syntax_unit).step);
     test_step.dependOn(&b.addRunArtifact(terminal_unit).step);
     test_step.dependOn(&b.addRunArtifact(session_unit).step);
 

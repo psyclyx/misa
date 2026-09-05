@@ -1,8 +1,8 @@
 # misa
 
-misa is a small event-driven coding-agent harness built with Zig 0.16 and
-system LuaJIT. The TUI uses only the Zig standard library. LuaJIT is the sole
-non-stdlib application dependency.
+misa is a small event-driven coding-agent harness built with Zig 0.16,
+system LuaJIT, and system tree-sitter. The TUI uses only the Zig standard
+library.
 
 No extensions are enabled implicitly: `{}` is valid and produces no output.
 The shipped extensions include `models`, `agent`, `auth`, `ui`, protocol adapters,
@@ -123,7 +123,16 @@ phase. Setup may register:
   `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
 
 Framework registrations are sealed after setup; component, theme, and animation
-registries additionally seal as `app/start` begins. Recursive dispatch is
+registries additionally seal as `app/start` begins. The checked synchronous
+`misa.syntax.highlight(language, source)` native API returns ordered
+`{start_byte=<zero-based>, end_byte=<exclusive>, capture=<semantic name>}`
+ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
+`keyword`, `type`, `function`, `constant`, `variable`, `property`, `tag`,
+`attribute`, `operator`, `punctuation`, `escape`, and `embedded`). Highlighting
+is derived only and never enters canonical `db`. Missing, unknown, or
+incompatible grammars return an empty array for plain-text fallback. Source is
+limited to 1 MiB and parsers are loaded lazily into a bounded cache.
+Recursive dispatch is
 unavailable. Each transaction takes one bounded working copy of `db`, then
 commits it only after its effects and view pass native validation and
 presentation. Projections receive private snapshots, so projection mutation can
@@ -414,6 +423,19 @@ composition. Interactive sessions return to the editor after each response;
 explicit argv remains a single headless turn.
 
 ## Nix
+
+The package and development shell include every grammar from the pinned
+nixpkgs using
+`pkgs.tree-sitter.withPlugins (_: pkgs.tree-sitter-grammars.allGrammars)`.
+The bundle contains parsers but no highlight queries; Misa classifies syntax
+node types generically. Fence aliases include common labels such as `js`, `ts`,
+`py`, `rb`, `rs`, `sh`, `c++`, `c#`, `yml`, and `md`.
+
+Outside Nix, install tree-sitter (including its pkg-config metadata) and point
+`MISA_TREE_SITTER_DIR` at a directory of `<language>.so` parsers. A default can
+instead be compiled with `zig build -Dtree-sitter-dir=/path/to/grammars`.
+Grammar libraries must export their conventional `tree_sitter_<language>`
+symbol.
 
 `default.nix` exports the package, overlay, shell, modules, `lib`, and
 `standardExtensions`. Raw and Nix configurations use the same ordered list:

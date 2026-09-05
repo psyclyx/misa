@@ -6,6 +6,7 @@ const lua = @import("misa_lua_runtime");
 const mcp = @import("misa_mcp");
 const standard_extensions = @import("misa_standard_extensions");
 const state_module = @import("misa_state");
+const syntax_module = @import("misa_syntax");
 const terminal_module = @import("misa_terminal");
 const session_module = @import("misa_session");
 
@@ -72,7 +73,8 @@ pub fn main(init: std.process.Init) !void {
     };
     defer config.deinit();
 
-    var runtime = lua.Runtime.init(allocator, config.config_value, extension_argv.items) catch |err| {
+    const grammar_dir = init.environ_map.get("MISA_TREE_SITTER_DIR") orelse syntax_module.default_grammar_dir;
+    var runtime = lua.Runtime.init(allocator, config.config_value, extension_argv.items, grammar_dir) catch |err| {
         if (err == error.MaximumNestingDepth) {
             std.debug.print("misa: invalid config '{s}': nesting exceeds maximum depth of {d}\n", .{ path, lua.max_nesting_depth });
             std.process.exit(2);

@@ -52,6 +52,11 @@ assert(type(package) == "table" and package.loadlib == nil and type(require) == 
 assert(type(load) == "function" and type(loadstring) == "function" and type(loadfile) == "function" and type(dofile) == "function")
 assert(ffi == nil and jit == nil)
 local ok = pcall(require, "ffi"); assert(not ok)
+assert(type(misa.syntax) == "table" and type(misa.syntax.highlight) == "function")
+assert(#misa.syntax.highlight("grammar_that_does_not_exist", "plain") == 0)
+assert(not pcall(misa.syntax.highlight, {}, "plain"))
+assert(not pcall(misa.syntax.highlight, "python", {}))
+assert(not pcall(misa.syntax.highlight, "python", string.rep("x", 1024 * 1024 + 1)))
 package.preload["misa.test.module"] = function() return {answer=42} end
 assert(require("misa.test.module").answer == 42)
 return {setup=function(context)
