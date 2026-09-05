@@ -34,7 +34,9 @@ return {
     misa.fuzzy_choices = function(source, query, text)
       local ranked = {}
       for ordinal, item in ipairs(source) do
-        local searchable = text and text(item) or (item.value .. " " .. (item.label or "") .. " " .. (item.description or ""))
+        local extra = ""
+        if type(item.search) == "string" then extra = item.search elseif type(item.search) == "table" then extra = table.concat(item.search, " ") end
+        local searchable = text and text(item) or (item.value .. " " .. (item.label or "") .. " " .. (item.description or "") .. " " .. extra)
         local rank = query == "" and 0 or score(query, searchable)
         if rank then ranked[#ranked + 1] = { item = item, score = rank, ordinal = ordinal } end
       end

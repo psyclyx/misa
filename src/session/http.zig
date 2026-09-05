@@ -13,6 +13,15 @@ pub const Spec = struct {
     completion: []const u8,
     id: []const u8,
     response_format: enum { text, json, sse_json, sse_json_stream },
+    timeouts: Timeouts = .{},
+
+    pub const Timeouts = struct {
+        // DNS and connection establishment are part of first-byte latency: the
+        // transport does not expose a separate connection-established signal.
+        first_byte_ms: u64 = 30_000,
+        idle_ms: u64 = 30_000,
+        overall_ms: u64 = 600_000,
+    };
 
     pub const Credential = struct {
         id: []const u8,
@@ -71,6 +80,18 @@ pub const Spec = struct {
             .string => |string| string,
             else => return error.InvalidEffect,
         } else "text";
+        const timeouts: Timeouts = if (object.get("timeouts")) |value| blk: {
+            const values = switch (value) {
+                .object => |item| item,
+                else => return error.InvalidEffect,
+            };
+            if (values.get("connect_ms") != null) return error.InvalidEffect;
+            break :blk .{
+                .first_byte_ms = try timeoutField(values, "first_byte_ms", 30_000),
+                .idle_ms = try timeoutField(values, "idle_ms", 30_000),
+                .overall_ms = try timeoutField(values, "overall_ms", 600_000),
+            };
+        } else .{};
         return .{
             .url = url,
             .method = method,
@@ -81,6 +102,7 @@ pub const Spec = struct {
             .completion = nonEmptyString(object, "completion") orelse return error.InvalidEffect,
             .id = nonEmptyString(object, "id") orelse return error.InvalidEffect,
             .response_format = if (std.mem.eql(u8, response_format, "text")) .text else if (std.mem.eql(u8, response_format, "json")) .json else if (std.mem.eql(u8, response_format, "sse_json")) .sse_json else if (std.mem.eql(u8, response_format, "sse_json_stream")) .sse_json_stream else return error.InvalidEffect,
+            .timeouts = timeouts,
         };
     }
 };
@@ -90,6 +112,12 @@ pub const Spec = struct {
 pub const StreamSink = struct {
     context: *anyopaque,
     emit: *const fn (context: *anyopaque, data: ?[]const u8) anyerror!void,
+    activity: ?*const fn (context: *anyopaque) void = null,
+};
+
+pub const Activity = struct {
+    context: *anyopaque,
+    note: *const fn (context: *anyopaque) void,
 };
 
 pub const Result = struct {
@@ -101,17 +129,54 @@ pub const Result = struct {
     }
 };
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec) !Result {
-    var response: std.Io.Writer.Allocating = .init(allocator);
+pub fn run(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec, activity: ?Activity) !Result {
+    var response: BoundedWriter = .{ .allocator = allocator, .limit = 8 * 1024 * 1024, .activity = activity };
     errdefer response.deinit();
-    const status = try fetch(allocator, io, store, spec, &response.writer);
-    const body = try response.toOwnedSlice();
-    if (body.len > 8 * 1024 * 1024) {
-        allocator.free(body);
-        return error.HttpResponseTooLarge;
-    }
-    return .{ .status = status, .body = body };
+    const status = fetch(allocator, io, store, spec, &response.writer) catch |err| {
+        if (response.exceeded) return error.HttpResponseTooLarge;
+        return err;
+    };
+    return .{ .status = status, .body = try response.toOwnedSlice() };
 }
+
+const BoundedWriter = struct {
+    writer: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+    allocator: std.mem.Allocator,
+    limit: usize,
+    bytes: std.ArrayList(u8) = .empty,
+    exceeded: bool = false,
+    activity: ?Activity = null,
+
+    fn deinit(self: *BoundedWriter) void {
+        self.bytes.deinit(self.allocator);
+    }
+    fn toOwnedSlice(self: *BoundedWriter) ![]u8 {
+        return self.bytes.toOwnedSlice(self.allocator);
+    }
+    fn drain(writer: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *BoundedWriter = @alignCast(@fieldParentPtr("writer", writer));
+        var consumed: usize = 0;
+        if (data.len == 0) return 0;
+        for (data[0 .. data.len - 1]) |part| {
+            self.append(part) catch return error.WriteFailed;
+            consumed += part.len;
+        }
+        for (0..splat) |_| {
+            const part = data[data.len - 1];
+            self.append(part) catch return error.WriteFailed;
+            consumed += part.len;
+        }
+        return consumed;
+    }
+    fn append(self: *BoundedWriter, value: []const u8) !void {
+        if (value.len != 0) if (self.activity) |activity| activity.note(activity.context);
+        if (value.len > self.limit -| self.bytes.items.len) {
+            self.exceeded = true;
+            return error.ResponseTooLarge;
+        }
+        try self.bytes.appendSlice(self.allocator, value);
+    }
+};
 
 /// Parse SSE framing incrementally from the response writer. `null` denotes
 /// the provider's literal `[DONE]` marker; EOF is deliberately not equivalent.
@@ -125,6 +190,8 @@ pub fn runSse(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spe
         // cancellation from a backpressured sink as cancellation of the HTTP
         // operation rather than misreporting it as an SSE parse failure.
         if (parser.canceled) return error.Canceled;
+        if (parser.finished) return .{ .status = 200, .error_body = "", .failure = null };
+        if (parser.failure) |failure| return failure;
         return err;
     };
     // EOF never completes an SSE event. A server must terminate an event with
@@ -178,6 +245,7 @@ const SseWriter = struct {
     total: usize = 0,
     failure: ?anyerror = null,
     canceled: bool = false,
+    finished: bool = false,
 
     fn deinit(self: *SseWriter) void {
         self.line.deinit(self.allocator);
@@ -188,6 +256,7 @@ const SseWriter = struct {
     fn drain(writer: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         const self: *SseWriter = @alignCast(@fieldParentPtr("writer", writer));
         var consumed: usize = 0;
+        if (data.len == 0) return 0;
         for (data[0 .. data.len - 1]) |part| {
             self.accept(part) catch return error.WriteFailed;
             consumed += part.len;
@@ -201,17 +270,14 @@ const SseWriter = struct {
     }
 
     fn accept(self: *SseWriter, bytes: []const u8) !void {
+        if (bytes.len != 0) if (self.sink.activity) |note| note(self.sink.context);
         self.total += bytes.len;
         if (self.total > 8 * 1024 * 1024) return error.HttpResponseTooLarge;
         const remaining = 64 * 1024 - self.bounded_body.items.len;
         try self.bounded_body.appendSlice(self.allocator, bytes[0..@min(remaining, bytes.len)]);
-        if (self.failure != null) return;
         self.feed(bytes) catch |err| {
-            if (err == error.Canceled) {
-                self.canceled = true;
-                return err;
-            }
-            self.failure = err;
+            if (err == error.Canceled) self.canceled = true else if (err == error.StreamFinished) self.finished = true else self.failure = err;
+            return err;
         };
     }
 
@@ -241,6 +307,16 @@ const SseWriter = struct {
     }
 };
 
+fn timeoutField(object: std.json.ObjectMap, name: []const u8, default: u64) !u64 {
+    const value = object.get(name) orelse return default;
+    const integer = switch (value) {
+        .integer => |item| item,
+        else => return error.InvalidEffect,
+    };
+    if (integer < 1 or integer > 3_600_000) return error.InvalidEffect;
+    return @intCast(integer);
+}
+
 fn validateHeader(value: []const u8) !void {
     if (std.mem.indexOfAny(u8, value, "\r\n\x00") != null) return error.InvalidEffect;
 }
@@ -256,6 +332,47 @@ fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = stringField(object, name) orelse return null;
     return if (value.len == 0 or std.mem.indexOfScalar(u8, value, 0) != null) null else value;
+}
+
+test "HTTP timeout contract uses observable first-byte idle and overall phases" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"url":"https://example.test","completion":"done","id":"1","timeouts":{"first_byte_ms":12,"idle_ms":34,"overall_ms":56}}
+    , .{});
+    defer parsed.deinit();
+    const spec = try Spec.parse(parsed.value.object);
+    try std.testing.expectEqual(@as(u64, 12), spec.timeouts.first_byte_ms);
+    try std.testing.expectEqual(@as(u64, 34), spec.timeouts.idle_ms);
+    try std.testing.expectEqual(@as(u64, 56), spec.timeouts.overall_ms);
+
+    var obsolete = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"url":"https://example.test","completion":"done","id":"1","timeouts":{"connect_ms":10}}
+    , .{});
+    defer obsolete.deinit();
+    try std.testing.expectError(error.InvalidEffect, Spec.parse(obsolete.value.object));
+}
+
+test "buffered HTTP writer reports body activity before completion" {
+    const Probe = struct {
+        count: usize = 0,
+        fn note(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    var probe: Probe = .{};
+    var writer: BoundedWriter = .{ .allocator = std.testing.allocator, .limit = 16, .activity = .{ .context = &probe, .note = Probe.note } };
+    defer writer.deinit();
+    try writer.append("body");
+    try std.testing.expectEqual(@as(usize, 1), probe.count);
+}
+
+test "regular HTTP response writer rejects before crossing its allocation bound" {
+    var writer: BoundedWriter = .{ .allocator = std.testing.allocator, .limit = 4 };
+    defer writer.deinit();
+    try writer.append("1234");
+    try std.testing.expectError(error.ResponseTooLarge, writer.append("5"));
+    try std.testing.expectEqual(@as(usize, 4), writer.bytes.items.len);
+    try std.testing.expect(writer.exceeded);
 }
 
 test "SSE EOF drops an unterminated event" {
@@ -289,6 +406,19 @@ test "SSE sink cancellation aborts the writer without becoming parse failure" {
     try std.testing.expectError(error.Canceled, parser.accept("data: {}\n\n"));
     try std.testing.expect(parser.canceled);
     try std.testing.expect(parser.failure == null);
+}
+
+test "SSE terminal marker aborts parsing immediately" {
+    const Probe = struct {
+        fn emit(_: *anyopaque, data: ?[]const u8) anyerror!void {
+            if (data == null) return error.StreamFinished;
+        }
+    };
+    var ignored: u8 = 0;
+    var parser: SseWriter = .{ .allocator = std.testing.allocator, .sink = .{ .context = &ignored, .emit = Probe.emit } };
+    defer parser.deinit();
+    try std.testing.expectError(error.StreamFinished, parser.accept("data: [DONE]\n\n"));
+    try std.testing.expect(parser.finished);
 }
 
 test "HTTP effect validation keeps credentials referential" {

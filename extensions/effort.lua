@@ -20,9 +20,14 @@ end
 return { setup = function()
   assert(misa.request_option_choices, "effort requires request_options first")
   misa.reg_keybinding({ context = "global", action = "cycle_effort", default = { "alt+e" } })
+  if misa.reg_indicator then misa.reg_indicator({
+    id="effort", label="effort", icon="◈",
+    hotkey={context="global",action="cycle_effort"},
+    value=function(db) return misa.request_option_value(db,option_name) end,
+  }) end
   misa.reg_command({
     name = "/effort", description = "Choose model reasoning effort", event = "effort/select",
-    preference_scope = "request-options/effort",
+    preference_scope = "request-options/effort", choice_purpose = "command",
     selected = function(db) return misa.request_option_value(db, option_name) end,
     complete = function(_, db)
       local result = {}
@@ -31,10 +36,9 @@ return { setup = function()
     end,
   })
 
-  -- command_choice owns ordinary choices. Intercept its empty unsupported case
-  -- so models without reasoning do not open an unusable empty picker.
+  -- Intercept the shared command-choice transaction when effort is unsupported.
   misa.reg_interceptor({ id = "effort/input", before = function(tx)
-    if tx.event.type == "command-choice/open" and tx.event.command == "/effort" and #choices(tx.db) == 0 then
+    if tx.event.type == "choices/command-open" and tx.event.command == "/effort" and #choices(tx.db) == 0 then
       tx.event = { type = "effort/unsupported" }
     elseif tx.event.type == "terminal/input" and misa.keybinding_action and misa.keybinding_action("global", tx.event) == "cycle_effort" then
       tx.event = { type = "effort/cycle" }

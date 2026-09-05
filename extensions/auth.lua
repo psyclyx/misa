@@ -2,6 +2,11 @@
 return {
   setup = function()
     local providers = misa.auth_providers()
+    local function provider_by_id(id) for _,provider in ipairs(providers) do if provider.id==id then return provider end end end
+    local function auth_effect(action,provider,id)
+      return {type="auth/command",action=action,provider=provider.id,strategy=provider.strategy,profile=provider.profile,
+        completion="auth/complete",interaction="auth/interaction",id=id}
+    end
     local function model_provider_for(id)
       for _, provider in ipairs(providers) do if provider.id == id then return provider.model_provider end end
     end
@@ -18,10 +23,8 @@ return {
     misa.reg_event("app/start", function(db)
       local effects = {}
       for _, provider in ipairs(providers) do
-        effects[#effects + 1] = {
-          type = "auth/command", action = "status", provider = provider.id,
-          completion = "auth/provider-status", id = provider.model_provider,
-        }
+        local effect=auth_effect("status",provider,provider.model_provider); effect.completion="auth/provider-status"
+        effects[#effects + 1] = effect
       end
       if #providers == 0 then effects[#effects + 1] = { type = "dispatch", event = { type = "auth/startup-ready" } } end
       return { db = db, fx = effects }
@@ -64,7 +67,7 @@ return {
     }) do
       local item = command
       local event_type = "auth/" .. item.action
-      misa.reg_command({ name = item.name, description = item.description, event = event_type, completion = "auth-provider" })
+      misa.reg_command({ name = item.name, description = item.description, event = event_type, completion = "auth-provider", choice_purpose = "auth" })
       misa.reg_event(event_type, function(_, event, cofx)
         local provider = type(event.arguments) == "string" and event.arguments:match("^%s*(%S+)%s*$") or nil
         if not provider then
@@ -77,15 +80,32 @@ return {
         if cofx.terminal.interactive then effects[#effects + 1] = { type = "dispatch", event = {
           type = "transcript/harness", text = item.action .. " " .. provider .. "…", level = "info",
         } } end
-        effects[#effects + 1] = {
-          type = "auth/command", action = item.action, provider = provider,
-          completion = "auth/complete", id = item.action .. ":" .. provider,
-        }
+        local declaration=provider_by_id(provider)
+        if not declaration then effects[#effects+1]={type="dispatch",event={type="auth/complete",id=item.action..":"..provider,provider=provider,ok=false,message="unknown provider"}}
+        elseif item.action=="login" and (declaration.strategy=="api_key" or declaration.strategy=="cli_handoff") then
+          effects[#effects+1]={type="dispatch",event={type="dialog/open",id="auth-handoff",correlation=item.action..":"..provider,completion="auth/handoff-confirmed",kind="alert",title="Terminal handoff",message="This provider requires temporary terminal input. Continue to leave the managed screen, then return automatically.",cancellable=true,actions={{id="continue",label="enter continue",primary=true}},hints={"secret input is handled natively"}}}
+        else effects[#effects+1]=auth_effect(item.action,declaration,item.action..":"..provider) end
         return { fx = effects }
       end)
     end
 
+    misa.reg_event("auth/handoff-confirmed",function(db,event)
+      if event.cancelled then return {db=db,fx={{type="terminal/read"}}} end
+      local action,provider=event.correlation:match("^([^:]+):(.+)$"); local declaration=provider_by_id(provider)
+      return {db=db,fx={auth_effect(action,assert(declaration),event.correlation)}}
+    end)
+    misa.reg_event("auth/interaction",function(db,event)
+      local dialog={type=db.dialog and "dialog/update" or "dialog/open",id=event.id,correlation=event.correlation or event.id,
+        completion="auth/dialog-action",kind=event.kind,title=event.title,message=event.message,url=event.url,code=event.code,
+        progress=event.progress,cancellable=event.cancellable,input=event.input,actions=event.actions,hints=event.hints}
+      return {db=db,fx={{type="dispatch",event=dialog},{type="terminal/read"}}}
+    end)
+    misa.reg_event("auth/dialog-action",function(db,event)
+      if event.cancelled then return {db=db,fx={{type="operation/cancel",id=event.id},{type="terminal/read"}}} end
+      return {db=db,fx={{type="auth/respond",id=event.id,correlation=event.correlation,action=event.action,value=event.value}}}
+    end)
     misa.reg_event("auth/complete", function(db, event)
+      if db.dialog and db.dialog.id==event.id then db.dialog=nil end
       local message = event.message
       if event.subscription_type and event.subscription_type ~= misa.json_null then message = message .. " (" .. event.subscription_type .. ")" end
       local effects = { { type = "dispatch", event = {

@@ -7,7 +7,9 @@ pub const default_config_path = build_options.default_config_path;
 pub const ids = [_][]const u8{
     "agent",
     "auth",
-    "command_choice",
+    "choices",
+    "dialogs",
+    "dialog_view",
     "components",
     "layout",
     "component.message",
@@ -15,9 +17,11 @@ pub const ids = [_][]const u8{
     "component.picker",
     "component.status",
     "component.chrome",
+    "component.dialog",
     "editor",
     "fuzzy",
     "keybindings",
+    "indicators",
     "json",
     "messages",
     "models",
@@ -58,7 +62,9 @@ pub fn isLiteralPath(value: []const u8) bool {
 pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "agent")) return "agent.lua";
     if (std.mem.eql(u8, id, "auth")) return "auth.lua";
-    if (std.mem.eql(u8, id, "command_choice")) return "command_choice.lua";
+    if (std.mem.eql(u8, id, "choices")) return "choices.lua";
+    if (std.mem.eql(u8, id, "dialogs")) return "dialogs.lua";
+    if (std.mem.eql(u8, id, "dialog_view")) return "dialog_view.lua";
     if (std.mem.eql(u8, id, "components")) return "components.lua";
     if (std.mem.eql(u8, id, "layout")) return "layout.lua";
     if (std.mem.eql(u8, id, "component.message")) return "component/message.lua";
@@ -66,9 +72,11 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "component.picker")) return "component/picker.lua";
     if (std.mem.eql(u8, id, "component.status")) return "component/status.lua";
     if (std.mem.eql(u8, id, "component.chrome")) return "component/chrome.lua";
+    if (std.mem.eql(u8, id, "component.dialog")) return "component/dialog.lua";
     if (std.mem.eql(u8, id, "editor")) return "editor.lua";
     if (std.mem.eql(u8, id, "fuzzy")) return "fuzzy.lua";
     if (std.mem.eql(u8, id, "keybindings")) return "keybindings.lua";
+    if (std.mem.eql(u8, id, "indicators")) return "indicators.lua";
     if (std.mem.eql(u8, id, "json")) return "json.lua";
     if (std.mem.eql(u8, id, "messages")) return "messages.lua";
     if (std.mem.eql(u8, id, "models")) return "models.lua";
@@ -116,7 +124,9 @@ pub fn resolve(
 test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("agent.lua", catalogPath("agent").?);
     try std.testing.expectEqualStrings("auth.lua", catalogPath("auth").?);
-    try std.testing.expectEqualStrings("command_choice.lua", catalogPath("command_choice").?);
+    try std.testing.expectEqualStrings("choices.lua", catalogPath("choices").?);
+    try std.testing.expectEqualStrings("dialogs.lua", catalogPath("dialogs").?);
+    try std.testing.expectEqualStrings("dialog_view.lua", catalogPath("dialog_view").?);
     try std.testing.expectEqualStrings("components.lua", catalogPath("components").?);
     try std.testing.expectEqualStrings("layout.lua", catalogPath("layout").?);
     try std.testing.expectEqualStrings("component/message.lua", catalogPath("component.message").?);
@@ -124,10 +134,12 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("component/picker.lua", catalogPath("component.picker").?);
     try std.testing.expectEqualStrings("component/status.lua", catalogPath("component.status").?);
     try std.testing.expectEqualStrings("component/chrome.lua", catalogPath("component.chrome").?);
+    try std.testing.expectEqualStrings("component/dialog.lua", catalogPath("component.dialog").?);
     try std.testing.expect(catalogPath("component.default") == null);
     try std.testing.expectEqualStrings("editor.lua", catalogPath("editor").?);
     try std.testing.expectEqualStrings("fuzzy.lua", catalogPath("fuzzy").?);
     try std.testing.expectEqualStrings("keybindings.lua", catalogPath("keybindings").?);
+    try std.testing.expectEqualStrings("indicators.lua", catalogPath("indicators").?);
     try std.testing.expectEqualStrings("json.lua", catalogPath("json").?);
     try std.testing.expectEqualStrings("messages.lua", catalogPath("messages").?);
     try std.testing.expectEqualStrings("models.lua", catalogPath("models").?);
@@ -156,7 +168,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("ui.lua", catalogPath("ui").?);
     try std.testing.expectEqualStrings("tool/files.lua", catalogPath("tool.files").?);
     try std.testing.expectEqualStrings("tool/shell.lua", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 39), ids.len);
+    try std.testing.expectEqual(@as(usize, 43), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {

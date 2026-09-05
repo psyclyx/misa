@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     if (argv.items.len > 1 and (std.mem.eql(u8, argv.items[1], "login") or std.mem.eql(u8, argv.items[1], "logout") or std.mem.eql(u8, argv.items[1], "status"))) {
         if (argv.items.len != 3) fatal("usage: misa <login|logout|status> <openai|openai-codex|anthropic|openrouter|kimi-coding|claude>");
         const action: auth.Action = if (std.mem.eql(u8, argv.items[1], "login")) .login else if (std.mem.eql(u8, argv.items[1], "logout")) .logout else .status;
-        const result = auth.command(allocator, init.io, init.environ_map, action, argv.items[2]) catch |err| {
+        const result = auth.commandTerminal(allocator, init.io, init.environ_map, action, argv.items[2]) catch |err| {
             if (err == error.UnknownProvider) fatal("unknown provider");
             return err;
         };
@@ -134,22 +134,16 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
     defer terminal.deinit();
     runtime.setTerminalInfo(.{
         .interactive = terminal.interactive,
-        .columns = terminal.dimensions.columns,
+        .columns = if (terminal.interactive) terminal_module.usableColumns(terminal.dimensions.columns) else terminal.dimensions.columns,
         .lines = terminal.dimensions.lines,
     });
-    var auth_store: ?auth.Store = auth.Store.init(allocator, init.io, init.environ_map) catch null;
-    defer if (auth_store) |*store| store.deinit();
-    var state_store = try state_module.Store.init(allocator, init.io, init.environ_map);
-    defer state_store.deinit();
     var session: session_module.Session = .{
         .allocator = allocator,
         .io = init.io,
         .runtime = runtime,
         .terminal = &terminal,
-        .auth_store = if (auth_store) |*store| store else null,
-        .state_store = &state_store,
         .environ = init.environ_map,
-        .operations = .init(allocator, init.io),
+        .operations = try .init(allocator, init.io),
         .timers = .init(allocator),
     };
     defer session.deinit();

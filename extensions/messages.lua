@@ -69,149 +69,178 @@ local function describe(value, depth)
   local values = {}; for key, child in pairs(value) do values[#values + 1] = printable_text(tostring(key)) .. "=" .. describe(child, depth + 1) end
   table.sort(values); return "{" .. table.concat(values, ", ") .. "}"
 end
-local function append(db, model)
-  local messages = assert(db.messages, "message state is not initialized")
-  messages.transcript[#messages.transcript + 1] = model; messages.scroll = 0
-end
 local function noninteractive_commit(db, role, model, cofx, markdown)
   if cofx.terminal.interactive or not misa.render_component then return {} end
-  local rendered = misa.render_component(db, role, model, { interactive = false, columns = cofx.terminal.columns, markdown = markdown })
-  if #(rendered.lines or {}) == 0 then return {} end
-  return { { type = "view/commit", lines = rendered.lines } }
+  local rendered=misa.render_component(db,role,model,{interactive=false,columns=cofx.terminal.columns,markdown=markdown})
+  if #(rendered.lines or {})==0 then return {} end
+  return {{type="view/commit",lines=rendered.lines}}
+end
+local function clock(cofx)
+  local value=assert(cofx.clock,"native clock coeffect is missing")
+  return value.wall_ms,value.monotonic_ms
+end
+local function append_response(db,id,role,cofx,status)
+  local state=assert(db.messages,"message state is not initialized")
+  assert(not state.by_response[id],"duplicate transcript response: "..tostring(id))
+  local wall,mono=clock(cofx); local response={id=id,role=role,status=status or "streaming",started_wall_ms=wall,started_monotonic_ms=mono,block_start=#state.blocks+1,block_count=0}
+  state.responses[#state.responses+1]=response; state.by_response[id]=#state.responses; state.scroll=0; return response
+end
+local function response(db,id)
+  local state=db.messages; local index=state and state.by_response[id]; return index and state.responses[index] or nil
+end
+local function append_block(db,response_model,block)
+  local state=db.messages; block.response_id=response_model.id; block.role=response_model.role; block.started_wall_ms=response_model.started_wall_ms
+  state.blocks[#state.blocks+1]=block; state.transcript=state.blocks; response_model.block_count=response_model.block_count+1; state.scroll=0; return block
+end
+local function find_block(db,response_model,id)
+  local blocks=db.messages.blocks
+  for index=response_model.block_start,response_model.block_start+response_model.block_count-1 do if blocks[index] and blocks[index].id==id then return blocks[index] end end
+end
+local function append_delta(block,value,policy)
+  value=printable_text(tostring(value or "")); if value=="" or block.truncated then return end
+  local remaining=policy.max_string-(block.byte_count or 0)
+  if remaining<=0 then block.chunks[#block.chunks+1]="… [truncated]"; block.truncated=true; return end
+  local piece=value
+  if #piece>remaining then piece=truncate_text(piece,remaining); block.truncated=true end
+  block.chunks[#block.chunks+1]=piece; block.byte_count=(block.byte_count or 0)+math.min(#value,remaining)
+end
+local function finish_block(block, event, policy)
+  if block.chunks then block.text=table.concat(block.chunks); block.chunks=nil end
+  if event and event.arguments~=nil then block.arguments=copy_structural(event.arguments,policy,0) end
+  if event and event.name~=nil then block.name=printable_text(tostring(event.name)) end
+  if event and event.call_id~=nil then block.call_id=printable_text(tostring(event.call_id)) end
+  if block.arguments~=nil then block.argument_chunks=nil; block.argument_text=nil
+  elseif block.argument_chunks then block.argument_text=table.concat(block.argument_chunks); block.argument_chunks=nil end
+  block.argument_bytes=nil
+  block.streaming=false
+end
+local function timestamp(ms)
+  local seconds=math.floor((tonumber(ms) or 0)/1000)%86400
+  return string.format("%02d:%02d:%02d",math.floor(seconds/3600),math.floor(seconds/60)%60,seconds%60)
 end
 
-return { setup = function(context)
-  local config = type(context.config) == "table" and context.config.messages or nil
-  config = type(config) == "table" and config or {}
-  local markdown = config.plain ~= true and config.markdown ~= false
-  local policy = { max_string = config.max_string or 4000, max_items = config.max_items or 64, max_depth = config.max_depth or 8, redact = {} }
-  assert(type(policy.max_string) == "number" and policy.max_string > 0, "messages.max_string must be positive")
-  for _, key in ipairs(config.redact_keys or { "authorization", "api_key", "password", "secret", "token" }) do policy.redact[lower(key)] = true end
+return { setup=function(context)
+  local config=type(context.config)=="table" and context.config.messages or nil; config=type(config)=="table" and config or {}
+  local markdown=config.plain~=true and config.markdown~=false
+  local policy={max_string=config.max_string or 4000,max_items=config.max_items or 64,max_depth=config.max_depth or 8,redact={}}
+  assert(type(policy.max_string)=="number" and policy.max_string>0,"messages.max_string must be positive")
+  for _,key in ipairs(config.redact_keys or {"authorization","api_key","password","secret","token"}) do policy.redact[lower(key)]=true end
+  misa.reg_keybinding({context="global",action="toggle_verbose",default={"alt+t"}})
+  misa.reg_keybinding({context="global",action="transcript_up",default={"page_up","alt+k"}})
+  misa.reg_keybinding({context="global",action="transcript_down",default={"page_down","alt+j"}})
+  if misa.reg_indicator then misa.reg_indicator({id="transcript-detail",label="detail",icon="≡",hotkey={context="global",action="toggle_verbose"},value=function(db) return (db.messages or {}).verbose and "verbose" or "summary" end}) end
+  misa.reg_command({name="/verbose",description="Toggle thinking and tool transcript detail",event="messages/toggle-verbose"})
+  misa.reg_event("app/start",function(db) db.messages={responses={},blocks={},transcript={},by_response={},verbose=config.verbose==true,scroll=0,next_id=0}; db.messages.transcript=db.messages.blocks; return {db=db} end)
+  misa.reg_event("messages/toggle-verbose",function(db) db.messages.verbose,db.messages.scroll=not db.messages.verbose,0; return {db=db,fx={{type="dispatch",event={type="ui/redraw"}}}} end)
+  misa.reg_event("messages/scroll",function(db,event) db.messages.scroll=math.max(0,db.messages.scroll+event.delta); return {db=db,fx={{type="terminal/read"}}} end)
+  misa.reg_interceptor({id="messages/global-keys",before=function(tx)
+    if tx.event.type=="terminal/input" and not tx.db.picker and misa.keybinding_action then local action=misa.keybinding_action("global",tx.event)
+      if action=="toggle_verbose" then tx.event={type="messages/toggle-verbose"}
+      elseif action=="transcript_up" then tx.event={type="messages/scroll",delta=math.max(1,math.floor(tx.cofx.terminal.lines/2))}
+      elseif action=="transcript_down" then tx.event={type="messages/scroll",delta=-math.max(1,math.floor(tx.cofx.terminal.lines/2))} end
+    end; return tx
+  end})
+  misa.messages_projection=function(db) return {verbose=(db.messages or {}).verbose==true} end
+  misa.transcript_projection=function(db,render_context)
+    local context_copy={}; for key,value in pairs(render_context or {}) do context_copy[key]=value end; context_copy.markdown=markdown
+    local result,state={},assert(db.messages,"message state is not initialized")
+    for _,source in ipairs(state.blocks) do
+      local model={}; for key,value in pairs(source) do model[key]=value end
+      if model.chunks then model.text=table.concat(model.chunks) end
+      model.timestamp=timestamp(model.started_wall_ms)
+      local owner=response(db,model.response_id)
+      if owner and owner.metadata_block_id==model.id then model.tokens_per_second=owner.tokens_per_second end
+      local role
+      if model.kind=="user" then role="transcript.user"
+      elseif model.kind=="assistant" then role="transcript.assistant"
+      elseif model.kind=="thinking" then role=state.verbose and "transcript.thinking" or "transcript.thinking_collapsed"; model.summary=model.streaming and "streaming" or "summary"
+      elseif model.kind=="tool_call" then role="transcript.tool_call"; model.detail=state.verbose and (model.arguments and describe(model.arguments,0) or printable_text(model.argument_text or table.concat(model.argument_chunks or {}))) or (model.streaming and "streaming" or "summary")
+      elseif model.kind=="tool_result" then role="transcript.tool_result"; model.collapsed=not state.verbose
+      elseif model.kind=="harness" then role="transcript.harness" end
+      if role then local rendered=misa.render_component(db,role,model,context_copy); for _,line in ipairs(rendered.lines or {}) do result[#result+1]=line end end
+    end
+    return result
+  end
+  misa.transcript_window=function(db,render_context,available_lines)
+    local lines=misa.transcript_projection(db,render_context); local room=math.max(0,math.floor(available_lines or 0)); if room==0 then return {} end
+    local scroll=math.min((db.messages or {}).scroll or 0,math.max(0,#lines-room)); local first=math.max(1,#lines-room-scroll+1); local result={}
+    for index=first,math.min(#lines,first+room-1) do result[#result+1]=lines[index] end; return result
+  end
+  misa.reg_event("transcript/reset",function(db) db.messages.responses,db.messages.blocks,db.messages.by_response={}, {}, {}; db.messages.transcript=db.messages.blocks; db.messages.scroll=0; return {db=db} end)
 
-  misa.reg_keybinding({ context = "global", action = "toggle_verbose", default = { "alt+t" } })
-  misa.reg_keybinding({ context = "global", action = "transcript_up", default = { "page_up", "alt+k" } })
-  misa.reg_keybinding({ context = "global", action = "transcript_down", default = { "page_down", "alt+j" } })
-  misa.reg_command({ name = "/verbose", description = "Toggle thinking and tool transcript detail", event = "messages/toggle-verbose" })
-  misa.reg_event("app/start", function(db)
-    db.messages = { transcript = {}, verbose = config.verbose == true, scroll = 0 }
-    return { db = db }
+  misa.reg_event("transcript/response-start",function(db,event,cofx)
+    assert(type(event.response_id)=="string" and event.response_id~="","response ID must be nonempty")
+    append_response(db,event.response_id,event.role or "assistant",cofx,"streaming"); return {db=db}
   end)
-  misa.reg_event("messages/toggle-verbose", function(db)
-    db.messages.verbose, db.messages.scroll = not db.messages.verbose, 0
-    return { db = db, fx = { { type = "dispatch", event = { type = "ui/redraw" } } } }
+  misa.reg_event("transcript/block-start",function(db,event)
+    local owner=assert(response(db,event.response_id),"unknown transcript response"); assert(owner.status=="streaming","response is finalized")
+    assert(type(event.block_id)=="string" and event.block_id~="" and not find_block(db,owner,event.block_id),"invalid transcript block ID")
+    local kind=assert(event.kind,"transcript block kind is missing"); local block={id=event.block_id,kind=kind,streaming=true,interrupted=false}
+    if kind=="assistant" or kind=="thinking" then block.chunks={}; block.byte_count=0
+    elseif kind=="tool_call" then block.name=printable_text(tostring(event.name or "tool")); block.call_id=event.call_id; block.argument_chunks={}; block.argument_bytes=0
+    else error("unsupported streaming transcript block: "..tostring(kind)) end
+    append_block(db,owner,block); return {db=db}
   end)
-  misa.reg_event("messages/scroll", function(db, event)
-    db.messages.scroll = math.max(0, db.messages.scroll + event.delta)
-    return { db = db, fx = { { type = "terminal/read" } } }
-  end)
-  misa.reg_interceptor({ id = "messages/global-keys", before = function(tx)
-    if tx.event.type == "terminal/input" and not tx.db.picker and misa.keybinding_action then
-      local action = misa.keybinding_action("global", tx.event)
-      if action == "toggle_verbose" then tx.event = { type = "messages/toggle-verbose" }
-      elseif action == "transcript_up" then tx.event = { type = "messages/scroll", delta = math.max(1, math.floor(tx.cofx.terminal.lines / 2)) }
-      elseif action == "transcript_down" then tx.event = { type = "messages/scroll", delta = -math.max(1, math.floor(tx.cofx.terminal.lines / 2)) } end
-    end
-    return tx
-  end })
-  misa.messages_projection = function(db)
-    local state = assert(db.messages, "message state is not initialized")
-    return { verbose=state.verbose == true }
-  end
-  misa.transcript_projection = function(db, render_context)
-    local context_copy = {}; for key, value in pairs(render_context or {}) do context_copy[key] = value end
-    context_copy.markdown = markdown
-    local result, state = {}, assert(db.messages, "message state is not initialized")
-    local function project(role, model)
-      local projected = model
-      if model.kind == "tool_call" then
-        projected = {}; for key, value in pairs(model) do projected[key] = value end
-        projected.detail = state.verbose and describe(model.arguments, 0) or "collapsed"
-      elseif model.kind == "tool_result" then
-        projected = {}; for key, value in pairs(model) do projected[key] = value end
-        projected.collapsed = not state.verbose
+  misa.reg_event("transcript/block-delta",function(db,event)
+    local owner=assert(response(db,event.response_id),"unknown transcript response"); local block=assert(find_block(db,owner,event.block_id),"unknown transcript block")
+    assert(block.streaming,"transcript block is finalized")
+    if block.kind=="assistant" or block.kind=="thinking" then append_delta(block,event.text,policy)
+    else
+      if event.name~=nil then block.name=printable_text(tostring(event.name)) end; if event.call_id~=nil then block.call_id=printable_text(tostring(event.call_id)) end
+      if event.arguments_json_delta~=nil and not block.arguments_truncated then
+        local value=printable_text(tostring(event.arguments_json_delta)); local remaining=policy.max_string-(block.argument_bytes or 0)
+        if remaining<=0 then block.argument_chunks[#block.argument_chunks+1]="… [truncated]"; block.arguments_truncated=true
+        elseif #value>remaining then block.argument_chunks[#block.argument_chunks+1]=truncate_text(value,remaining); block.argument_bytes=policy.max_string; block.arguments_truncated=true
+        else block.argument_chunks[#block.argument_chunks+1]=value; block.argument_bytes=(block.argument_bytes or 0)+#value end
       end
-      local rendered = misa.render_component(db, role, projected, context_copy)
-      for _, line in ipairs(rendered.lines or {}) do result[#result + 1] = line end
+      if event.arguments~=nil then block.arguments=copy_structural(event.arguments,policy,0) end
     end
-    for _, model in ipairs(state.transcript) do
-      if model.kind == "user" then project("transcript.user", model)
-      elseif model.kind == "assistant" then project("transcript.assistant", model)
-      elseif model.kind == "thinking" then project(state.verbose and "transcript.thinking" or "transcript.thinking_collapsed", model)
-      elseif model.kind == "tool_call" then project("transcript.tool_call", model)
-      elseif model.kind == "tool_result" then project("transcript.tool_result", model)
-      elseif model.kind == "harness" then project("transcript.harness", model) end
+    return {db=db}
+  end)
+  misa.reg_event("transcript/block-end",function(db,event)
+    local owner=assert(response(db,event.response_id),"unknown transcript response"); finish_block(assert(find_block(db,owner,event.block_id),"unknown transcript block"),event,policy); return {db=db}
+  end)
+  misa.reg_event("transcript/response-end",function(db,event,cofx)
+    local owner=assert(response(db,event.response_id),"unknown transcript response"); local _,now=clock(cofx)
+    for index=owner.block_start,owner.block_start+owner.block_count-1 do local block=db.messages.blocks[index]; if block.streaming then finish_block(block,nil,policy) end end
+    owner.status="complete"; owner.completed_monotonic_ms=now; owner.elapsed_ms=math.max(0,now-owner.started_monotonic_ms)
+    local output=type(event.usage)=="table" and event.usage.output_tokens or nil
+    if type(output)=="number" and output>=0 and owner.elapsed_ms>0 then owner.output_tokens=output; owner.tokens_per_second=output*1000/owner.elapsed_ms end
+    local fx={}; if owner.role=="assistant" then
+      local text,last_text={}
+      for i=owner.block_start,owner.block_start+owner.block_count-1 do
+        local block=db.messages.blocks[i]
+        if block.kind=="assistant" then text[#text+1]=block.text or ""; last_text=block end
+      end
+      if last_text then owner.metadata_block_id=last_text.id end
+      if #text>0 then local committed={text=table.concat(text,""),timestamp=timestamp(owner.started_wall_ms),tokens_per_second=owner.tokens_per_second}; for _,effect in ipairs(noninteractive_commit(db,"transcript.assistant",committed,cofx,markdown)) do fx[#fx+1]=effect end end
     end
-    return result
+    return {db=db,fx=fx}
+  end)
+  misa.reg_event("transcript/response-interrupted",function(db,event,cofx)
+    local owner=response(db,event.response_id); if not owner then return {db=db} end; local _,now=clock(cofx); owner.status="interrupted"; owner.completed_monotonic_ms=now; owner.elapsed_ms=math.max(0,now-owner.started_monotonic_ms)
+    for i=owner.block_start,owner.block_start+owner.block_count-1 do local block=db.messages.blocks[i]; finish_block(block,nil,policy); block.interrupted=true end; return {db=db}
+  end)
+
+  local function standalone(db,kind,text,event,cofx)
+    db.messages.next_id=db.messages.next_id+1; local id="transcript-"..db.messages.next_id; local owner=append_response(db,id,kind=="user" and "user" or "system",cofx,"complete")
+    local model=append_block(db,owner,{id=id.."/1",kind=kind,text=copy_structural(tostring(text or ""),policy,0),streaming=false,is_error=event and event.is_error==true,level=event and event.level})
+    return model
   end
-  misa.transcript_window = function(db, render_context, available_lines)
-    local lines = misa.transcript_projection(db, render_context)
-    local room = math.max(0, math.floor(available_lines or 0)); if room == 0 then return {} end
-    local scroll = math.min((db.messages or {}).scroll or 0, math.max(0, #lines - room))
-    local first = math.max(1, #lines - room - scroll + 1); local result = {}
-    for index=first,math.min(#lines,first+room-1) do result[#result+1]=lines[index] end
-    return result
-  end
-  misa.reg_event("transcript/reset", function(db) db.messages.transcript, db.messages.scroll = {}, 0; return { db = db } end)
-  misa.reg_event("transcript/stream-delta", function(db, event)
-    assert((event.kind == "text" or event.kind == "thinking") and type(event.text) == "string", "invalid transcript stream delta")
-    local kind = event.kind == "text" and "assistant" or "thinking"
-    local transcript, model = db.messages.transcript, nil
-    local last = transcript[#transcript]
-    if last and last.streaming and last.request_id == event.request_id and last.kind == kind then model = last end
-    if model then model.text = copy_structural(model.text .. event.text, policy, 0)
-    else append(db, { kind = kind, text = copy_structural(event.text, policy, 0), summary = "streaming", streaming = true, request_id = event.request_id }) end
-    return { db = db }
+  misa.reg_event("transcript/user",function(db,event,cofx) local model=standalone(db,"user",event.text,event,cofx); return {db=db,fx=noninteractive_commit(db,"transcript.user",model,cofx,markdown)} end)
+  misa.reg_event("transcript/tool-result",function(db,event,cofx) standalone(db,"tool_result",event.text,event,cofx); return {db=db} end)
+  misa.reg_event("transcript/harness",function(db,event,cofx) local model=standalone(db,"harness",event.text,event,cofx); return {db=db,fx=noninteractive_commit(db,"transcript.harness",model,cofx,markdown)} end)
+  misa.reg_event("transcript/tool-call",function(db,event,cofx) local model=standalone(db,"tool_call","",event,cofx); model.call_id=event.id; model.name=printable_text(tostring(event.name or "tool")); model.arguments=copy_structural(event.arguments or event.arguments_json or {},policy,0); return {db=db} end)
+  -- Compatibility completion input for custom agents. It is normalized once
+  -- into the same response/block lifecycle rather than maintained as a shadow.
+  misa.reg_event("transcript/assistant",function(db,event,cofx)
+    local id=event.request_id or ("legacy-"..tostring(db.messages.next_id+1)); local owner=append_response(db,id,"assistant",cofx,"complete")
+    local output={}; for index,source in ipairs(event.content or {}) do local kind=source.type=="text" and "assistant" or source.type
+      local block={id=id.."/"..index,kind=kind,streaming=false,text=source.text and copy_structural(source.text,policy,0),call_id=source.id,name=source.name,arguments=source.arguments and copy_structural(source.arguments,policy,0)}; append_block(db,owner,block); if kind=="assistant" then output[#output+1]=block.text end end
+    local fx={}; if #output>0 then for _,effect in ipairs(noninteractive_commit(db,"transcript.assistant",{text=table.concat(output,""),timestamp=timestamp(owner.started_wall_ms)},cofx,markdown)) do fx[#fx+1]=effect end end; return {db=db,fx=fx}
   end)
-  local function block_model(block, request_id, interrupted)
-    if block.type == "text" or block.type == "thinking" then return {
-      kind = block.type == "text" and "assistant" or "thinking", text = copy_structural(block.text, policy, 0),
-      summary = block.type == "thinking" and "collapsed" or nil, request_id = request_id, interrupted = interrupted or nil,
-    } end
-    if block.type == "tool_call" then return {
-      kind = "tool_call", id = printable_text(tostring(block.id or "")), name = printable_text(tostring(block.name or "")),
-      arguments = copy_structural(block.arguments or block.arguments_json or {}, policy, 0), request_id = request_id, interrupted = interrupted or nil,
-    } end
-  end
-  local function replace_request(db, request_id, blocks, interrupted)
-    local transcript, retained, insertion = db.messages.transcript, {}, nil
-    for _, model in ipairs(transcript) do
-      if model.streaming and model.request_id == request_id then insertion = insertion or (#retained + 1)
-      else retained[#retained + 1] = model end
-    end
-    insertion = insertion or (#retained + 1)
-    local normalized = {}
-    for _, block in ipairs(blocks or {}) do local model = block_model(block, request_id, interrupted); if model then normalized[#normalized + 1] = model end end
-    for index = #normalized, 1, -1 do table.insert(retained, insertion, normalized[index]) end
-    db.messages.transcript = retained
-    return normalized
-  end
-  misa.reg_event("transcript/interrupted", function(db, event)
-    replace_request(db, event.request_id, event.content or {}, true)
-    return { db = db }
-  end)
-  misa.reg_event("transcript/user", function(db, event, cofx)
-    local model = { kind = "user", text = copy_structural(event.text, policy, 0) }; append(db, model)
-    return { db = db, fx = noninteractive_commit(db, "transcript.user", model, cofx, markdown) }
-  end)
-  misa.reg_event("transcript/assistant", function(db, event, cofx)
-    local models, fx, output = replace_request(db, event.request_id, event.content or {}, false), {}, {}
-    for _, model in ipairs(models) do if model.kind == "assistant" then output[#output + 1] = model.text end end
-    if #output > 0 then
-      local committed = { kind = "assistant", text = table.concat(output, ""), request_id = event.request_id }
-      for _, effect in ipairs(noninteractive_commit(db, "transcript.assistant", committed, cofx, markdown)) do fx[#fx + 1] = effect end
-    end
-    return { db = db, fx = fx }
-  end)
-  misa.reg_event("transcript/tool-call", function(db, event)
-    append(db, { kind = "tool_call", id = printable_text(tostring(event.id or "")), name = printable_text(tostring(event.name or "")), arguments = copy_structural(event.arguments or event.arguments_json or {}, policy, 0) })
-    return { db = db }
-  end)
-  misa.reg_event("transcript/tool-result", function(db, event)
-    append(db, { kind = "tool_result", id = event.id, text = copy_structural(tostring(event.text or ""), policy, 0), is_error = event.is_error == true })
-    return { db = db }
-  end)
-  misa.reg_event("transcript/harness", function(db, event, cofx)
-    local model = { kind = "harness", text = copy_structural(tostring(event.text or ""), policy, 0), level = event.level }; append(db, model)
-    return { db = db, fx = noninteractive_commit(db, "transcript.harness", model, cofx, markdown) }
+  misa.reg_event("transcript/interrupted",function(db,event,cofx)
+    local result={db=db}; if not response(db,event.request_id) then local owner=append_response(db,event.request_id,"assistant",cofx,"streaming"); for index,source in ipairs(event.content or {}) do append_block(db,owner,{id=event.request_id.."/"..index,kind=source.type=="text" and "assistant" or source.type,text=source.text,streaming=false}) end end
+    local owner=response(db,event.request_id); owner.status="interrupted"; for i=owner.block_start,owner.block_start+owner.block_count-1 do db.messages.blocks[i].interrupted=true end; return result
   end)
 end }

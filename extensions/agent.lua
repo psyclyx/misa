@@ -31,7 +31,7 @@ local function request(db)
   if problem then return nil, problem end
   agent.request_seq = agent.request_seq + 1
   local id = "agent-" .. tostring(agent.request_seq)
-  agent.active_request_id, agent.status = id, "working"
+  agent.active_request_id, agent.status, agent.cancel_requested = id, "working", false
   return {
     type = "provider." .. selected.provider,
     id = id,
@@ -90,15 +90,23 @@ local function normalize_tool_arguments(blocks)
 end
 
 local function complete_response(db, agent, id, blocks, usage, stop_reason)
+  local stream = agent.stream
   local argument_failures = normalize_tool_arguments(blocks)
   blocks = content(blocks, "assistant")
   record_usage(agent, usage)
   agent.messages[#agent.messages + 1] = { role = "assistant", content = blocks }
   agent.active_request_id, agent.accepted_request_id, agent.stream = nil, id, nil
-  local effects, saw_tool = {
-    { type = "dispatch", event = { type = "transcript/assistant", content = blocks, request_id = id } },
-    { type = "dispatch", event = { type = "agent/usage", usage = agent.usage, last_usage = agent.last_usage } },
-  }, false
+  local effects, saw_tool = {}, false
+  if stream then
+    for _, block in ipairs(blocks) do effects[#effects + 1] = { type = "dispatch", event = {
+      type = "transcript/block-end", response_id = id, block_id = block.transcript_id,
+      call_id = block.id, name = block.name, arguments = block.arguments,
+    } }; block.transcript_id = nil end
+    effects[#effects + 1] = { type = "dispatch", event = { type = "transcript/response-end", response_id = id, usage = usage or stream.usage } }
+  else
+    effects[#effects + 1] = { type = "dispatch", event = { type = "transcript/assistant", content = blocks, request_id = id } }
+  end
+  effects[#effects + 1] = { type = "dispatch", event = { type = "agent/usage", usage = agent.usage, last_usage = agent.last_usage } }
   for _, block in ipairs(blocks) do
     if block.type == "tool_call" then
       saw_tool = true
@@ -139,10 +147,28 @@ local function complete_response(db, agent, id, blocks, usage, stop_reason)
   return { db = db, fx = effects }
 end
 
+local function cancelled(db,agent,id,interrupt_response)
+  local response_id=id or agent.active_request_id or agent.accepted_request_id
+  agent.error,agent.status,agent.active_request_id,agent.stream,agent.cancel_requested=nil,"ready",nil,nil,false
+  agent.pending_tools,agent.pending_tool_count={},0
+  local effects={}
+  if interrupt_response and response_id then effects[#effects+1]={type="dispatch",event={type="transcript/response-interrupted",response_id=response_id}} end
+  effects[#effects+1]={type="dispatch",event={type="transcript/harness",text="Cancelled",level="warning"}}
+  effects[#effects+1]={type="dispatch",event={type="agent/status",status="ready"}}
+  effects[#effects+1]={type="dispatch",event={type="agent/completed",id=response_id,exit=agent.exit_after_response}}
+  return {db=db,fx=effects}
+end
+
 local function stream_blocks(stream)
   local blocks = {}
-  for _, block in ipairs(stream.blocks) do
-    if block.type == "tool_call" and not (type(block.id) == "string" and block.id ~= "" and type(block.name) == "string" and block.name ~= "") then return nil end
+  for _, source in ipairs(stream.blocks) do
+    if source.type == "tool_call" and not (type(source.id) == "string" and source.id ~= "" and type(source.name) == "string" and source.name ~= "") then return nil end
+    local block = { type=source.type, transcript_id=source.transcript_id }
+    if source.type == "text" or source.type == "thinking" then block.text=table.concat(source.chunks)
+    else
+      block.id,block.name,block.arguments=source.id,source.name,source.arguments
+      block.arguments_json=source.arguments_json_chunks and table.concat(source.arguments_json_chunks) or source.arguments_json
+    end
     blocks[#blocks + 1] = block
   end
   return blocks
@@ -180,8 +206,18 @@ return {
 
     misa.reg_event("agent/cancel-active", function(db)
       local agent = db.agent
-      if not agent or agent.status ~= "working" or not agent.active_request_id then return { db = db } end
-      return { db = db, fx = { { type = "operation/cancel", id = agent.active_request_id } } }
+      if not agent or agent.cancel_requested then return {db=db} end
+      local effects={}
+      if agent.status=="working" and agent.active_request_id then
+        agent.cancel_requested,agent.status=true,"cancelling"
+        effects={{type="dispatch",event={type="agent/status",status="cancelling"}},{type="operation/cancel",id=agent.active_request_id}}
+      elseif agent.status=="tools" and agent.pending_tool_count>0 then
+        agent.cancel_requested,agent.status=true,"cancelling"
+        effects[1]={type="dispatch",event={type="agent/status",status="cancelling"}}
+        local ids={}; for id in pairs(agent.pending_tools) do ids[#ids+1]=id end; table.sort(ids)
+        for _,id in ipairs(ids) do effects[#effects+1]={type="operation/cancel",id=id} end
+      end
+      return {db=db,fx=effects}
     end)
 
     misa.reg_event("agent/reset", function(db)
@@ -199,6 +235,10 @@ return {
       assert(type(event.prompt) == "string" and event.prompt ~= "", "agent prompt must be nonempty")
       local agent = assert(db.agent, "agent state is not initialized")
       assert(agent.status == "ready", "agent is busy")
+      if db.auth_startup and not db.auth_startup.ready then
+        agent.startup_prompt = event.prompt
+        return { db = db }
+      end
       if not selected_model(db) then
         local configured = db.models and db.models.configured_default
         local message = configured and ("configured model is unavailable: " .. configured) or "no available models; log in to a provider"
@@ -223,35 +263,35 @@ return {
     misa.reg_event("agent/stream-start", function(db, event)
       local agent = db.agent
       if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id or agent.stream then return end
-      agent.stream = { id = event.id, blocks = {}, tools = {} }
-      return { db = db }
+      agent.stream = { id = event.id, blocks = {}, tools = {}, block_seq = 0 }
+      return { db = db, fx = { { type="dispatch", event={ type="transcript/response-start", response_id=event.id, role="assistant" } } } }
     end)
 
-    misa.reg_event("agent/stream-delta", function(db, event, cofx)
+    misa.reg_event("agent/stream-delta", function(db, event)
       local agent, delta = db.agent, event.delta
       local stream = agent and agent.stream
-      if not stream or event.id ~= agent.active_request_id or stream.id ~= event.id or type(delta) ~= "table" then return end
+      if not stream or agent.cancel_requested or event.id ~= agent.active_request_id or stream.id ~= event.id or type(delta) ~= "table" then return end
       local fx = {}
+      local function start(block, kind)
+        stream.block_seq=stream.block_seq+1; block.transcript_id=event.id.."/"..stream.block_seq; stream.blocks[#stream.blocks+1]=block
+        fx[#fx+1]={type="dispatch",event={type="transcript/block-start",response_id=event.id,block_id=block.transcript_id,kind=kind,name=block.name,call_id=block.id}}
+      end
       if delta.type == "text" or delta.type == "thinking" then
         assert(type(delta.text) == "string", "stream text delta must be a string")
         if delta.text ~= "" then
           local last = stream.blocks[#stream.blocks]
-          if last and last.type == delta.type then last.text = last.text .. delta.text
-          else stream.blocks[#stream.blocks + 1] = { type = delta.type, text = delta.text } end
-          if cofx.terminal.interactive then fx[1] = { type = "dispatch", event = { type = "transcript/stream-delta", request_id = event.id, kind = delta.type, text = delta.text } } end
+          if not last or last.type ~= delta.type then last={type=delta.type,chunks={}}; start(last,delta.type=="text" and "assistant" or "thinking") end
+          last.chunks[#last.chunks+1]=delta.text
+          fx[#fx+1]={type="dispatch",event={type="transcript/block-delta",response_id=event.id,block_id=last.transcript_id,text=delta.text}}
         end
       elseif delta.type == "tool_call" then
-        local key = tostring(delta.index or delta.id or (#stream.blocks + 1))
-        local block = stream.tools[key]
-        if not block then
-          block = { type = "tool_call", id = delta.id, name = delta.name, arguments_json = "" }
-          stream.tools[key] = block; stream.blocks[#stream.blocks + 1] = block
-        end
-        if delta.id ~= nil then block.id = delta.id end
-        if delta.name ~= nil then block.name = delta.name end
-        if delta.arguments ~= nil then block.arguments, block.arguments_json = delta.arguments, nil end
-        if delta.arguments_json ~= nil then block.arguments_json = delta.arguments_json end
-        if delta.arguments_json_delta ~= nil then block.arguments_json = (block.arguments_json or "") .. delta.arguments_json_delta end
+        local key = tostring(delta.index or delta.id or (#stream.blocks + 1)); local block=stream.tools[key]
+        if not block then block={type="tool_call",id=delta.id,name=delta.name,arguments_json_chunks={}}; stream.tools[key]=block; start(block,"tool_call") end
+        if delta.id~=nil then block.id=delta.id end; if delta.name~=nil then block.name=delta.name end
+        if delta.arguments~=nil then block.arguments,block.arguments_json_chunks=delta.arguments,nil end
+        if delta.arguments_json~=nil then block.arguments_json_chunks={delta.arguments_json} end
+        if delta.arguments_json_delta~=nil then block.arguments_json_chunks=block.arguments_json_chunks or {}; block.arguments_json_chunks[#block.arguments_json_chunks+1]=delta.arguments_json_delta end
+        fx[#fx+1]={type="dispatch",event={type="transcript/block-delta",response_id=event.id,block_id=block.transcript_id,call_id=delta.id,name=delta.name,arguments=delta.arguments,arguments_json_delta=delta.arguments_json or delta.arguments_json_delta}}
       else error("unsupported agent stream delta: " .. tostring(delta.type)) end
       return { db = db, fx = fx }
     end)
@@ -259,7 +299,7 @@ return {
     misa.reg_event("agent/stream-usage", function(db, event)
       local agent = db.agent
       local stream = agent and agent.stream
-      if not stream or event.id ~= agent.active_request_id then return end
+      if not stream or agent.cancel_requested or event.id ~= agent.active_request_id then return end
       stream.usage = stream.usage or {}
       for _, name in ipairs({ "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens" }) do
         if type(event.usage) == "table" and event.usage[name] ~= nil then stream.usage[name] = event.usage[name] end
@@ -271,7 +311,9 @@ return {
     misa.reg_event("agent/stream-end", function(db, event)
       local agent = db.agent
       local stream = agent and agent.stream
-      if not stream or agent.status ~= "working" or event.id ~= agent.active_request_id or stream.id ~= event.id then return end
+      if not stream or event.id ~= agent.active_request_id or stream.id ~= event.id then return end
+      if agent.cancel_requested then return cancelled(db,agent,event.id,true) end
+      if agent.status ~= "working" then return end
       local blocks = stream_blocks(stream)
       if not blocks then return { db = db, fx = { { type = "dispatch", event = {
         type = "agent/stream-error", id = event.id, message = "provider ended an incomplete tool call",
@@ -283,16 +325,22 @@ return {
     -- use this legacy event.
     misa.reg_event("agent/result", function(db, event)
       local agent = db.agent
-      if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id then return end
+      if not agent or event.id ~= agent.active_request_id then return end
+      if agent.cancel_requested then return cancelled(db,agent,event.id,agent.stream~=nil) end
+      if agent.status ~= "working" then return end
       return complete_response(db, agent, event.id, event.content, event.usage, event.stop_reason)
     end)
 
     misa.reg_event("tool/result", function(db, event)
       local agent = db.agent
-      assert(agent and agent.status == "tools", "no tools are pending")
+      assert(agent and (agent.status == "tools" or agent.status == "cancelling"), "no tools are pending")
       assert(type(event.tool_call_id) == "string" and agent.pending_tools[event.tool_call_id], "unexpected tool result")
       agent.pending_tools[event.tool_call_id] = nil
       agent.pending_tool_count = agent.pending_tool_count - 1
+      if agent.cancel_requested then
+        if agent.pending_tool_count==0 then return cancelled(db,agent,agent.accepted_request_id,true) end
+        return {db=db}
+      end
       agent.messages[#agent.messages + 1] = tool_result(event.tool_call_id, event.text or "", event.is_error)
       local effects = { { type = "dispatch", event = {
         type = "transcript/tool-result", id = event.tool_call_id, text = event.text or "", is_error = event.is_error == true,
@@ -311,13 +359,14 @@ return {
 
     local function stream_error(db, event)
       local agent = db.agent
-      if not agent or agent.status ~= "working" or event.id ~= agent.active_request_id then return end
-      local partial = agent.stream and agent.stream.blocks or {}
+      if not agent or event.id ~= agent.active_request_id or (agent.status ~= "working" and agent.status ~= "cancelling") then return end
+      if agent.cancel_requested then return cancelled(db,agent,event.id,agent.stream~=nil) end
+      local had_stream = agent.stream ~= nil
       agent.error, agent.status, agent.active_request_id, agent.stream = tostring(event.message or "provider failed"), "ready", nil, nil
       agent.accepted_request_id = event.id
       local fx = {}
-      if #partial > 0 then fx[#fx + 1] = { type = "dispatch", event = {
-        type = "transcript/interrupted", request_id = event.id, content = partial,
+      if had_stream then fx[#fx + 1] = { type = "dispatch", event = {
+        type = "transcript/response-interrupted", response_id = event.id,
       } } end
       fx[#fx + 1] = { type = "dispatch", event = { type = "transcript/harness", text = agent.error, level = "error" } }
       fx[#fx + 1] = { type = "dispatch", event = { type = "agent/status", status = "ready" } }

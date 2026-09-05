@@ -11,6 +11,7 @@ const appendScreenPrelude = presenter.appendScreenPrelude;
 const appendView = presenter.appendView;
 const appendLines = presenter.appendLines;
 const cursorRow = presenter.cursorRow;
+pub const usableColumns = presenter.usableColumns;
 
 pub const Dimensions = struct { columns: usize = 80, lines: usize = 24 };
 
@@ -22,8 +23,9 @@ pub const PreparedPresentation = struct {
     }
 };
 
-const enter_managed_screen = "\x1b[?1049h\x1b[H\x1b[2J";
-const leave_managed_screen = "\x1b[?1049l";
+const show_cursor = "\x1b[?25h";
+const enter_managed_screen = "\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J";
+const leave_managed_screen = "\x1b[?25h\x1b[?1049l";
 
 const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM };
 const SignalState = struct {
@@ -38,7 +40,10 @@ var signal_state: SignalState = .{};
 
 fn restoreOnSignal(sig: posix.SIG) callconv(.c) void {
     if (!signal_state.active.load(.acquire)) return;
-    if (signal_state.screen_active.load(.acquire)) _ = posix.system.write(posix.STDOUT_FILENO, leave_managed_screen.ptr, leave_managed_screen.len);
+    if (signal_state.screen_active.load(.acquire))
+        _ = posix.system.write(posix.STDOUT_FILENO, leave_managed_screen.ptr, leave_managed_screen.len)
+    else
+        _ = posix.system.write(posix.STDOUT_FILENO, show_cursor.ptr, show_cursor.len);
     posix.tcsetattr(posix.STDIN_FILENO, .NOW, signal_state.saved_termios) catch {};
     for (handled_signals, 0..) |candidate, i| {
         if (candidate == sig) {
@@ -64,8 +69,10 @@ fn rawMode(original: posix.termios) posix.termios {
     raw.iflag.BRKINT = false;
     raw.iflag.INPCK = false;
     raw.iflag.ISTRIP = false;
+    // Reads are issued only after poll(2) reports readiness. Keep the fd
+    // genuinely nonblocking at the tty layer as well: no hidden VTIME sleep.
     raw.cc[@intFromEnum(posix.V.MIN)] = 0;
-    raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+    raw.cc[@intFromEnum(posix.V.TIME)] = 0;
     return raw;
 }
 
@@ -77,7 +84,12 @@ pub const Terminal = struct {
     saved: ?posix.termios = null,
     signals_installed: bool = false,
     screen_active: bool = false,
+    handoff_generation: u64 = 0,
+    active_handoff: ?u64 = null,
     decoder: Decoder = .{},
+    last_frame: std.ArrayList(u8) = .empty,
+
+    pub const HandoffLease = struct { generation: u64 };
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) !Terminal {
         const term = environ.get("TERM") orelse "";
@@ -125,21 +137,58 @@ pub const Terminal = struct {
         return self;
     }
 
-    pub fn suspendInput(self: *Terminal) !void {
+    /// Exclusively transfer stdin to an external command. A generation token
+    /// prevents a stale completion from resuming over a newer owner.
+    pub fn acquireHandoff(self: *Terminal) !HandoffLease {
+        if (self.active_handoff != null) return error.TerminalHandoffBusy;
+        self.handoff_generation +%= 1;
+        if (self.handoff_generation == 0) self.handoff_generation = 1;
+        const lease: HandoffLease = .{ .generation = self.handoff_generation };
+        self.active_handoff = lease.generation;
+        errdefer {
+            // A partial suspend must not strand either the generation lease or
+            // terminal ownership. Recovery is best-effort; the original error
+            // still reports that no handoff was granted.
+            self.active_handoff = null;
+            if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, rawMode(saved)) catch {};
+            if (self.interactive and !self.screen_active) {
+                if (self.writeAll(enter_managed_screen)) |_| {
+                    self.screen_active = true;
+                    signal_state.screen_active.store(true, .release);
+                } else |_| {}
+            }
+        }
         if (self.screen_active) {
             try self.writeAll(leave_managed_screen);
             self.screen_active = false;
             signal_state.screen_active.store(false, .release);
         }
+        if (self.interactive) try self.writeAll(show_cursor);
         if (self.saved) |saved| try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved);
+        return lease;
     }
 
-    pub fn resumeInput(self: *Terminal) !void {
-        if (self.saved) |saved| try posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, rawMode(saved));
+    pub fn releaseHandoff(self: *Terminal, lease: HandoffLease) !void {
+        if (self.active_handoff == null or self.active_handoff.? != lease.generation)
+            return error.StaleTerminalHandoff;
+        // Consume the matching generation regardless of resume I/O outcome. A
+        // failed resume is a clean failed operation, never a permanent busy
+        // lease that wedges every future auth command.
+        self.active_handoff = null;
+        if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, rawMode(saved)) catch |err| {
+            posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
+            return err;
+        };
         if (self.interactive and !self.screen_active) {
+            self.writeAll(enter_managed_screen) catch |err| {
+                if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
+                return err;
+            };
             self.screen_active = true;
             signal_state.screen_active.store(true, .release);
-            self.writeAll(enter_managed_screen) catch |err| {
+            // Alternate-screen contents are unspecified after resume.
+            if (self.last_frame.items.len != 0) self.writeAll(self.last_frame.items) catch |err| {
+                self.writeAll(leave_managed_screen) catch {};
                 self.screen_active = false;
                 signal_state.screen_active.store(false, .release);
                 if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
@@ -148,15 +197,20 @@ pub const Terminal = struct {
         }
     }
 
+    pub fn presentationEnabled(self: *const Terminal) bool {
+        return !self.interactive or self.screen_active;
+    }
+
     pub fn deinit(self: *Terminal) void {
         if (self.interactive) {
-            if (self.screen_active) self.writeAll(leave_managed_screen) catch {};
+            if (self.screen_active) self.writeAll(leave_managed_screen) catch {} else self.writeAll(show_cursor) catch {};
             self.screen_active = false;
             signal_state.screen_active.store(false, .release);
             if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .DRAIN, saved) catch {};
             self.restoreSignals();
         }
         self.decoder.deinit(self.allocator);
+        self.last_frame.deinit(self.allocator);
     }
 
     fn restoreSignals(self: *Terminal) void {
@@ -196,7 +250,10 @@ pub const Terminal = struct {
 
     pub fn present(self: *Terminal, prepared: *const PreparedPresentation) !void {
         if (!self.interactive) return;
+        if (!self.screen_active) return error.TerminalSuspended;
         try self.writeAll(prepared.bytes.items);
+        self.last_frame.clearRetainingCapacity();
+        try self.last_frame.appendSlice(self.allocator, prepared.bytes.items);
     }
 
     pub fn commit(self: *Terminal, lines: std.json.Value) !void {
@@ -209,12 +266,45 @@ pub const Terminal = struct {
         try self.writeAll(buffer.items);
     }
 
+    /// Readiness probe used while native work is active, so the session never
+    /// enters even the tty's short VTIME wait on its owner thread.
+    pub fn inputReady(self: *const Terminal) !bool {
+        _ = self;
+        var fds = [_]posix.pollfd{.{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 }};
+        return try posix.poll(&fds, 0) != 0;
+    }
+
+    pub const ReadySources = struct { input: bool = false, operation: bool = false };
+
+    /// Wait once for every asynchronous source owned by the session. The
+    /// operation pipe is always present; stdin is omitted during handoff.
+    pub fn waitSources(self: *const Terminal, operation_fd: posix.fd_t, want_input: bool, timeout_ms: i32) !ReadySources {
+        var fds = [_]posix.pollfd{
+            .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = operation_fd, .events = posix.POLL.IN, .revents = 0 },
+        };
+        if (!want_input or self.active_handoff != null) fds[0].fd = -1;
+        _ = try posix.poll(&fds, timeout_ms);
+        return .{
+            .input = fds[0].fd >= 0 and (fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0,
+            .operation = (fds[1].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0,
+        };
+    }
+
+    pub fn decoderNeedsTimeout(self: *const Terminal) bool {
+        return self.decoder.needsTimeout();
+    }
+
+    pub fn resolveDecoderTimeout(self: *Terminal, out: *std.ArrayList(Event)) !void {
+        try self.decoder.finish(self.allocator, out);
+    }
+
     pub fn readEvents(self: *Terminal, out: *std.ArrayList(Event)) !void {
         var bytes: [4096]u8 = undefined;
         const n = std.Io.File.stdin().readStreaming(self.io, &.{&bytes}) catch |err| switch (err) {
             error.EndOfStream => {
-                // With VMIN=0/VTIME=1, an idle tty read times out with zero
-                // bytes; Zig reports that as EndOfStream. It is not EOF.
+                // Interactive reads are readiness-gated with VMIN=0/VTIME=0.
+                // A zero-byte result is a transient empty read, not tty EOF.
                 switch (classifyStreamEnd(self.interactive)) {
                     .timeout => try self.decoder.finish(self.allocator, out),
                     .eof => {
@@ -267,9 +357,21 @@ fn parseDimension(value: ?[]const u8, fallback: usize) usize {
 }
 
 test "managed screen lifetime and frames use distinct control sequences" {
-    try std.testing.expectEqualStrings("\x1b[?1049h\x1b[H\x1b[2J", enter_managed_screen);
-    try std.testing.expectEqualStrings("\x1b[?1049l", leave_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J", enter_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?25h\x1b[?1049l", leave_managed_screen);
     try std.testing.expect(std.mem.indexOf(u8, enter_managed_screen, leave_managed_screen) == null);
+}
+
+test "terminal handoff lease is exclusive and generation checked" {
+    var terminal: Terminal = .{ .allocator = std.testing.allocator, .io = std.testing.io, .interactive = false, .dimensions = .{} };
+    defer terminal.deinit();
+    const lease = try terminal.acquireHandoff();
+    try std.testing.expectError(error.TerminalHandoffBusy, terminal.acquireHandoff());
+    try std.testing.expectError(error.StaleTerminalHandoff, terminal.releaseHandoff(.{ .generation = lease.generation + 1 }));
+    try terminal.releaseHandoff(lease);
+    const next = try terminal.acquireHandoff();
+    try std.testing.expect(next.generation != lease.generation);
+    try terminal.releaseHandoff(next);
 }
 
 test "idle interactive stream end is a read timeout, not EOF" {
@@ -287,7 +389,7 @@ test "terminal presentation validation uses instance width and cursor limit" {
     var valid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[{\"text\":\"abcdefghijklmnopq\"}]}],\"cursor\":{\"row\":1,\"byte\":15}}", .{});
     defer valid.deinit();
     var prepared = try narrow.preparePresentation(valid.value);
-    try std.testing.expect(std.mem.startsWith(u8, prepared.bytes.items, "\x1b[H\x1b[2J"));
+    try std.testing.expect(std.mem.startsWith(u8, prepared.bytes.items, "\x1b[?25l\x1b[H\x1b[2J"));
     prepared.deinit(std.testing.allocator);
 
     var too_tall = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"lines\":[{\"spans\":[]},{\"spans\":[]}]}", .{});

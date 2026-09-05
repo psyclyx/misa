@@ -17,6 +17,14 @@ pub const TerminalInfo = struct {
     lines: usize,
 };
 
+/// Trusted clocks sampled by the native event loop for each Lua transaction.
+/// Milliseconds remain exactly representable by LuaJIT's number type for many
+/// millennia; monotonic values are deliberately unrelated to wall time.
+pub const ClockInfo = struct {
+    wall_ms: i64,
+    monotonic_ms: i64,
+};
+
 /// Effects and view copied out of Lua into one short-lived arena.
 pub const OwnedValue = struct {
     arena: std.heap.ArenaAllocator,
@@ -142,7 +150,7 @@ pub const Runtime = struct {
     }
 
     /// Dispatch one event and copy only its effects/view out of Lua.
-    pub fn dispatch(self: *Runtime, event_json: []const u8) !Transaction {
+    pub fn dispatch(self: *Runtime, event_json: []const u8, clock: ClockInfo) !Transaction {
         self.assertStack(0);
         var event = std.json.parseFromSlice(std.json.Value, self.allocator, event_json, .{}) catch {
             self.setError("invalid native event JSON", .{});
@@ -158,7 +166,8 @@ pub const Runtime = struct {
         const error_handler = c.lua_gettop(self.state) - 1;
         try self.pushJson(event.value, 0);
         self.pushTerminalInfo(self.terminal_info orelse return error.TerminalInfoMissing);
-        if (c.lua_pcall(self.state, 2, 2, error_handler) != 0) {
+        self.pushClockInfo(clock);
+        if (c.lua_pcall(self.state, 3, 2, error_handler) != 0) {
             self.setError("event dispatch: {s}", .{self.stackError()});
             c.lua_settop(self.state, 0);
             return error.EventDispatchFailed;
@@ -274,6 +283,14 @@ pub const Runtime = struct {
         c.lua_setfield(self.state, -2, "columns");
         c.lua_pushnumber(self.state, @floatFromInt(info.lines));
         c.lua_setfield(self.state, -2, "lines");
+    }
+
+    fn pushClockInfo(self: *Runtime, info: ClockInfo) void {
+        c.lua_createtable(self.state, 0, 2);
+        c.lua_pushnumber(self.state, @floatFromInt(info.wall_ms));
+        c.lua_setfield(self.state, -2, "wall_ms");
+        c.lua_pushnumber(self.state, @floatFromInt(info.monotonic_ms));
+        c.lua_setfield(self.state, -2, "monotonic_ms");
     }
 
     fn pushJson(self: *Runtime, value: std.json.Value, depth: usize) !void {

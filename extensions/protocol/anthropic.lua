@@ -75,7 +75,7 @@ function misa.protocols.anthropic(spec)
       return {
         type = "http/request", method = "GET", url = url, headers = headers,
         credential = { id = spec.credential, header = spec.auth_header or "x-api-key", prefix = spec.auth_prefix or "" },
-        response_format = "json", completion = completion, id = "models-" .. spec.id,
+        response_format = "json", completion = completion, id = "models-" .. spec.id, timeouts = spec.timeouts,
       }
     end
     local function discover(db)
@@ -145,7 +145,7 @@ function misa.protocols.anthropic(spec)
       type = "http/request", method = "POST", url = spec.url, json = body,
       headers = headers,
       credential = { id = spec.credential, header = spec.auth_header or "x-api-key", prefix = spec.auth_prefix or "" },
-      response_format = "sse_json_stream", completion = "provider/" .. spec.id .. "-complete", id = effect.id,
+      response_format = "sse_json_stream", completion = "provider/" .. spec.id .. "-complete", id = effect.id, timeouts = spec.timeouts,
     }
   end)
 
@@ -157,14 +157,17 @@ function misa.protocols.anthropic(spec)
       local terminal = streams[event.id] == true; streams[event.id] = nil
       local body = type(event.body) == "string" and event.body ~= "" and event.body or nil
       local http = type(event.status) == "number" and event.status >= 400 and ("HTTP " .. tostring(event.status) .. (body and (": " .. body) or "")) or nil
+      local mismatch=event.message=="CredentialProfileMismatch"
       local next_event = event.ok and terminal and { type = "agent/stream-end", id = event.id } or {
-        type = "agent/stream-error", id = event.id, message = http or body or event.message or (not terminal and "Anthropic stream ended without message_stop") or "Anthropic request failed",
+        type = "agent/stream-error", id = event.id, message = mismatch and "credential endpoint profile changed; run /login kimi-coding for the selected region" or http or body or event.message or (not terminal and "Anthropic stream ended without message_stop") or "Anthropic request failed",
       }
-      return { db = db, fx = { { type = "dispatch", event = next_event } } }
+      local fx={{type="dispatch",event=next_event}}
+      if mismatch then fx[#fx+1]={type="dispatch",event={type="models/provider-availability",provider=spec.id,available=false,reason="relogin-required"}} end
+      return { db = db, fx = fx }
     end
-    local fx = {}
+    local fx, terminal = {}, false
     for _, record in ipairs(event.records or {}) do
-      if record.type == "message_stop" then streams[event.id] = true
+      if record.type == "message_stop" then streams[event.id], terminal = true, true; break
       elseif record.type == "content_block_start" and type(record.content_block) == "table" then
         local block = record.content_block
         if block.type == "tool_use" then fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = {
@@ -197,6 +200,7 @@ function misa.protocols.anthropic(spec)
         type = "agent/stream-error", id = event.id, message = tostring(type(record.error) == "table" and record.error.message or "Anthropic request failed"),
       } } end
     end
+    if terminal then fx[#fx + 1] = { type = "operation/finish", id = event.id } end
     return { db = db, fx = fx }
   end)
 end

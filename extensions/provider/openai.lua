@@ -6,11 +6,12 @@ return {
     local config = type(providers) == "table" and providers.openai or nil
     config = type(config) == "table" and config or {}
     local models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.openai.com/v1/models" or nil)
-    misa.reg_auth_provider({ id = "openai", model_provider = "openai", discover_models = models_url ~= nil, label = "OpenAI", description = "OpenAI API key" })
+    misa.reg_auth_provider({ id = "openai", model_provider = "openai", discover_models = models_url ~= nil, label = "OpenAI", description = "OpenAI API key", strategy="api_key" })
     misa.protocols.openai({
       id = "openai",
       credential = "openai",
       url = config.url or "https://api.openai.com/v1/chat/completions",
+      timeouts = config.timeouts,
       max_tokens = config.max_tokens,
       models_url = models_url,
       catalogue_authoritative = true,

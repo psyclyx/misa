@@ -16,6 +16,20 @@ local function bound_frame(lines,columns,cursor)
   return {lines=result,cursor=cursor}
 end
 return {setup=function()
+  misa.picker_available_lines=function(db,terminal)
+    local height=math.max(0,terminal.lines); local header=misa.render_component(db,"root.header",{}).lines
+    return math.max(0,height-(height>=4 and math.min(2,#header) or 0))
+  end
+  -- Inline choices use the same window for rendering and positional-key
+  -- resolution; root composition is the sole owner of this geometry.
+  misa.inline_choice_room=function(db,terminal,input_count)
+    local height=math.max(0,terminal.lines); if height==0 then return 0 end
+    local header=misa.render_component(db,"root.header",{}).lines; local header_count=height>=4 and math.min(2,#header) or 0
+    local status=misa.status_projection and misa.status_projection(db,{columns=terminal.columns}) or {}; local status_count=(#status>0 and height>=2) and 1 or 0
+    local editor_budget=math.min(input_count,math.max(1,math.floor(height/2)),math.max(1,height-header_count-status_count))
+    local remaining=math.max(0,height-header_count-status_count-editor_budget)
+    return math.max(0,math.min(5,math.floor(remaining/3)))
+  end
   misa.reg_view(function(db,cofx)
     local height=math.max(0,cofx.terminal.lines); if height==0 then return {lines={}} end
     local header=misa.render_component(db,"root.header",{}).lines; local header_count=height>=4 and math.min(2,#header) or 0
@@ -25,8 +39,8 @@ return {setup=function()
       local cursor=layer.cursor and {row=math.min(height,offset+layer.cursor.row),byte=layer.cursor.byte} or nil
       return bound_frame(lines,cofx.terminal.columns,cursor)
     end end
-    local status=misa.status_projection and misa.status_projection(db) or {}; local status_count=(#status>0 and height>=2) and 1 or 0
-    local editor=misa.editor_projection and misa.editor_projection(db) or {busy=true,row=1,byte=0,input={},completions={}}
+    local status=misa.status_projection and misa.status_projection(db,{columns=cofx.terminal.columns}) or {}; local status_count=(#status>0 and height>=2) and 1 or 0
+    local editor=misa.editor_projection and misa.editor_projection(db,{terminal=cofx.terminal}) or {busy=true,row=1,byte=0,input={},completions={}}
     local editor_budget=math.min(#editor.input,math.max(1,math.floor(height/2)),math.max(1,height-header_count-status_count))
     local editor_first=math.max(1,math.min(editor.row-math.floor(editor_budget/2),#editor.input-editor_budget+1)); local editor_lines=slice(editor.input,editor_first,editor_budget)
     local remaining=math.max(0,height-header_count-status_count-#editor_lines); local completion_count=math.min(#editor.completions,5,math.floor(remaining/3)); remaining=remaining-completion_count

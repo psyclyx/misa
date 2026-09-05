@@ -44,20 +44,32 @@ local function markdown_lines(text,base,enabled)
   end
   if #result==0 then result[1]={spans={span("",base)}} end; return result
 end
+local function title(model,label,style)
+  local parts={span(label,style or "bold")}
+  if model.timestamp then parts[#parts+1]=span("  "..tostring(model.timestamp),"dim") end
+  if model.streaming then parts[#parts+1]=span("  streaming","accent") end
+  if model.interrupted then parts[#parts+1]=span("  interrupted","error") end
+  if type(model.tokens_per_second)=="number" then parts[#parts+1]=span("  "..string.format("%.1f",model.tokens_per_second).." tok/s","dim") end
+  return {spans=parts}
+end
 local function message(model,context,style,label)
   if not context.interactive then return plain_lines(model.text,style) end
-  local rendered=markdown_lines(model.text,style,context.markdown~=false); if label then table.insert(rendered[1].spans,1,span(label.."  ","bold")) end
-  return misa.layout.wrap_spans(rendered,context.columns,{{text="▏ ",style="accent"}})
+  local rendered=markdown_lines(model.text,style,context.markdown~=false)
+  rendered=misa.layout.wrap_spans(rendered,context.columns,{{text="▏ ",style="accent"}})
+  if label then table.insert(rendered,1,title(model,label)) end
+  return rendered
 end
-local function one(text,style) return {lines={{spans={span(text,style)}}}} end
+local function titled(model,label,text,style)
+  return {lines={title(model,label),{spans={span("▏ ","accent"),span(text,style)}}}}
+end
 return {setup=function()
   assert(misa.layout,"component.message requires layout")
   local function reg(role,render) misa.reg_component("default."..role,{render=render}) end
   reg("transcript.user",function(model,context) return {lines=context.interactive and message(model,context,"user","You") or {}} end)
   reg("transcript.assistant",function(model,context) return {lines=message(model,context,"assistant","Assistant")} end)
   reg("transcript.thinking",function(model,context) return {lines=message(model,context,"thinking","Thinking")} end)
-  reg("transcript.thinking_collapsed",function(model) return one("▏ Thinking  "..tostring(model.summary or "collapsed"),"thinking") end)
-  reg("transcript.tool_call",function(model) return one("▏ Tool  "..tostring(model.name or "tool").."  "..tostring(model.detail or "collapsed"),"tool") end)
-  reg("transcript.tool_result",function(model,context) if model.collapsed then return one("▏ "..(model.is_error and "Tool error" or "Tool result").."  collapsed",model.is_error and "error" or "tool") end return {lines=message(model,context,model.is_error and "error" or "tool",model.is_error and "Tool error" or "Tool result")} end)
+  reg("transcript.thinking_collapsed",function(model) return titled(model,"Thinking",tostring(model.summary or "summary"),"thinking") end)
+  reg("transcript.tool_call",function(model) return titled(model,"Tool · "..tostring(model.name or "tool"),tostring(model.detail or "summary"),"tool") end)
+  reg("transcript.tool_result",function(model,context) if model.collapsed then return titled(model,model.is_error and "Tool error" or "Tool result","summary",model.is_error and "error" or "tool") end return {lines=message(model,context,model.is_error and "error" or "tool",model.is_error and "Tool error" or "Tool result")} end)
   reg("transcript.harness",function(model,context) return {lines=message(model,context,model.level=="error" and "error" or "plain",nil)} end)
 end}

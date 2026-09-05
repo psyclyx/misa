@@ -36,6 +36,13 @@ pub const Decoder = struct {
         self.pending.deinit(allocator);
     }
 
+    /// True when a short ambiguity deadline is required. Bracketed paste is
+    /// deliberately excluded: it waits for bytes or EOF, not an ESC timeout.
+    pub fn needsTimeout(self: *const Decoder) bool {
+        return !self.paste and self.pending.items.len != 0 and
+            (self.pending.items[0] == 0x1b or self.pending.items[0] == '\r');
+    }
+
     pub fn feed(self: *Decoder, allocator: std.mem.Allocator, bytes: []const u8, out: *std.ArrayList(Event)) !void {
         try self.pending.appendSlice(allocator, bytes);
         while (self.pending.items.len > 0) {

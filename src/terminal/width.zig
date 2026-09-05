@@ -67,8 +67,141 @@ const wide = [_]WidthInterval{
 };
 
 pub fn displayWidth(cp: u21) usize {
-    if (inIntervals(cp, &zero_width)) return 0;
+    if (inIntervals(cp, &zero_width) or isVirama(cp)) return 0;
     return if (inIntervals(cp, &wide)) 2 else 1;
+}
+
+fn isRegional(cp: u21) bool {
+    return cp >= 0x1f1e6 and cp <= 0x1f1ff;
+}
+
+// UAX #29 GB9c linkers. Keeping this explicit and conservative avoids
+// splitting common Indic conjuncts without pretending every combining mark
+// joins an arbitrary following character.
+fn isVirama(cp: u21) bool {
+    return switch (cp) {
+        0x094d,
+        0x09cd,
+        0x0a4d,
+        0x0acd,
+        0x0b4d,
+        0x0bcd,
+        0x0c4d,
+        0x0ccd,
+        0x0d3b,
+        0x0d3c,
+        0x0d4d,
+        0x0dca,
+        0x0e3a,
+        0x0f84,
+        0x1039,
+        0x103a,
+        0x1714,
+        0x1715,
+        0x1734,
+        0x17d2,
+        0x1a60,
+        0x1b44,
+        0x1baa,
+        0x1bab,
+        0x1bf2,
+        0x1bf3,
+        0xa806,
+        0xa8c4,
+        0xa953,
+        0xa9c0,
+        0xaaf6,
+        0xabed,
+        0x10a3f,
+        0x11046,
+        0x11070,
+        0x11133,
+        0x11134,
+        0x111c0,
+        0x11235,
+        0x112ea,
+        0x1134d,
+        0x11442,
+        0x114c2,
+        0x115bf,
+        0x115c0,
+        0x1163f,
+        0x116b6,
+        0x1172b,
+        0x11839,
+        0x1193d,
+        0x1193e,
+        0x11943,
+        0x119e0,
+        0x11a34,
+        0x11a47,
+        0x11a99,
+        0x11c3f,
+        0x11d44,
+        0x11d45,
+        0x11d97,
+        => true,
+        else => false,
+    };
+}
+
+fn isIndicLetter(cp: u21) bool {
+    return (cp >= 0x0900 and cp <= 0x0dff) or (cp >= 0x1000 and cp <= 0x109f) or
+        (cp >= 0x1780 and cp <= 0x17ff) or (cp >= 0xa800 and cp <= 0xabff) or
+        (cp >= 0x11000 and cp <= 0x11dff);
+}
+
+pub const Cluster = struct { end: usize, width: usize };
+
+pub fn nextCluster(text: []const u8, start: usize) !Cluster {
+    if (start >= text.len) return .{ .end = start, .width = 0 };
+    var it = std.unicode.Utf8Iterator{ .bytes = text, .i = start };
+    const first = it.nextCodepointSlice() orelse return error.InvalidUtf8;
+    const first_cp = try std.unicode.utf8Decode(first);
+    var width = displayWidth(first_cp);
+    var emoji = isRegional(first_cp);
+    const flag = isRegional(first_cp);
+    var after_virama = false;
+    while (it.nextCodepointSlice()) |encoded| {
+        const cp = try std.unicode.utf8Decode(encoded);
+        if (after_virama and isIndicLetter(cp) and !inIntervals(cp, &zero_width)) {
+            width = @max(width, displayWidth(cp));
+            after_virama = false;
+            continue;
+        }
+        if (cp == 0x200d) {
+            const joined = it.nextCodepointSlice() orelse return .{ .end = it.i, .width = @max(width, 2) };
+            width = @max(width, displayWidth(try std.unicode.utf8Decode(joined)));
+            emoji = true;
+            continue;
+        }
+        if (isVirama(cp) or inIntervals(cp, &zero_width)) {
+            if (cp == 0xfe0f or cp == 0x20e3 or (cp >= 0x1f3fb and cp <= 0x1f3ff)) emoji = true;
+            if (isVirama(cp)) after_virama = true;
+            continue;
+        }
+        if (flag and isRegional(cp)) {
+            emoji = true;
+            return .{ .end = it.i, .width = @max(width, 2) };
+        }
+        return .{ .end = it.i - encoded.len, .width = if (emoji) @max(width, 2) else width };
+    }
+    return .{ .end = it.i, .width = if (emoji) @max(width, 2) else width };
+}
+
+/// Width of UTF-8 text by extended emoji cluster. This deliberately keeps the
+/// dependency-free wcwidth tables, while treating variation-selector emoji,
+/// flags, modifiers, and ZWJ chains as the single glyph terminals render.
+pub fn textWidth(text: []const u8) !usize {
+    var at: usize = 0;
+    var total: usize = 0;
+    while (at < text.len) {
+        const cluster = try nextCluster(text, at);
+        if (cluster.end <= at) return error.InvalidUtf8;
+        total += cluster.width;
+        at = cluster.end;
+    }
+    return total;
 }
 
 test "display width handles narrow scripts, combining sequences, and wide glyphs" {
@@ -81,4 +214,17 @@ test "display width handles narrow scripts, combining sequences, and wide glyphs
     try std.testing.expectEqual(@as(usize, 0), displayWidth(0x1f3fb));
     try std.testing.expectEqual(@as(usize, 2), displayWidth('界'));
     try std.testing.expectEqual(@as(usize, 2), displayWidth(0x1f600));
+}
+
+test "emoji and Indic conjuncts occupy one grapheme" {
+    try std.testing.expectEqual(@as(usize, 2), try textWidth("👩‍💻"));
+    try std.testing.expectEqual(@as(usize, 2), try textWidth("🏳️‍🌈"));
+    try std.testing.expectEqual(@as(usize, 2), try textWidth("©️"));
+    try std.testing.expectEqual(@as(usize, 3), try textWidth("a👨‍👩‍👧‍👦"));
+    const conjunct = "क्ष"; // KA + VIRAMA + SSA
+    const cluster = try nextCluster(conjunct, 0);
+    try std.testing.expectEqual(conjunct.len, cluster.end);
+    try std.testing.expectEqual(@as(usize, 1), cluster.width);
+    const bengali = "ক্ষ";
+    try std.testing.expectEqual(bengali.len, (try nextCluster(bengali, 0)).end);
 }

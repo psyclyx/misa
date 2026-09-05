@@ -30,7 +30,7 @@ end
 
 return {
   setup = function(context)
-    misa.reg_auth_provider({ id = "openai-codex", model_provider = "openai-codex", label = "OpenAI Codex", description = "ChatGPT subscription OAuth" })
+    misa.reg_auth_provider({ id = "openai-codex", model_provider = "openai-codex", label = "OpenAI Codex", description = "ChatGPT subscription OAuth", strategy="device_oauth", profile={id="default",authorization_url="https://auth.openai.com/api/accounts/deviceauth/usercode",token_url="https://auth.openai.com/oauth/token"} })
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.openai_codex or nil
     config = type(config) == "table" and config or {}
@@ -76,7 +76,7 @@ return {
           id = "openai-codex", header = "authorization", prefix = "Bearer ",
           metadata_field = "account_id", metadata_header = "chatgpt-account-id",
         },
-        response_format = "sse_json_stream", completion = "provider/openai-codex-complete", id = effect.id,
+        response_format = "sse_json_stream", completion = "provider/openai-codex-complete", id = effect.id, timeouts = config.timeouts,
       }
     end)
 
@@ -91,7 +91,7 @@ return {
         }
         return { db = db, fx = { { type = "dispatch", event = next_event } } }
       end
-      local fx = {}
+      local fx, terminal = {}, false
       for _, record in ipairs(event.records or {}) do
         if record.type == "response.output_text.delta" and type(record.delta) == "string" then
           fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-delta", id = event.id, delta = { type = "text", text = record.delta } } }
@@ -102,17 +102,19 @@ return {
             type = "tool_call", index = record.output_index, id = record.item.call_id, name = record.item.name, arguments_json = record.item.arguments or "{}",
           } } }
         elseif record.type == "response.completed" and type(record.response) == "table" then
-          streams[event.id] = true
+          streams[event.id], terminal = true, true
           local usage = type(record.response.usage) == "table" and record.response.usage or {}
           local details = type(usage.input_tokens_details) == "table" and usage.input_tokens_details or {}
           fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-usage", id = event.id,
             usage = { input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
               cache_read_tokens = details.cached_tokens or 0, cache_write_tokens = 0 },
           } }
+          break
         elseif record.type == "error" then fx[#fx + 1] = { type = "dispatch", event = {
           type = "agent/stream-error", id = event.id, message = tostring(record.message or "Codex request failed"),
         } } end
       end
+      if terminal then fx[#fx + 1] = { type = "operation/finish", id = event.id } end
       return { db = db, fx = fx }
     end)
   end,

@@ -37,7 +37,7 @@ end
 
 return {
   setup = function(context)
-    misa.reg_auth_provider({ id = "claude", model_provider = "claude", label = "Claude", description = "Claude Pro/Max via Claude Code" })
+    misa.reg_auth_provider({ id = "claude", model_provider = "claude", label = "Claude", description = "Claude Pro/Max via Claude Code", strategy="cli_handoff" })
     local providers = type(context.config) == "table" and context.config.providers or nil
     local config = type(providers) == "table" and providers.claude or nil
     config = type(config) == "table" and config or {}
@@ -146,7 +146,7 @@ return {
         else next_event = { type = "agent/stream-end", id = event.id } end
         return { db = db, fx = { { type = "dispatch", event = next_event } } }
       end
-      local fx = {}
+      local fx, terminal = {}, false
       for _, record in ipairs(event.records or {}) do
         local partial = record.type == "stream_event" and record.event or nil
         if type(partial) == "table" and (partial.type == "content_block_start" or partial.type == "content_block_delta") then state.saw_stream_event = true; break end
@@ -197,7 +197,7 @@ return {
             end
           end
         elseif record.type == "result" then
-          state.result = true
+          state.result, terminal = true, true
           if record.is_error then
             fx[#fx + 1] = { type = "dispatch", event = { type = "agent/stream-error", id = event.id, message = tostring(record.result or "Claude request failed") } }
           elseif not state.saw_content and type(record.result) == "string" then
@@ -208,9 +208,11 @@ return {
             input_tokens = usage.input_tokens or 0, output_tokens = usage.output_tokens or 0,
             cache_read_tokens = usage.cache_read_input_tokens or 0, cache_write_tokens = usage.cache_creation_input_tokens or 0,
           } } }
+          break
         end
       end
       db.providers.claude_streams[event.id] = state
+      if terminal then fx[#fx + 1] = { type = "operation/finish", id = event.id } end
       return { db = db, fx = fx }
     end)
   end,

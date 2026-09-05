@@ -9,8 +9,11 @@ return {setup=function()
     local rendered=lines(model.text); table.insert(rendered[1].spans,1,span("> ","accent")); return {lines=rendered}
   end})
   misa.reg_component("default.editor.completions",{render=function(model)
-    local rendered={}; for index,candidate in ipairs(model.matches) do local active=model.active==index; rendered[#rendered+1]={spans={
-      span(active and "> " or "  ",active and "accent" or "plain"),span(candidate.label,"bold"),span("  "..candidate.description,"dim"),
+    local rendered={}; for _,row in ipairs(model.rows or {}) do rendered[#rendered+1]={spans={
+      span((row.marker or " ").." ",row.active and "choice.row.active" or "choice.row"),
+      span(row.hotkey and (row.hotkey.." ") or "", "choice.hint"),
+      span(row.label,row.active and "choice.row.active" or (row.selected and "choice.row.selected" or "choice.row")),
+      span(row.description and row.description~="" and ("  "..row.description) or "","choice.hint"),
     }} end; return {lines=rendered}
   end})
 end}

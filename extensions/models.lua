@@ -28,14 +28,20 @@ end
 
 return {
   setup = function(context)
+    if misa.reg_indicator then misa.reg_indicator({
+      id="model", label="model", icon="◆",
+      value=function(db) local model=misa.selected_model_projection and misa.selected_model_projection(db); return model and model.id or "none" end,
+    }) end
     misa.reg_command({
       name = "/model", description = "Choose the active model", event = "model/open",
-      preference_scope = "models",
+      preference_scope = "models", choice_purpose = "models",
       selected = function(db) return db.models and db.models.selected or nil end,
       complete = function(_, db)
         local result = {}
         for _, model in ipairs(db.models and db.models.entries or {}) do
-          result[#result + 1] = { value = model.id, label = model.id, description = model.label or "" }
+          local label = model.label
+          if label == nil or label == "" then label = model.id end
+          result[#result + 1] = { value=model.id, label=label, search={model.id,model.label or "",model.model or "",model.provider or ""} }
         end
         return result
       end,

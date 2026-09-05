@@ -22,7 +22,12 @@ return {
       assert(type(id) == "string" and id ~= "", "no component configured for role: " .. role)
       return assert(implementations[id], "unknown component for " .. role .. ": " .. id)
     end
-    local native_style = { plain="plain", dim="dim", bold="bold", accent="accent", user="user", assistant="assistant", error="error", thinking="dim", tool="dim" }
+    local native_style = { plain="plain", dim="dim", bold="bold", accent="accent", user="user", assistant="assistant", error="error", thinking="dim", tool="dim",
+      ["choice.prompt"]="accent", ["choice.query"]="plain", ["choice.hint"]="dim", ["choice.view"]="bold", ["choice.view.active"]="accent",
+      ["choice.row"]="plain", ["choice.row.active"]="accent", ["choice.row.selected"]="bold", ["choice.empty"]="dim",
+      ["indicator.label"]="dim", ["indicator.value"]="plain", ["indicator.hotkey"]="dim",
+      ["dialog.title"]="accent", ["dialog.message"]="plain", ["dialog.label"]="dim", ["dialog.value"]="plain",
+      ["dialog.code"]="bold", ["dialog.progress"]="dim", ["dialog.input"]="plain", ["dialog.hint"]="dim" }
     misa.render_component = function(db, role, model, render_context)
       local component = misa.component(db, role)
       local rendered = component.render(misa.snapshot(model), misa.snapshot(render_context or {}))

@@ -40,6 +40,16 @@ pub const Collection = struct {
         return self.timers.count();
     }
 
+    pub fn nextDeadline(self: *const Collection) ?i96 {
+        var result: ?i96 = null;
+        var iterator = self.timers.iterator();
+        while (iterator.next()) |entry| {
+            if (result == null or entry.value_ptr.deadline_ns < result.?)
+                result = entry.value_ptr.deadline_ns;
+        }
+        return result;
+    }
+
     pub fn start(self: *Collection, spec: Start, now_ns: i96) !void {
         self.stop(spec.id);
         const completion = try self.allocator.dupe(u8, spec.completion);

@@ -1,368 +1,208 @@
-//! Ownership, scheduling, and bounded publication for one streaming operation.
+//! Concurrent native operation collection, fair scheduling, and cancellation.
 const std = @import("std");
+const posix = std.posix;
 const auth = @import("misa_auth");
-const http = @import("http.zig");
+const file = @import("misa_file");
 const process = @import("misa_process");
+const http = @import("http.zig");
+const channel = @import("operation/channel.zig");
+const result_json = @import("operation/result_json.zig");
+const operation_task = @import("operation/task.zig");
 
-pub const Item = struct {
-    json: []u8,
-    terminal: bool = false,
-};
+pub const Item = result_json.Item;
+const Task = operation_task.Task;
 
 pub const Owner = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    active: ?*Operation = null,
+    active: std.ArrayList(*Task) = .empty,
+    cursor: usize = 0,
+    serial: u64 = 0,
+    wakeup: channel.Wakeup,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) Owner {
-        return .{ .allocator = allocator, .io = io };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !Owner {
+        return .{ .allocator = allocator, .io = io, .wakeup = try .init() };
     }
 
     pub fn deinit(self: *Owner) void {
-        if (self.active) |operation| {
-            operation.group.cancel(self.io);
-            self.destroy(operation);
-            self.active = null;
+        for (self.active.items) |task| {
+            task.cancel();
+            task.destroy();
         }
+        self.active.deinit(self.allocator);
+        self.wakeup.deinit();
+    }
+
+    pub fn wakeupFd(self: *const Owner) posix.fd_t {
+        return self.wakeup.read_fd;
+    }
+
+    pub fn consumeWakeup(self: *Owner) void {
+        self.wakeup.consume();
     }
 
     pub fn isActive(self: *const Owner) bool {
-        return self.active != null;
+        return self.active.items.len != 0;
     }
 
-    /// Construction is private and publication is the final fallible-free step,
-    /// so callers can never observe an operation destroyed by an errdefer.
     pub fn startProcess(self: *Owner, source: process.Spec) !void {
-        if (self.active != null) return error.OperationAlreadyActive;
-        const operation = try self.create();
-        errdefer self.destroy(operation);
-        const allocator = operation.arena.allocator();
-        const argv = try allocator.alloc(std.json.Value, source.argv.len);
-        for (source.argv, argv) |arg, *copy| copy.* = .{ .string = try allocator.dupe(u8, arg.string) };
-        const spec: process.Spec = .{
-            .argv = argv,
-            .completion = try allocator.dupe(u8, source.completion),
-            .id = try allocator.dupe(u8, source.id),
-            .stdout_format = .json_lines_stream,
-            .stdin = if (source.stdin) |value| try allocator.dupe(u8, value) else null,
-            .stdin_json = if (source.stdin_json) |value| try cloneJson(allocator, value) else null,
-        };
-        operation.kind = .{ .process = spec };
-        try operation.prepare(spec.completion, spec.id);
-        operation.group.async(self.io, Operation.worker, .{operation});
-        self.active = operation;
+        try self.ensureUnique(source.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createProcess(self.allocator, self.io, self.wakeup, source);
+        self.startPrepared(task);
     }
 
-    pub fn startHttp(self: *Owner, source: http.Spec, store: ?*auth.Store) !void {
-        if (self.active != null) return error.OperationAlreadyActive;
-        const operation = try self.create();
-        errdefer self.destroy(operation);
-        const allocator = operation.arena.allocator();
-        const extra: usize = if (source.credential) |credential| if (credential.metadata_field != null) 2 else 1 else 0;
-        const headers = try allocator.alloc(std.json.Value, source.headers.len + extra);
-        for (source.headers, headers[0..source.headers.len]) |value, *copy| copy.* = try cloneJson(allocator, value);
-        if (source.credential) |credential| {
-            const credential_store = store orelse return error.CredentialStoreUnavailable;
-            const secret = try credential_store.access(credential.id);
-            const value = try std.mem.concat(allocator, u8, &.{ credential.prefix, secret });
-            headers[source.headers.len] = try headerJson(allocator, credential.header, value);
-            if (credential.metadata_field) |field| headers[source.headers.len + 1] = try headerJson(
-                allocator,
-                credential.metadata_header.?,
-                credential_store.getField(credential.id, field) orelse return error.CredentialMetadataMissing,
-            );
+    pub fn startHttp(self: *Owner, source: http.Spec, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(source.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createHttp(self.allocator, self.io, self.wakeup, source, environ);
+        self.startPrepared(task);
+    }
+
+    pub fn startFile(self: *Owner, source: file.Spec) !void {
+        try self.ensureUnique(source.requestId());
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createFile(self.allocator, self.io, self.wakeup, source);
+        self.startPrepared(task);
+    }
+
+    pub fn startStateLoad(self: *Owner, namespace: []const u8, completion: []const u8, environ: *const std.process.Environ.Map) !void {
+        try self.startState(namespace, completion, null, environ);
+    }
+
+    pub fn startStateSave(self: *Owner, namespace: []const u8, data: std.json.Value, environ: *const std.process.Environ.Map) !void {
+        try self.startState(namespace, "state/saved", data, environ);
+    }
+
+    fn startState(self: *Owner, namespace: []const u8, completion: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map) !void {
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const serial = self.serial +% 1;
+        const task = try Task.createState(self.allocator, self.io, self.wakeup, namespace, completion, serial, data, environ);
+        self.serial = serial;
+        self.startPrepared(task);
+    }
+
+    pub fn startAuth(self: *Owner, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64) !void {
+        try self.ensureUnique(id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createAuth(self.allocator, self.io, self.wakeup, action, declaration, completion, interaction, id, environ, terminal_lease);
+        self.startPrepared(task);
+    }
+
+    /// Return at most one item, checking operations in round-robin order.
+    pub fn pop(self: *Owner, now_ns: i96) !?Item {
+        if (self.active.items.len == 0) return null;
+        var checked: usize = 0;
+        while (checked < self.active.items.len) : (checked += 1) {
+            if (self.cursor >= self.active.items.len) self.cursor = 0;
+            const index = self.cursor;
+            self.cursor = (self.cursor + 1) % self.active.items.len;
+            const task = self.active.items[index];
+            if (task.timeoutName(now_ns)) |name| return self.removeCanceled(index, name, false);
+            if (try task.popRecord()) |item| return item;
+            if (task.isDone()) return try self.removeCompleted(index);
         }
-        const spec: http.Spec = .{
-            .url = try allocator.dupe(u8, source.url),
-            .method = source.method,
-            .body = if (source.body) |value| try allocator.dupe(u8, value) else null,
-            .json = if (source.json) |value| try cloneJson(allocator, value) else null,
-            .headers = headers,
-            .credential = null,
-            .completion = try allocator.dupe(u8, source.completion),
-            .id = try allocator.dupe(u8, source.id),
-            .response_format = .sse_json_stream,
-        };
-        operation.kind = .{ .http = spec };
-        try operation.prepare(spec.completion, spec.id);
-        operation.group.async(self.io, Operation.worker, .{operation});
-        self.active = operation;
+        return null;
     }
 
-    /// Returns queued records first. Completion is synthesized only after the
-    /// worker has published its outcome and every preceding record is drained.
-    pub fn pop(self: *Owner) !?Item {
-        const operation = self.active orelse return null;
-        if (try operation.popRecord()) |item| return item;
-        if (!operation.done.load(.acquire)) return null;
-        operation.group.await(self.io) catch |err| if (err != error.Canceled) return err;
-        const item = operation.completionItem() catch operation.takeFallback();
-        self.destroy(operation);
-        self.active = null;
-        return item;
+    pub fn hasReady(self: *Owner, now_ns: i96) bool {
+        for (self.active.items) |task| if (task.isDone() or task.recordCount() != 0 or task.timeoutName(now_ns) != null) return true;
+        return false;
+    }
+
+    pub fn nextDeadline(self: *const Owner) ?i96 {
+        var result: ?i96 = null;
+        for (self.active.items) |task| {
+            const deadline = task.nextDeadline();
+            if (result == null or deadline < result.?) result = deadline;
+        }
+        return result;
+    }
+
+    pub fn respond(self: *Owner, id: []const u8, correlation: []const u8, action: []const u8, value: []const u8) !void {
+        const index = self.find(id) orelse return error.OperationNotFound;
+        try self.active.items[index].respond(correlation, action, value);
     }
 
     pub fn cancel(self: *Owner, id: []const u8) !?Item {
-        const operation = self.active orelse return null;
-        if (!std.mem.eql(u8, operation.id, id)) return null;
-        operation.group.cancel(self.io);
-        operation.discardRecords();
-        const item = operation.canceledItem() catch operation.takeFallback();
-        self.destroy(operation);
-        self.active = null;
+        const index = self.find(id) orelse return null;
+        return self.removeCanceled(index, "Canceled", false);
+    }
+
+    /// Stop a peer after policy observes its semantic terminal record.
+    pub fn finish(self: *Owner, id: []const u8) !?Item {
+        const index = self.find(id) orelse return null;
+        return self.removeCanceled(index, null, true);
+    }
+
+    fn startPrepared(self: *Owner, task: *Task) void {
+        task.start();
+        self.active.appendAssumeCapacity(task);
+    }
+
+    fn ensureUnique(self: *Owner, id: []const u8) !void {
+        if (self.find(id) != null) return error.DuplicateOperationId;
+    }
+
+    fn find(self: *const Owner, id: []const u8) ?usize {
+        for (self.active.items, 0..) |task, index| if (std.mem.eql(u8, task.id, id)) return index;
+        return null;
+    }
+
+    fn removeCompleted(self: *Owner, index: usize) !Item {
+        const task = self.active.items[index];
+        try task.await();
+        const item = task.completionItem() catch task.takeFallback();
+        self.remove(index);
+        task.destroy();
         return item;
     }
 
-    fn create(self: *Owner) !*Operation {
-        const operation = try self.allocator.create(Operation);
-        operation.* = .{
-            .owner_allocator = self.allocator,
-            .arena = .init(self.allocator),
-            .io = self.io,
-            .kind = undefined,
-        };
-        return operation;
+    fn removeCanceled(self: *Owner, index: usize, message: ?[]const u8, success: bool) Item {
+        const task = self.active.items[index];
+        task.cancel();
+        task.discardRecords();
+        const item = task.forcedItem(success, message) catch task.takeFallback();
+        self.remove(index);
+        task.destroy();
+        return item;
     }
 
-    fn destroy(self: *Owner, operation: *Operation) void {
-        operation.discardRecords();
-        if (operation.fallback) |json| self.allocator.free(json);
-        operation.arena.deinit();
-        self.allocator.destroy(operation);
+    fn remove(self: *Owner, index: usize) void {
+        _ = self.active.orderedRemove(index);
+        if (self.cursor > index) self.cursor -= 1;
     }
 };
 
-const Operation = struct {
-    const capacity = max_records_per_event;
-    pub const max_records_per_event = 32;
-    const Kind = union(enum) { http: http.Spec, process: process.Spec };
-    const QueuedRecord = union(enum) {
-        data: []u8,
-        terminal,
-    };
-    const Outcome = struct { ok: bool = false, status: i64 = 0, body: []const u8 = "", message: ?[]const u8 = "OperationFailed" };
-
-    owner_allocator: std.mem.Allocator,
-    arena: std.heap.ArenaAllocator,
-    io: std.Io,
-    kind: Kind,
-    completion: []const u8 = "",
-    id: []const u8 = "",
-    fallback: ?[]u8 = null,
-    outcome: Outcome = .{},
-    done: std.atomic.Value(bool) = .init(false),
-    group: std.Io.Group = .init,
-    mutex: std.Io.Mutex = .init,
-    not_full: std.Io.Condition = .init,
-    items: [capacity]?QueuedRecord = .{null} ** capacity,
-    head: usize = 0,
-    len: usize = 0,
-
-    fn prepare(self: *Operation, completion: []const u8, id: []const u8) !void {
-        self.completion = completion;
-        self.id = id;
-        // This reserved event makes worker allocation and queue failures
-        // terminal rather than leaving the scheduler waiting forever.
-        self.fallback = try terminalJson(self.owner_allocator, completion, id, false, 0, "", "OperationFailed");
-    }
-
-    fn pushRecord(self: *Operation, record: QueuedRecord) !void {
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
-        while (self.len == capacity) try self.not_full.wait(self.io, &self.mutex);
-        self.items[(self.head + self.len) % capacity] = record;
-        self.len += 1;
-    }
-
-    /// Take one immediately available ordered batch. The consumer polling
-    /// cadence supplies the latency bound; a full batch, terminal marker, or
-    /// worker completion supplies the structural flush bound.
-    fn popRecord(self: *Operation) !?Item {
-        var records: [max_records_per_event][]u8 = undefined;
-        var record_count: usize = 0;
-        var terminal_marker = false;
-
-        self.mutex.lockUncancelable(self.io);
-        while (self.len != 0 and record_count < max_records_per_event) {
-            const queued = self.items[self.head].?;
-            switch (queued) {
-                .data => |json| {
-                    records[record_count] = json;
-                    record_count += 1;
-                },
-                .terminal => terminal_marker = true,
-            }
-            self.items[self.head] = null;
-            self.head = (self.head + 1) % capacity;
-            self.len -= 1;
-            if (terminal_marker) break;
-        }
-        if (record_count != 0 or terminal_marker) self.not_full.signal(self.io);
-        self.mutex.unlock(self.io);
-        if (record_count == 0 and !terminal_marker) return null;
-        defer for (records[0..record_count]) |json| self.owner_allocator.free(json);
-        return .{ .json = try dataJson(self.owner_allocator, self.completion, self.id, records[0..record_count], terminal_marker) };
-    }
-
-    fn discardRecords(self: *Operation) void {
-        while (true) {
-            self.mutex.lockUncancelable(self.io);
-            if (self.len == 0) {
-                self.mutex.unlock(self.io);
-                return;
-            }
-            const queued = self.items[self.head].?;
-            self.items[self.head] = null;
-            self.head = (self.head + 1) % capacity;
-            self.len -= 1;
-            self.not_full.signal(self.io);
-            self.mutex.unlock(self.io);
-            switch (queued) {
-                .data => |json| self.owner_allocator.free(json),
-                .terminal => {},
-            }
-        }
-    }
-
-    fn emitHttpRecord(context: *anyopaque, raw: ?[]const u8) anyerror!void {
-        const self: *Operation = @ptrCast(@alignCast(context));
-        if (raw == null) return self.pushRecord(.terminal);
-        var parsed = try std.json.parseFromSlice(std.json.Value, self.owner_allocator, raw.?, .{});
-        defer parsed.deinit();
-        const owned = try self.owner_allocator.dupe(u8, raw.?);
-        errdefer self.owner_allocator.free(owned);
-        try self.pushRecord(.{ .data = owned });
-    }
-
-    fn emitProcessRecord(context: *anyopaque, raw: []const u8) anyerror!void {
-        return emitHttpRecord(context, raw);
-    }
-
-    fn worker(self: *Operation) std.Io.Cancelable!void {
-        defer self.done.store(true, .release);
-        switch (self.kind) {
-            .http => |spec| {
-                const result = http.runSse(self.arena.allocator(), self.io, null, spec, .{ .context = self, .emit = emitHttpRecord }) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    self.outcome = .{ .message = @errorName(err) };
-                    return;
-                };
-                const body = process.sanitizeOutput(self.arena.allocator(), result.error_body, 64 * 1024) catch |err| {
-                    self.outcome = .{ .status = result.status, .message = @errorName(err) };
-                    return;
-                };
-                self.outcome = .{
-                    .ok = result.status >= 200 and result.status < 300 and result.failure == null,
-                    .status = result.status,
-                    .body = body,
-                    .message = if (result.failure) |failure| @errorName(failure) else null,
-                };
-            },
-            .process => |spec| {
-                const result = process.runJsonLines(self.arena.allocator(), self.io, spec, .{ .context = self, .emit = emitProcessRecord }) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    self.outcome = .{ .status = -1, .message = @errorName(err) };
-                    return;
-                };
-                self.outcome = .{ .ok = result.status == 0, .status = result.status, .body = result.stderr, .message = null };
-            },
-        }
-    }
-
-    fn completionItem(self: *Operation) !Item {
-        const json = try terminalJson(self.owner_allocator, self.completion, self.id, self.outcome.ok, self.outcome.status, self.outcome.body, self.outcome.message);
-        self.owner_allocator.free(self.fallback.?);
-        self.fallback = null;
-        return .{ .json = json, .terminal = true };
-    }
-
-    fn canceledItem(self: *Operation) !Item {
-        const json = try terminalJson(self.owner_allocator, self.completion, self.id, false, 0, "", "Canceled");
-        self.owner_allocator.free(self.fallback.?);
-        self.fallback = null;
-        return .{ .json = json, .terminal = true };
-    }
-
-    fn takeFallback(self: *Operation) Item {
-        const json = self.fallback.?;
-        self.fallback = null;
-        return .{ .json = json, .terminal = true };
-    }
-};
-
-fn dataJson(allocator: std.mem.Allocator, completion: []const u8, id: []const u8, records: []const []u8, terminal_marker: bool) ![]u8 {
-    const encoded_type = try std.json.Stringify.valueAlloc(allocator, completion, .{});
-    defer allocator.free(encoded_type);
-    const encoded_id = try std.json.Stringify.valueAlloc(allocator, id, .{});
-    defer allocator.free(encoded_id);
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.print(allocator, "{{\"type\":{s},\"id\":{s},\"phase\":\"data\",\"records\":[", .{ encoded_type, encoded_id });
-    for (records, 0..) |record, index| {
-        if (index != 0) try out.append(allocator, ',');
-        try out.appendSlice(allocator, record);
-    }
-    try out.print(allocator, "],\"terminal\":{s}}}", .{if (terminal_marker) "true" else "false"});
-    return out.toOwnedSlice(allocator);
-}
-
-fn terminalJson(allocator: std.mem.Allocator, completion: []const u8, id: []const u8, ok: bool, status: i64, body: []const u8, message: ?[]const u8) ![]u8 {
-    return std.json.Stringify.valueAlloc(allocator, .{
-        .type = completion,
-        .id = id,
-        .phase = "end",
-        .ok = ok,
-        .status = status,
-        .body = body,
-        .message = message,
-    }, .{});
-}
-
-fn cloneJson(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
-    const encoded = try std.json.Stringify.valueAlloc(allocator, value, .{});
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{ .allocate = .alloc_always });
-    return parsed.value;
-}
-
-fn headerJson(allocator: std.mem.Allocator, name: []const u8, value: []const u8) !std.json.Value {
-    const encoded = try std.json.Stringify.valueAlloc(allocator, .{ .name = name, .value = value }, .{});
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{ .allocate = .alloc_always });
-    return parsed.value;
-}
-
-test "ordered records coalesce to 32 and terminal markers flush" {
-    var owner: Owner = .init(std.testing.allocator, std.testing.io);
+test "operations run concurrently and semantic finish kills a sleeping process" {
+    var owner: Owner = try .init(std.testing.allocator, std.testing.io);
     defer owner.deinit();
-    const operation = try owner.create();
-    owner.active = operation;
-    operation.kind = undefined;
-    try operation.prepare("stream/done", "quoted-\"id");
-
-    for (0..Operation.max_records_per_event) |index| {
-        const json = try std.fmt.allocPrint(std.testing.allocator, "{{\"index\":{d}}}", .{index});
-        try operation.pushRecord(.{ .data = json });
+    const argv_a = [_]std.json.Value{ .{ .string = "/bin/sh" }, .{ .string = "-c" }, .{ .string = "sleep 0.15; printf done" } };
+    const argv_b = [_]std.json.Value{ .{ .string = "/bin/sh" }, .{ .string = "-c" }, .{ .string = "sleep 0.15; printf done" } };
+    const started = std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds;
+    try owner.startProcess(.{ .argv = &argv_a, .completion = "done", .id = "a", .stdout_format = .text, .stdin = null, .stdin_json = null });
+    try owner.startProcess(.{ .argv = &argv_b, .completion = "done", .id = "b", .stdout_format = .text, .stdin = null, .stdin_json = null });
+    var completed: usize = 0;
+    while (completed < 2) {
+        if (try owner.pop(std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds)) |item| {
+            defer std.testing.allocator.free(item.json);
+            completed += 1;
+        } else std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake) catch {};
     }
+    const elapsed = std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds - started;
+    try std.testing.expect(elapsed < 280 * std.time.ns_per_ms);
 
-    const first = (try operation.popRecord()).?;
-    defer std.testing.allocator.free(first.json);
-    var first_parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, first.json, .{});
-    defer first_parsed.deinit();
-    try std.testing.expectEqual(Operation.max_records_per_event, first_parsed.value.object.get("records").?.array.items.len);
-    try std.testing.expectEqual(@as(i64, 0), first_parsed.value.object.get("records").?.array.items[0].object.get("index").?.integer);
-    try std.testing.expect(!first_parsed.value.object.get("terminal").?.bool);
-
-    for (Operation.max_records_per_event..35) |index| {
-        const json = try std.fmt.allocPrint(std.testing.allocator, "{{\"index\":{d}}}", .{index});
-        try operation.pushRecord(.{ .data = json });
+    const stream_argv = [_]std.json.Value{ .{ .string = "/bin/sh" }, .{ .string = "-c" }, .{ .string = "printf '{\"type\":\"result\"}\\n'; sleep 2" } };
+    try owner.startProcess(.{ .argv = &stream_argv, .completion = "stream", .id = "sleeping", .stdout_format = .json_lines_stream, .stdin = null, .stdin_json = null });
+    while (true) {
+        if (try owner.pop(std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds)) |item| {
+            defer std.testing.allocator.free(item.json);
+            if (!item.terminal) break;
+        } else std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake) catch {};
     }
-    try operation.pushRecord(.terminal);
-    const second = (try operation.popRecord()).?;
-    defer std.testing.allocator.free(second.json);
-    var second_parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, second.json, .{});
-    defer second_parsed.deinit();
-    const tail = second_parsed.value.object.get("records").?.array.items;
-    try std.testing.expectEqual(@as(usize, 3), tail.len);
-    try std.testing.expectEqual(@as(i64, 32), tail[0].object.get("index").?.integer);
-    try std.testing.expect(second_parsed.value.object.get("terminal").?.bool);
-    try std.testing.expectEqualStrings("quoted-\"id", second_parsed.value.object.get("id").?.string);
+    const finish_started = std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds;
+    const finished = (try owner.finish("sleeping")).?;
+    defer std.testing.allocator.free(finished.json);
+    try std.testing.expect(std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds - finish_started < 500 * std.time.ns_per_ms);
+    try std.testing.expect(!owner.isActive());
 }

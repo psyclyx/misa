@@ -3,7 +3,9 @@
   animations = "animations";
   animationDefault = "animation.default";
   auth = "auth";
-  commandChoice = "command_choice";
+  choices = "choices";
+  dialogs = "dialogs";
+  dialogView = "dialog_view";
   components = "components";
   layout = "layout";
   componentMessage = "component.message";
@@ -11,9 +13,11 @@
   componentPicker = "component.picker";
   componentStatus = "component.status";
   componentChrome = "component.chrome";
+  componentDialog = "component.dialog";
   editor = "editor";
   fuzzy = "fuzzy";
   keybindings = "keybindings";
+  indicators = "indicators";
   json = "json";
   messages = "messages";
   models = "models";

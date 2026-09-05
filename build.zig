@@ -104,6 +104,22 @@ pub fn build(b: *std.Build) void {
     b.step("run", "Run misa").dependOn(&run.step);
 
     const auth_unit = b.addTest(.{ .root_module = auth });
+    const oauth_test_module = b.createModule(.{
+        .root_source_file = b.path("src/auth/oauth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const oauth_unit = b.addTest(.{ .root_module = oauth_test_module });
+    const operation_test_module = b.createModule(.{
+        .root_source_file = b.path("src/session/operation.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    operation_test_module.addImport("misa_auth", auth);
+    operation_test_module.addImport("misa_file", file_effect);
+    operation_test_module.addImport("misa_process", process_effect);
+    operation_test_module.addImport("misa_state", state);
+    const operation_unit = b.addTest(.{ .root_module = operation_test_module });
     const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const process_unit = b.addTest(.{ .root_module = process_effect });
@@ -112,6 +128,8 @@ pub fn build(b: *std.Build) void {
     const session_unit = b.addTest(.{ .root_module = session });
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&b.addRunArtifact(auth_unit).step);
+    test_step.dependOn(&b.addRunArtifact(oauth_unit).step);
+    test_step.dependOn(&b.addRunArtifact(operation_unit).step);
     test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
     test_step.dependOn(&b.addRunArtifact(process_unit).step);

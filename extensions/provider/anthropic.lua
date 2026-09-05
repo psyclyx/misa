@@ -6,11 +6,12 @@ return {
     local config = type(providers) == "table" and providers.anthropic or nil
     config = type(config) == "table" and config or {}
     local models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://api.anthropic.com/v1/models" or nil)
-    misa.reg_auth_provider({ id = "anthropic", model_provider = "anthropic", discover_models = models_url ~= nil, label = "Anthropic", description = "Anthropic API key" })
+    misa.reg_auth_provider({ id = "anthropic", model_provider = "anthropic", discover_models = models_url ~= nil, label = "Anthropic", description = "Anthropic API key", strategy="api_key" })
     misa.protocols.anthropic({
       id = "anthropic",
       credential = "anthropic",
       url = config.url or "https://api.anthropic.com/v1/messages",
+      timeouts = config.timeouts,
       max_tokens = config.max_tokens,
       models_url = models_url,
       catalogue_authoritative = true,

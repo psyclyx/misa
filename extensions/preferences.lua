@@ -45,32 +45,6 @@ local function merge_configured_favorites(preferences, configured)
   end
 end
 
-local function copy_item(item)
-  return { value = item.value, label = item.label, description = item.description }
-end
-
-local function panels(preferences, scope, source)
-  local values, favorites, recent, all = scope_state(preferences, scope), {}, {}, {}
-  for _, item in ipairs(source) do
-    local copy, preference = copy_item(item), values[item.value]
-    all[#all + 1] = copy
-    if preference and preference.favorite then favorites[#favorites + 1] = copy_item(item) end
-    if preference and (preference.uses or 0) > 0 then
-      recent[#recent + 1] = { item = copy_item(item), score = (preference.last or 0) * 1000000 + preference.uses }
-    end
-  end
-  table.sort(favorites, function(left, right) return (left.label or left.value) < (right.label or right.value) end)
-  table.sort(recent, function(left, right) return left.score > right.score end)
-  local result = {}
-  if #favorites > 0 then result[#result + 1] = { id = "favorites", title = "Favorites", items = favorites } end
-  if #recent > 0 then
-    local items = {}; for _, entry in ipairs(recent) do items[#items + 1] = entry.item end
-    result[#result + 1] = { id = "recent", title = "Recent", items = items }
-  end
-  result[#result + 1] = { id = "all", title = "All", items = all }
-  return result
-end
-
 return {
   setup = function(context)
     local preferences_config = type(context.config) == "table" and context.config.preferences or nil
@@ -89,17 +63,6 @@ return {
       return { db = db }
     end)
 
-    misa.reg_interceptor({
-      id = "preferences/project-picker",
-      before = function(tx)
-        local event = tx.event
-        if event.type == "picker/open" and type(event.preference_scope) == "string" and event.panels == nil then
-          event.panels = panels(state(tx.db), event.preference_scope, event.items or {})
-        end
-        return tx
-      end,
-    })
-
     misa.reg_event("choice/used", function(db, event)
       if type(event.scope) ~= "string" or type(event.value) ~= "string" then return end
       local preferences = state(db)
@@ -112,21 +75,13 @@ return {
     end)
 
     misa.reg_event("preferences/toggle", function(db, event)
-      if type(event.scope) ~= "string" or type(event.value) ~= "string" or type(event.items) ~= "table" then return end
+      if type(event.scope) ~= "string" or type(event.value) ~= "string" then return end
       local preferences = state(db)
       local values = scope_state(preferences, event.scope)
       local entry = values[event.value] or { uses = 0 }
       entry.favorite = not (entry.favorite == true)
       values[event.value] = entry
-      return { db = db, fx = {
-        { type = "state/save", namespace = "preferences", data = preferences },
-        { type = "dispatch", event = {
-          type = "picker/update", id = event.picker, token = event.picker_token,
-          panels = panels(preferences, event.scope, event.items), selected = event.selected,
-        } },
-        -- Favorite consumes a terminal event without closing the picker.
-        { type = "terminal/read" },
-      } }
+      return { db = db, fx = { { type = "state/save", namespace = "preferences", data = preferences } } }
     end)
   end,
 }

@@ -69,7 +69,7 @@ function misa.protocols.openai(spec)
       return { fx = { {
         type = "http/request", method = "GET", url = spec.models_url,
         headers = spec.model_headers or {}, credential = credential,
-        response_format = "json", completion = "provider/" .. spec.id .. "-models", id = "models-" .. spec.id,
+        response_format = "json", completion = "provider/" .. spec.id .. "-models", id = "models-" .. spec.id, timeouts = spec.timeouts,
       } } }
     end
     misa.reg_event("models/discover", function(_, event)
@@ -114,7 +114,7 @@ function misa.protocols.openai(spec)
     return {
       type = "http/request", method = "POST", url = spec.url, json = body, headers = headers,
       credential = { id = spec.credential, header = "authorization", prefix = "Bearer " },
-      response_format = "sse_json_stream", completion = "provider/" .. spec.id .. "-complete", id = effect.id,
+      response_format = "sse_json_stream", completion = "provider/" .. spec.id .. "-complete", id = effect.id, timeouts = spec.timeouts,
     }
   end)
 
@@ -163,6 +163,7 @@ function misa.protocols.openai(spec)
         } }
       end
     end
+    if event.terminal == true then fx[#fx + 1] = { type = "operation/finish", id = event.id } end
     return { db = db, fx = fx }
   end)
 end

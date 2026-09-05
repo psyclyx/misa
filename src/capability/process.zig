@@ -10,6 +10,13 @@ pub const Spec = struct {
     stdout_format: StdoutFormat,
     stdin: ?[]const u8,
     stdin_json: ?std.json.Value,
+    timeouts: Timeouts = .{},
+
+    pub const Timeouts = struct {
+        startup_ms: u64 = 10_000,
+        idle_ms: u64 = 30_000,
+        overall_ms: u64 = 600_000,
+    };
 
     pub fn parse(object: std.json.ObjectMap) !Spec {
         const argv = switch (object.get("argv") orelse return error.InvalidEffect) {
@@ -31,6 +38,14 @@ pub const Spec = struct {
         } else null;
         const stdin_json = object.get("stdin_json");
         if (stdin != null and stdin_json != null) return error.InvalidEffect;
+        const timeouts: Timeouts = if (object.get("timeouts")) |value| blk: {
+            if (value != .object) return error.InvalidEffect;
+            break :blk .{
+                .startup_ms = try timeoutField(value.object, "startup_ms", 10_000),
+                .idle_ms = try timeoutField(value.object, "idle_ms", 30_000),
+                .overall_ms = try timeoutField(value.object, "overall_ms", 600_000),
+            };
+        } else .{};
         return .{
             .argv = argv,
             .completion = nonEmptyString(object, "completion") orelse return error.InvalidEffect,
@@ -38,6 +53,7 @@ pub const Spec = struct {
             .stdout_format = if (std.mem.eql(u8, format, "text")) .text else if (std.mem.eql(u8, format, "json_lines")) .json_lines else if (std.mem.eql(u8, format, "json_lines_stream")) .json_lines_stream else return error.InvalidEffect,
             .stdin = stdin,
             .stdin_json = stdin_json,
+            .timeouts = timeouts,
         };
     }
 };
@@ -45,6 +61,12 @@ pub const Spec = struct {
 pub const StreamSink = struct {
     context: *anyopaque,
     emit: *const fn (context: *anyopaque, json_line: []const u8) anyerror!void,
+    activity: ?*const fn (context: *anyopaque) void = null,
+};
+
+pub const ActivitySink = struct {
+    context: *anyopaque,
+    note: *const fn (context: *anyopaque) void,
 };
 
 pub const StreamResult = struct { status: i64, stderr: []u8 };
@@ -61,6 +83,10 @@ pub const Result = struct {
 };
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, spec: Spec) !Result {
+    return runWithActivity(allocator, io, spec, null);
+}
+
+pub fn runWithActivity(allocator: std.mem.Allocator, io: std.Io, spec: Spec, activity: ?ActivitySink) !Result {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
     for (spec.argv) |arg| try argv.append(allocator, arg.string);
@@ -73,7 +99,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, spec: Spec) !Result {
         encoded_stdin = try std.fmt.allocPrint(allocator, "{s}\n", .{json});
     }
     const process_stdin: ?[]const u8 = if (spec.stdin) |value| value else if (encoded_stdin) |value| value else null;
-    const captured = capture(allocator, io, argv.items, process_stdin) catch |err| {
+    const captured = capture(allocator, io, argv.items, process_stdin, activity) catch |err| {
         const stdout = try allocator.dupe(u8, "");
         errdefer allocator.free(stdout);
         return .{
@@ -132,9 +158,11 @@ pub fn runJsonLines(allocator: std.mem.Allocator, io: std.Io, spec: Spec, sink: 
     errdefer stderr.deinit(allocator);
     while (reader.fill(1, .none)) |_| {
         const stdout_bytes = reader.reader(0).buffered();
+        if (stdout_bytes.len != 0) if (sink.activity) |note| note(sink.context);
         try feedJsonLines(allocator, &line, stdout_bytes, sink);
         reader.reader(0).tossBuffered();
         const stderr_bytes = reader.reader(1).buffered();
+        if (stderr_bytes.len != 0) if (sink.activity) |note| note(sink.context);
         if (stderr.items.len + stderr_bytes.len > 1024 * 1024) return error.StreamTooLong;
         try stderr.appendSlice(allocator, stderr_bytes);
         reader.reader(1).tossBuffered();
@@ -179,28 +207,31 @@ fn termStatus(term: std.process.Child.Term) i64 {
     };
 }
 
-fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin: ?[]const u8) !std.process.RunResult {
-    if (stdin == null) return std.process.run(allocator, io, .{
-        .argv = argv,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-    });
-    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
+fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin: ?[]const u8, activity: ?ActivitySink) !std.process.RunResult {
+    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = if (stdin != null) .pipe else .ignore, .stdout = .pipe, .stderr = .pipe });
     defer child.kill(io);
     var stdin_group: std.Io.Group = .init;
     defer stdin_group.cancel(io);
     var pump: WritePump = .{};
-    const pipe = child.stdin.?;
-    child.stdin = null;
-    stdin_group.async(io, WritePump.run, .{ &pump, io, pipe, stdin.? });
+    if (stdin) |input| {
+        const pipe = child.stdin.?;
+        child.stdin = null;
+        stdin_group.async(io, WritePump.run, .{ &pump, io, pipe, input });
+    }
 
     var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var reader: std.Io.File.MultiReader = undefined;
     reader.init(allocator, io, buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer reader.deinit();
+    var stdout_seen: usize = 0;
+    var stderr_seen: usize = 0;
     while (reader.fill(64, .none)) |_| {
-        if (reader.reader(0).buffered().len > 1024 * 1024 or reader.reader(1).buffered().len > 1024 * 1024)
-            return error.StreamTooLong;
+        const stdout_len = reader.reader(0).buffered().len;
+        const stderr_len = reader.reader(1).buffered().len;
+        if (stdout_len > stdout_seen or stderr_len > stderr_seen) if (activity) |sink| sink.note(sink.context);
+        stdout_seen = stdout_len;
+        stderr_seen = stderr_len;
+        if (stdout_len > 1024 * 1024 or stderr_len > 1024 * 1024) return error.StreamTooLong;
     } else |err| switch (err) {
         error.EndOfStream => {},
         else => |other| return other,
@@ -302,6 +333,12 @@ pub fn sanitizeOutput(allocator: std.mem.Allocator, input: []const u8, limit: us
     return out.toOwnedSlice(allocator);
 }
 
+fn timeoutField(object: std.json.ObjectMap, name: []const u8, default: u64) !u64 {
+    const value = object.get(name) orelse return default;
+    if (value != .integer or value.integer < 1 or value.integer > 3_600_000) return error.InvalidEffect;
+    return @intCast(value.integer);
+}
+
 fn optionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     return switch (value) {
@@ -358,7 +395,7 @@ test "stdin and stdout are pumped concurrently" {
         // deadlocks because the child writes before it reads.
         "dd if=/dev/zero bs=262144 count=1 2>/dev/null; cat >/dev/null",
     };
-    const captured = try capture(std.testing.allocator, std.testing.io, &argv, input);
+    const captured = try capture(std.testing.allocator, std.testing.io, &argv, input, null);
     defer std.testing.allocator.free(captured.stdout);
     defer std.testing.allocator.free(captured.stderr);
     try std.testing.expectEqual(@as(i64, 0), termStatus(captured.term));

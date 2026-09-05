@@ -28,7 +28,7 @@ adapters precede the API providers that use them:
     "tool.shell",
     "fuzzy",
     "keybindings",
-    "command_choice",
+    "choices",
     "preferences",
     "themes",
     "theme.default",
@@ -36,6 +36,7 @@ adapters precede the API providers that use them:
     "animation.default",
     "components",
     "layout",
+    "indicators",
     "component.message",
     "component.editor",
     "component.picker",
@@ -93,9 +94,12 @@ phase. Setup may register:
   return `{db,event,cofx,fx}`.
 - `misa.reg_cofx(name, fn)`: derives a policy value. Derivations run in
   registration order; a later derivation may read values installed by earlier
-  ones. Base coeffects always include `config`, `argv`, and
-  `terminal={interactive=<bool>,columns=<integer>,lines=<integer>}`. These names
-  are reserved. Configuration and argv are shared immutable inputs by contract.
+  ones. Base coeffects always include `config`, `argv`,
+  `terminal={interactive=<bool>,columns=<integer>,lines=<integer>}`, and
+  `clock={wall_ms=<Unix epoch milliseconds>,monotonic_ms=<monotonic milliseconds>}`.
+  These names are reserved. Native code samples both clocks for every
+  transaction; elapsed durations must use `monotonic_ms`, never wall time.
+  Configuration and argv are shared immutable inputs by contract.
 - `misa.reg_fx(type, fn)`: translates a Lua policy effect to one native effect
   or an ordered array of native effects.
 - `misa.reg_view(fn)`: registers exactly one semantic projection.
@@ -105,8 +109,9 @@ phase. Setup may register:
   optional `context_window` and API metadata. `api.request_options` maps generic
   option names to `{choices={...},default=...,required=?}` declarations and
   `api.request_options_serializer` identifies the provider transport serializer.
-- `misa.reg_auth_provider(provider)`: declares an authentication ID and its
-  corresponding model provider for completion and availability tracking.
+- `misa.reg_auth_provider(provider)`: declares an authentication ID, model
+  provider, native `strategy`, and (for OAuth) trusted endpoint `profile` for
+  completion and availability tracking. Native validation rejects drift.
 - `misa.reg_command({name,description,event,completion?,complete?})`: adds a
   generic slash command. `completion` names a shared static candidate group;
   `complete(prefix,db)` supplies dynamic candidates when needed.
@@ -127,11 +132,16 @@ not write or render: `io`, `os`, and `print` are unavailable. Ordinary Lua
 source composition (`require`, `load`, `loadfile`, and `dofile`) remains
 available, while native `package.loadlib`, FFI, and JIT access are disabled.
 
+HTTP deadlines describe only signals the transport can observe: `first_byte_ms`
+includes DNS and connection establishment, `idle_ms` applies after response-body
+activity begins, and `overall_ms` bounds the complete operation. There is no
+separately configurable connect deadline.
+
 The fixed native effects are:
 
 - `{type="dispatch", event=<table>}`
-- `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>}`
-- `{type="http/request", url=..., json=..., credential=..., completion=..., id=...}`
+- `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
+- `{type="http/request", url=..., json=..., credential=..., completion=..., id=..., timeouts={first_byte_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="file/read", path=..., completion=..., id=...}`
 - `{type="file/list", path=..., completion=..., id=...}`
 - `{type="file/write", path=..., content=..., completion=..., id=...}`
@@ -140,6 +150,9 @@ The fixed native effects are:
 - `{type="terminal/read"}`
 - `{type="timer/start", interval_ms=<10..60000>, completion=..., id=...}` / `{type="timer/stop", id=...}`
 - `{type="operation/cancel", id=...}`
+- `{type="auth/command", action=..., provider=..., strategy=..., profile=...,
+  completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
+  correlation=..., action=..., value=...}`
 - `{type="state/load", namespace=..., completion=...}` / `{type="state/save", namespace=..., data=...}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
@@ -170,7 +183,9 @@ A view is modest semantic data:
 }
 ```
 
-Styles are `plain`, `dim`, `bold`, `accent`, `user`, `assistant`, and `error`.
+Native styles are `plain`, `dim`, `bold`, `accent`, `user`, `assistant`, and
+`error`; themes also map component tokens such as `indicator.label`,
+`indicator.value`, and `indicator.hotkey` onto those native styles.
 Text must be valid UTF-8 and may not contain controls, ESC, CR, or LF. Cursor
 rows are one-based; `byte` is a zero-based UTF-8 boundary in the concatenated
 spans of that row. Zig alone converts it to a terminal cell column and clamps it
@@ -183,12 +198,16 @@ output strips styles.
 once into a closed native union; `src/capability/process.zig` owns direct
 process execution and captured-output normalization, while
 `src/capability/file.zig` owns bounded file operations. Lua owns canonical application
-state. A transaction is fully validated, then its pending semantic
-view is successfully presented, then Lua policy state is committed, and only
-then are the prevalidated effects executed. Policy changes are rollback-safe
-through validation and presentation. A native side-effect or I/O failure after
-commit is fatal and is not generally rollbackable. `src/terminal/root.zig`
-owns tty/raw-mode lifetime and all stdout writes; `terminal/input.zig`,
+state. A transaction is fully validated before Lua policy state is committed. Views
+are deadline-coalesced and the latest prepared frame is retained during terminal
+handoff. Potentially blocking HTTP, process, authentication, file, credential,
+and persistent-state work runs in cancellable native workers and reports
+completion errors as events; the owner thread performs only Lua/rendering and
+bounded queue work. Worker publication uses a bounded per-operation queue and a
+nonblocking wakeup pipe. One readiness wait covers that pipe, requested stdin,
+and the nearest timer, frame, operation-timeout, or decoder deadline; there is
+no periodic operation polling. `src/terminal/root.zig`
+owns tty/raw-mode lifetime, exclusive generation-checked handoff, and all stdout writes; `terminal/input.zig`,
 `terminal/presenter.zig`, and `terminal/width.zig` own their respective pure
 mechanisms. Raw mode is always restored with `defer`.
 
@@ -227,7 +246,7 @@ enable that mode because Zig exposes no portable async-signal-safe POSIX write.
 The application UI is split at semantic boundaries. `components` resolves
 visual roles to registered implementations. The independently loadable
 `component.message`, `component.editor`, `component.picker`, `component.status`,
-and `component.chrome` plugins provide the default roles; none owns behavior or
+`component.chrome`, and `component.dialog` plugins provide the default roles; none owns behavior or
 depends on a theme. `layout` provides pure terminal-cell width, fitting,
 semantic-span wrapping, and responsive-column primitives. Theme resolution is
 centralized at the component registry boundary. Custom code calls
@@ -243,29 +262,42 @@ Selections live in `db`, so failed transactions roll back; successful swaps pers
 the generic state service. Set `persist = false` in the corresponding config
 section to disable persistence. These registries contain no input or agent behavior.
 
-`messages` owns the sole interactive transcript in `db.messages.transcript` for
-user, assistant, thinking, tool call/result, authentication, and harness entries.
-The root managed view reprojects that complete transcript; streaming events
-update canonical models and never commit output fragments. Thinking and tool
-rows remain visible but collapsed by default. `/verbose` or the configurable
-global `alt+t` binding reprojects the entire transcript with details. Page Up /
-Page Down (also `alt+k` / `alt+j`) scroll the transcript while input and compact,
-colored SI-prefixed status metrics remain visible below it. The default user and
-assistant boxes have a `▏` margin and render bounded headings, emphasis, inline
+`messages` owns ordered response and block models in `db.messages.responses` and
+`db.messages.blocks` for user, assistant, thinking, tool call/result,
+authentication, and harness entries. The root managed view reprojects those
+models. Stable `transcript/response-*` and `transcript/block-*` lifecycle events
+append stream chunks without repeatedly copying accumulated responses, then
+compact each block once at finalization. Thinking and tool-call blocks are
+visible while streaming and remain summarized by default. Interruption marks
+visible partial blocks without promoting them to provider history. `/verbose`
+or the configurable global `alt+t` binding reprojects the transcript with
+details. Page Up / Page Down (also `alt+k` / `alt+j`) scroll while input and a
+responsive semantic indicator row remain visible below it. Default message roles
+and timestamps occupy a title line above the `▏` body box instead of prefixing
+content. Completed assistant responses show tok/s exactly once, on their final assistant
+block, and only from provider-reported output tokens and positive native monotonic elapsed time. The boxes render
+bounded headings, emphasis, inline
 and fenced code, lists, quotes, and links as semantic spans. The pure `layout`
 service uses the same wcwidth-style combining, modifier, East Asian wide, and
-emoji ranges as the native presenter. Message spans and picker options therefore
-wrap on UTF-8 boundaries using terminal cells rather than bytes or scalar count.
+emoji ranges as the native presenter. It also owns editor grapheme boundaries,
+so combining sequences, emoji ZWJ sequences, and virama-attached marks are never
+split by Left, Right, or Backspace. Message spans and picker options therefore
+wrap on grapheme/UTF-8 boundaries using terminal cells rather than bytes or scalar count.
 Set `config.messages.markdown` to `false` (or `plain` to `true`) for literal text.
 `config.messages` also controls initial `verbose` and structural `redact_keys`,
 `max_string`, `max_items`, and `max_depth` limits. Headless output remains plain.
-`agent` emits explicit `transcript/*`, `agent/status`, and `agent/usage` events;
-visual extensions do not inspect its private orchestration state. UI cancellation
+`agent` emits explicit stable response/block start, delta, end, and interruption
+`transcript/*` events plus `agent/status` and `agent/usage`; visual extensions do
+not inspect or reconstruct shadows from its private orchestration state. UI cancellation
 dispatches the semantic `agent/cancel-active` action, and the agent alone resolves
-that action to its active operation. Providers
+that action to its active provider operation or every pending native tool call ID.
+Cancellation intent remains set while completions are drained, prevents model
+continuation, then returns the harness to ready with visible cancelled/interrupted
+transcript state. Providers
 normalize every response to `agent/stream-start`, `agent/stream-delta`, optional
 `agent/stream-usage`, and `agent/stream-end`/`agent/stream-error`. Deltas cover
-text, thinking, and incrementally assembled tool calls. The focused `json`
+text, thinking, and incrementally assembled tool calls; finalized tool argument
+chunks are compacted once before the transcript is reprojected. The focused `json`
 extension supplies `misa.json.decode` and `misa.json.encode` at protocol
 boundaries. Before continuation, the agent parses every tool call into a
 provider-neutral `arguments` table and removes transport JSON; adapters encode
@@ -274,6 +306,15 @@ keeps unknown-tool calls replayable after a provider switch. Only the agent corr
 request IDs and promotes a completed assistant response into provider history;
 an interrupted response remains marked in the visible transcript but is not
 replayed to the provider.
+
+`indicators` is a focused registry for semantic status values. Features call
+`misa.reg_indicator({id,label?,icon?,hotkey?,value=function(db)...end})`.
+`config.status.indicators` selects order, label/icon representation, an optional
+structured keybinding reminder, and drop priority. The common component styles
+`indicator.label`, `indicator.value`, and `indicator.hotkey` independently and
+removes low-priority items at narrow widths. Standard registrations cover
+activity, model, effort (with its cycle hotkey), session usage, context usage,
+and transcript detail (`summary`/`verbose`). Root composition stays generic.
 
 `request_options` derives request readiness and selected option values entirely
 from the active model's `api.request_options` metadata. Required options without
@@ -284,19 +325,51 @@ only the selected model's declared choices, and the configurable global
 retain an equivalent value when supported, otherwise use the new model default;
 models without reasoning support simply expose no effort value.
 
-`picker` is generic searchable single-selection state/input: extensions open it
-with semantic items and receive the chosen value through an event. `picker_view`
-owns its default visual projection. `models` owns
-only model catalogue, availability, and selection policy; its `/model` command
-uses `picker` without owning input or filtering behavior. Type in the picker to
-filter provider-qualified IDs, then use
-the arrow keys and Enter to select. Models from providers that are not logged in
+`choices` owns generic choice sessions: query text, fuzzy filtering, highlight,
+view navigation, and acceptance are shared by inline slash completion and
+searchable overlays. Items have semantic display fields (`label` and
+`description`) plus an optional `search` string or string array, so aliases and
+model names can remain searchable without being rendered. Sessions project the
+same marker/hotkey/label/value/description/selected/active row model on both
+surfaces.
+
+Choice views are immutable implementations registered with
+`misa.reg_choice_view`. The built-ins are `all`, `favorites`, `frecency`, and the
+opt-in `slash-prefix` tree. `config.choices.purposes` maps a purpose to its
+ordered visible views; the active view is always the leftmost and Right Arrow
+rotates the order. The tree is available to model sessions through view
+replacement but is not an extra default model column. It groups prefixes at
+common `/`, `.`, and `:` delimiters, searches every descendant's full hidden
+value/label/search fields, enters a unique group while typing, and makes
+Backspace return to the parent node atomically when the node query is empty.
+
+Inline and overlay sessions resolve the same `keybindings.choices` actions and
+positional banks. Overlay panel count, wrapped row viewport, and hotkey targets
+come from one shared choice-layout projection used by both picker input and
+`picker_view`. Tab or Enter accepts, only banks and slots actually rendered on
+screen activate, and configured positional keys are rendered as row hints on both
+surfaces. `open_overlay` (default `alt+space`) promotes the current inline
+session without resetting its query, highlight, or tree node. `replace_view`
+(default `alt+/`) opens the nested `picker-picker`; replacing the active view is
+kept only for that choice session and never changes purpose defaults.
+
+`dialogs` owns correlated modal/progress/alert lifecycle, actions, cancellation,
+and optional text input; `dialog_view` projects that state through the replaceable
+`dialog` component role. Dialog data and hints are generic—providers do not own
+UI paths or rendering. `picker` is only the overlay adapter and `picker_view` owns its visual
+projection. Extensions open it with semantic items and receive the chosen value
+through an event. `models` owns only model catalogue, availability, and
+selection policy; its `/model` command has no model-specific picker behavior.
+Type in the picker to filter provider-qualified IDs, labels, or model names,
+then use the arrow keys and Enter to select. Models from providers that are not logged in
 are hidden. OpenAI, Anthropic, OpenRouter, and Kimi catalogues are loaded from
 their model APIs after successful authentication; Misa does not maintain
 fallback lists for those providers. Set a provider's `discover_models`
 to `false` and provide an explicit `models` list to keep a fixed catalogue. The
-editor discovers registered slash commands and argument candidates,
-displays matching descriptions, and cycles matches with Tab. Login commands
+editor discovers registered slash commands and argument candidates, displays
+the same semantic choice rows as the overlay, and delegates filtering,
+highlight, tree navigation, configured hotkeys, and acceptance to its inline
+choice session. Login commands
 automatically complete authentication providers contributed by enabled
 provider plugins; `/model` completes the current dynamic model catalogue. Its live startup banner
 shows the selected model, cumulative session tokens, and latest context use.
@@ -349,8 +422,8 @@ explicit argv remains a single headless turn.
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
   extensions = with p.lib.standardExtensions; [
-    json providerFake fuzzy keybindings commandChoice preferences
-    themes themeDefault animations animationDefault components layout componentMessage componentEditor componentPicker componentStatus componentChrome
+    json providerFake fuzzy keybindings choices preferences
+    themes themeDefault animations animationDefault components layout indicators dialogs dialogView componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
     messages status picker pickerView models requestOptions effort agent editor ui
   ];
   config = {
@@ -365,23 +438,36 @@ p.lib.mkMisa {
 Run `misa login openai` or `misa login anthropic` to enter an API key without
 terminal echo. `misa login openai-codex` uses OpenAI's device flow for a
 ChatGPT subscription, `misa login kimi-coding` uses Kimi's device flow, and
-`misa login openrouter` uses OpenRouter's headless PKCE flow. Use
+`misa login openrouter` uses OpenRouter's PKCE flow. In the managed UI, device OAuth remains on the alternate screen with URL, code, progress, and cancellation. OpenRouter uses a temporary loopback callback with state validation and falls back to a pasted-code dialog when callback setup or browser launch is unavailable. Use
 `misa status PROVIDER` to inspect login state without exposing credential data
 and `misa logout PROVIDER` to remove it. The `auth` extension provides the same
 flows inside the TUI as `/login PROVIDER`, `/status PROVIDER`, and
 `/logout PROVIDER`. For `claude`, all three commands are
-delegated to `claude auth`. OAuth access credentials are refreshed from their
-stored refresh tokens. Credentials are
+delegated to `claude auth`. API-key and Claude login explicitly announce the temporary terminal handoff before leaving the managed screen. OAuth access credentials are refreshed from their
+stored refresh tokens. Credential mutex acquisition is cancellable and refresh
+network I/O never holds a mutex. A refreshed token is published with a
+process/interprocess-locked compare-and-swap over credential generation, refresh
+token, and profile; logout or a newer login always wins and stale refreshes can
+never resurrect it. Mutations take a sibling interprocess lock, reload the latest
+document, merge one provider, and atomically replace it, so concurrent Misa
+processes do not lose unrelated grants. Kimi defaults to the official global `.ai` profile; set
+`config.providers.kimi.region` to `"mainland"` for the `.com` endpoint bundle.
+The selected profile and trusted refresh/API endpoint metadata are stored with
+the credential so regions cannot silently drift. Credentials are
 written atomically with mode `0600` beneath a mode `0700` directory. The
 path is `$MISA_AUTH_FILE`, otherwise `$XDG_STATE_HOME/misa/auth.json`, otherwise
 `$HOME/.local/state/misa/auth.json`. They never belong in regular or Nix
-configuration. `misa login claude` delegates to `claude auth login`; Claude Code
+configuration. Standard credentials are injected only for native trusted
+origins. A user may explicitly grant an HTTPS custom origin (host only, no path)
+through process configuration, for example
+`MISA_CREDENTIAL_ORIGINS='{"openai":["https://gateway.example"]}'`; extensions
+cannot grant themselves destinations. `misa login claude` delegates to `claude auth login`; Claude Code
 continues to own and refresh its existing subscription credentials.
 
 API provider lists include their protocol explicitly, for example
 `[ "json", "protocol.anthropic", "provider.anthropic", "components", "layout", "component.message", "component.editor", "component.picker", "component.status", "component.chrome",
-"messages", "models", "request_options", "effort", "agent", "editor", "ui" ]` (add `picker` and `picker_view` when
-interactive choices are needed).
+"messages", "models", "request_options", "effort", "agent", "choices", "editor", "ui" ]` (add `picker` and `picker_view` when
+overlay choices are needed).
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
 `protocol.anthropic`. ChatGPT subscription access is the separate
 `provider.openai-codex` extension and its Codex Responses protocol.

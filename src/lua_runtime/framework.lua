@@ -37,7 +37,7 @@ end
 function misa.reg_cofx(name, fn)
   open()
   assert(type(name) == "string" and name ~= "")
-  assert(name ~= "config" and name ~= "argv" and name ~= "terminal")
+  assert(name ~= "config" and name ~= "argv" and name ~= "terminal" and name ~= "clock")
   assert(type(fn) == "function" and cofx_fns[name] == nil, "duplicate cofx")
   cofx_fns[name] = fn
   cofx_order[#cofx_order + 1] = name
@@ -150,13 +150,14 @@ function misa.model(id) return model_by_id[id] end
 
 function misa.reg_command(command)
   open()
-  assert(type(command) == "table" and type(command.name) == "string" and command.name:match("^/[%w_-]+$"), "command.name must look like /name")
+  assert(type(command) == "table" and type(command.name) == "string" and command.name:match("^/[%w_/-]+$") and not command.name:find("//", 1, true) and command.name:sub(-1) ~= "/", "command.name must look like /name or /group/name")
   assert(type(command.description) == "string", "command.description must be a string")
   assert(type(command.event) == "string" and command.event ~= "", "command.event must be nonempty")
   assert(command.completion == nil or type(command.completion) == "string", "command.completion must name a completion group")
   assert(command.complete == nil or type(command.complete) == "function", "command.complete must be a function")
   assert(command.selected == nil or type(command.selected) == "function", "command.selected must be a function")
   assert(command.preference_scope == nil or type(command.preference_scope) == "string", "command.preference_scope must be a string")
+  assert(command.choice_purpose == nil or (type(command.choice_purpose) == "string" and command.choice_purpose ~= ""), "command.choice_purpose must be a nonempty string")
   assert(not (command.completion and command.complete), "command may have one completion source")
   assert(command_by_name[command.name] == nil, "duplicate command")
   command_by_name[command.name] = command
@@ -199,6 +200,9 @@ function misa.reg_auth_provider(provider)
   assert(type(provider) == "table" and type(provider.id) == "string" and provider.id ~= "", "auth provider ID must be nonempty")
   assert(type(provider.model_provider) == "string" and provider.model_provider ~= "", "auth model provider must be nonempty")
   assert(provider.discover_models == nil or type(provider.discover_models) == "boolean", "auth provider discover_models must be boolean")
+  assert(provider.strategy=="api_key" or provider.strategy=="cli_handoff" or provider.strategy=="device_oauth" or provider.strategy=="loopback_pkce", "auth provider strategy is required")
+  assert(provider.profile == nil or (type(provider.profile)=="table" and type(provider.profile.id)=="string" and provider.profile.id~=""), "invalid auth provider profile")
+  if provider.strategy=="device_oauth" then assert(type(provider.profile)=="table" and type(provider.profile.authorization_url)=="string" and type(provider.profile.token_url)=="string", "device OAuth requires endpoint profile") end
   assert(not auth_provider_ids[provider.id], "duplicate auth provider")
   assert(not auth_model_providers[provider.model_provider], "duplicate auth model provider")
   auth_provider_ids[provider.id] = true
@@ -309,13 +313,14 @@ function misa._seal(context)
   base_context = context
 end
 
-function misa._dispatch(event, terminal)
+function misa._dispatch(event, terminal, clock)
   assert(sealed and not dispatching, "invalid dispatch state")
   assert(pending_db == nil, "previous transaction was not committed")
   assert(type(event) == "table" and type(event.type) == "string" and event.type ~= "", "event.type must be a nonempty string")
   dispatching = true
   local ok, native, projection = xpcall(function()
-    local cofx = { config = base_context.config, argv = base_context.argv, terminal = terminal }
+    assert(type(clock) == "table" and type(clock.wall_ms) == "number" and type(clock.monotonic_ms) == "number", "native clock coeffect is missing")
+    local cofx = { config = base_context.config, argv = base_context.argv, terminal = terminal, clock = clock }
     local working = clone(db)
     for _, name in ipairs(cofx_order) do cofx[name] = cofx_fns[name](cofx, event, working) end
     local tx = { db = working, event = event, cofx = cofx, fx = {} }

@@ -6,11 +6,12 @@ return {
     local config = type(providers) == "table" and providers.openrouter or nil
     config = type(config) == "table" and config or {}
     local models_url = config.models_url or (config.discover_models ~= false and config.models == nil and "https://openrouter.ai/api/v1/models" or nil)
-    misa.reg_auth_provider({ id = "openrouter", model_provider = "openrouter", discover_models = models_url ~= nil, label = "OpenRouter", description = "OpenRouter OAuth" })
+    misa.reg_auth_provider({ id = "openrouter", model_provider = "openrouter", discover_models = models_url ~= nil, label = "OpenRouter", description = "OpenRouter OAuth", strategy="loopback_pkce", profile={id="default"} })
     misa.protocols.openai({
       id = "openrouter",
       credential = "openrouter",
       url = config.url or "https://openrouter.ai/api/v1/chat/completions",
+      timeouts = config.timeouts,
       max_tokens = config.max_tokens,
       models_url = models_url,
       models_credential = false,
