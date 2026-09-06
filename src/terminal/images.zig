@@ -22,7 +22,7 @@ const Entry = struct {
     rows: u32,
     row: u32,
     column: u32,
-    data: []u8,
+    data: []const u8,
     hash: u64,
 
     fn samePixels(self: Entry, other: Entry) bool {
@@ -81,44 +81,77 @@ pub const Plan = struct {
     }
 };
 
-pub fn prepare(allocator: std.mem.Allocator, cache: *const Cache, view: std.json.Value, columns: usize, rows: usize) !Plan {
-    var result: Plan = .{};
-    errdefer result.deinit(allocator);
+fn specs(view: std.json.Value, columns: usize, rows: usize) !Specs {
     if (view != .object) return error.InvalidView;
     const lines = view.object.get("lines") orelse return error.InvalidView;
     if (lines != .array) return error.InvalidView;
-    for (lines.array.items, 0..) |line, index| {
-        if (line != .object) return error.InvalidView;
-        const value = line.object.get("image") orelse continue;
-        if (value == .null) continue;
-        if (value != .object or result.next.entries.items.len >= 32) return error.InvalidView;
-        const object = value.object;
-        const format = object.get("format") orelse return error.InvalidView;
-        if (format != .string or !std.mem.eql(u8, format.string, "rgba")) return error.InvalidView;
-        const data = object.get("data") orelse return error.InvalidView;
-        if (data != .string) return error.InvalidView;
-        const width = try positive(object, "width", 480);
-        const height = try positive(object, "height", 320);
-        const image_columns = try positive(object, "columns", 65535);
-        const image_rows = try positive(object, "rows", 65535);
-        const column = if (object.get("column") != null) try positive(object, "column", 65535) else 1;
-        try validateBase64(data.string, @as(usize, width) * height * 4);
-        const id = try positive(object, "id", std.math.maxInt(u32));
-        if (result.next.find(id) != null) return error.InvalidView;
-        // A partially visible header cannot anchor a correctly clipped image.
-        // Keep the textual fallback; Lua can reserve fewer rows on small views.
-        if (index >= rows or image_rows > rows - index or column > columns or image_columns > columns - column + 1) continue;
-        const entry: Entry = .{
-            .id = id,
-            .width = width,
-            .height = height,
-            .columns = image_columns,
-            .rows = image_rows,
-            .row = @intCast(index + 1),
-            .column = column,
-            .data = try allocator.dupe(u8, data.string),
-            .hash = std.hash.Wyhash.hash(0, data.string),
-        };
+    return .{ .lines = lines.array.items, .columns = columns, .rows = rows };
+}
+
+const Specs = struct {
+    lines: []const std.json.Value,
+    columns: usize,
+    rows: usize,
+    index: usize = 0,
+    ids: [32]u32 = undefined,
+    count: usize = 0,
+
+    fn next(self: *Specs) !?Entry {
+        while (self.index < self.lines.len) {
+            const index = self.index;
+            const line = self.lines[index];
+            self.index += 1;
+            if (line != .object) return error.InvalidView;
+            const value = line.object.get("image") orelse continue;
+            if (value == .null) continue;
+            if (value != .object or self.count >= 32) return error.InvalidView;
+            const object = value.object;
+            const format = object.get("format") orelse return error.InvalidView;
+            if (format != .string or !std.mem.eql(u8, format.string, "rgba")) return error.InvalidView;
+            const data = object.get("data") orelse return error.InvalidView;
+            if (data != .string) return error.InvalidView;
+            const width = try positive(object, "width", 480);
+            const height = try positive(object, "height", 320);
+            const image_columns = try positive(object, "columns", 65535);
+            const image_rows = try positive(object, "rows", 65535);
+            const column = if (object.get("column") != null) try positive(object, "column", 65535) else 1;
+            try validateBase64(data.string, @as(usize, width) * height * 4);
+            const id = try positive(object, "id", std.math.maxInt(u32));
+            for (self.ids[0..self.count]) |seen| if (seen == id) return error.InvalidView;
+            // A partially visible header cannot anchor a correctly clipped image.
+            // Keep the textual fallback; Lua can reserve fewer rows on small views.
+            if (index >= self.rows or image_rows > self.rows - index or column > self.columns or image_columns > self.columns - column + 1) continue;
+            self.ids[self.count] = id;
+            self.count += 1;
+            return .{
+                .id = id,
+                .width = width,
+                .height = height,
+                .columns = image_columns,
+                .rows = image_rows,
+                .row = @intCast(index + 1),
+                .column = column,
+                .data = data.string,
+                .hash = 0,
+            };
+        }
+        return null;
+    }
+};
+
+pub fn validate(view: std.json.Value, columns: usize, rows: usize) !void {
+    var iterator = try specs(view, columns, rows);
+    while (try iterator.next()) |_| {}
+}
+
+pub fn prepare(allocator: std.mem.Allocator, cache: *const Cache, view: std.json.Value, columns: usize, rows: usize) !Plan {
+    var result: Plan = .{};
+    errdefer result.deinit(allocator);
+    var iterator = try specs(view, columns, rows);
+    while (try iterator.next()) |spec| {
+        var entry = spec;
+        entry.data = try allocator.dupe(u8, spec.data);
+        entry.hash = std.hash.Wyhash.hash(0, spec.data);
         result.next.entries.append(allocator, entry) catch |err| {
             allocator.free(entry.data);
             return err;
@@ -219,4 +252,22 @@ test "image payload validation rejects control injection and inconsistent dimens
     try validateBase64("yGQU/w==", 4);
     try std.testing.expectError(error.InvalidView, validateBase64("yGQ\x1b/w==", 4));
     try std.testing.expectError(error.InvalidView, validateBase64("yGQU/w==", 8));
+}
+
+test "image validation preserves clipped IDs and requires no payload allocation" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"lines":[{"spans":[],"image":{"id":1,"format":"rgba","data":"yGQU/w==","width":1,"height":1,"columns":4,"rows":1}},{"spans":[],"image":{"id":1,"format":"rgba","data":"yGQU/w==","width":1,"height":1,"columns":1,"rows":1}}]}
+    , .{});
+    defer parsed.deinit();
+    // A clipped first occurrence does not reserve an ID.
+    try validate(parsed.value, 3, 2);
+    const cache: Cache = .{};
+    var plan = try prepare(allocator, &cache, parsed.value, 3, 2);
+    defer plan.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), plan.next.entries.items.len);
+    // Once visible, the first occurrence reserves its ID, including against
+    // subsequent clipped placements.
+    try std.testing.expectError(error.InvalidView, validate(parsed.value, 4, 2));
+    try std.testing.expectError(error.InvalidView, prepare(allocator, &cache, parsed.value, 4, 2));
 }

@@ -25,6 +25,12 @@ pub const Map = struct {
     }
 };
 
+pub fn validateAction(value: ?std.json.Value) !void {
+    const action = value orelse return;
+    if (action != .string or action.string.len == 0 or action.string.len > 4096) return error.InvalidView;
+    for (action.string) |byte| if (byte < 32 or byte == 127) return error.InvalidView;
+}
+
 pub fn build(allocator: std.mem.Allocator, view: std.json.Value, columns: usize) !Map {
     var result: Map = .{};
     errdefer result.deinit(allocator);
@@ -35,10 +41,7 @@ pub fn build(allocator: std.mem.Allocator, view: std.json.Value, columns: usize)
         defer text.deinit(allocator);
         for (spans) |span| {
             try text.appendSlice(allocator, span.object.get("text").?.string);
-            if (span.object.get("action")) |action| {
-                if (action != .string or action.string.len == 0 or action.string.len > 4096) return error.InvalidView;
-                for (action.string) |byte| if (byte < 32 or byte == 127) return error.InvalidView;
-            }
+            try validateAction(span.object.get("action"));
         }
         var offset: usize = 0;
         var column: usize = 1;

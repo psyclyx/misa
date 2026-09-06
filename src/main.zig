@@ -136,19 +136,23 @@ pub fn main(init: std.process.Init) !void {
 
 /// Keep terminal cleanup in a scope that unwinds before main chooses an exit status.
 fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lua.Runtime) !void {
-    var terminal = try terminal_module.Terminal.init(allocator, init.io, init.environ_map);
-    defer terminal.deinit();
+    const terminal = try terminal_module.Driver.create(allocator, init.io, init.environ_map);
+    defer terminal.destroy();
+    const terminal_info = terminal.info();
     runtime.setTerminalInfo(.{
-        .interactive = terminal.interactive,
-        .images = terminal.images_supported,
-        .columns = if (terminal.interactive) terminal_module.usableColumns(terminal.dimensions.columns) else terminal.dimensions.columns,
-        .lines = terminal.dimensions.lines,
+        .interactive = terminal_info.interactive,
+        .images = terminal_info.images_supported,
+        .columns = terminal_module.usableColumns(terminal_info.dimensions.columns),
+        .lines = terminal_info.dimensions.lines,
     });
     var session: session_module.Session = .{
         .allocator = allocator,
         .io = init.io,
         .runtime = runtime,
-        .terminal = &terminal,
+        .terminal = terminal,
+        .interactive = terminal_info.interactive,
+        .images_supported = terminal_info.images_supported,
+        .dimensions = terminal_info.dimensions,
         .environ = init.environ_map,
         .operations = try .init(allocator, init.io),
         .timers = .init(allocator),

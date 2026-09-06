@@ -101,7 +101,8 @@ runner supports the Fennel benchmark scripts and uses the bundled compiler.
 
 Optional
 terminal-protocol regressions run with `python3 tests/ghostty-input.py
-zig-out/bin/misa` and `python3 tests/settled-frames.py zig-out/bin/misa`. They
+zig-out/bin/misa`, `python3 tests/settled-frames.py zig-out/bin/misa`, and
+`python3 tests/threaded-terminal.py zig-out/bin/misa`. They
 use a PTY and local provider fixtures, with no account or network dependency.
 
 Without an override, misa loads the installed `share/misa/default.json`, which
@@ -204,8 +205,9 @@ incompatible grammars return an empty array for plain-text fallback. Source is
 limited to 1 MiB and parsers are loaded lazily into a bounded cache.
 Recursive dispatch is
 unavailable. Each transaction takes one bounded working copy of `db`, then
-commits it only after its effects and view pass native validation and
-presentation. Projections receive private snapshots, so projection mutation can
+commits it only after its effects and semantic view pass native validation.
+Native frame construction and terminal writes follow asynchronously; output
+failures end the session. Projections receive private snapshots, so projection mutation can
 never change transactional state. Extensions must
 not write or render: `io`, `os`, and `print` are unavailable. Ordinary Lua
 source composition (`require`, `load`, `loadfile`, and `dofile`) remains
@@ -291,18 +293,30 @@ output strips styles.
 once into a closed native union; `src/capability/process.zig` owns direct
 process execution and captured-output normalization, while
 `src/capability/file.zig` owns bounded file operations. Fennel owns canonical application
-state. A transaction is fully validated before Fennel policy state is committed. Views
-are deadline-coalesced and the latest prepared frame is retained during terminal
-handoff. Potentially blocking HTTP, process, authentication, file, credential,
-and persistent-state work runs in cancellable native workers and reports
-completion errors as events; the owner thread performs only Lua/rendering and
-bounded queue work. Worker publication uses a bounded per-operation queue and a
-nonblocking wakeup pipe. One readiness wait covers that pipe, requested stdin,
-and the nearest timer, frame, operation-timeout, or decoder deadline; there is
-no periodic operation polling. `src/terminal/root.zig`
-owns tty/raw-mode lifetime, exclusive generation-checked handoff, and all stdout writes; `terminal/input.zig`,
-`terminal/presenter.zig`, and `terminal/width.zig` own their respective pure
-mechanisms. Raw mode is always restored with `defer`.
+state. Fennel handlers and semantic view projection share one serialized VM.
+The session validates effects and views before committing state, then transfers
+an owned view after the synchronous dispatch chain settles.
+
+`src/terminal/driver.zig` runs a separate terminal thread. Its latest-view mailbox
+coalesces frames before native rendering; image updates use the actually displayed
+image cache. Frames prepared for obsolete dimensions are discarded. The driver
+owns terminal reads, decoder deadlines, frame construction, hit testing, and all
+terminal writes. Decoded input uses a 64-entry queue plus one bounded read batch;
+the session interprets one event per settled chain so protected-input transitions
+remain ordered. Mouse actions retain the hit map displayed when their batch was
+decoded. Clipboard, committed output, input discard, and generation-checked
+handoff use acknowledged commands. Shutdown joins the driver before restoring
+terminal modes; blocked stdout can delay that join until its write completes.
+
+Potentially blocking HTTP, process, authentication, file, credential, and
+persistent-state work runs in cancellable native workers and reports completion
+errors as events. Worker publication uses bounded per-operation queues. The
+session waits on terminal and operation wakeup pipes and timer/operation deadlines.
+The terminal thread waits on stdin, commands, frame and decoder deadlines, with
+a 100 ms maximum wait to observe resize signals delivered to another thread.
+`src/wakeup/root.zig` supplies the shared nonblocking notification mechanism.
+`src/terminal/root.zig` owns tty lifetime; `terminal/input.zig`,
+`terminal/presenter.zig`, and `terminal/width.zig` own their respective mechanisms.
 
 The interactive presenter owns an alternate screen and repaints bounded
 semantic frames using absolute cursor positioning. Leaving Misa or temporarily
@@ -331,12 +345,12 @@ Escape, Ctrl-C, and EOF are decoded. Decoder, presenter,
 and installed-layout behavior are covered without third-party
 test dependencies. The integration suite also exercises resize and cancellation
 through a PTY on supported platforms; the optional Python regressions cover
-Ghostty input and settled frames. Zig 0.16 no longer
+Ghostty input, settled frames, and presentation while the Fennel VM is blocked.
+Zig 0.16 no longer
 exports `std.posix.read/write/isatty`; misa uses the corresponding
-`std.Io.File` portable abstractions. Raw mode uses portable termios with a read
-timeout, and POSIX signal actions restore it before chaining/defaulting normal
-termination signals. Bracketed-paste markers are decoded, but misa does not
-enable that mode because Zig exposes no portable async-signal-safe POSIX write.
+`std.Io.File` portable abstractions. Raw-mode reads are readiness-gated with
+VMIN=0/VTIME=0; POSIX signal actions restore terminal modes before chaining normal
+termination signals. Bracketed-paste mode is enabled while the managed screen is active.
 
 ## Standard extensions
 

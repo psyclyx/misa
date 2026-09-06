@@ -1,6 +1,7 @@
 //! Absolute semantic frame presentation for a managed terminal screen.
 const std = @import("std");
 const cell_width = @import("width.zig");
+const hit_map = @import("hit_map.zig");
 
 pub fn appendScreenPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
     // Every frame starts with a hidden cursor. A semantic cursor explicitly
@@ -117,10 +118,45 @@ fn validateLink(value: ?std.json.Value) !?[]const u8 {
     return link;
 }
 
+fn spanText(span: std.json.Value) ![]const u8 {
+    if (span != .object) return error.InvalidView;
+    const value = span.object.get("text") orelse return error.InvalidView;
+    if (value != .string or !std.unicode.utf8ValidateSlice(value.string)) return error.InvalidView;
+    var check = std.unicode.Utf8Iterator{ .bytes = value.string, .i = 0 };
+    while (check.nextCodepointSlice()) |encoded| {
+        const cp = std.unicode.utf8Decode(encoded) catch return error.InvalidView;
+        if (cp < 0x20 or (cp >= 0x7f and cp <= 0x9f)) return error.InvalidView;
+    }
+    return value.string;
+}
+
+fn lineSpans(line: std.json.Value) ![]const std.json.Value {
+    if (line != .object) return error.InvalidView;
+    const spans = line.object.get("spans") orelse return error.InvalidView;
+    if (spans != .array) return error.InvalidView;
+    return spans.array.items;
+}
+
 pub fn validateLines(lines: std.json.Value) !void {
-    var sink: std.ArrayList(u8) = .empty;
-    defer sink.deinit(std.heap.page_allocator);
-    _ = try appendLines(&sink, std.heap.page_allocator, lines, 80, false, false, false);
+    if (lines != .array) return error.InvalidView;
+    for (lines.array.items) |line| {
+        for (try lineSpans(line)) |span| {
+            _ = try spanText(span);
+            _ = try parseStyle(span.object.get("style"));
+            _ = try validateLink(span.object.get("link"));
+        }
+    }
+}
+
+pub fn validateView(allocator: std.mem.Allocator, view: std.json.Value, columns: usize, max_lines: usize) !void {
+    if (view != .object) return error.InvalidView;
+    const lines = view.object.get("lines") orelse return error.InvalidView;
+    try validateLines(lines);
+    if (lines.array.items.len > max_lines) return error.InvalidView;
+    for (lines.array.items) |line| {
+        for (try lineSpans(line)) |span| try hit_map.validateAction(span.object.get("action"));
+    }
+    _ = try resolveCursor(allocator, view.object.get("cursor"), lines, lines.array.items.len, columns, max_lines);
 }
 
 pub fn appendView(out: *std.ArrayList(u8), allocator: std.mem.Allocator, view: std.json.Value, columns: usize, max_lines: usize, ansi: bool, final_newline: bool) !usize {
@@ -132,7 +168,7 @@ pub fn appendView(out: *std.ArrayList(u8), allocator: std.mem.Allocator, view: s
     const row_count = try appendLines(out, allocator, lines, columns, ansi, final_newline, true);
     if (row_count > max_lines) return error.InvalidView;
     if (ansi and row_count < max_lines) try out.print(allocator, "\x1b[{d};1H\x1b[J", .{row_count + 1});
-    if (try resolveCursor(object.get("cursor"), lines, row_count, columns, max_lines)) |cursor| {
+    if (try resolveCursor(allocator, object.get("cursor"), lines, row_count, columns, max_lines)) |cursor| {
         if (ansi and row_count != 0) try out.print(allocator, "\x1b[{d};{d}H\x1b[?25h", .{ cursor.row, cursor.column });
     }
     return row_count;
@@ -142,7 +178,7 @@ const Cursor = struct { row: usize, column: usize };
 
 /// A cursor uses a one-based semantic row and a zero-based UTF-8 byte offset
 /// into that row's concatenated spans. Zig alone converts bytes to cells.
-fn resolveCursor(value: ?std.json.Value, lines_value: std.json.Value, row_count: usize, columns: usize, max_lines: usize) !?Cursor {
+fn resolveCursor(allocator: std.mem.Allocator, value: ?std.json.Value, lines_value: std.json.Value, row_count: usize, columns: usize, max_lines: usize) !?Cursor {
     const cursor = value orelse return null;
     const position = switch (cursor) {
         .null => return null,
@@ -151,11 +187,11 @@ fn resolveCursor(value: ?std.json.Value, lines_value: std.json.Value, row_count:
     };
     const row = try coordinate(position.get("row"));
     if (row > row_count or row > max_lines or position.get("column") != null) return error.InvalidView;
-    const width = try widthAtByteOffset(lines_value, row, try byteOffset(position.get("byte")));
+    const width = try widthAtByteOffset(allocator, lines_value, row, try byteOffset(position.get("byte")));
     return .{ .row = row, .column = @min(width +| 1, @max(@as(usize, 1), usableColumns(columns))) };
 }
 
-fn widthAtByteOffset(lines_value: std.json.Value, row: usize, target: usize) !usize {
+fn widthAtByteOffset(allocator: std.mem.Allocator, lines_value: std.json.Value, row: usize, target: usize) !usize {
     const lines = switch (lines_value) {
         .array => |array| array.items,
         else => return error.InvalidView,
@@ -170,7 +206,7 @@ fn widthAtByteOffset(lines_value: std.json.Value, row: usize, target: usize) !us
         else => return error.InvalidView,
     };
     var text: std.ArrayList(u8) = .empty;
-    defer text.deinit(std.heap.page_allocator);
+    defer text.deinit(allocator);
     for (spans) |span| {
         const object = switch (span) {
             .object => |item| item,
@@ -180,7 +216,7 @@ fn widthAtByteOffset(lines_value: std.json.Value, row: usize, target: usize) !us
             .string => |string| string,
             else => return error.InvalidView,
         };
-        try text.appendSlice(std.heap.page_allocator, value);
+        try text.appendSlice(allocator, value);
     }
     if (target > text.items.len) return error.InvalidView;
     var offset: usize = 0;
@@ -213,34 +249,14 @@ pub fn appendLines(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value:
     const limit = usableColumns(columns);
     for (lines, 0..) |line, line_index| {
         if (ansi) try out.appendSlice(allocator, "\x1b[0m\x1b[2K");
-        const object = switch (line) {
-            .object => |o| o,
-            else => return error.InvalidView,
-        };
-        const spans = switch (object.get("spans") orelse return error.InvalidView) {
-            .array => |v| v.items,
-            else => return error.InvalidView,
-        };
+        const spans = try lineSpans(line);
         // Grapheme boundaries belong to the semantic line, not to styling
         // spans. Concatenate for segmentation, then project the visible byte
         // range back through spans so a combining/ZWJ cluster remains atomic.
         var line_text: std.ArrayList(u8) = .empty;
         defer line_text.deinit(allocator);
         for (spans) |span| {
-            const span_object = switch (span) {
-                .object => |o| o,
-                else => return error.InvalidView,
-            };
-            const text = switch (span_object.get("text") orelse return error.InvalidView) {
-                .string => |s| s,
-                else => return error.InvalidView,
-            };
-            if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidView;
-            var check = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
-            while (check.nextCodepointSlice()) |encoded| {
-                const cp = std.unicode.utf8Decode(encoded) catch return error.InvalidView;
-                if (cp == 0x1b or cp == '\n' or cp == '\r' or cp < 0x20 or (cp >= 0x7f and cp <= 0x9f)) return error.InvalidView;
-            }
+            const text = try spanText(span);
             try line_text.appendSlice(allocator, text);
         }
         var visible_end = line_text.items.len;
@@ -415,4 +431,14 @@ test "cursor visibility and emoji clusters are explicit at the right edge" {
     defer out.deinit(std.testing.allocator);
     _ = try appendView(&out, std.testing.allocator, emoji.value, 5, 24, true, false);
     try std.testing.expect(std.mem.endsWith(u8, out.items, "\x1b[1;4H\x1b[?25h"));
+}
+
+test "semantic validation does not allocate rendered text or action maps" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"lines":[{"spans":[{"text":"界","style":{"bold":true},"link":"https://example.test","action":"open"},{"text":"é"}]}]}
+    , .{});
+    defer parsed.deinit();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try validateView(failing.allocator(), parsed.value, 3, 2);
+    try validateLines(parsed.value.object.get("lines").?);
 }

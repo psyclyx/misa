@@ -6,6 +6,7 @@ const presenter = @import("presenter.zig");
 const hit_map = @import("hit_map.zig");
 const images = @import("images.zig");
 
+pub const Driver = @import("driver.zig");
 pub const Event = input.Event;
 pub const Decoder = input.Decoder;
 pub const validateLines = presenter.validateLines;
@@ -16,6 +17,13 @@ const cursorRow = presenter.cursorRow;
 pub const usableColumns = presenter.usableColumns;
 
 pub const Dimensions = struct { columns: usize = 80, lines: usize = 24 };
+
+/// Validate semantic data before committing policy state. This does not render
+/// bytes or inspect presentation caches and can run away from terminal ownership.
+pub fn validateView(allocator: std.mem.Allocator, view: std.json.Value, size: Dimensions, images_supported: bool) !void {
+    try presenter.validateView(allocator, view, size.columns, size.lines);
+    if (images_supported) try images.validate(view, size.columns, size.lines);
+}
 
 pub const PreparedPresentation = struct {
     bytes: std.ArrayList(u8) = .empty,
@@ -214,12 +222,13 @@ pub const Terminal = struct {
 
     /// Drop unread bytes when protected input cannot be completed. Reapply
     /// the current raw mode with TCSAFLUSH to discard the tty input queue too.
+    /// During handoff, only clear our decoder; the external owner controls the tty.
     pub fn discardInput(self: *Terminal) void {
         std.crypto.secureZero(u8, self.decoder.pending.allocatedSlice());
         self.decoder.pending.clearRetainingCapacity();
         self.decoder.paste = false;
         self.decoder.paste_cr = false;
-        if (self.interactive) if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, rawMode(saved)) catch {};
+        if (self.interactive and self.active_handoff == null) if (self.saved) |saved| posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, rawMode(saved)) catch {};
     }
 
     /// Copy through the terminal's clipboard protocol. Keep terminal ownership
@@ -278,8 +287,8 @@ pub const Terminal = struct {
         return true;
     }
 
-    /// Validate and render once. The session can then write the exact prepared
-    /// bytes before committing Lua state without paying for a second render.
+    /// Render native bytes and build transitions against the terminal's image
+    /// cache. Semantic validation can run separately before ownership transfer.
     pub fn preparePresentation(self: *const Terminal, view: std.json.Value) !PreparedPresentation {
         var prepared: PreparedPresentation = .{};
         errdefer prepared.deinit(self.allocator);
@@ -532,4 +541,63 @@ test "click actions belong to shown frames, including visually identical updates
     terminal.screen_active = true;
     try terminal.present(&next);
     try std.testing.expectEqualStrings("new", terminal.actionAt(1, 1).?);
+}
+
+test "semantic validation rejects the same invalid frames as native preparation" {
+    const allocator = std.testing.allocator;
+    var terminal: Terminal = .{ .allocator = allocator, .io = std.testing.io, .interactive = false, .dimensions = .{ .columns = 3, .lines = 2 }, .images_supported = true };
+    defer terminal.deinit();
+    const invalid = [_][]const u8{
+        "null",
+        "{\"lines\":{}}",
+        "{\"lines\":[{}]}",
+        "{\"lines\":[{\"spans\":[{}]}]}",
+        "{\"lines\":[{\"spans\":[{\"text\":\"bad\\u001b\"}]}]}",
+        "{\"lines\":[{\"spans\":[{\"text\":\"clipped\",\"style\":{\"bold\":0}}]}]}",
+        "{\"lines\":[{\"spans\":[{\"text\":\"clipped\",\"link\":\"bad\\nurl\"}]}]}",
+        "{\"lines\":[{\"spans\":[{\"text\":\"clipped\",\"action\":\"\"}]}]}",
+        "{\"lines\":[{\"spans\":[]},{\"spans\":[]},{\"spans\":[]}]}",
+        "{\"lines\":[{\"spans\":[{\"text\":\"e\"},{\"text\":\"́\"}]}],\"cursor\":{\"row\":1,\"byte\":1}}",
+        "{\"lines\":[{\"spans\":[]}],\"cursor\":{\"row\":2,\"byte\":0}}",
+        "{\"lines\":[{\"spans\":[]}],\"cursor\":{\"row\":1,\"byte\":1}}",
+        "{\"lines\":[{\"spans\":[],\"image\":{\"id\":1,\"format\":\"rgba\",\"data\":\"bad\",\"width\":1,\"height\":1,\"columns\":4,\"rows\":1}}]}",
+        "{\"lines\":[{\"spans\":[],\"image\":{\"id\":1,\"format\":\"rgba\",\"data\":\"yGQU/w==\",\"width\":1,\"height\":1,\"columns\":1,\"rows\":1}},{\"spans\":[],\"image\":{\"id\":1,\"format\":\"rgba\",\"data\":\"yGQU/w==\",\"width\":1,\"height\":1,\"columns\":4,\"rows\":1}}]}",
+    };
+    for (invalid) |source| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, source, .{});
+        defer parsed.deinit();
+        try std.testing.expectError(error.InvalidView, validateView(allocator, parsed.value, terminal.dimensions, terminal.images_supported));
+        try std.testing.expectError(error.InvalidView, terminal.preparePresentation(parsed.value));
+    }
+    // Unsupported graphics retain the textual fallback, including malformed images.
+    var fallback = try std.json.parseFromSlice(std.json.Value, allocator, "{\"lines\":[{\"spans\":[],\"image\":false}]}", .{});
+    defer fallback.deinit();
+    try validateView(allocator, fallback.value, terminal.dimensions, false);
+    terminal.images_supported = false;
+    var prepared = try terminal.preparePresentation(fallback.value);
+    defer prepared.deinit(allocator);
+}
+
+test {
+    _ = Driver;
+}
+
+test "discard during handoff clears private decoder and preserves the lease" {
+    const allocator = std.testing.allocator;
+    var terminal: Terminal = .{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .interactive = true,
+        .dimensions = .{},
+        .active_handoff = 7,
+    };
+    defer terminal.decoder.deinit(allocator);
+    try terminal.decoder.pending.appendSlice(allocator, "private trailing bytes");
+    terminal.decoder.paste = true;
+    terminal.decoder.paste_cr = true;
+    terminal.discardInput();
+    try std.testing.expectEqual(@as(?u64, 7), terminal.active_handoff);
+    try std.testing.expectEqual(@as(usize, 0), terminal.decoder.pending.items.len);
+    try std.testing.expect(!terminal.decoder.paste and !terminal.decoder.paste_cr);
+    try std.testing.expect(std.mem.indexOf(u8, terminal.decoder.pending.allocatedSlice(), "private trailing bytes") == null);
 }

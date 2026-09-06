@@ -14,26 +14,24 @@ const native_effect = @import("native_effect.zig");
 const timer = @import("timer.zig");
 const protected_input = @import("protected_input.zig");
 const max_operation_events_per_poll = 1;
-const frame_interval_ns = 16 * std.time.ns_per_ms;
 
 pub const Session = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     runtime: *lua.Runtime,
-    terminal: *terminal_module.Terminal,
+    terminal: *terminal_module.Driver,
+    interactive: bool,
+    images_supported: bool,
+    dimensions: terminal_module.Dimensions,
     environ: *const std.process.Environ.Map,
     queue: std.ArrayList([]u8) = .empty,
     queue_head: usize = 0,
-    input_events: std.ArrayList(terminal_module.Event) = .empty,
-    input_head: usize = 0,
     running: bool = false,
     quit: bool = false,
     read_requested: bool = false,
     operations: operation.Owner,
     timers: timer.Collection,
-    pending_presentation: ?terminal_module.PreparedPresentation = null,
-    last_frame_ns: i96 = 0,
-    decoder_deadline_ns: ?i96 = null,
+    pending_view: ?terminal_module.Driver.View = null,
     protected: ?protected_input.Input = null,
     protected_wait: ?[]u8 = null,
 
@@ -42,11 +40,9 @@ pub const Session = struct {
         if (self.protected_wait) |id| self.allocator.free(id);
         self.operations.deinit();
         self.timers.deinit();
-        if (self.pending_presentation) |*prepared| prepared.deinit(self.allocator);
+        if (self.pending_view) |*view| view.deinit();
         for (self.queue.items[self.queue_head..]) |item| self.allocator.free(item);
         self.queue.deinit(self.allocator);
-        for (self.input_events.items[self.input_head..]) |event| event.deinit(self.allocator);
-        self.input_events.deinit(self.allocator);
     }
 
     /// Seed app/start, then drain the queue. Dispatch effects only append; they never recurse.
@@ -55,16 +51,20 @@ pub const Session = struct {
         self.running = true;
         defer self.running = false;
         try self.enqueue("{\"type\":\"app/start\"}");
-        while ((!self.quit or self.operations.isActive()) and (self.queue_head < self.queue.items.len or self.read_requested or self.operations.isActive() or self.timers.count() != 0 or self.pending_presentation != null)) {
+        while (self.hasWork()) {
+            try self.terminal.checkError();
             if (self.queue_head == self.queue.items.len) {
                 // A native source event and its synchronous dispatch effects
                 // form one visible update. Settle that chain before showing a
                 // frame or introducing another source batch. Polling only at
                 // this boundary also prevents a busy stream/timer from keeping
                 // the queue nonempty forever and starving presentation.
-                try self.flushFrame(false);
+                try self.publishView();
                 try self.pollSources();
                 if (self.queue_head == self.queue.items.len) {
+                    // Publishing the final view can exhaust the session. The
+                    // terminal's flush acknowledgement handles that last frame.
+                    if (!self.hasWork()) break;
                     try self.waitForSource();
                     continue;
                 }
@@ -82,20 +82,18 @@ pub const Session = struct {
             var effects: std.ArrayList(native_effect.Effect) = .empty;
             defer effects.deinit(self.allocator);
             for (transaction.effects) |effect| try effects.append(self.allocator, try .parse(effect));
-            // Validate and prepare the view before committing policy state.
-            // Presentation waits for the synchronous dispatch chain to settle;
-            // components never need to hide intermediate event transitions.
-            // Preparation failures leave canonical Lua db unchanged. After
-            // commit, effect I/O cannot in general be rolled back.
-            var presentation: ?terminal_module.PreparedPresentation = if (view != .null) try self.terminal.preparePresentation(view) else null;
-            errdefer if (presentation) |*prepared| prepared.deinit(self.allocator);
+            // Semantic validation is part of the transaction. Native rendering
+            // runs on the terminal owner after the dispatch chain settles.
+            if (view != .null) try terminal_module.validateView(self.allocator, view, self.dimensions, self.images_supported);
             try self.runtime.commitTransaction();
-            if (presentation) |prepared| {
-                if (self.pending_presentation) |*old| old.deinit(self.allocator);
-                self.pending_presentation = prepared;
-                presentation = null;
-            }
             for (effects.items) |effect| try self.execute(effect);
+            if (view != .null) {
+                if (self.pending_view) |*old| old.deinit();
+                self.pending_view = .{ .arena = transaction.arena, .value = view, .dimensions = self.dimensions };
+                // The view takes the transaction arena once every effect has
+                // consumed its borrowed arguments. No Lua memory crosses threads.
+                transaction.arena = .init(self.allocator);
+            }
             self.compactQueue();
             // A read request is level-triggered. Decoded terminal events are
             // released one at a time so policy effects from Enter run before
@@ -104,7 +102,14 @@ pub const Session = struct {
             // chain drains before the next key is interpreted, so command effects
             // can install input ownership before trailing pasted bytes arrive.
         }
-        try self.flushFrame(true);
+        try self.publishView();
+        try self.terminal.flush();
+    }
+
+    fn hasWork(self: *const Session) bool {
+        return (!self.quit or self.operations.isActive()) and
+            (self.queue_head < self.queue.items.len or self.read_requested or
+                self.operations.isActive() or self.timers.count() != 0 or self.pending_view != null);
     }
 
     fn enqueue(self: *Session, json: []const u8) !void {
@@ -159,28 +164,24 @@ pub const Session = struct {
     }
 
     fn pollSources(self: *Session) !void {
-        const source_now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
-        if (self.decoder_deadline_ns) |deadline| if (source_now >= deadline) {
-            try self.terminal.resolveDecoderTimeout(&self.input_events);
-            self.decoder_deadline_ns = null;
-            self.read_requested = true;
-        };
-        // One readiness-gated read per turn keeps input fair without allowing a
-        // continuously readable tty to monopolize dispatch.
-        if (self.read_requested and self.protected_wait == null and self.queue_head == self.queue.items.len and
-            ((self.input_head < self.input_events.items.len) or try self.terminal.inputReady()))
-            try self.readTerminal();
-        if (try self.terminal.pollResize()) {
+        // Acquisition runs independently; interpretation releases only one key
+        // after each settled chain, including installation of protected input.
+        if (self.read_requested and self.protected_wait == null and self.queue_head == self.queue.items.len) {
+            try self.terminal.enableInput();
+            if (try self.terminal.popInput()) |input| try self.readTerminal(input);
+        }
+        if (try self.terminal.takeResize()) |dimensions| {
+            self.dimensions = dimensions;
             self.runtime.setTerminalInfo(.{
-                .interactive = self.terminal.interactive,
-                .images = self.terminal.images_supported,
-                .columns = terminal_module.usableColumns(self.terminal.dimensions.columns),
-                .lines = self.terminal.dimensions.lines,
+                .interactive = self.interactive,
+                .images = self.images_supported,
+                .columns = terminal_module.usableColumns(dimensions.columns),
+                .lines = dimensions.lines,
             });
             const event = try std.json.Stringify.valueAlloc(self.allocator, .{
                 .type = "terminal/resize",
-                .columns = self.terminal.dimensions.columns,
-                .lines = self.terminal.dimensions.lines,
+                .columns = dimensions.columns,
+                .lines = dimensions.lines,
             }, .{});
             defer self.allocator.free(event);
             try self.enqueue(event);
@@ -205,12 +206,12 @@ pub const Session = struct {
             try self.queue.append(self.allocator, item.json);
         };
         if (self.protected) |*input| if (self.operations.find(input.spec.id) == null) {
-            self.discardBufferedInput();
+            try self.discardBufferedInput();
             input.deinit();
             self.protected = null;
         };
         if (self.protected_wait) |id| if (self.operations.find(id) == null) {
-            self.discardBufferedInput();
+            try self.discardBufferedInput();
             self.allocator.free(id);
             self.protected_wait = null;
             self.read_requested = true;
@@ -229,47 +230,40 @@ pub const Session = struct {
     }
 
     fn waitForSource(self: *Session) !void {
+        // Consume notifications before inspecting state, so a publication
+        // between the state check and poll leaves a byte that wakes us.
+        self.terminal.consumeWakeup();
+        self.operations.consumeWakeup();
+        try self.pollSources();
+        if (self.queue_head < self.queue.items.len) return;
+        try self.terminal.checkError();
         const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
-        if (self.decoder_deadline_ns) |deadline| if (now >= deadline) {
-            try self.terminal.resolveDecoderTimeout(&self.input_events);
-            self.decoder_deadline_ns = null;
-            self.read_requested = true;
-            return;
-        };
-        var deadline: ?i96 = null;
-        if (self.pending_presentation != null and self.last_frame_ns != 0) deadline = self.last_frame_ns + frame_interval_ns;
-        if (self.timers.nextDeadline()) |value| deadline = if (deadline) |old| @min(old, value) else value;
+        var deadline: ?i96 = self.timers.nextDeadline();
         if (self.operations.nextDeadline()) |value| deadline = if (deadline) |old| @min(old, value) else value;
-        if (self.decoder_deadline_ns) |value| deadline = if (deadline) |old| @min(old, value) else value;
         const wait_ms: i32 = if (deadline) |value| @intCast(@min(@as(i96, std.math.maxInt(i32)), @divTrunc(@max(@as(i96, 0), value - now) + std.time.ns_per_ms - 1, std.time.ns_per_ms))) else -1;
-        const ready = try self.terminal.waitSources(self.operations.wakeupFd(), self.read_requested and self.protected_wait == null, wait_ms);
-        if (ready.operation) self.operations.consumeWakeup();
-        if (ready.input) try self.readTerminal();
+        var fds = [_]std.posix.pollfd{
+            .{ .fd = self.terminal.wakeupFd(), .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = self.operations.wakeupFd(), .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        _ = try std.posix.poll(&fds, wait_ms);
     }
 
-    fn readTerminal(self: *Session) !void {
+    fn readTerminal(self: *Session, incoming: terminal_module.Driver.Input) !void {
+        defer incoming.deinit(self.allocator);
         self.read_requested = false;
-        if (self.input_head == self.input_events.items.len) {
-            self.input_events.clearRetainingCapacity();
-            self.input_head = 0;
-            try self.terminal.readEvents(&self.input_events);
-            self.decoder_deadline_ns = if (self.terminal.decoderNeedsTimeout())
-                std.Io.Timestamp.now(self.io, .awake).nanoseconds + 25 * std.time.ns_per_ms
-            else
-                null;
-        }
-        if (self.input_head == self.input_events.items.len) {
-            self.read_requested = true;
-            return;
-        }
-        const event = self.input_events.items[self.input_head];
-        self.input_head += 1;
-        defer event.deinit(self.allocator);
+        const event = switch (incoming) {
+            .key => |key| key,
+            .action => |action| {
+                if (self.protected == null) {
+                    const json = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "ui/action", .action = action }, .{});
+                    defer self.allocator.free(json);
+                    try self.enqueue(json);
+                }
+                self.read_requested = true;
+                return;
+            },
+        };
         if (self.protected) |*input| {
-            defer switch (event) {
-                .text, .alt => |bytes| std.crypto.secureZero(u8, bytes),
-                else => {},
-            };
             const result = input.accept(event);
             const json = try std.json.Stringify.valueAlloc(self.allocator, .{
                 .type = input.spec.completion,
@@ -289,29 +283,22 @@ pub const Session = struct {
             }
             self.read_requested = true;
         } else try self.enqueueInput(event);
-        if (self.input_head == self.input_events.items.len) {
-            self.input_events.clearRetainingCapacity();
-            self.input_head = 0;
-        }
     }
 
     fn startAuth(self: *Session, spec: native_effect.AuthCommand) !void {
         const should_suspend = spec.action == .login and (spec.declaration.strategy == .cli_handoff or
-            (spec.declaration.strategy == .api_key and !self.terminal.interactive));
+            (spec.declaration.strategy == .api_key and !self.interactive));
         var lease: ?terminal_module.Terminal.HandoffLease = null;
         if (should_suspend) {
             self.read_requested = false;
-            for (self.input_events.items[self.input_head..]) |event| event.deinit(self.allocator);
-            self.input_events.clearRetainingCapacity();
-            self.input_head = 0;
             lease = try self.terminal.acquireHandoff();
         }
         // Wait for the protected prompt before releasing any buffered keys.
-        if (spec.action == .login and spec.declaration.strategy == .api_key and self.terminal.interactive) {
+        if (spec.action == .login and spec.declaration.strategy == .api_key and self.interactive) {
             if (self.protected_wait != null or self.protected != null) return error.ProtectedInputAlreadyActive;
             self.protected_wait = try self.allocator.dupe(u8, spec.id);
         }
-        self.operations.startAuth(spec.action, spec.declaration, spec.completion, spec.interaction, spec.id, self.environ, if (lease) |value| value.generation else null, self.terminal.interactive) catch |err| {
+        self.operations.startAuth(spec.action, spec.declaration, spec.completion, spec.interaction, spec.id, self.environ, if (lease) |value| value.generation else null, self.interactive) catch |err| {
             if (lease) |value| self.terminal.releaseHandoff(value) catch {};
             return err;
         };
@@ -346,7 +333,7 @@ pub const Session = struct {
             if (source.stdout_format == .json_lines_stream) if (self.queue.pop()) |json| self.allocator.free(json);
             return err;
         };
-        if (self.terminal.interactive) self.read_requested = true;
+        if (self.interactive) self.read_requested = true;
     }
 
     fn startHttp(self: *Session, source: http.Spec) !void {
@@ -355,12 +342,12 @@ pub const Session = struct {
             if (source.response_format == .sse_json_stream) if (self.queue.pop()) |json| self.allocator.free(json);
             return err;
         };
-        if (self.terminal.interactive) self.read_requested = true;
+        if (self.interactive) self.read_requested = true;
     }
 
     fn cancelOperation(self: *Session, id: []const u8) !void {
         if (self.protected) |*input| if (std.mem.eql(u8, input.spec.id, id)) {
-            self.discardBufferedInput();
+            try self.discardBufferedInput();
             input.deinit();
             self.protected = null;
         };
@@ -370,18 +357,8 @@ pub const Session = struct {
         }
     }
 
-    fn discardBufferedInput(self: *Session) void {
-        for (self.input_events.items[self.input_head..]) |event| {
-            switch (event) {
-                .text, .alt => |bytes| std.crypto.secureZero(u8, bytes),
-                else => {},
-            }
-            event.deinit(self.allocator);
-        }
-        self.input_events.clearRetainingCapacity();
-        self.input_head = 0;
-        self.decoder_deadline_ns = null;
-        self.terminal.discardInput();
+    fn discardBufferedInput(self: *Session) !void {
+        try self.terminal.discardInput();
     }
 
     fn finishOperation(self: *Session, id: []const u8) !void {
@@ -391,15 +368,10 @@ pub const Session = struct {
         }
     }
 
-    fn flushFrame(self: *Session, force: bool) !void {
-        if (self.pending_presentation == null) return;
-        const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
-        if (!self.terminal.presentationEnabled()) return;
-        if (!force and self.last_frame_ns != 0 and now - self.last_frame_ns < frame_interval_ns) return;
-        try self.terminal.present(&self.pending_presentation.?);
-        self.pending_presentation.?.deinit(self.allocator);
-        self.pending_presentation = null;
-        self.last_frame_ns = now;
+    fn publishView(self: *Session) !void {
+        const view = self.pending_view orelse return;
+        try self.terminal.publish(view);
+        self.pending_view = null;
     }
 
     fn enqueueStreamStart(self: *Session, completion: []const u8, id: []const u8) !void {
@@ -414,12 +386,9 @@ pub const Session = struct {
     }
 
     fn enqueueInput(self: *Session, event: terminal_module.Event) !void {
+        // Click actions were resolved on the terminal owner against the frame
+        // visible when the bytes were acquired. Unmapped clicks are inert.
         if (event == .mouse) {
-            if (self.terminal.actionAt(event.mouse.row, event.mouse.column)) |action| {
-                const json = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "ui/action", .action = action }, .{});
-                defer self.allocator.free(json);
-                try self.enqueue(json);
-            }
             self.read_requested = true;
             return;
         }

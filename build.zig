@@ -4,6 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const wakeup = b.createModule(.{
+        .root_source_file = b.path("src/wakeup/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const auth = b.createModule(.{
         .root_source_file = b.path("src/auth/root.zig"),
         .target = target,
@@ -56,6 +62,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    terminal.addImport("misa_wakeup", wakeup);
     const file_effect = b.createModule(.{
         .root_source_file = b.path("src/capability/file.zig"),
         .target = target,
@@ -77,6 +84,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     session.addImport("misa_auth", auth);
+    session.addImport("misa_wakeup", wakeup);
     session.addImport("misa_image", image);
     session.addImport("misa_file", file_effect);
     session.addImport("misa_lua_runtime", lua_runtime);
@@ -139,6 +147,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     operation_test_module.addImport("misa_auth", auth);
+    operation_test_module.addImport("misa_wakeup", wakeup);
     operation_test_module.addImport("misa_image", image);
     operation_test_module.addImport("misa_file", file_effect);
     operation_test_module.addImport("misa_process", process_effect);

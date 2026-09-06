@@ -7,6 +7,17 @@ test "empty" {
     try h.expect(.{ .args = &.{}, .input = "" }, "");
 }
 
+test "a final projected view flushes without keeping an idle session alive" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.write("final-view.fnl",
+        \\{:setup (fn [] {:fx [{:type :register/view
+        \\                     :handler (fn [] {:lines [{:spans [{:text "final"}]}]})}]})}
+    );
+    try h.config("{\"extensions\":[\"@WORK@/final-view.fnl\"]}");
+    try h.expect(.{ .input = "" }, "");
+}
+
 test "contracts" {
     var h = try Harness.init();
     defer h.deinit();
