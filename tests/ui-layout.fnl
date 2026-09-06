@@ -67,4 +67,16 @@
 (assert (= (length (. (view {} {:terminal {:lines 0 :columns 80}}) :lines)) 0)
         "zero-height terminal emitted content")
 
+(let [animation {:id :clip :interval_ms 100 :frames [{:text :xx} {:text :yy}]}
+      source [{:spans [{:text :xx : animation}]}]
+      full (_G.misa.ui_bound_frame source 2)
+      clipped (_G.misa.ui_bound_frame source 1)]
+  (assert (= (. full.lines 1 :spans 1 :animation) animation)
+          "root clipping lost a fully visible animation")
+  (assert (= (. clipped.lines 1 :spans 1 :text) :x))
+  (assert (= (. clipped.lines 1 :spans 1 :animation) nil)
+          "root clipping retained frames wider than their fallback")
+  (assert (= (. source 1 :spans 1 :animation) animation)
+          "root clipping mutated the source animation"))
+
 (print "layout contracts passed")

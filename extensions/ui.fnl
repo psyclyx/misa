@@ -34,6 +34,7 @@
           (local item {})
           (each [key value (pairs source)] (tset item key value))
           (set item.text (text:sub 1 count))
+          (when (< count (length text)) (set item.animation nil))
           (tset spans (+ (length spans) 1) item))
         (set offset (+ offset (length text))))
       (local copy {})

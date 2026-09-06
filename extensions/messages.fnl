@@ -566,15 +566,15 @@
                         {:type :register/service
                          :name :transcript_window
                          :value (fn [db render-context available-lines]
-                                  (local lines
-                                         (misa.transcript_projection db
-                                                                     render-context))
                                   (local room
                                          (math.max 0
                                                    (math.floor (or available-lines
                                                                    0))))
                                   (if (= room 0) {}
                                       (do
+                                        (local lines
+                                               (misa.transcript_projection db
+                                                                           render-context))
                                         (local selected
                                                (and misa.selection_projection
                                                     (misa.selection_projection db)))

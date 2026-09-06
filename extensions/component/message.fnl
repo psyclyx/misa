@@ -54,9 +54,7 @@
                                  [{:style (rail model) :text prefix}]))
     (set (entry.lines entry.prefix entry.rail entry.columns)
          (values lines prefix (rail model) columns)))
-  ;; The component registry resolves tokens in-place; cached semantic output
-  ;; must remain independent of the current theme and message title.
-  (misa.snapshot entry.wrapped))
+  entry.wrapped)
 
 (fn body-lines [model context style columns prefix]
   (if (= context.markdown false)
@@ -67,11 +65,17 @@
 (fn interactive-message [model context style label]
   (local columns (math.max 1 (or (tonumber context.columns) 80)))
   (local prefix (misa.layout.clip "┃ " (math.max 0 (- columns 2))))
-  (local rendered (body-lines model context style columns prefix))
+  ;; Titles and surfaces belong to this message wrapper; body spans stay cached.
+  (local rendered [])
+  (each [_ line (ipairs (body-lines model context style columns prefix))]
+    (local wrapped {})
+    (each [key value (pairs line)] (tset wrapped key value))
+    (table.insert rendered wrapped))
   (when label
     (local titles (misa.layout.wrap_spans [(title model label style)] columns))
     (for [index (length titles) 1 (- 1)]
       (table.insert rendered 1 (. titles index))))
+  ;; Title lines are newly allocated too, so assigning their surface is local.
   (each [_ line (ipairs rendered)]
     (set line.surface (.. :surface. (: (rail model) :gsub "^rail%." ""))))
   rendered)

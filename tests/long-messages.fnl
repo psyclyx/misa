@@ -91,6 +91,17 @@
 
 (assert (= (. db.messages.blocks 3 :text) (.. first " LEGACY-END")))
 (visible :LEGACY-END)
+;; A hidden transcript must not invoke its potentially expensive projection.
+(let [project misa.transcript_projection]
+  (set misa.transcript_projection
+       (fn [] (error "hidden transcript attempted projection")))
+  (each [_ room (ipairs [0 -1])]
+    (assert (= (length (misa.transcript_window db terminal room)) 0)))
+  (set misa.transcript_projection project))
+
+(assert (> (length (misa.transcript_window db terminal 1)) 0)
+        "visible transcript did not resume projection")
+
 ;; Formatting continues beyond the former document-size and block-count caps.
 (local view (misa.markdown_view.new_document))
 (fn has-strong [lines marker]

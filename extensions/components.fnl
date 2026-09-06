@@ -2,6 +2,11 @@
 
 ;; data; every role selection lives in transactional application state.
 
+(fn shallow [source]
+  (local result {})
+  (each [key value (pairs source)] (tset result key value))
+  result)
+
 {:setup (fn [context]
           (local setup-fx [])
           (local implementations {})
@@ -66,50 +71,69 @@
                                   ;; nothing about terminal colors. Resolution composes one native record.
                                   (assert misa.theme_style
                                           "components requires the themes service")
-                                  (each [_ line (ipairs (or rendered.lines {}))]
-                                    (local surface
-                                           (or line.surface rendered.surface))
-                                    (local base
-                                           (or (and surface
-                                                    (misa.theme_style db
-                                                                      surface))
-                                               {}))
-                                    (var text "")
-                                    (each [_ span (ipairs (or line.spans {}))]
-                                      (local style {})
-                                      (each [key value (pairs base)]
-                                        (tset style key value))
-                                      (each [key value (pairs (misa.theme_style db
-                                                                                (or span.style
-                                                                                    :plain)))]
-                                        (tset style key value))
-                                      (set span.style style)
-                                      (when span.animation
-                                        (each [_ frame (ipairs (or span.animation.frames
-                                                                   {}))]
-                                          (when frame.style
-                                            (local resolved {})
-                                            (each [key value (pairs style)]
-                                              (tset resolved key value))
-                                            (each [key value (pairs (misa.theme_style db
-                                                                                      frame.style))]
-                                              (tset resolved key value))
-                                            (set frame.style resolved))))
-                                      (set text (.. text (or span.text ""))))
-                                    ;; A surface belongs to the box, including the unused part of each row.
-                                    (when (and (and (and surface render-context)
-                                                    render-context.columns)
-                                               misa.layout)
-                                      (local padding
-                                             (math.max 0
-                                                       (- render-context.columns
-                                                          (misa.layout.width text))))
-                                      (when (> padding 0)
-                                        (tset line.spans
-                                              (+ (length line.spans) 1)
-                                              {:style base
-                                               :text (string.rep " " padding)}))))
-                                  rendered)})
+                                  ;; Resolve into output records; component-owned semantic caches remain reusable.
+                                  (local result (shallow rendered))
+                                  (when rendered.lines
+                                    (set result.lines [])
+                                    (each [_ line (ipairs rendered.lines)]
+                                      (local resolved-line (shallow line))
+                                      (set resolved-line.spans [])
+                                      (table.insert result.lines resolved-line)
+                                      (local surface
+                                             (or line.surface rendered.surface))
+                                      (local base
+                                             (if surface
+                                                 (misa.theme_style db surface)
+                                                 {}))
+                                      (local texts [])
+                                      (each [_ span (ipairs (or line.spans []))]
+                                        (local resolved-span (shallow span))
+                                        (local style (shallow base))
+                                        (each [key value (pairs (misa.theme_style db
+                                                                                  (or span.style
+                                                                                      :plain)))]
+                                          (tset style key value))
+                                        (set resolved-span.style style)
+                                        (when span.animation
+                                          (var animation nil)
+                                          (each [index frame (ipairs (or span.animation.frames
+                                                                         []))]
+                                            (when frame.style
+                                              (when (not animation)
+                                                (set animation
+                                                     (shallow span.animation))
+                                                (set animation.frames
+                                                     (shallow span.animation.frames))
+                                                (set resolved-span.animation
+                                                     animation))
+                                              (local resolved-frame
+                                                     (shallow frame))
+                                              (local frame-style
+                                                     (shallow style))
+                                              (each [key value (pairs (misa.theme_style db
+                                                                                        frame.style))]
+                                                (tset frame-style key value))
+                                              (set resolved-frame.style
+                                                   frame-style)
+                                              (tset animation.frames index
+                                                    resolved-frame))))
+                                        (table.insert resolved-line.spans
+                                                      resolved-span)
+                                        (table.insert texts (or span.text "")))
+                                      ;; A surface belongs to the box, including unused row cells.
+                                      (when (and surface render-context
+                                                 render-context.columns
+                                                 misa.layout)
+                                        (local padding
+                                               (math.max 0
+                                                         (- render-context.columns
+                                                            (misa.layout.width (table.concat texts)))))
+                                        (when (> padding 0)
+                                          (table.insert resolved-line.spans
+                                                        {:style base
+                                                         :text (string.rep " "
+                                                                           padding)})))))
+                                  result)})
           (table.insert setup-fx
                         {:type :register/service
                          :name :swap_component

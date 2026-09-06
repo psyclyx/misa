@@ -313,12 +313,11 @@ pub const Terminal = struct {
         return prepared;
     }
 
+    /// On successful output, adopt the prepared buffers as displayed state.
+    /// A failed write leaves both owners' buffers intact for cleanup.
     pub fn present(self: *Terminal, prepared: *PreparedPresentation) !void {
         if (!self.interactive) return;
         if (!self.screen_active) return error.TerminalSuspended;
-        var actions = try prepared.actions.clone(self.allocator);
-        errdefer actions.deinit(self.allocator);
-        try self.last_frame.ensureTotalCapacity(self.allocator, prepared.bytes.items.len);
         const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
         prepared.animations.reconcile(&self.animations, now);
         const redraw = !std.mem.eql(u8, self.last_frame.items, prepared.bytes.items) or prepared.graphics.changed or prepared.animations.changed(&self.animations);
@@ -335,10 +334,12 @@ pub const Terminal = struct {
         }
         prepared.animations.commit(now);
         prepared.graphics.commit(&self.image_cache, self.allocator);
-        self.last_frame.clearRetainingCapacity();
-        self.last_frame.appendSliceAssumeCapacity(prepared.bytes.items);
+        self.last_frame.deinit(self.allocator);
+        self.last_frame = prepared.bytes;
+        prepared.bytes = .empty;
         self.presented_actions.deinit(self.allocator);
-        self.presented_actions = actions;
+        self.presented_actions = prepared.actions;
+        prepared.actions = .{};
         self.animations.deinit(self.allocator);
         self.animations = prepared.animations;
         prepared.animations = .{};
@@ -594,17 +595,26 @@ test "click actions belong to shown frames, including visually identical updates
     // Avoid stdout in this unit test; the equal-byte presentation still must
     // commit its semantic hit map.
     try terminal.last_frame.appendSlice(allocator, old.bytes.items);
+    const old_bytes = old.bytes.items.ptr;
+    const old_actions = old.actions.hits.items.ptr;
     try terminal.present(&old);
+    try std.testing.expectEqual(old_bytes, terminal.last_frame.items.ptr);
+    try std.testing.expectEqual(old_actions, terminal.presented_actions.hits.items.ptr);
+    try std.testing.expect(old.bytes.items.len == 0 and old.actions.hits.items.len == 0);
     try std.testing.expectEqualStrings("old", terminal.actionAt(1, 1).?);
     parsed.value.object.getPtr("lines").?.array.items[0].object.getPtr("spans").?.array.items[0].object.getPtr("action").?.* = .{ .string = "new" };
     var next = try terminal.preparePresentation(parsed.value);
     defer next.deinit(allocator);
     try std.testing.expectEqualStrings("old", terminal.actionAt(1, 1).?);
     terminal.screen_active = false;
+    const next_bytes = next.bytes.items.ptr;
     try std.testing.expectError(error.TerminalSuspended, terminal.present(&next));
+    try std.testing.expectEqual(next_bytes, next.bytes.items.ptr);
+    try std.testing.expectEqual(old_bytes, terminal.last_frame.items.ptr);
     try std.testing.expectEqualStrings("old", terminal.presented_actions.at(1, 1).?);
     terminal.screen_active = true;
     try terminal.present(&next);
+    try std.testing.expectEqual(next_bytes, terminal.last_frame.items.ptr);
     try std.testing.expectEqualStrings("new", terminal.actionAt(1, 1).?);
 }
 
