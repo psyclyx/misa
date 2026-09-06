@@ -446,6 +446,13 @@
                                                    (selection-id model))))
                                     (when (and selecting model.text)
                                       (set model.text selected.text))
+                                    (when misa.syntax_projection
+                                      (local syntax
+                                             (misa.syntax_projection db model))
+                                      ;; Immutable projection inputs stay shared across the component
+                                      ;; model snapshot; resolving this value performs no work.
+                                      (when syntax
+                                        (set model.syntax (fn [] syntax))))
                                     (set model.timestamp
                                          (timestamp model.started_wall_ms))
                                     (local owner
@@ -1042,4 +1049,12 @@
                                       (tset (. db.messages.blocks i)
                                             :interrupted true))
                                     result)})
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :runtime/dispatch-limit
+                         :handler (fn [_ event]
+                                    {:fx [{:type :dispatch
+                                           :event {:type :transcript/harness
+                                                   :level :error
+                                                   :text event.text}}]})})
           {:fx setup-fx})}

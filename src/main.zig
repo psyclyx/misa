@@ -74,7 +74,7 @@ pub fn main(init: std.process.Init) !void {
     defer config.deinit();
 
     const grammar_dir = init.environ_map.get("MISA_TREE_SITTER_DIR") orelse syntax_module.default_grammar_dir;
-    var runtime = lua.Runtime.init(allocator, config.config_value, extension_argv.items, grammar_dir) catch |err| {
+    var runtime = lua.Runtime.init(allocator, config.config_value, extension_argv.items) catch |err| {
         if (err == error.MaximumNestingDepth) {
             std.debug.print("misa: invalid config '{s}': nesting exceeds maximum depth of {d}\n", .{ path, lua.max_nesting_depth });
             std.process.exit(2);
@@ -125,7 +125,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    runSession(init, allocator, &runtime) catch |err| {
+    runSession(init, allocator, &runtime, grammar_dir, config.config_value) catch |err| {
         if (err == error.LuaTransactionFailed)
             std.debug.print("misa: {s}\n", .{runtime.lastError()})
         else
@@ -135,7 +135,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Keep terminal cleanup in a scope that unwinds before main chooses an exit status.
-fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lua.Runtime) !void {
+fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lua.Runtime, grammar_dir: []const u8, config: std.json.Value) !void {
     const terminal = try terminal_module.Driver.create(allocator, init.io, init.environ_map);
     defer terminal.destroy();
     const terminal_info = terminal.info();
@@ -149,6 +149,7 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
         .allocator = allocator,
         .io = init.io,
         .runtime = runtime,
+        .dispatch_chain_limit = try session_module.dispatchChainLimit(config),
         .terminal = terminal,
         .interactive = terminal_info.interactive,
         .images_supported = terminal_info.images_supported,
@@ -158,6 +159,7 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
         .timers = .init(allocator),
     };
     defer session.deinit();
+    try session.operations.setGrammarDir(grammar_dir);
     try session.run();
 }
 

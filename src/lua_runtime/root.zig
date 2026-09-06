@@ -1,6 +1,5 @@
 //! LuaJIT lifetime and the checked Lua/data boundary.
 const std = @import("std");
-const syntax = @import("misa_syntax");
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lauxlib.h");
@@ -12,41 +11,6 @@ const fennel = @embedFile("vendor/fennel.lua");
 pub const max_nesting_depth: usize = 128;
 
 const Extension = struct { ref: c_int, path: []u8 };
-
-fn syntaxHighlight(state: ?*c.lua_State) callconv(.c) c_int {
-    const lua_state = state orelse return 0;
-    if (c.lua_type(lua_state, 1) != c.LUA_TSTRING) return c.luaL_argerror(lua_state, 1, "language must be a string");
-    if (c.lua_type(lua_state, 2) != c.LUA_TSTRING) return c.luaL_argerror(lua_state, 2, "source must be a string");
-    var language_len: usize = 0;
-    var source_len: usize = 0;
-    const language_ptr = c.lua_tolstring(lua_state, 1, &language_len) orelse return c.luaL_argerror(lua_state, 1, "language must be a string");
-    const source_ptr = c.lua_tolstring(lua_state, 2, &source_len) orelse return c.luaL_argerror(lua_state, 2, "source must be a string");
-    const context_ptr = c.lua_touserdata(lua_state, c.LUA_GLOBALSINDEX - 1) orelse return pushLuaError(lua_state, "syntax highlighter is unavailable");
-    const highlighter: *syntax.Highlighter = @ptrCast(@alignCast(context_ptr));
-    const captures = highlighter.highlight(highlighter.allocator, language_ptr[0..language_len], source_ptr[0..source_len]) catch |err| switch (err) {
-        error.InvalidLanguage => return c.luaL_argerror(lua_state, 1, "language must contain 1 to 64 safe bytes"),
-        error.SourceTooLarge => return c.luaL_argerror(lua_state, 2, "source exceeds 1 MiB"),
-        else => return pushLuaError(lua_state, "syntax highlighting failed"),
-    };
-    defer highlighter.allocator.free(captures);
-    c.lua_createtable(lua_state, @intCast(captures.len), 0);
-    for (captures, 0..) |capture, index| {
-        c.lua_createtable(lua_state, 0, 3);
-        c.lua_pushnumber(lua_state, @floatFromInt(capture.start_byte));
-        c.lua_setfield(lua_state, -2, "start_byte");
-        c.lua_pushnumber(lua_state, @floatFromInt(capture.end_byte));
-        c.lua_setfield(lua_state, -2, "end_byte");
-        _ = c.lua_pushlstring(lua_state, capture.capture.ptr, capture.capture.len);
-        c.lua_setfield(lua_state, -2, "capture");
-        c.lua_rawseti(lua_state, -2, @intCast(index + 1));
-    }
-    return 1;
-}
-
-fn pushLuaError(state: *c.lua_State, message: []const u8) c_int {
-    _ = c.lua_pushlstring(state, message.ptr, message.len);
-    return c.lua_error(state);
-}
 
 pub const TerminalInfo = struct {
     interactive: bool,
@@ -94,17 +58,10 @@ pub const Runtime = struct {
     terminal_info: ?TerminalInfo = null,
     error_buffer: [2048]u8 = undefined,
     error_len: usize = 0,
-    syntax_highlighter: *syntax.Highlighter,
 
-    pub fn init(allocator: std.mem.Allocator, config: std.json.Value, argv: anytype, grammar_dir: []const u8) !Runtime {
+    pub fn init(allocator: std.mem.Allocator, config: std.json.Value, argv: anytype) !Runtime {
         const state = c.luaL_newstate() orelse return error.LuaInitializationFailed;
-        const syntax_highlighter = try allocator.create(syntax.Highlighter);
-        syntax_highlighter.* = syntax.Highlighter.init(allocator, grammar_dir) catch |err| {
-            allocator.destroy(syntax_highlighter);
-            c.lua_close(state);
-            return err;
-        };
-        var self: Runtime = .{ .state = state, .allocator = allocator, .syntax_highlighter = syntax_highlighter };
+        var self: Runtime = .{ .state = state, .allocator = allocator };
         errdefer self.deinit();
         c.luaL_openlibs(state);
 
@@ -114,7 +71,6 @@ pub const Runtime = struct {
         c.lua_getfield(state, -1, "json_null");
         c.lua_remove(state, -2);
         self.json_null_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
-        self.installSyntaxApi();
         try self.setContext(config, argv);
         return self;
     }
@@ -177,8 +133,6 @@ pub const Runtime = struct {
 
     pub fn deinit(self: *Runtime) void {
         c.lua_close(self.state);
-        self.syntax_highlighter.deinit();
-        self.allocator.destroy(self.syntax_highlighter);
         for (self.extensions.items) |extension| self.allocator.free(extension.path);
         self.extensions.deinit(self.allocator);
     }
@@ -364,16 +318,6 @@ pub const Runtime = struct {
 
     pub fn lastError(self: *const Runtime) []const u8 {
         return self.error_buffer[0..self.error_len];
-    }
-
-    fn installSyntaxApi(self: *Runtime) void {
-        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
-        c.lua_createtable(self.state, 0, 1);
-        c.lua_pushlightuserdata(self.state, self.syntax_highlighter);
-        c.lua_pushcclosure(self.state, syntaxHighlight, 1);
-        c.lua_setfield(self.state, -2, "highlight");
-        c.lua_setfield(self.state, -2, "syntax");
-        self.pop(1);
     }
 
     /// Process identity for extensions that spawn another instance of the
@@ -577,14 +521,14 @@ pub const Runtime = struct {
 };
 
 test "bundled Fennel loads extensions after framework restrictions" {
-    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{}, "");
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     try runtime.loadExtension("src/lua_runtime/fixtures/extension.fnl");
     try runtime.setup();
 }
 
 test "Fennel loading reports source location and restores stack after failure" {
-    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{}, "");
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     try std.testing.expectError(error.ExtensionLoadFailed, runtime.loadExtension("src/lua_runtime/fixtures/failure.fnl"));
     try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "failure.fnl:2") != null);
@@ -596,7 +540,7 @@ test "Fennel loading reports source location and restores stack after failure" {
 }
 
 test "setup effects expand in order and remain outside event dispatch" {
-    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{}, "");
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     const source =
         \\local producer = {setup = function()

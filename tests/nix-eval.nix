@@ -67,6 +67,7 @@ assert
     components = "components";
     layout = "layout";
     markdown = "markdown";
+    syntax = "syntax";
     componentMarkdown = "component.markdown";
     componentTool = "component.tool";
     componentMessage = "component.message";

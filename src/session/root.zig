@@ -15,6 +15,17 @@ const timer = @import("timer.zig");
 const protected_input = @import("protected_input.zig");
 const max_operation_events_per_poll = 1;
 
+/// Bound synchronous dispatch fan-out without changing Lua execution or the
+/// ordering of ordinary settled chains.
+pub fn dispatchChainLimit(config: std.json.Value) !usize {
+    if (config != .object) return 1024;
+    const runtime = config.object.get("runtime") orelse return 1024;
+    if (runtime != .object) return error.InvalidRuntimeConfig;
+    const limit = runtime.object.get("max_dispatch_chain") orelse return 1024;
+    if (limit != .integer or limit.integer < 1 or limit.integer > 1_000_000) return error.InvalidDispatchChainLimit;
+    return @intCast(limit.integer);
+}
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -29,6 +40,7 @@ pub const Session = struct {
     running: bool = false,
     quit: bool = false,
     read_requested: bool = false,
+    dispatch_chain_limit: usize = 1024,
     operations: operation.Owner,
     timers: timer.Collection,
     pending_view: ?terminal_module.Driver.View = null,
@@ -51,9 +63,11 @@ pub const Session = struct {
         self.running = true;
         defer self.running = false;
         try self.enqueue("{\"type\":\"app/start\"}");
+        var chain_events: usize = 0;
         while (self.hasWork()) {
             try self.terminal.checkError();
             if (self.queue_head == self.queue.items.len) {
+                chain_events = 0;
                 // A native source event and its synchronous dispatch effects
                 // form one visible update. Settle that chain before showing a
                 // frame or introducing another source batch. Polling only at
@@ -69,6 +83,34 @@ pub const Session = struct {
                     continue;
                 }
             }
+            if (chain_events == self.dispatch_chain_limit) {
+                var interrupted = try std.json.parseFromSlice(std.json.Value, self.allocator, self.queue.items[self.queue_head], .{ .allocate = .alloc_always });
+                defer interrupted.deinit();
+                const kind = if (interrupted.value == .object) interrupted.value.object.get("type") else null;
+                const event_type = if (kind != null and kind.? == .string) kind.?.string else "unknown";
+                // Already committed transactions/effects stay committed. Only
+                // the remaining synchronous chain is discarded at this boundary.
+                for (self.queue.items[self.queue_head..]) |queued| self.allocator.free(queued);
+                self.queue.clearRetainingCapacity();
+                self.queue_head = 0;
+                if (!self.interactive) return error.DispatchChainLimitExceeded;
+                self.read_requested = true;
+                try self.publishView();
+                try self.pollSources();
+                const message = try std.fmt.allocPrint(self.allocator, "Stopped dispatch chain at '{s}': config.runtime.max_dispatch_chain exceeded; previously committed changes remain.", .{event_type});
+                defer self.allocator.free(message);
+                const notice = try std.json.Stringify.valueAlloc(self.allocator, .{
+                    .type = "runtime/dispatch-limit",
+                    .limit = self.dispatch_chain_limit,
+                    .event_type = event_type,
+                    .text = message,
+                }, .{});
+                defer self.allocator.free(notice);
+                try self.enqueue(notice);
+                chain_events = 0;
+                continue;
+            }
+            chain_events += 1;
             const event = self.queue.items[self.queue_head];
             self.queue_head += 1;
             defer self.allocator.free(event);
@@ -149,6 +191,7 @@ pub const Session = struct {
             .app_quit => self.quit = true,
             .process_run => |spec| try self.startProcess(spec),
             .image => |spec| try self.operations.startImage(spec, self.environ),
+            .syntax_highlight => |spec| try self.operations.startSyntax(spec),
             .http_request => |spec| try self.startHttp(spec),
             .file => |spec| try self.operations.startFile(spec),
             .json_decode => |spec| try self.decodeJson(spec),

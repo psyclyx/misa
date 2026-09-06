@@ -4,6 +4,7 @@ const posix = std.posix;
 const auth = @import("misa_auth");
 const file = @import("misa_file");
 const image = @import("misa_image");
+const syntax = @import("misa_syntax");
 const process = @import("misa_process");
 const http = @import("http.zig");
 const channel = @import("operation/channel.zig");
@@ -20,6 +21,7 @@ pub const Owner = struct {
     cursor: usize = 0,
     serial: u64 = 0,
     wakeup: channel.Wakeup,
+    syntax_service: ?*syntax.Service = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !Owner {
         return .{ .allocator = allocator, .io = io, .wakeup = try .init() };
@@ -31,6 +33,10 @@ pub const Owner = struct {
             task.destroy();
         }
         self.active.deinit(self.allocator);
+        if (self.syntax_service) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+        }
         self.wakeup.deinit();
     }
 
@@ -71,6 +77,23 @@ pub const Owner = struct {
         try self.ensureUnique(source.id);
         try self.active.ensureUnusedCapacity(self.allocator, 1);
         const task = try Task.createImage(self.allocator, self.io, self.wakeup, source, environ);
+        self.startPrepared(task);
+    }
+
+    /// Configure once before syntax tasks start; parsers load lazily on workers.
+    pub fn setGrammarDir(self: *Owner, directory: []const u8) !void {
+        if (self.syntax_service != null) return error.SyntaxAlreadyConfigured;
+        const service = try self.allocator.create(syntax.Service);
+        errdefer self.allocator.destroy(service);
+        service.* = try .init(self.allocator, directory);
+        self.syntax_service = service;
+    }
+
+    pub fn startSyntax(self: *Owner, source: syntax.Spec) !void {
+        try self.ensureUnique(source.id);
+        if (self.syntax_service == null) try self.setGrammarDir(syntax.default_grammar_dir);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createSyntax(self.allocator, self.io, self.wakeup, source, self.syntax_service.?);
         self.startPrepared(task);
     }
 
@@ -121,6 +144,7 @@ pub const Owner = struct {
     pub fn nextDeadline(self: *const Owner) ?i96 {
         var result: ?i96 = null;
         for (self.active.items) |task| {
+            if (task.timeout_kind == .none) continue;
             const deadline = task.nextDeadline();
             if (result == null or deadline < result.?) result = deadline;
         }

@@ -100,3 +100,111 @@ test "explicit Lua extensions remain compatible beside bundled Fennel" {
     );
     try h.expect(.{}, "Lua compatibility\n");
 }
+
+test "syntax highlighting completes asynchronously without exposing a synchronous API" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.write("syntax-effect.lua",
+        \\return {setup=function(context)
+        \\  assert(misa.syntax == nil or misa.syntax.highlight == nil, "synchronous syntax capability remains exposed")
+        \\  local source = "local answer = 42 -- comment\n"
+        \\  return {fx={
+        \\    {type="register/event",name="app/start",handler=function(db)
+        \\      db.received = {}
+        \\      return {db=db,fx={
+        \\        {type="syntax/highlight",id="known",language="lua",source=source,completion="fixture/highlighted"},
+        \\        {type="syntax/highlight",id="unknown",language="fixture-unknown-language",source=source,completion="fixture/highlighted"},
+        \\        {type="syntax/highlight",id="empty",language="lua",source="",completion="fixture/highlighted"}}}
+        \\    end},
+        \\    {type="register/event",name="fixture/highlighted",handler=function(db,event)
+        \\      assert(event.type == "fixture/highlighted" and event.ok == true)
+        \\      assert(event.id == "known" or event.id == "unknown" or event.id == "empty")
+        \\      assert(not db.received[event.id], "duplicate syntax completion")
+        \\      assert(event.source == nil and event.language == nil, "syntax completion echoed request content")
+        \\      assert(type(event.data) == "table")
+        \\      if event.id ~= "known" then assert(#event.data == 0, "empty/unknown grammar did not fall back") end
+        \\      if event.id == "known" and context.config.expect_captures then assert(#event.data > 0, "installed Lua grammar produced no captures") end
+        \\      local previous = 0
+        \\      for _,capture in ipairs(event.data) do
+        \\        assert(type(capture.start_byte) == "number" and capture.start_byte >= previous)
+        \\        assert(capture.end_byte > capture.start_byte and capture.end_byte <= #source)
+        \\        assert(type(capture.capture) == "string" and capture.capture ~= "")
+        \\        previous = capture.end_byte
+        \\      end
+        \\      db.received[event.id] = true
+        \\      if db.received.known and db.received.unknown and db.received.empty then
+        \\        return {db=db,fx={{type="view/commit",lines={{spans={{text="async syntax"}}}}},{type="app/quit"}}}
+        \\      end
+        \\      return {db=db}
+        \\    end}}}
+        \\end}
+    );
+    const expect_captures = if (h.environ.get("MISA_TREE_SITTER_DIR")) |value| value.len != 0 else false;
+    try h.config(if (expect_captures)
+        "{\"extensions\":[\"@WORK@/syntax-effect.lua\"],\"config\":{\"expect_captures\":true}}"
+    else
+        "{\"extensions\":[\"@WORK@/syntax-effect.lua\"]}");
+    try h.expect(.{ .timeout_ms = 3000 }, "async syntax\n");
+}
+
+test "syntax highlighting rejects malformed requests before execution" {
+    const std = @import("std");
+    const support = @import("harness.zig");
+    for ([_][]const u8{
+        "effect.id = nil",
+        "effect.id = ''",
+        "effect.language = nil",
+        "effect.language = ''",
+        "effect.language = string.rep('x', 65)",
+        "effect.source = nil",
+        "effect.source = 17",
+        "effect.source = string.char(255)",
+        "effect.source = string.rep('x', 1024 * 1024 + 1)",
+        "effect.completion = nil",
+        "effect.completion = ''",
+    }) |mutation| {
+        var h = try Harness.init();
+        defer h.deinit();
+        const source = try std.fmt.allocPrint(h.allocator(),
+            \\return {{setup=function()
+            \\  return {{fx={{{{type="register/event",name="app/start",handler=function()
+            \\    local effect = {{type="syntax/highlight",id="bad",language="lua",source="local x=1",completion="done"}}
+            \\    {s}
+            \\    return {{fx={{effect}}}}
+            \\  end}}}}}}
+            \\end}}
+        , .{mutation});
+        try h.write("invalid-syntax.lua", source);
+        try h.config("{\"extensions\":[\"@WORK@/invalid-syntax.lua\"]}");
+        const result = try h.run(.{ .timeout_ms = 3000 });
+        try std.testing.expect(result.term == .exited and result.term.exited != 0);
+        try support.contains(result.stderr, "InvalidEffect");
+    }
+}
+
+test "component resolution preserves cached semantic spans across themes" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.write("cached-component.lua",
+        \\return {setup=function()
+        \\  local cached = {lines={{spans={{text="cached",style="plain",animation={id="cached",interval_ms=40,frames={{style="bold"},{text="second"}}}}}}}}
+        \\  return {fx={
+        \\    {type="register/theme",id="second",value={palette={ink="red"},styles={plain={foreground="ink"}}}},
+        \\    {type="register/component",id="default.cached",value={render=function() return cached end}},
+        \\    {type="register/event",name="app/start",handler=function(db)
+        \\      local first = misa.render_component(db,"cached",{})
+        \\      assert(cached.lines[1].spans[1].style == "plain")
+        \\      assert(cached.lines[1].spans[1].animation.frames[1].style == "bold")
+        \\      local old = first.lines[1].spans[1].style.foreground
+        \\      misa.swap_theme(db,"second")
+        \\      local second = misa.render_component(db,"cached",{})
+        \\      assert(second.lines[1].spans[1].style.foreground == "red")
+        \\      assert(first.lines[1].spans[1].style.foreground == old)
+        \\      assert(cached.lines[1].spans[1].animation.frames[1].style == "bold")
+        \\      return {fx={{type="view/commit",lines={{spans={{text="pure components"}}}}},{type="app/quit"}}}
+        \\    end}}}
+        \\end}
+    );
+    try h.config("{\"extensions\":[\"themes\",\"theme.default\",\"components\",\"@WORK@/cached-component.lua\"],\"config\":{\"themes\":{\"persist\":false},\"components\":{\"persist\":false}}}");
+    try h.expect(.{}, "pure components\n");
+}

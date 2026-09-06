@@ -194,15 +194,20 @@ translators. Registrations seal after all extensions have completed setup.
 Perform startup IO through effects from an `app/start` handler. Plugin setup must
 return service declarations rather than assigning fields directly on `misa`.
 Protocol factories such as `misa.protocols.openai(spec)` return `{fx={...}}` for
-composition into a provider extension's setup result. The checked synchronous
-`misa.syntax.highlight(language, source)` native API returns ordered
+composition into a provider extension's setup result. The asynchronous
+`syntax/highlight` effect accepts `id`, `language`, `source`, and `completion`,
+with an optional `timeout_ms` (1–60000; default 1000). Its completion event has
+`id`, `ok`, and `data` containing ordered
 `{start_byte=<zero-based>, end_byte=<exclusive>, capture=<semantic name>}`
 ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
 `keyword`, `type`, `function`, `constant`, `variable`, `property`, `tag`,
 `attribute`, `operator`, `punctuation`, `escape`, and `embedded`). Highlighting
-is derived only and never enters canonical `db`. Missing, unknown, or
-incompatible grammars return an empty array for plain-text fallback. Source is
-limited to 1 MiB and parsers are loaded lazily into a bounded cache.
+is derived data: the `syntax` extension tracks pending requests and accepted
+revisions in transactional state, retaining capture arrays in a derived cache
+and passing them into rendering. Source parsing and grammar
+loading run on native workers with a reusable parser cache. Missing, unknown,
+incompatible, or timed-out grammars produce plain-text fallback. Source is
+limited to 1 MiB. There is no synchronous highlighting API on `misa`.
 Recursive dispatch is
 unavailable. Each transaction takes one bounded working copy of `db`, then
 commits it only after its effects and semantic view pass native validation.
@@ -213,6 +218,25 @@ not write or render: `io`, `os`, and `print` are unavailable. Ordinary Lua
 source composition (`require`, `load`, `loadfile`, and `dofile`) remains
 available, while native `package.loadlib`, FFI, and JIT access are disabled.
 
+`config.runtime.max_dispatch_chain` bounds each synchronous event chain (default
+1024, range 1–1000000). On overflow, interactive sessions discard its remaining
+queued events, preserve previously committed state/effects, publish the last
+valid view, and resume input. A `runtime/dispatch-limit` event carries `limit`,
+`event_type`, and `text`; the standard messages extension displays it. Headless sessions exit
+with `DispatchChainLimitExceeded`. This protects against self-dispatch loops,
+not a callback that never returns or a blocking native/file-loader call. LuaJIT
+remains enabled; arbitrary plugin isolation requires a separate worker/process.
+Native operations require concurrent worker execution. If a worker cannot be
+started, the operation completes with an error instead of running inline on the
+session thread.
+
+Component theme resolution constructs new output records and shares unchanged
+semantic data. Cached message spans stay semantic across theme changes. The
+terminal adopts prepared frame bytes and click maps after successful output;
+the session transfers the semantic view arena to the terminal owner. The working
+`db` copy and projection/input snapshots still enforce their existing rollback
+and mutation-isolation contracts.
+
 HTTP deadlines describe only signals the transport can observe: `first_byte_ms`
 includes DNS and connection establishment, `idle_ms` applies after response-body
 activity begins, and `overall_ms` bounds the complete operation. There is no
@@ -221,6 +245,7 @@ separately configurable connect deadline.
 The fixed native effects are:
 
 - `{type="dispatch", event=<table>}`
+- `{type="syntax/highlight", language=..., source=..., completion=..., id=..., timeout_ms=?}`
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="http/request", url=..., json=..., credential=..., completion=..., id=..., timeouts={first_byte_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="file/read", path=..., completion=..., id=...}`
@@ -440,7 +465,10 @@ terminal flow, while `component.message` supplies only message titles and the ou
 owns tool name/description, arguments, pending state, result, and lifecycle colors. Rendering includes visibly graded
 streaming headings, composable emphasis, Unicode task checkboxes, nested lists and continuations, thematic rules,
 quotes, responsive bordered tables, inline/fenced code, and OSC 8-capable links. Fenced languages are labeled and use
-`misa.syntax.highlight` when their grammar is installed, with unknown grammars rendered plainly. The pure `layout`
+the `syntax` extension's asynchronous captures when their grammar is installed.
+Code renders plainly while highlighting is pending; stale streaming results are
+discarded and the latest source is requested. Rendering consumes capture data
+without loading grammars or calling a native parser. The pure `layout`
 service uses the same wcwidth-style combining, modifier, East Asian wide, and
 emoji ranges as the native presenter. It also owns editor grapheme boundaries,
 so combining sequences, emoji ZWJ sequences, and virama-attached marks are never

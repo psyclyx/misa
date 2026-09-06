@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("misa_auth");
 const file = @import("misa_file");
 const image = @import("misa_image");
+const syntax = @import("misa_syntax");
 const process = @import("misa_process");
 const state = @import("misa_state");
 const http = @import("../http.zig");
@@ -14,7 +15,8 @@ const AuthSpec = struct { action: auth.Action, declaration: auth.Declaration, co
 const StateSpec = struct { namespace: []const u8, completion: []const u8, id: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map };
 const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
 const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
-const Kind = union(enum) { image: ImageSpec, http: HttpSpec, process: process.Spec, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
+const SyntaxSpec = struct { spec: syntax.Spec, service: *syntax.Service };
+const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: process.Spec, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
 
 pub const Task = struct {
     pub const max_records_per_event = 32;
@@ -126,6 +128,23 @@ pub const Task = struct {
         return task;
     }
 
+    pub fn createSyntax(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: syntax.Spec, service: *syntax.Service) !*Task {
+        const task = try create(owner_allocator, io, wakeup);
+        errdefer task.destroy();
+        const a = task.arena.allocator();
+        const spec: syntax.Spec = .{
+            .id = try a.dupe(u8, source.id),
+            .completion = try a.dupe(u8, source.completion),
+            .language = try a.dupe(u8, source.language),
+            .source = try a.dupe(u8, source.source),
+            .timeout_ms = source.timeout_ms,
+        };
+        task.kind = .{ .syntax = .{ .spec = spec, .service = service } };
+        try task.prepare(spec.completion, spec.id, .{});
+        task.timeout_kind = .none;
+        return task;
+    }
+
     pub fn createState(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, namespace: []const u8, completion: []const u8, serial: u64, data: ?std.json.Value, environ: *const std.process.Environ.Map) !*Task {
         const task = try create(owner_allocator, io, wakeup);
         errdefer task.destroy();
@@ -155,7 +174,13 @@ pub const Task = struct {
     }
 
     pub fn start(self: *Task) void {
-        self.group.async(self.io, worker, .{self});
+        // Native effects must never fall back to running on the policy owner.
+        // Resource exhaustion is an ordinary operation completion failure.
+        self.group.concurrent(self.io, worker, .{self}) catch |err| {
+            self.result = .{ .message = @errorName(err) };
+            self.done.store(true, .release);
+            self.records.wakeup.notify();
+        };
     }
 
     pub fn cancel(self: *Task) void {
@@ -175,6 +200,7 @@ pub const Task = struct {
     }
 
     pub fn timeoutName(self: *Task, now: i96) ?[]const u8 {
+        if (self.timeout_kind == .none) return null;
         if (self.done.load(.acquire)) return null;
         const elapsed_ms = @divTrunc(now - self.started_ns, std.time.ns_per_ms);
         if (elapsed_ms >= self.timeouts.overall_ms) return "OverallTimeout";
@@ -273,7 +299,7 @@ pub const Task = struct {
             .http => |request| if (request.spec.response_format == .sse_json_stream) .http_stream else .ordinary,
             .process => |spec| if (spec.stdout_format == .json_lines_stream) .process_stream else .ordinary,
             .file => .file,
-            .image => .ordinary,
+            .image, .syntax => .ordinary,
             .state_load => |spec| .{ .state_load = spec.namespace },
             .state_save => .state_save,
         };
@@ -328,6 +354,24 @@ pub const Task = struct {
             self.records.wakeup.notify();
         }
         switch (self.kind) {
+            .syntax => |request| {
+                const a = self.arena.allocator();
+                const captures = request.service.run(a, self.io, request.spec) catch |err| {
+                    if (err == error.Canceled) return error.Canceled;
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                var values: std.array_list.Managed(std.json.Value) = .init(a);
+                for (captures, 0..) |capture, index| {
+                    if (index % 256 == 0) try self.io.checkCancel();
+                    var object: std.json.ObjectMap = .empty;
+                    object.put(a, "start_byte", .{ .integer = capture.start_byte }) catch return;
+                    object.put(a, "end_byte", .{ .integer = capture.end_byte }) catch return;
+                    object.put(a, "capture", .{ .string = capture.capture }) catch return;
+                    values.append(.{ .object = object }) catch return;
+                }
+                self.result = .{ .ok = true, .data = .{ .array = values }, .message = null };
+            },
             .image => |request| {
                 const value = image.run(self.arena.allocator(), self.io, request.spec, request.environ) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
@@ -514,4 +558,48 @@ test "task coalesces 32 ordered records and flushes terminal markers" {
     defer second_parsed.deinit();
     try std.testing.expectEqual(@as(usize, 3), second_parsed.value.object.get("records").?.array.items.len);
     try std.testing.expect(second_parsed.value.object.get("terminal").?.bool);
+}
+
+test "syntax task owns one source copy before workers run" {
+    const allocator = std.testing.allocator;
+    const wakeup = try channel_module.Wakeup.init();
+    defer wakeup.deinit();
+    var service = try syntax.Service.init(allocator, "");
+    defer service.deinit();
+    var source = [_]u8{ 'a', '=', '1' };
+    const task = try Task.createSyntax(allocator, std.testing.io, wakeup, .{ .id = "highlight", .completion = "syntax/done", .language = "lua", .source = &source }, &service);
+    defer task.destroy();
+    source[0] = 'b';
+    try std.testing.expectEqualStrings("a=1", task.kind.syntax.spec.source);
+    try std.testing.expect(service.highlighter == null);
+}
+
+test "unavailable concurrency completes with failure without running native work inline" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{ .async_limit = .nothing, .concurrent_limit = .nothing });
+    defer threaded.deinit();
+    const io = threaded.io();
+    const wakeup = try channel_module.Wakeup.init();
+    defer wakeup.deinit();
+    var service = try syntax.Service.init(allocator, "");
+    defer service.deinit();
+    const task = try Task.createSyntax(allocator, io, wakeup, .{ .id = "no-worker", .completion = "syntax/done", .language = "unknown", .source = "private source" }, &service);
+    defer task.destroy();
+    task.start();
+    try task.await();
+    try std.testing.expect(task.isDone());
+    // The worker initializes this cache even for a missing grammar. Keeping it
+    // absent proves group submission did not execute the native operation.
+    try std.testing.expect(service.highlighter == null);
+    var ready = [_]std.posix.pollfd{.{ .fd = wakeup.read_fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    try std.testing.expectEqual(@as(usize, 1), try std.posix.poll(&ready, 0));
+    const item = try task.completionItem();
+    defer allocator.free(item.json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, item.json, .{});
+    defer parsed.deinit();
+    try std.testing.expect(item.terminal);
+    try std.testing.expect(!parsed.value.object.get("ok").?.bool);
+    try std.testing.expectEqualStrings("no-worker", parsed.value.object.get("id").?.string);
+    try std.testing.expectEqualStrings("syntax/done", parsed.value.object.get("type").?.string);
+    try std.testing.expectEqualStrings("ConcurrencyUnavailable", parsed.value.object.get("message").?.string);
 }

@@ -56,7 +56,6 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     lua_runtime.linkSystemLibrary("luajit", .{ .use_pkg_config = .force });
-    lua_runtime.addImport("misa_syntax", syntax);
     const terminal = b.createModule(.{
         .root_source_file = b.path("src/terminal/root.zig"),
         .target = target,
@@ -86,6 +85,7 @@ pub fn build(b: *std.Build) void {
     session.addImport("misa_auth", auth);
     session.addImport("misa_wakeup", wakeup);
     session.addImport("misa_image", image);
+    session.addImport("misa_syntax", syntax);
     session.addImport("misa_file", file_effect);
     session.addImport("misa_lua_runtime", lua_runtime);
     session.addImport("misa_process", process_effect);
@@ -149,6 +149,7 @@ pub fn build(b: *std.Build) void {
     operation_test_module.addImport("misa_auth", auth);
     operation_test_module.addImport("misa_wakeup", wakeup);
     operation_test_module.addImport("misa_image", image);
+    operation_test_module.addImport("misa_syntax", syntax);
     operation_test_module.addImport("misa_file", file_effect);
     operation_test_module.addImport("misa_process", process_effect);
     operation_test_module.addImport("misa_state", state);

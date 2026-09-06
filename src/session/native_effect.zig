@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("misa_auth");
 const file = @import("misa_file");
 const image = @import("misa_image");
+const syntax = @import("misa_syntax");
 const http = @import("http.zig");
 const process = @import("misa_process");
 const state = @import("misa_state");
@@ -29,6 +30,7 @@ pub const Effect = union(enum) {
     http_request: http.Spec,
     file: file.Spec,
     image: image.Spec,
+    syntax_highlight: syntax.Spec,
     json_decode: JsonDecode,
     auth_command: AuthCommand,
     auth_respond: AuthRespond,
@@ -91,6 +93,7 @@ pub const Effect = union(enum) {
         } };
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
         if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
+        if (std.mem.eql(u8, kind, "syntax/highlight")) return .{ .syntax_highlight = try .parse(object) };
         if (std.mem.startsWith(u8, kind, "image/")) return .{ .image = try .parse(kind, object) };
         if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
         if (std.mem.eql(u8, kind, "auth/command")) {

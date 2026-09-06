@@ -4,14 +4,6 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (var highlighted false)
-                                    (local native-highlight
-                                           misa.syntax.highlight)
-
-                                    (fn misa.syntax.highlight [language source]
-                                      (set highlighted true)
-                                      (native-highlight language source))
-
                                     (local source "# live
 ## second
 ***both*** and ~~**gone**~~ and `x` [docs](https://example.test)
@@ -40,13 +32,22 @@ return 42
                                                          :heading))
                                                  (= (. document.blocks 1 :level)
                                                     1)))
+                                    (local captures {})
+                                    (each [_ block (ipairs document.blocks)]
+                                      (when (= block.kind :code_block)
+                                        (tset captures block.source_start
+                                              [{:start_byte 0
+                                                :end_byte 6
+                                                :capture :keyword}])))
                                     (local narrow
                                            (misa.markdown_view.render document
                                                                       {:base :assistant
+                                                                       : captures
                                                                        :columns 30}))
                                     (local wide
                                            (misa.markdown_view.render document
                                                                       {:base :assistant
+                                                                       : captures
                                                                        :columns 60}))
                                     (var (text narrow-top wide-top)
                                          (values "" nil nil))
@@ -54,6 +55,7 @@ return 42
                                            {:both false
                                             :box false
                                             :code false
+                                            :highlight false
                                             :continuation false
                                             :h1 false
                                             :h2 false
@@ -71,6 +73,9 @@ return 42
                                         (when (= (type item.style) :table)
                                           (each [_ token (ipairs item.style)]
                                             (tset styles token true)))
+                                        (when (and (= item.text :return)
+                                                   (. styles :syntax.keyword))
+                                          (set saw.highlight true))
                                         (when (and (and (= item.text :both)
                                                         styles.bold)
                                                    styles.italic)
@@ -113,8 +118,6 @@ return 42
                                       (assert value
                                               (.. "missing Markdown rendering: "
                                                   feature)))
-                                    (assert highlighted
-                                            "fenced code did not invoke the syntax service")
                                     (assert (and (and (not (text:find "***" 1
                                                                       true))
                                                       (not (text:find "~~" 1

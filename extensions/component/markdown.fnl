@@ -201,13 +201,9 @@
               (border widths "└" "┴" "┘" base))
         result)))
 
-(fn highlighted-lines [block base]
+(fn highlighted-lines [block base captures]
   (let [source (or block.text "")]
-    (var captures {})
-    (when (and (and (not= block.language "") misa.syntax) misa.syntax.highlight)
-      (local (ok value) (pcall misa.syntax.highlight block.language source))
-      (when (and ok (= (type value) :table))
-        (set captures value)))
+    (set-forcibly! captures (or captures {}))
     (var (spans at) (values {} 1))
     (each [_ capture (ipairs captures)]
       (local first (+ (or (tonumber capture.start_byte) 0) 1))
@@ -247,7 +243,7 @@
       (each [_ item (ipairs line.spans)] (set item.source true)))
     lines))
 
-(fn code-block [block columns base]
+(fn code-block [block columns base captures]
   (let [language (or (and (not= block.language "") block.language) :plain)
         result {}
         label (misa.layout.take language (math.max 1 (- columns 4)))
@@ -258,7 +254,7 @@
                    (span (string.rep "─"
                                      (math.max 0 (- (- columns label-width) 4)))
                          (compose base :markdown.code.border))]})
-    (each [_ line (ipairs (highlighted-lines block base))]
+    (each [_ line (ipairs (highlighted-lines block base captures))]
       (append result (flow line.spans columns
                            [(span "│ " (compose base :markdown.code.border))]
                            [(span "│ " (compose base :markdown.code.border))]
@@ -269,7 +265,7 @@
                          (compose base :markdown.code.border))]})
     result))
 
-(fn render-block [block columns base]
+(fn render-block [block columns base captures]
   (let [result {}]
     (if (= block.kind :blank)
         (tset result (+ (length result) 1) {:spans [(span "" base)]})
@@ -332,7 +328,7 @@
         (= block.kind :table)
         (append result (render-table block columns base))
         (= block.kind :code_block)
-        (append result (code-block block columns base)))
+        (append result (code-block block columns base captures)))
     (each [_ line (ipairs result)]
       (set (line.source_start line.source_end)
            (values block.source_start block.source_end)))
@@ -348,12 +344,16 @@
   (local result {})
   (local base-key (style-key base))
   (each [_ block (ipairs (or document.blocks {}))]
+    (local captures
+           (and options.captures (. options.captures block.source_start)))
     (var entry (and cache (. cache block)))
     (when (or (or (not entry) (not= entry.columns columns))
-              (not= entry.base base-key))
-      (set entry {:base base-key
-                  : columns
-                  :lines (render-block block columns base)})
+              (or (not= entry.base base-key) (not= entry.captures captures)))
+      (set entry
+           {:base base-key
+            : columns
+            : captures
+            :lines (render-block block columns base captures)})
       (when cache (tset cache block entry)))
     (append result entry.lines))
   (when (= (length result) 0)
@@ -380,32 +380,43 @@
                                                  (local blocks
                                                         (setmetatable {}
                                                                       {:__mode :k}))
-                                                 (var (previous columns base
-                                                                lines)
+                                                 (var (previous previous-source
+                                                                columns base
+                                                                revision lines)
                                                       nil)
                                                  {:render (fn [_ text options]
                                                             (local opts
                                                                    (or options
                                                                        {}))
                                                             (local document
-                                                                   (parser:update text))
+                                                                   (or opts.document
+                                                                       (parser:update text)))
                                                             (local next-base
                                                                    (style-key opts.base))
-                                                            (when (or (not= document
-                                                                            previous)
+                                                            (when (or (if opts.document
+                                                                          (not= text
+                                                                                previous-source)
+                                                                          (not= document
+                                                                                previous))
                                                                       (not= opts.columns
                                                                             columns)
-                                                                      (not= next-base
-                                                                            base))
+                                                                      (or (not= next-base
+                                                                                base)
+                                                                          (not= opts.revision
+                                                                                revision)))
                                                               (set lines
                                                                    (render document
                                                                            opts
                                                                            blocks))
-                                                              (set (previous columns
-                                                                             base)
+                                                              (set (previous previous-source
+                                                                             columns
+                                                                             base
+                                                                             revision)
                                                                    (values document
+                                                                           text
                                                                            opts.columns
-                                                                           next-base)))
+                                                                           next-base
+                                                                           opts.revision)))
                                                             ;; Semantic lines are read-only; consumers decorate copies.
                                                             lines)})
                                  : plain

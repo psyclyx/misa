@@ -31,6 +31,7 @@ pub const ids = [_][]const u8{
     "components",
     "layout",
     "markdown",
+    "syntax",
     "component.markdown",
     "component.tool",
     "component.message",
@@ -106,6 +107,7 @@ pub fn catalogPath(id: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, id, "components")) return "components.fnl";
     if (std.mem.eql(u8, id, "layout")) return "layout.fnl";
     if (std.mem.eql(u8, id, "markdown")) return "markdown.fnl";
+    if (std.mem.eql(u8, id, "syntax")) return "syntax.fnl";
     if (std.mem.eql(u8, id, "component.markdown")) return "component/markdown.fnl";
     if (std.mem.eql(u8, id, "component.tool")) return "component/tool.fnl";
     if (std.mem.eql(u8, id, "component.message")) return "component/message.fnl";
@@ -174,6 +176,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("components.fnl", catalogPath("components").?);
     try std.testing.expectEqualStrings("layout.fnl", catalogPath("layout").?);
     try std.testing.expectEqualStrings("markdown.fnl", catalogPath("markdown").?);
+    try std.testing.expectEqualStrings("syntax.fnl", catalogPath("syntax").?);
     try std.testing.expectEqualStrings("component/markdown.fnl", catalogPath("component.markdown").?);
     try std.testing.expectEqualStrings("component/tool.fnl", catalogPath("component.tool").?);
     try std.testing.expectEqualStrings("component/message.fnl", catalogPath("component.message").?);
@@ -215,7 +218,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("ui.fnl", catalogPath("ui").?);
     try std.testing.expectEqualStrings("tool/files.fnl", catalogPath("tool.files").?);
     try std.testing.expectEqualStrings("tool/shell.fnl", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 62), ids.len);
+    try std.testing.expectEqual(@as(usize, 63), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {

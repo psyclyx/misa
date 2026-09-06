@@ -4,6 +4,8 @@ const options = @import("misa_syntax_options");
 const c = @cImport(@cInclude("tree_sitter/api.h"));
 
 pub const default_grammar_dir = options.default_grammar_dir;
+pub const Spec = @import("operation.zig").Spec;
+pub const Service = @import("operation.zig").Service;
 pub const max_source_bytes: usize = 1024 * 1024;
 pub const max_language_bytes: usize = 64;
 const max_parsers: usize = 32;
@@ -30,7 +32,7 @@ const Entry = struct {
 };
 
 /// Owns the bounded lazy parser cache. It is synchronous and must only be used
-/// by its owning Lua runtime thread.
+/// by one native worker at a time.
 pub const Highlighter = struct {
     allocator: std.mem.Allocator,
     grammar_dir: []u8,
@@ -52,16 +54,40 @@ pub const Highlighter = struct {
     /// Returns generic semantic captures. Missing, incompatible, and unknown
     /// grammars deliberately produce an empty result so callers can render plain text.
     pub fn highlight(self: *Highlighter, allocator: std.mem.Allocator, language_label: []const u8, source: []const u8) ![]Capture {
+        return self.highlightWithProgress(allocator, language_label, source, null);
+    }
+
+    pub fn highlightCancelable(self: *Highlighter, allocator: std.mem.Allocator, io: std.Io, language_label: []const u8, source: []const u8, timeout_ms: u32) ![]Capture {
+        try io.checkCancel();
+        var progress: Progress = .{ .io = io, .deadline = std.Io.Timestamp.now(io, .awake).nanoseconds + @as(i96, timeout_ms) * std.time.ns_per_ms };
+        return self.highlightWithProgress(allocator, language_label, source, &progress);
+    }
+
+    fn highlightWithProgress(self: *Highlighter, allocator: std.mem.Allocator, language_label: []const u8, source: []const u8, progress: ?*Progress) ![]Capture {
         if (language_label.len == 0 or language_label.len > max_language_bytes) return error.InvalidLanguage;
         if (source.len > max_source_bytes) return error.SourceTooLarge;
         const name = canonicalLanguage(language_label) orelse return &.{};
         const parser = try self.getParser(name) orelse return &.{};
-        const tree = c.ts_parser_parse_string(parser, null, source.ptr, @intCast(source.len)) orelse return &.{};
+        var input = source;
+        const parsed = if (progress) |context| c.ts_parser_parse_with_options(parser, null, .{
+            .payload = @ptrCast(&input),
+            .read = readSource,
+            .encoding = c.TSInputEncodingUTF8,
+            .decode = null,
+        }, .{ .payload = context, .progress_callback = parseProgress }) else c.ts_parser_parse_string(parser, null, source.ptr, @intCast(source.len));
+        const tree = parsed orelse {
+            // Tree-sitter otherwise resumes an interrupted parse on the next
+            // request, whose source may be completely different.
+            c.ts_parser_reset(parser);
+            if (progress) |context| if (context.canceled) return error.Canceled;
+            return &.{};
+        };
         defer c.ts_tree_delete(tree);
+        if (progress) |context| try context.io.checkCancel();
 
         var captures: std.ArrayList(Capture) = .empty;
         errdefer captures.deinit(allocator);
-        walk(c.ts_tree_root_node(tree), &captures, allocator) catch |err| switch (err) {
+        walk(c.ts_tree_root_node(tree), &captures, allocator, if (progress) |context| context.io else null) catch |err| switch (err) {
             error.SyntaxTooComplex => {
                 captures.clearRetainingCapacity();
                 return captures.toOwnedSlice(allocator);
@@ -112,7 +138,28 @@ pub const Highlighter = struct {
     }
 };
 
-fn walk(root: c.TSNode, captures: *std.ArrayList(Capture), allocator: std.mem.Allocator) !void {
+const Progress = struct { io: std.Io, deadline: i96, canceled: bool = false };
+
+fn readSource(payload: ?*anyopaque, byte_index: u32, _: c.TSPoint, bytes_read: [*c]u32) callconv(.c) [*c]const u8 {
+    const source: *[]const u8 = @ptrCast(@alignCast(payload.?));
+    if (byte_index >= source.len) {
+        bytes_read.* = 0;
+        return null;
+    }
+    bytes_read.* = @intCast(source.len - byte_index);
+    return source.ptr + byte_index;
+}
+
+fn parseProgress(state: [*c]c.TSParseState) callconv(.c) bool {
+    const progress: *Progress = @ptrCast(@alignCast(state.*.payload.?));
+    progress.io.checkCancel() catch {
+        progress.canceled = true;
+        return true;
+    };
+    return std.Io.Timestamp.now(progress.io, .awake).nanoseconds >= progress.deadline;
+}
+
+fn walk(root: c.TSNode, captures: *std.ArrayList(Capture), allocator: std.mem.Allocator, io: ?std.Io) !void {
     const Pending = struct { node: c.TSNode, inherited: ?[]const u8, depth: usize };
     var pending: std.ArrayList(Pending) = .empty;
     defer pending.deinit(allocator);
@@ -121,6 +168,7 @@ fn walk(root: c.TSNode, captures: *std.ArrayList(Capture), allocator: std.mem.Al
     var work: usize = 1;
     while (pending.pop()) |current| {
         nodes += 1;
+        if (nodes % 256 == 0) if (io) |context| try context.checkCancel();
         if (nodes > max_ast_nodes or current.depth > max_ast_depth) return error.SyntaxTooComplex;
         const node_type = std.mem.span(c.ts_node_type(current.node));
         const own = classify(node_type);
@@ -333,4 +381,34 @@ test "bundled grammar produces ordered semantic captures" {
         saw_number = saw_number or std.mem.eql(u8, capture.capture, "number");
     }
     try std.testing.expect(saw_comment and saw_number);
+}
+
+test "canceled parse state is reset before the cached parser handles new source" {
+    if (default_grammar_dir.len == 0) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var highlighter = try Highlighter.init(allocator, default_grammar_dir);
+    defer highlighter.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(allocator);
+    for (0..20000) |_| try source.appendSlice(allocator, "value = 42\n");
+    var expired: Progress = .{ .io = std.testing.io, .deadline = 0 };
+    const interrupted = try highlighter.highlightWithProgress(allocator, "python", source.items, &expired);
+    defer allocator.free(interrupted);
+    try std.testing.expectEqual(@as(usize, 0), interrupted.len);
+    const parser = (try highlighter.getParser("python")).?;
+    const resumed = try highlighter.highlightCancelable(allocator, std.testing.io, "python", "answer = 123\n", 1000);
+    defer allocator.free(resumed);
+    try std.testing.expect(resumed.len != 0);
+    try std.testing.expectEqual(parser, (try highlighter.getParser("python")).?);
+    for (resumed) |capture| try std.testing.expect(capture.end_byte <= "answer = 123\n".len);
+}
+
+test "syntax service initializes its cache on first worker request" {
+    var service = try Service.init(std.testing.allocator, "");
+    defer service.deinit();
+    try std.testing.expect(service.highlighter == null);
+    const captures = try service.run(std.testing.allocator, std.testing.io, .{ .id = "test", .completion = "test/done", .language = "unknown", .source = "private source" });
+    defer std.testing.allocator.free(captures);
+    try std.testing.expect(service.highlighter != null);
+    try std.testing.expectEqual(@as(usize, 0), captures.len);
 }

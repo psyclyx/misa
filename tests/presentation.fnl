@@ -217,15 +217,6 @@ local x = 1
                                         (assert (= block.depth 100000)
                                                 "layout changed semantic nesting depth")))
                                     ;; Captures and plain gaps may both cross line boundaries.
-                                    (local previous-syntax misa.syntax)
-                                    (set misa.syntax
-                                         {:highlight (fn [_ _]
-                                                       [{:start_byte 0
-                                                         :end_byte 10
-                                                         :capture :keyword}
-                                                        {:start_byte 12
-                                                         :end_byte 18
-                                                         :capture :string}])})
                                     (local code-source "alpha\nbeta\n\ngamma\n")
                                     (local code-lines
                                            (misa.markdown_view.render {:blocks [{:kind :code_block
@@ -233,8 +224,13 @@ local x = 1
                                                                                  :text code-source
                                                                                  :source_start 0
                                                                                  :source_end (length code-source)}]}
-                                                                      {:columns 32}))
-                                    (set misa.syntax previous-syntax)
+                                                                      {:columns 32
+                                                                       :captures {0 [{:start_byte 0
+                                                                                      :end_byte 10
+                                                                                      :capture :keyword}
+                                                                                     {:start_byte 12
+                                                                                      :end_byte 18
+                                                                                      :capture :string}]}}))
                                     (local code-pieces {})
                                     (for [index 2 (- (length code-lines) 1)]
                                       (local pieces {})

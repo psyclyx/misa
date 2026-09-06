@@ -15,18 +15,7 @@
 
 (assert (not ok))
 
-(assert (and (= (type misa.syntax) :table)
-             (= (type misa.syntax.highlight) :function)))
-
-(assert (= (length (misa.syntax.highlight :grammar_that_does_not_exist :plain))
-           0))
-
-(assert (not (pcall misa.syntax.highlight {} :plain)))
-
-(assert (not (pcall misa.syntax.highlight :python {})))
-
-(assert (not (pcall misa.syntax.highlight :python
-                    (string.rep :x (+ (* 1024 1024) 1)))))
+(assert (= misa.syntax nil) "synchronous syntax capability remains exposed")
 
 (tset package.preload :misa.test.module (fn [] {:answer 42}))
 

@@ -28,6 +28,7 @@
     "layout",
     "choice_layout",
     "markdown",
+    "syntax",
     "selection_document",
     "selection",
     "component.markdown",
