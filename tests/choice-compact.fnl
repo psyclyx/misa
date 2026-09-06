@@ -108,6 +108,50 @@
                                                   :sub (- (length "…")))
                                                "…")
                                             "omitted choice content had no visible continuation marker")
+                                    (local many [])
+                                    (for [index 1 40]
+                                      (table.insert many
+                                                    {:label (tostring index)
+                                                     :value index}))
+                                    (local expanded
+                                           (misa.choice_session {:items many
+                                                                 :title :Many
+                                                                 :views [:all]}
+                                                                db))
+                                    (for [_ 1 40]
+                                      (local layout
+                                             (misa.choice_completion_layout expanded
+                                                                            db
+                                                                            80
+                                                                            22))
+                                      (local rows (. layout.columns 1 :rows))
+                                      (assert (> (length rows) 9)
+                                              "completion candidates are capped by the shortcut count")
+                                      (assert (= layout.targets.option_1_9.value
+                                                 (. expanded.panels 1 :items
+                                                    (. rows 9 :source_index)
+                                                    :value))
+                                              "expanded completion shortcuts disagree with visible rows")
+                                      (assert (and (not layout.targets.option_1_10)
+                                                   (not (. rows 10 :hotkey))
+                                                   (not (. rows 10 :action)))
+                                              "extra candidates advertise an unavailable shortcut")
+                                      (var focused false)
+                                      (each [_ row (ipairs rows)]
+                                        (when (= row.source_index
+                                                 (. expanded.panels 1
+                                                    :highlight))
+                                          (set focused true)))
+                                      (assert focused
+                                              "expanded completion focus scrolled out of view")
+                                      (assert (<= (length (. (misa.render_component db
+                                                                                    :picker
+                                                                                    layout)
+                                                             :lines))
+                                                  22)
+                                              "expanded completions exceeded the screen budget")
+                                      (misa.choice_input expanded
+                                                         {:action :next} db))
                                     {: db
                                      :fx [{:lines [{:spans [{:text "compact choices"}]}]
                                            :type :view/commit}

@@ -66,7 +66,7 @@
 
 ;; Shared layout policy for rendering and positional-key resolution.
 
-(local policy {:completions {:height_fraction 3 :maximum_lines 8}
+(local policy {:completions {:height_fraction 2}
                :dock {:transcript_reserve 1}
                :editor {:height_fraction 2}
                :header {:maximum_lines 2 :minimum_height 4}
@@ -102,9 +102,8 @@
                      (math.max 0 (- remaining policy.dock.transcript_reserve))))
     (set remaining (- remaining dock))
     {:completions (math.max 0
-                            (math.min policy.completions.maximum_lines
-                                      (math.floor (/ remaining
-                                                     policy.completions.height_fraction))))
+                            (math.floor (/ remaining
+                                           policy.completions.height_fraction)))
      : dock
      : editor
      : remaining}))

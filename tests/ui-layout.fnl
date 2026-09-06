@@ -32,6 +32,9 @@
 
 (setup (fennel.dofile :extensions/layout.fnl))
 (setup (fennel.dofile :extensions/ui.fnl))
+(assert (> (_G.misa.inline_choice_room {} {:lines 48 :columns 80} 1) 9)
+        "tall terminals should have room for more than nine completion candidates")
+
 (for [height 1 60]
   (for [count 1 20]
     (for [dock 0 8]

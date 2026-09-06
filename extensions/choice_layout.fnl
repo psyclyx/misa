@@ -107,6 +107,8 @@
                         {:type :register/service
                          :name :choice_viewport
                          :value (fn [panel models width height bank compact]
+                                  (local row-limit (math.max 1 (- height 1)))
+
                                   (fn window [start]
                                     (var (rows lines targets section)
                                          (values {} {} {}
@@ -117,7 +119,8 @@
                                                      nil)))
                                     (var indices {})
                                     (for [index start (math.min (length panel.items)
-                                                                (+ start 8))]
+                                                                (+ start
+                                                                   row-limit -1))]
                                       (tset indices (+ (length indices) 1)
                                             index))
                                     ;; In a compact grouped list, spend the scarce rows on both groups.
@@ -139,21 +142,23 @@
                                                                   (- boundary 1)))])
                                         (for [index boundary (math.min (length panel.items)
                                                                        (+ boundary
-                                                                          7))]
+                                                                          row-limit
+                                                                          -2))]
                                           (tset indices (+ (length indices) 1)
                                                 index))))
                                     (var full false)
-                                    (each [_ index (ipairs indices)
-                                           &until (or full (>= (length rows) 9))]
+                                    (each [_ index (ipairs indices) &until full]
                                       (local row (. models index))
+                                      (local shortcut
+                                             (when (< (length rows) 9)
+                                               (.. :option_ bank "_"
+                                                   (+ (length rows) 1))))
                                       (set row.hotkey
-                                           (misa.choice_hint (.. :option_ bank
-                                                                 "_"
-                                                                 (+ (length rows)
-                                                                    1))))
+                                           (and shortcut
+                                                (misa.choice_hint shortcut)))
                                       (set row.action
-                                           (.. :choices.option_ bank "_"
-                                               (+ (length rows) 1)))
+                                           (and shortcut
+                                                (.. :choices. shortcut)))
                                       (local wrapped
                                              (misa.choice_row_lines row width))
                                       (local heading
@@ -197,15 +202,15 @@
                                         (set section row.section)
                                         (set row.source_index index)
                                         (tset rows (+ (length rows) 1) row)
-                                        (tset targets
-                                              (.. :option_ bank "_"
-                                                  (length rows))
-                                              (. panel.items index))
+                                        (when shortcut
+                                          (tset targets shortcut
+                                                (. panel.items index)))
                                         (each [_ line (ipairs wrapped)]
                                           (tset lines (+ (length lines) 1) line))))
                                     (values rows lines targets))
 
-                                  (var start (misa.choice_first_index panel 9))
+                                  (var start
+                                       (misa.choice_first_index panel row-limit))
                                   (var (rows lines targets) (window start))
                                   ;; Fit by physical lines, keeping the focused choice inside the viewport.
 

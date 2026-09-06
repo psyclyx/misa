@@ -156,13 +156,15 @@
             (let [(rows targets) (values {} {})
                   first (misa.choice_first_index panel room)]
               (for [index first (math.min (length panel.items)
-                                          (- (+ first room) 1) (+ first 8))]
+                                          (- (+ first room) 1))]
                 (local row (. columns 1 :rows index))
-                (set row.hotkey
-                     (misa.choice_hint (.. :option_1_ (+ (length rows) 1))))
+                (local shortcut
+                       (when (< (length rows) 9)
+                         (.. :option_1_ (+ (length rows) 1))))
+                (set row.hotkey (and shortcut (misa.choice_hint shortcut)))
                 (tset rows (+ (length rows) 1) row)
-                (tset targets (.. :option_1_ (length rows))
-                      (. panel.items index)))
+                (when shortcut
+                  (tset targets shortcut (. panel.items index))))
               (values {: rows} targets))))))
 
 {:setup (fn [context]
