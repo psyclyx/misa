@@ -244,6 +244,10 @@ fn loop(self: *Driver) !void {
         self.mutex.unlock(self.io);
         var timeout: i32 = 100;
         if (pending and self.terminal.presentationEnabled()) timeout = @intCast(@min(timeout, @max(0, @divFloor(self.last_frame + frame_ns - now + std.time.ns_per_ms - 1, std.time.ns_per_ms))));
+        if (self.terminal.nextAnimationDeadline()) |deadline| {
+            const due = @max(deadline, self.last_frame + frame_ns);
+            timeout = @intCast(@min(timeout, @max(0, @divFloor(due - now + std.time.ns_per_ms - 1, std.time.ns_per_ms))));
+        }
         if (self.decoder_deadline) |deadline| timeout = @intCast(@min(timeout, @max(0, @divFloor(deadline - now + std.time.ns_per_ms - 1, std.time.ns_per_ms))));
         const ready = try self.terminal.waitSources(self.actor_wakeup.read_fd, want_input, timeout);
         // Commands win readiness races with stdin (especially handoff/discard).
@@ -294,6 +298,8 @@ fn render(self: *Driver, force: bool) !void {
         var prepared = try self.terminal.preparePresentation(owned.value);
         defer prepared.deinit(self.allocator);
         try self.terminal.present(&prepared);
+        self.last_frame = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+    } else if (try self.terminal.advanceAnimations(now)) {
         self.last_frame = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
     }
 }

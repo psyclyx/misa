@@ -5,6 +5,7 @@ const input = @import("input.zig");
 const presenter = @import("presenter.zig");
 const hit_map = @import("hit_map.zig");
 const images = @import("images.zig");
+const clock_animation = @import("animation.zig");
 
 pub const Driver = @import("driver.zig");
 pub const Event = input.Event;
@@ -22,6 +23,7 @@ pub const Dimensions = struct { columns: usize = 80, lines: usize = 24 };
 /// bytes or inspect presentation caches and can run away from terminal ownership.
 pub fn validateView(allocator: std.mem.Allocator, view: std.json.Value, size: Dimensions, images_supported: bool) !void {
     try presenter.validateView(allocator, view, size.columns, size.lines);
+    try clock_animation.validate(allocator, view, size.columns);
     if (images_supported) try images.validate(view, size.columns, size.lines);
 }
 
@@ -29,11 +31,13 @@ pub const PreparedPresentation = struct {
     bytes: std.ArrayList(u8) = .empty,
     actions: hit_map.Map = .{},
     graphics: images.Plan = .{},
+    animations: clock_animation.Plan = .{},
 
     pub fn deinit(self: *PreparedPresentation, allocator: std.mem.Allocator) void {
         self.bytes.deinit(allocator);
         self.actions.deinit(allocator);
         self.graphics.deinit(allocator);
+        self.animations.deinit(allocator);
     }
 };
 
@@ -106,6 +110,7 @@ pub const Terminal = struct {
     presented_actions: hit_map.Map = .{},
     images_supported: bool = false,
     image_cache: images.Cache = .{},
+    animations: clock_animation.Plan = .{},
 
     pub const HandoffLease = struct { generation: u64 };
 
@@ -261,6 +266,7 @@ pub const Terminal = struct {
         self.last_frame.deinit(self.allocator);
         self.presented_actions.deinit(self.allocator);
         self.image_cache.deinit(self.allocator);
+        self.animations.deinit(self.allocator);
     }
 
     fn restoreSignals(self: *Terminal) void {
@@ -284,6 +290,9 @@ pub const Terminal = struct {
         const updated = try queryDimensions(self.io);
         if (updated.columns == self.dimensions.columns and updated.lines == self.dimensions.lines) return false;
         self.dimensions = updated;
+        // Old animation placements refer to the previous cell grid. Wait for
+        // a new semantic view before scheduling any further patches.
+        self.animations.deinit(self.allocator);
         return true;
     }
 
@@ -296,6 +305,9 @@ pub const Terminal = struct {
         const rows = try appendView(&prepared.bytes, self.allocator, view, self.dimensions.columns, self.dimensions.lines, self.interactive, false);
         _ = try cursorRow(view, rows);
         prepared.actions = try hit_map.build(self.allocator, view, self.dimensions.columns);
+        if (self.interactive) {
+            prepared.animations = try clock_animation.build(self.allocator, view, self.dimensions.columns);
+        } else try clock_animation.validate(self.allocator, view, self.dimensions.columns);
         if (self.images_supported) prepared.graphics = try images.prepare(self.allocator, &self.image_cache, view, self.dimensions.columns, self.dimensions.lines);
         if (self.interactive) try prepared.bytes.appendSlice(self.allocator, frame_end);
         return prepared;
@@ -307,17 +319,52 @@ pub const Terminal = struct {
         var actions = try prepared.actions.clone(self.allocator);
         errdefer actions.deinit(self.allocator);
         try self.last_frame.ensureTotalCapacity(self.allocator, prepared.bytes.items.len);
-        if (!std.mem.eql(u8, self.last_frame.items, prepared.bytes.items) or prepared.graphics.changed) {
+        const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+        prepared.animations.reconcile(&self.animations, now);
+        const redraw = !std.mem.eql(u8, self.last_frame.items, prepared.bytes.items) or prepared.graphics.changed or prepared.animations.changed(&self.animations);
+        var patches: std.ArrayList(u8) = .empty;
+        defer patches.deinit(self.allocator);
+        const changed = try prepared.animations.append(&patches, self.allocator, now, redraw);
+        if (redraw or changed) {
             var output: std.ArrayList(u8) = .empty;
             defer output.deinit(self.allocator);
-            try appendFrame(&output, self.allocator, prepared.bytes.items, prepared.graphics.bytes.items);
+            if (redraw) {
+                try appendFrame(&output, self.allocator, prepared.bytes.items, prepared.graphics.bytes.items, patches.items);
+            } else try appendAnimationUpdate(&output, self.allocator, patches.items);
             try self.writeAll(output.items);
         }
+        prepared.animations.commit(now);
         prepared.graphics.commit(&self.image_cache, self.allocator);
         self.last_frame.clearRetainingCapacity();
         self.last_frame.appendSliceAssumeCapacity(prepared.bytes.items);
         self.presented_actions.deinit(self.allocator);
         self.presented_actions = actions;
+        self.animations.deinit(self.allocator);
+        self.animations = prepared.animations;
+        prepared.animations = .{};
+    }
+
+    pub fn nextAnimationDeadline(self: *const Terminal) ?i96 {
+        if (!self.interactive or !self.screen_active) return null;
+        return self.animations.nextDeadline();
+    }
+
+    /// Repaint only time-dependent spans. Their fixed cell geometry leaves the
+    /// displayed hit map, graphics cache, and semantic cursor untouched.
+    pub fn advanceAnimations(self: *Terminal, now: i96) !bool {
+        const deadline = self.nextAnimationDeadline() orelse return false;
+        if (now < deadline) return false;
+        var patches: std.ArrayList(u8) = .empty;
+        defer patches.deinit(self.allocator);
+        const changed = try self.animations.append(&patches, self.allocator, now, false);
+        if (changed) {
+            var output: std.ArrayList(u8) = .empty;
+            defer output.deinit(self.allocator);
+            try appendAnimationUpdate(&output, self.allocator, patches.items);
+            try self.writeAll(output.items);
+        }
+        self.animations.commit(now);
+        return changed;
     }
 
     pub fn actionAt(self: *const Terminal, row: usize, column: usize) ?[]const u8 {
@@ -340,6 +387,7 @@ pub const Terminal = struct {
         self.last_frame.clearRetainingCapacity();
         self.image_cache.deinit(self.allocator);
         self.presented_actions.deinit(self.allocator);
+        self.animations.deinit(self.allocator);
     }
 
     /// Readiness probe used while native work is active, so the session never
@@ -408,8 +456,13 @@ pub const Terminal = struct {
         try self.image_cache.replay(&graphics, self.allocator);
         var output: std.ArrayList(u8) = .empty;
         defer output.deinit(self.allocator);
-        try appendFrame(&output, self.allocator, self.last_frame.items, graphics.items);
+        const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+        var patches: std.ArrayList(u8) = .empty;
+        defer patches.deinit(self.allocator);
+        _ = try self.animations.append(&patches, self.allocator, now, true);
+        try appendFrame(&output, self.allocator, self.last_frame.items, graphics.items, patches.items);
         try self.writeAll(output.items);
+        self.animations.commit(now);
     }
 
     fn leaveScreen(self: *Terminal) !void {
@@ -425,10 +478,22 @@ pub const Terminal = struct {
     }
 };
 
-fn appendFrame(out: *std.ArrayList(u8), allocator: std.mem.Allocator, frame: []const u8, graphics: []const u8) !void {
+fn appendFrame(out: *std.ArrayList(u8), allocator: std.mem.Allocator, frame: []const u8, graphics: []const u8, animations: []const u8) !void {
     std.debug.assert(std.mem.endsWith(u8, frame, frame_end));
     try out.appendSlice(allocator, frame[0 .. frame.len - frame_end.len]);
     try out.appendSlice(allocator, graphics);
+    if (animations.len != 0) {
+        try out.appendSlice(allocator, "\x1b7");
+        try out.appendSlice(allocator, animations);
+        try out.appendSlice(allocator, "\x1b8");
+    }
+    try out.appendSlice(allocator, frame_end);
+}
+
+fn appendAnimationUpdate(out: *std.ArrayList(u8), allocator: std.mem.Allocator, patches: []const u8) !void {
+    try out.appendSlice(allocator, "\x1b[?2026h\x1b7\x1b[?7l");
+    try out.appendSlice(allocator, patches);
+    try out.appendSlice(allocator, "\x1b8");
     try out.appendSlice(allocator, frame_end);
 }
 
@@ -517,7 +582,7 @@ test "terminal presentation validation uses instance width and cursor limit" {
 
 test "click actions belong to shown frames, including visually identical updates" {
     const allocator = std.testing.allocator;
-    var terminal: Terminal = .{ .allocator = allocator, .io = undefined, .interactive = true, .screen_active = true, .dimensions = .{} };
+    var terminal: Terminal = .{ .allocator = allocator, .io = std.testing.io, .interactive = true, .screen_active = true, .dimensions = .{} };
     defer {
         terminal.interactive = false;
         terminal.deinit();

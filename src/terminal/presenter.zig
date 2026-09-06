@@ -121,13 +121,71 @@ fn validateLink(value: ?std.json.Value) !?[]const u8 {
 fn spanText(span: std.json.Value) ![]const u8 {
     if (span != .object) return error.InvalidView;
     const value = span.object.get("text") orelse return error.InvalidView;
-    if (value != .string or !std.unicode.utf8ValidateSlice(value.string)) return error.InvalidView;
-    var check = std.unicode.Utf8Iterator{ .bytes = value.string, .i = 0 };
+    if (value != .string) return error.InvalidView;
+    try validateText(value.string);
+    return value.string;
+}
+
+pub fn validateText(text: []const u8) !void {
+    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidView;
+    var check = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
     while (check.nextCodepointSlice()) |encoded| {
         const cp = std.unicode.utf8Decode(encoded) catch return error.InvalidView;
         if (cp < 0x20 or (cp >= 0x7f and cp <= 0x9f)) return error.InvalidView;
     }
-    return value.string;
+}
+
+/// A validated paint payload. Frame styles override individual base fields;
+/// links remain the immutable base span link.
+pub const SpanFrame = struct {
+    text: []const u8,
+    style: Style,
+    link: ?[]const u8,
+
+    pub fn byteLength(self: SpanFrame) usize {
+        var buffer: [256]u8 = undefined;
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        var bytes: std.ArrayList(u8) = .empty;
+        appendStyle(&bytes, fixed.allocator(), self.style) catch unreachable;
+        return bytes.items.len + self.text.len + 4 + if (self.link) |link| link.len + 14 else @as(usize, 0);
+    }
+
+    pub fn append(self: SpanFrame, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+        try appendStyle(out, allocator, self.style);
+        if (self.link) |link| {
+            try out.appendSlice(allocator, "\x1b]8;;");
+            try out.appendSlice(allocator, link);
+            try out.appendSlice(allocator, "\x1b\\");
+        }
+        try out.appendSlice(allocator, self.text);
+        if (self.link != null) try out.appendSlice(allocator, "\x1b]8;;\x1b\\");
+        try out.appendSlice(allocator, "\x1b[0m");
+    }
+};
+
+pub fn spanFrame(span: std.json.Value, frame: std.json.Value) !SpanFrame {
+    var result: SpanFrame = .{
+        .text = try spanText(span),
+        .style = try parseStyle(span.object.get("style")),
+        .link = try validateLink(span.object.get("link")),
+    };
+    if (frame != .object) return error.InvalidView;
+    var fields = frame.object.iterator();
+    while (fields.next()) |field| {
+        if (!std.mem.eql(u8, field.key_ptr.*, "text") and !std.mem.eql(u8, field.key_ptr.*, "style")) return error.InvalidView;
+    }
+    if (frame.object.get("text")) |text| {
+        if (text != .string) return error.InvalidView;
+        try validateText(text.string);
+        result.text = text.string;
+    }
+    if (frame.object.get("style")) |value| {
+        const overrides = try parseStyle(value);
+        inline for (@typeInfo(Style).@"struct".fields) |field| {
+            if (value.object.contains(field.name)) @field(result.style, field.name) = @field(overrides, field.name);
+        }
+    }
+    return result;
 }
 
 fn lineSpans(line: std.json.Value) ![]const std.json.Value {

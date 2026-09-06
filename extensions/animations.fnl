@@ -1,4 +1,5 @@
-;; Animation registry and timer-backed service. Registrations are immutable once
+;; Animation registry with clock-driven spans and optional explicit timer events.
+;; Registrations are immutable once
 
 ;; app/start begins; selections, role ticks, and running timers are transactional.
 
@@ -84,6 +85,49 @@
                                                    0)))
                                         (. frames
                                            (+ (% current (length frames)) 1)))))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :animation_span
+                         :value (fn [db role options]
+                                  (local animation (misa.animation db role))
+                                  (local frames animation.frames)
+                                  (local opts (or options {}))
+                                  (local phase (or opts.phase 0))
+                                  (assert (and (and (= (type phase) :number)
+                                                    (= (% phase 1) 0))
+                                               (and (>= phase 0)
+                                                    (< phase (length frames))))
+                                          "animation phase must name a frame")
+                                  (local span
+                                         {:text (or (and (not enabled)
+                                                         (or animation.still
+                                                             (. frames 1)))
+                                                    (. frames (+ phase 1)))
+                                          :style opts.style})
+                                  (var distinct false)
+                                  (each [_ frame (ipairs frames)]
+                                    (when (not= frame (. frames 1))
+                                      (set distinct true)))
+                                  (when (and enabled distinct)
+                                    (local id
+                                           (or opts.id
+                                               (.. :animation/
+                                                   (or role :default))))
+                                    (assert (and (and (= (type id) :string)
+                                                      (> (length id) 0))
+                                                 (<= (length id) 256))
+                                            "animation ID must contain 1 through 256 bytes")
+                                    (assert (<= (length frames) 64)
+                                            "clock animation supports at most 64 frames")
+                                    (local projected {})
+                                    (each [_ frame (ipairs frames)]
+                                      (table.insert projected {:text frame}))
+                                    (set span.animation
+                                         {: id
+                                          :interval_ms interval-ms
+                                          : phase
+                                          :frames projected}))
+                                  span)})
           (table.insert setup-fx
                         {:type :register/service
                          :name :swap_animation
@@ -240,13 +284,4 @@
                                           {: db
                                            :fx [{:event {:type :ui/redraw}
                                                  :type :dispatch}]})))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/status
-                         :handler (fn [db event]
-                                    (local fx
-                                           (or (and (= event.status :ready)
-                                                    (stop-role db :status))
-                                               (start-role db :status)))
-                                    {: db : fx})})
           {:fx setup-fx})}

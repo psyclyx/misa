@@ -56,17 +56,16 @@
                                        :id :activity
                                        :label :activity
                                        :value (fn [db]
-                                                (var mode
-                                                     (or (. (or db.status {})
-                                                            :mode)
-                                                         :ready))
-                                                (when (and (not= mode :ready)
-                                                           misa.animation_frame)
-                                                  (set mode
-                                                       (.. mode
-                                                           (misa.animation_frame db
-                                                                                 :status))))
-                                                mode)}})
+                                                (local mode
+                                                       (or (. (or db.status {})
+                                                              :mode)
+                                                           :ready))
+                                                (if (and (not= mode :ready)
+                                                         misa.animation_span)
+                                                    {:spans [{:text mode}
+                                                             (misa.animation_span db
+                                                                                  :status)]}
+                                                    mode))}})
                 (table.insert setup-fx
                               {:type :register/indicator
                                :value {:icon :tok

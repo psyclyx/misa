@@ -362,7 +362,8 @@ depends on a theme. `layout` provides pure terminal-cell width, fitting,
 semantic-span wrapping, and responsive-column primitives. Theme resolution is
 centralized at the component registry boundary. Custom code calls
 `misa.render_component(db, role, model, context)` and
-`misa.animation_frame(db, role, tick?)`. Configure individual roles with
+`misa.animation_span(db, role, options?)` for clock-driven visual motion.
+Configure individual roles with
 `config.components.roles` (for example, `"picker": "my.picker"`) and dispatch
 `components/swap` with `role` and `implementation` to swap one at runtime.
 `themes`/`theme.default` and `animations`/`animation.default` are independent
@@ -378,14 +379,41 @@ and `rail.error` tokens. Components may set `surface="surface.assistant"`
 on a rendered result or individual line: the registry applies that style under
 every span and fills the row to the available width. The default `surface.*`
 tokens provide muted backgrounds; body text uses the terminal's default foreground.
-Animation
-roles are selected with `config.animations.roles`; the service advances their
-transactional ticks using ordinary `timer/start` and `timer/stop` effects.
-The default activity indicator uses a fixed-width dot pulse every 160 ms while
-the agent is working. Idle and single-frame animations schedule no ticks.
-Set `config.animations.enabled=false` for a static indicator, or adjust
-`interval_ms`. Custom animations register `frames` and an optional `still` frame
-for disabled motion; the built-in `static` animation can also be selected per role.
+Animation roles are selected with `config.animations.roles`. Pure visual motion
+uses `misa.animation_span(db, role, options?)`, which returns a semantic span with
+an animation descriptor. Options include a stable `id` (default
+`"animation/" .. role`), an initial `phase` (default 0), and a semantic `style`.
+Use distinct stable IDs for independent instances, or share an ID and vary
+`phase` for synchronized motion such as a moving highlight. The
+terminal owns the monotonic clock, preserves an ID's epoch across publications,
+and repaints only changed animation slots. These updates do not invoke Fennel,
+change `db`, or produce `animations/tick` events; visual motion continues while
+the session processes an event.
+
+The default activity indicator animates only its fixed-width dot pulse every
+160 ms while the agent is working; the mode label remains ordinary text. Idle
+and single-frame animations schedule no visual updates. Set
+`config.animations.enabled=false` for a static indicator, or adjust
+`config.animations.interval_ms`. Custom animations register `frames` and an
+optional `still` frame for disabled motion; the built-in `static` animation can
+also be selected per role. Reduced motion returns the still frame without an
+animation descriptor.
+
+A native span can declare `animation={id,interval_ms,phase?,frames={...}}` directly.
+Each frame supplies optional `text` and `style`: omitted text uses the base
+span's text, and style fields override the base style while preserving its link.
+Styles at this boundary are resolved native style records. Every frame must
+occupy the same positive terminal-cell width and preserve grapheme boundaries.
+Descriptors allow at most 64 frames, IDs at most 256 bytes, and a semantic view
+at most 128 visible animated slots with 1 MiB of compiled payloads. Partially
+clipped spans retain their fallback text and do not schedule animation updates.
+Headless output uses the base span text without ANSI animation output.
+
+Stateful behavior still uses ordinary events and effects. Plugins that need
+transactional ticks can explicitly dispatch `animations/start` and
+`animations/stop`, handle `animations/tick`, and call
+`misa.animation_frame(db, role, tick?)`; these retain the `timer/start` and
+`timer/stop` path. Default visual activity does not start those timers.
 Selections live in `db`, so failed transactions roll back; successful swaps persist through
 the generic state service. Set `persist = false` in the corresponding config
 section to disable persistence. These registries contain no input or agent behavior.

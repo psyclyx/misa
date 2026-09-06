@@ -84,6 +84,17 @@
                                                                                     :plain)))]
                                         (tset style key value))
                                       (set span.style style)
+                                      (when span.animation
+                                        (each [_ frame (ipairs (or span.animation.frames
+                                                                   {}))]
+                                          (when frame.style
+                                            (local resolved {})
+                                            (each [key value (pairs style)]
+                                              (tset resolved key value))
+                                            (each [key value (pairs (misa.theme_style db
+                                                                                      frame.style))]
+                                              (tset resolved key value))
+                                            (set frame.style resolved))))
                                       (set text (.. text (or span.text ""))))
                                     ;; A surface belongs to the box, including the unused part of each row.
                                     (when (and (and (and surface render-context)

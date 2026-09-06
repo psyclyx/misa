@@ -4,6 +4,31 @@
 
 (fn span [text style action] {: action : style : text})
 
+(fn value-text [value]
+  (if (= (type value) :table)
+      (if value.spans
+          (let [pieces {}]
+            (each [_ item (ipairs value.spans)]
+              (table.insert pieces (value-text item)))
+            (table.concat pieces))
+          (do
+            (assert (= (type value.text) :string)
+                    "indicator span requires text")
+            value.text))
+      (tostring (or value ""))))
+
+(fn append-value [spans value style action]
+  (if (= (type value) :table)
+      (if value.spans
+          (each [_ item (ipairs value.spans)]
+            (append-value spans item style action))
+          (let [result (misa.snapshot value)]
+            (value-text result)
+            (set result.style (or result.style style))
+            (set result.action (or result.action action))
+            (table.insert spans result)))
+      (table.insert spans (span (value-text value) style action))))
+
 {:setup (fn []
           (local setup-fx [])
 
@@ -15,7 +40,7 @@
             (fn item-width [item]
               (var width
                    (misa.layout.width (.. (tostring (or item.label "")) " "
-                                          (tostring (or item.value "")))))
+                                          (value-text item.value))))
               (when (and item.hotkey (not= item.hotkey ""))
                 (var rendered "")
                 (each [_ token (ipairs (or (and misa.keybinding_tokens
@@ -58,8 +83,7 @@
                 (tset spans (+ (length spans) 1)
                       (span (tostring (or item.label "")) :label item.action))
                 (tset spans (+ (length spans) 1) (span " " :plain))
-                (tset spans (+ (length spans) 1)
-                      (span (tostring (or item.value "")) :value item.action))
+                (append-value spans item.value :value item.action)
                 (when (and item.hotkey (not= item.hotkey ""))
                   (tset spans (+ (length spans) 1) (span " " :plain))
                   (each [_ key-span (ipairs (or (and misa.render_keybinding

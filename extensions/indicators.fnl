@@ -123,7 +123,9 @@
                                                : label
                                                :priority (or (tonumber selection.priority)
                                                              (- 1000 index))
-                                               :value (tostring value)}))))
+                                               :value (if (= (type value)
+                                                             :table)
+                                                          value (tostring value))}))))
                                   (local context-copy {})
                                   (each [key value (pairs (or render-context {}))]
                                     (tset context-copy key value))

@@ -338,6 +338,8 @@
   (let [result {}]
     (each [key value (pairs source)] (tset result key value))
     (set result.text text)
+    ;; Clock frames preserve cell geometry only when the whole span survives.
+    (when (not= text source.text) (set result.animation nil))
     (when (= (type source.source_start) :number)
       (set result.source_start (- (+ source.source_start (or first 1)) 1))
       (set result.source_end (+ source.source_start (or last (length text)))))
