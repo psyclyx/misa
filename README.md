@@ -809,6 +809,9 @@ source documents with `{id,label,text,kind,first,last,children}`. Ranges are
 zero-based, half-open byte offsets. `selection_document` derives semantic
 ranges from Markdown and lazily supplies finer ranges; selection policy and
 rendering can both be replaced independently.
+Lists expose sibling items and nested lists; an item's range includes its nested
+content and continuation lines. Range offsets refer to the original source bytes,
+including CRLF line endings.
 
 Within a document, `v` anchors a visual range and sibling motions extend it;
 `v` again returns to the focused node. Changing structural depth or documents

@@ -93,6 +93,12 @@ unavailable when quota facts are absent. Tests cover raw values, precedence,
 section updates, retained state, and visible output. Actual provider coding-plan
 retrieval remains unfinished; semantic presentation is not quota integration.
 
+Structural selection now groups Markdown lists, nests indented items, and keeps
+continuation lines under their owning item. Source ranges include nested content
+without consuming following paragraphs. Tests exercise bounds, Unicode/CRLF,
+and visual sibling ranges copied through the real selection actions. Cross-
+document ranges and broader transcript interaction remain unfinished.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

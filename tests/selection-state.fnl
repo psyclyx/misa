@@ -13,7 +13,7 @@
 (local document {:id :doc :kind :document :label :doc :text "one two three"
                  :first 0 :last 13 :children []})
 (misa._setup_effects {:fx [{:type :register/selection-source :id :test
-                          :value (fn [db] (if db.empty [] [document]))}]})
+                          :value (fn [db] (if db.empty [] [(or db.document document)]))}]})
 (fn transition [db type action]
   (local before (misa.json.encode db))
   (local event {: type : action})
@@ -63,4 +63,31 @@
 (misa._setup_effects {:fx [{:type :register/selection-action :id :custom
                           :value (fn [state] {:state (misa.patch state {:custom true})})}]})
 (assert (. (act selected :custom) :selection :custom))
+(each [_ newline (ipairs ["\n" "\r\n"])]
+  (local text (table.concat ["- parent é" "  - nested 🙂" "    continued" "- sibling" "" "paragraph"] newline))
+  (local tree (misa.selection_document :list :List text))
+  (local list (. tree.children 1))
+  (assert (= list.kind :list))
+  (assert (= (length list.children) 2))
+  (local parent (. list.children 1))
+  (local nested (. parent.children 2))
+  (assert (= nested.kind :list))
+  (assert (= (length nested.children) 1))
+  (assert (= (length (. nested.children 1 :children)) 2))
+  (assert (= (text:sub (+ parent.first 1) parent.last)
+             (table.concat ["- parent é" "  - nested 🙂" "    continued"] newline)))
+  (assert (= (. tree.children 2 :kind) :paragraph))
+  (local item (act (act (transition {:document tree} :selection/open) :child) :child))
+  (local range-db (act (act item :visual) :next))
+  (local selected-range (misa.selection_projection range-db))
+  (assert (= selected-range.first list.first))
+  (assert (= selected-range.last list.last))
+  (local (_ copied) (act range-db :copy))
+  (assert (= (. copied 2 :event :text) (text:sub (+ list.first 1) list.last)))
+  (fn bounds [node]
+    (each [_ child (ipairs node.children)]
+      (assert (and (<= node.first child.first) (<= child.first child.last)
+                   (<= child.last node.last)))
+      (bounds child)))
+  (bounds tree))
 (output "selection state properties passed\n")

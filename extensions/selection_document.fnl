@@ -108,6 +108,30 @@
                           (set (root.id root.text) (values id text))
                           (local sections {})
                           (var parent root)
+                          (local lists [])
+
+                          (fn list-block [block first last]
+                            (local depth (math.max 1 (or block.depth 1)))
+                            (while (and (> (length lists) 0)
+                                        (> (. lists (length lists) :depth) depth))
+                              (table.remove lists))
+                            (var frame (. lists (length lists)))
+                            (when (or (not frame) (< frame.depth depth))
+                              (local list (node :list "List" first last))
+                              (table.insert (or (and frame frame.item.children) parent.children) list)
+                              (set frame {: depth :node list})
+                              (table.insert lists frame))
+                            (local line (node :line (excerpt text first last) first last))
+                            (if (and (= block.kind :list_continuation) frame.item)
+                                (table.insert frame.item.children line)
+                                (do
+                                  (local item (node :list_item (.. "Item: " (excerpt text first last))
+                                                   first last [line]))
+                                  (table.insert frame.node.children item)
+                                  (set frame.item item)))
+                            (each [_ ancestor (ipairs lists)]
+                              (set ancestor.node.last last)
+                              (set ancestor.item.last last)))
 
                           (fn close [until-level finish]
                             (while (and (> (length sections) 0)
@@ -131,7 +155,13 @@
                             (local (first last)
                                    (values (original block.source_start)
                                            (original block.source_end)))
-                            (if (= block.kind :heading)
+                            (when (and (not= block.kind :list_item)
+                                       (not= block.kind :list_continuation)
+                                       (not= block.kind :blank))
+                              (while (> (length lists) 0) (table.remove lists)))
+                            (if (or (= block.kind :list_item) (= block.kind :list_continuation))
+                                (list-block block first last)
+                                (= block.kind :heading)
                                 (do
                                   (close block.level first)
                                   (local title
