@@ -135,9 +135,9 @@
                                   (assert (. entries id)
                                           (.. "unknown animation: "
                                               (tostring id)))
-                                  (if role (tset db.animations.roles role id)
-                                      (set db.animations.active id))
-                                  nil)})
+                                  (misa.patch db
+                                              {:animations (if role {:roles {role id}}
+                                                               {:active id})}))})
           (local timer-id :animation/service)
 
           (fn moving [db role]
@@ -147,30 +147,28 @@
             (var needed false)
             (each [role (pairs db.animations.running)]
               (when (moving db role) (set needed true) (lua :break)))
-            (if (= needed (= db.animations.timer_running true)) {}
-                (do
-                  (set db.animations.timer_running needed)
+            {:patch {:animations
+                     (misa.replace (misa.patch db.animations {:timer_running needed}))}
+             :fx (if (= needed (= db.animations.timer_running true)) {}
                   (or (and needed
                            [{:completion :animations/tick
                              :id timer-id
                              :interval_ms interval-ms
                              :type :timer/start}])
-                      [{:id timer-id :type :timer/stop}]))))
+                      [{:id timer-id :type :timer/stop}]))})
 
           (fn start-role [db role]
             (local running db.animations.running)
-            (if (. running role) {}
-                (do
-                  (tset running role true)
-                  (tset db.animations.ticks role 0)
-                  (reconcile-timer db))))
+            (when (not (. running role))
+              (reconcile-timer
+                (misa.patch db {:animations {:running {role true}
+                                             :ticks {role 0}}}))))
 
           (fn stop-role [db role]
             (local running db.animations.running)
-            (if (not (. running role)) {}
-                (do
-                  (tset running role nil)
-                  (reconcile-timer db))))
+            (when (. running role)
+              (reconcile-timer
+                (misa.patch db {:animations {:running {role misa.delete}}}))))
 
           (table.insert setup-fx
                         {:type :register/interceptor
@@ -188,11 +186,11 @@
                                                               (. entries id))
                                                          "invalid configured animation role")
                                                  (tset roles role id))
-                                               (set tx.db.animations
-                                                    {:active configured
+                                               (set tx.db (misa.patch tx.db
+                                                    {:animations (misa.replace {:active configured
                                                      : roles
                                                      :running {}
-                                                     :ticks {}})))
+                                                     :ticks {}})}))))
                                            tx)
                                  :id :animations/initialize}})
           (table.insert setup-fx
@@ -202,9 +200,8 @@
                                     (assert (. entries db.animations.active)
                                             (.. "unknown configured animation: "
                                                 (tostring db.animations.active)))
-                                    (if (= config.persist false) {: db}
-                                        {: db
-                                         :fx [{:completion :animations/loaded
+                                    (if (= config.persist false) nil
+                                        {:fx [{:completion :animations/loaded
                                                :namespace :ui.animation
                                                :type :state/load}]}))})
           (table.insert setup-fx
@@ -213,57 +210,57 @@
                          :handler (fn [db event]
                                     (if (or (= event.found false)
                                             (= event.data misa.json_null))
-                                        {: db}
+                                        nil
                                         (do
                                           (assert (and (= (type event.data)
                                                           :table)
                                                        (= (type event.data.active)
                                                           :string))
                                                   "invalid persisted animation")
-                                          (when (. entries event.data.active)
-                                            (set db.animations.active
-                                                 event.data.active))
+                                          (local roles {})
                                           (each [role id (pairs (or (and (= (type event.data.roles)
                                                                             :table)
                                                                          event.data.roles)
                                                                     {}))]
                                             (when (and (= (type role) :string)
                                                        (. entries id))
-                                              (tset db.animations.roles role id)))
-                                          {: db :fx (reconcile-timer db)})))})
+                                              (tset roles role id)))
+                                          (reconcile-timer
+                                            (misa.patch db
+                                                        {:animations {: roles
+                                                                      :active (when (. entries event.data.active)
+                                                                                event.data.active)}})))))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :animations/swap
                          :handler (fn [db event]
-                                    (misa.swap_animation db event.animation
-                                                         event.role)
-                                    (local fx (reconcile-timer db))
+                                    (local next (misa.swap_animation db event.animation event.role))
+                                    (local result (reconcile-timer next))
+                                    (local fx result.fx)
                                     (when (not= config.persist false)
                                       (tset fx (+ (length fx) 1)
-                                            {:data {:active db.animations.active
-                                                    :roles db.animations.roles}
+                                            {:data {:active next.animations.active
+                                                    :roles next.animations.roles}
                                              :namespace :ui.animation
                                              :type :state/save}))
                                     (tset fx (+ (length fx) 1)
                                           {:event {:type :ui/redraw}
                                            :type :dispatch})
-                                    {: db : fx})})
+                                    result)})
           (table.insert setup-fx
                         {:type :register/event
                          :name :animations/start
                          :handler (fn [db event]
-                                    {: db
-                                     :fx (start-role db
+                                    (start-role db
                                                      (assert event.role
-                                                             "animation role is required"))})})
+                                                             "animation role is required")))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :animations/stop
                          :handler (fn [db event]
-                                    {: db
-                                     :fx (stop-role db
+                                    (stop-role db
                                                     (assert event.role
-                                                            "animation role is required"))})})
+                                                            "animation role is required")))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :animations/tick
@@ -274,14 +271,15 @@
                                         (do
                                           ;; Ignore native tick counters: every running role advances exactly once
                                           ;; in the same transaction as the redraw request.
+                                          (local ticks {})
                                           (each [role (pairs db.animations.running)]
                                             (when (moving db role)
-                                              (tset db.animations.ticks role
+                                              (tset ticks role
                                                     (+ (or (. db.animations.ticks
                                                               role)
                                                            0)
                                                        1))))
-                                          {: db
+                                          {:patch {:animations {: ticks}}
                                            :fx [{:event {:type :ui/redraw}
                                                  :type :dispatch}]})))})
           {:fx setup-fx})}

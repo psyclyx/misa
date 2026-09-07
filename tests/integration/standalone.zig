@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "animation state and timer transition properties" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/animation-state.fnl"} }, "animation state properties passed\n");
+}
+
 test "model transitions preserve state and selection invariants" {
     var h = try Harness.init();
     defer h.deinit();
