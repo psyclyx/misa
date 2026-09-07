@@ -1,6 +1,6 @@
 ;; Generic per-model request-option selection and readiness. Model providers
 
-;; declare API capabilities; this extension alone owns their mutable values.
+;; declare API capabilities; pure normalization supplies reads and state updates.
 
 (fn selected-model [db]
   (let [models db.models]
@@ -37,24 +37,24 @@
       (let [___values___ (choices option)]
         (or (= (length ___values___) 0) (contains ___values___ value)))))
 
-(fn reconcile [db]
-  (set db.request_options (or db.request_options {:values {}}))
-  (local (state model) (values db.request_options (selected-model db)))
+(fn reconcile [db model]
+  (local state (or db.request_options {:values {}}))
+  (set-forcibly! model (or model (selected-model db)))
   (local previous (or state.values {}))
   (local (next-values configured) (values {} (or state.configured {})))
   (each [name option (pairs (declarations model))]
     (when (and (= (type name) :string) (= (type option) :table))
       (var value (. previous name))
       (when (not (valid option value))
-        (set value (or (and (= state.model_id nil) (. configured name)) nil))
+        (set value (if (= state.model_id nil) (. configured name) nil))
         (when (not (valid option value)) (set value option.default)))
       (when (valid option value) (tset next-values name value))))
-  (set (state.values state.model_id)
-       (values next-values (or (and model model.id) nil)))
-  state)
+  {:configured state.configured
+   :values next-values
+   :model_id (and model model.id)})
 
 (fn prepare [db model]
-  (let [state (reconcile db)]
+  (let [state (reconcile db model)]
     (set-forcibly! model (or model (selected-model db)))
     (local (result problems) (values {} {}))
     (local serializer (or (and (and model (= (type model.api) :table))
@@ -144,10 +144,10 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (set db.request_options
-                                         {: configured :values {}})
-                                    (reconcile db)
-                                    {: db})})
+                                    {:patch {:request_options
+                                             (misa.replace
+                                               (reconcile {:models db.models
+                                                           :request_options {: configured :values {}}}))}})})
           (each [_ event-type (ipairs [:model/open
                                        :model/select
                                        :models/provider-availability
@@ -157,8 +157,9 @@
                           {:type :register/event
                            :name event-type
                            :handler (fn [db]
-                                      (when db.request_options (reconcile db))
-                                      {: db})}))
+                                      (when db.request_options
+                                        {:patch {:request_options
+                                                 (misa.replace (reconcile db))}}))}))
           (table.insert setup-fx
                         {:type :register/event
                          :name :request-options/select
@@ -174,6 +175,8 @@
                                     (assert (valid option event.value)
                                             "request option value is not supported by the selected model")
                                     (local state (reconcile db))
-                                    (tset state.values event.name event.value)
-                                    {: db})})
+                                    {:patch {:request_options
+                                             (misa.replace
+                                               (misa.patch state
+                                                           {:values {event.name event.value}}))}})})
           {:fx setup-fx})}

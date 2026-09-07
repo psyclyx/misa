@@ -1,0 +1,30 @@
+(local fennel (require :fennel))
+(local output io.write)
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(misa._setup (fennel.dofile :extensions/request_options.fnl)
+             {:argv [] :config {}})
+(local model {:id :one
+              :api {:request_options {:enabled {:choices [false true]
+                                               :default true}}}})
+(local db {:models {:selected :one :entries [model]}
+           :request_options {:configured {:enabled false} :values {}}})
+(assert (= (misa.request_option_value db :enabled) false)
+        "configured false was replaced by the default")
+(assert (= db.request_options.model_id nil) "read initialized input state")
+(assert (= db.request_options.values.enabled nil) "read mutated option values")
+(local normal (misa.reconcile_request_options db))
+(assert (= normal.model_id :one))
+(assert (= normal.values.enabled false))
+(local other {:id :two
+              :api {:request_options {:region {:choices [:west :east]
+                                               :default :west}}}})
+(local normalized-other (misa.reconcile_request_options db other))
+(assert (= normalized-other.model_id :two))
+(assert (= normalized-other.values.region :west))
+(assert (= normalized-other.values.enabled nil))
+(local cleared (misa.reconcile_request_options {:request_options normal}))
+(assert (= cleared.model_id nil))
+(assert (= (next cleared.values) nil))
+(assert (= normal.values.enabled false) "normalization changed earlier output")
+(output "request option state contracts passed\n")
