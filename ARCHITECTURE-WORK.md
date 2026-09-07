@@ -199,3 +199,10 @@ labels no longer consume space and icon representations retain their icon.
 `tests/model-affordances.fnl` covers those contracts and shared keybinding-span
 ownership. Premature model subscription wiring was removed pending the framework
 subscription contract; the selected-model projection remains pure.
+
+`src/lua_runtime/subscriptions.fnl` now provides the replacement evaluator as a
+UI-independent registry with bounded, disposable consumer scopes and speculative
+forks. Direct tests cover typed canonical keys, nullable dependency counts,
+identity reuse, dependency cycles, failed-query isolation, bounds, and disposal.
+It is not yet wired into framework transactions: replacing the provisional
+framework cache and connecting native commit/rejection ownership remain required.

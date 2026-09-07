@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "subscription scopes preserve nullable dependencies and speculation" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/subscriptions.fnl"} }, "subscription scope contracts passed\n");
+}
+
 test "model picker controls and value-only status presentation" {
     var h = try Harness.init();
     defer h.deinit();
