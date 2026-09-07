@@ -32,26 +32,26 @@
             cached.document)
 
           (fn request [state key index slot fx]
-            (when (and (not slot.request) (not slot.done))
-              (set state.next_id (+ state.next_id 1))
-              (local id (.. :syntax/ state.next_id))
-              (set slot.request id)
-              (tset state.pending id
-                    {: key : index :source slot.source :language slot.language})
-              (table.insert fx
+            (if (or slot.request slot.done) (values state slot)
+                (let [next-id (+ state.next_id 1)
+                      id (.. :syntax/ next-id)]
+                  (table.insert fx
                             {:type :syntax/highlight
                              : id
                              :source slot.source
                              :language slot.language
-                             :completion :syntax/completed})))
+                             :completion :syntax/completed})
+                  (values (misa.patch state {:next_id next-id
+                                            :pending {id {: key : index :source slot.source :language slot.language}}})
+                          (misa.patch slot {:request id})))))
 
-          (fn update-model [db model fx]
+          (fn update-model [previous-state model fx]
+            (var state previous-state)
             (when (and model.id
                        (or (= model.kind :assistant) (= model.kind :thinking)
                            (= model.kind :user) (= model.kind :harness)))
               (local key (key-for model))
               (local source (source-for model))
-              (local state db.syntax)
               (local old (. state.documents key))
               (when (or (not old) (not= old.source source))
                 (local parsed (document key source))
@@ -70,15 +70,17 @@
                     (local same
                            (and previous (= previous.source block.text)
                                 (= previous.language block.language)))
-                    (local slot
+                    (local previous-slot
                            (or (and same previous)
                                {:source block.text
                                 :language block.language
                                 :request (and previous previous.request)}))
-                    (set slot.start block.source_start)
-                    (table.insert next.slots slot)
-                    (request state key index slot fx)))
-                (tset state.documents key next))))
+                    (local (next-state slot)
+                           (request state key index (misa.patch previous-slot {:start block.source_start}) fx))
+                    (set state next-state)
+                    (table.insert next.slots slot)))
+                (set state (misa.patch state {:documents {key (misa.replace next)}}))))
+            state)
 
           {:fx [{:type :register/service
                  :name :syntax_projection
@@ -104,19 +106,16 @@
                 {:type :register/event
                  :name :app/start
                  :handler (fn [db]
-                            (set db.syntax
-                                 {:next_id 0
+                            {:patch {:syntax (misa.replace {:next_id 0
                                   :epoch 0
                                   :pending {}
-                                  :documents {}})
-                            {: db})}
+                                  :documents {}})}})}
                 {:type :register/event
                  :name :transcript/reset
                  :handler (fn [db]
-                            (set db.syntax.pending {})
-                            (set db.syntax.documents {})
-                            (set db.syntax.epoch (+ db.syntax.epoch 1))
-                            {: db})}
+                            {:patch {:syntax {:pending (misa.replace {})
+                                              :documents (misa.replace {})
+                                              :epoch (+ db.syntax.epoch 1)}}})}
                 {:type :register/interceptor
                  :value {:id :syntax/transcript
                          :before (fn [tx]
@@ -148,8 +147,8 @@
                                              tx.db.syntax tx.db.messages)
                                     (local blocks tx.db.messages.blocks)
                                     (for [index (+ tx.syntax_count 1) (length blocks)]
-                                      (update-model tx.db (. blocks index)
-                                                    tx.fx))
+                                      (set tx.db (misa.patch tx.db
+                                                            {:syntax (misa.replace (update-model tx.db.syntax (. blocks index) tx.fx))})))
                                     (when (and tx.event.response_id
                                                (or (= tx.event.type
                                                       :transcript/block-delta)
@@ -174,42 +173,43 @@
                                           (when (or (not tx.event.block_id)
                                                     (= model.id
                                                        tx.event.block_id))
-                                            (update-model tx.db model tx.fx))))))
+                                            (set tx.db (misa.patch tx.db
+                                                                  {:syntax (misa.replace (update-model tx.db.syntax model tx.fx))})))))))
                                   tx)}}
                 {:type :register/event
                  :name :syntax/completed
                  :handler (fn [db event]
-                            (local state db.syntax)
-                            (local pending (. state.pending event.id))
-                            (local fx {})
+                            (local pending (. db.syntax.pending event.id))
                             (when pending
-                              (tset state.pending event.id nil)
+                              (var state (misa.patch db.syntax {:pending {event.id misa.delete}}))
                               (local entry (. state.documents pending.key))
-                              (local slot
-                                     (and entry (. entry.slots pending.index)))
-                              (when (and slot (= slot.request event.id))
-                                (set slot.request nil)
-                                (if (and (= slot.source pending.source)
-                                         (= slot.language pending.language))
+                              (local previous (and entry (. entry.slots pending.index)))
+                              (local fx {})
+                              (when (and previous (= previous.request event.id))
+                                (var slot (misa.patch previous {:request misa.delete}))
+                                (var revision entry.revision)
+                                (if (and (= slot.source pending.source) (= slot.language pending.language))
                                     (do
-                                      (set slot.done true)
-                                      (when (and event.ok
-                                                 (= (type event.data) :table))
-                                        (local cached
-                                               (assert (. documents pending.key)))
+                                      (set slot (misa.patch slot {:done true}))
+                                      (when (and event.ok (= (type event.data) :table))
+                                        (local cached (assert (. documents pending.key)))
                                         (tset dirty pending.key true)
-                                        ;; Memo data is owned once; db only accepts its result ID.
-                                        ;; An aborted transaction cannot expose unaccepted captures.
+                                        ;; External memo data stays behind an accepted result ID.
                                         (tset cached.results event.id
-                                              {:source pending.source
-                                               :language pending.language
+                                              {:source pending.source :language pending.language
                                                :data (misa.snapshot event.data)})
-                                        (set slot.result event.id)
-                                        (set entry.revision
-                                             (+ entry.revision 1))
-                                        (table.insert fx
-                                                      {:type :dispatch
-                                                       :event {:type :ui/redraw}})))
-                                    (request state pending.key pending.index
-                                             slot fx))))
-                            {: db : fx})}]})}
+                                        (set slot (misa.patch slot {:result event.id}))
+                                        (set revision (+ revision 1))
+                                        (table.insert fx {:type :dispatch :event {:type :ui/redraw}})))
+                                    (let [(next-state next-slot) (request state pending.key pending.index slot fx)]
+                                      (set state next-state)
+                                      (set slot next-slot)))
+                                (local slots {})
+                                (each [index value (ipairs entry.slots)]
+                                  (tset slots index (if (= index pending.index) slot value)))
+                                (set state (misa.patch state
+                                                       {:documents {pending.key
+                                                                    (misa.replace (misa.patch entry
+                                                                                              {:slots (misa.replace slots)
+                                                                                               : revision}))}})))
+                              {:patch {:syntax (misa.replace state)} : fx}))}]})}

@@ -55,6 +55,12 @@ test "persistent patch data and sharing contracts" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/state-patches.fnl"} }, "state patch contracts passed\n");
 }
 
+test "syntax transitions preserve state across streaming completions" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/syntax-state.fnl"} }, "syntax state properties passed\n");
+}
+
 test "async syntax memo preserves rollback and coalesces streaming requests" {
     var h = try Harness.init();
     defer h.deinit();

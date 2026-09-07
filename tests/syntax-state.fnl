@@ -1,0 +1,70 @@
+(local fennel (require :fennel))
+(local output io.write)
+(local G (require :tests.generators))
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(each [_ name (ipairs [:json :layout :markdown])]
+  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
+(local specs ((. (fennel.dofile :extensions/syntax.fnl) :setup) {:config {}}))
+(local handlers {})
+(var policy nil)
+(each [_ spec (ipairs specs.fx)]
+  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
+  (when (= spec.type :register/interceptor) (set policy spec.value)))
+(misa._setup_effects specs)
+(fn unchanged [db call]
+  (local before (misa.json.encode db))
+  (local result (call))
+  (assert (= before (misa.json.encode db)) "syntax transition mutated prior state")
+  result)
+(fn event [db input]
+  (local tx (unchanged db #(policy.before {: db :event input})))
+  (local result (unchanged tx.db #((. handlers input.type) tx.db input)))
+  (assert (not (and result result.db)))
+  (values (misa.patch tx.db (or (and result result.patch) {})) (or (and result result.fx) [])))
+(fn source [db text]
+  (local tx (unchanged db #(policy.before {: db :event {:type :transcript/block-delta
+                                                      :response_id :reply :block_id :body}
+                                         :cofx {:terminal {:interactive true}} :fx []})))
+  (set tx.db (misa.patch tx.db {:messages {:blocks (misa.replace [{:id :body :kind :assistant
+                                                                 :response_id :reply : text}])
+                                         :by_response {:reply 1}
+                                         :responses [{:block_start 1 :block_count 1}]}}))
+  (unchanged tx.db #(policy.after tx))
+  (values tx.db tx.fx))
+(fn initial [] (event {} {:type :app/start}))
+(local text "```lua\nlocal x=1\n```")
+(local (first requests) (source (initial) text))
+(local id (. requests 1 :id))
+(local (_ entry) (next first.syntax.documents))
+(local start (. entry.slots 1 :start))
+(local (shifted extra) (source first (.. "intro\n\n" text)))
+(assert (= (length extra) 0) "unchanged code requested highlighting again")
+(assert (= (. entry.slots 1 :start) start))
+(local (_ shifted-entry) (next shifted.syntax.documents))
+(assert (> (. shifted-entry.slots 1 :start) start))
+(local changed (source shifted "```lua\nlocal x=2\n```"))
+(local (completed next-requests) (event changed {:type :syntax/completed : id :ok true :data []}))
+(assert (= (length next-requests) 1))
+(assert (= (. next-requests 1 :source) "local x=2"))
+(local reset (event completed {:type :transcript/reset}))
+(assert (= (next reset.syntax.pending) nil))
+(assert (= (next reset.syntax.documents) nil))
+(assert (= (event reset {:type :syntax/completed :id (. next-requests 1 :id) :ok true :data []}) reset))
+(local failure
+       (G.for_all (G.vector (G.elements [:first :second :complete :reset]))
+                  (fn [actions]
+                    (var db (initial))
+                    (each [_ action (ipairs actions)]
+                      (if (= action :reset) (set db (event db {:type :transcript/reset}))
+                          (= action :complete)
+                          (let [pending-id (next db.syntax.pending)]
+                            (when pending-id
+                              (set db (event db {:type :syntax/completed :id pending-id :ok true :data []}))))
+                          (set db (source db (if (= action :first) text "```lua\nlocal x=2\n```"))))
+                      (var count 0)
+                      (each [_ _ (pairs db.syntax.pending)] (set count (+ count 1)))
+                      (assert (<= count 1) "streaming created concurrent requests for one slot")))
+                  {:cases 1000 :size 20}))
+(assert (not failure) (and failure (fennel.view failure)))
+(output "syntax state properties passed\n")

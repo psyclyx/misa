@@ -65,3 +65,9 @@ empty replacements, and the protected-input boundary. `tests/auth-state.fnl`
 covers late provider registration, provider-keyed startup work, duplicate and
 unrelated completions, and auth-owned dialog cleanup. Registry lookups live with
 provider registration instead of taking setup-time snapshots.
+
+Syntax request bookkeeping and completion handling now return persistent state;
+moving an unchanged code block no longer mutates an older slot's source offset.
+`tests/syntax-state.fnl` checks ownership, offset changes, reset/stale completion
+handling, and generated single-slot request coalescing. The existing syntax
+integration test still verifies rollback and external capture-cache ownership.
