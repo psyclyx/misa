@@ -275,29 +275,28 @@
                  :type :dispatch})))
     {: db :fx effects}))
 
-(fn cancelled [db agent id interrupt-response]
+(fn empty-usage []
+  {:cache_read_tokens 0 :cache_write_tokens 0 :input_tokens 0 :output_tokens 0})
+
+(fn pending-ids [agent]
+  (local ids (icollect [id (pairs agent.pending_tools)] id))
+  (table.sort ids)
+  ids)
+
+(fn cancelled [_ agent id interrupt-response]
   (let [response-id (or (or id agent.active_request_id)
                         agent.accepted_request_id)]
+    (local messages (icollect [_ message (ipairs agent.messages)] message))
     (when agent.stream
-      (local ___partial___ {})
-      (each [_ block (ipairs agent.stream.blocks)]
-        (when (and (= block.type :text) (> (length block.chunks) 0))
-          (tset ___partial___ (+ (length ___partial___) 1)
-                {:text (table.concat block.chunks) :type :text})))
-      (when (> (length ___partial___) 0)
-        (tset agent.messages (+ (length agent.messages) 1)
-              {:content ___partial___ :role :assistant})))
+      (local partial-content (icollect [_ block (ipairs agent.stream.blocks)]
+                               (when (and (= block.type :text) (> (length block.chunks) 0))
+                                 {:text (table.concat block.chunks) :type :text})))
+      (when (> (length partial-content) 0)
+        (table.insert messages {:content partial-content :role :assistant})))
     (when agent.tool_batch
       (each [_ call-id (ipairs agent.tool_batch.order)]
-        (tset agent.tool_batch.results call-id
-              (or (. agent.tool_batch.results call-id)
-                  (tool-result call-id :Cancelled true))))
-      (flush-tool-results agent))
-    (set (agent.error agent.status agent.active_request_id agent.stream
-                      agent.cancel_requested)
-         (values nil :ready nil nil false))
-    (set (agent.pending_tools agent.pending_tool_count agent.tool_batch)
-         (values {} 0 nil))
+        (table.insert messages (or (. agent.tool_batch.results call-id)
+                                   (tool-result call-id :Cancelled true)))))
     (local effects {})
     (when (and interrupt-response response-id)
       (tset effects (+ (length effects) 1)
@@ -314,7 +313,10 @@
                    :id response-id
                    :type :agent/completed}
            :type :dispatch})
-    {: db :fx effects}))
+    {:patch {:agent {:messages (misa.replace messages) :error misa.delete :status :ready
+                      :active_request_id misa.delete :stream misa.delete :cancel_requested false
+                      :pending_tools (misa.replace {}) :pending_tool_count 0 :tool_batch misa.delete}}
+     :fx effects}))
 
 (fn stream-blocks [stream]
   (let [blocks {}]
@@ -436,137 +438,61 @@
                       (= (type config.system_prompt) :string))
                   "config.agent.system_prompt must be a string")
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
+                        {:type :register/event :name :app/start
                          :handler (fn [db _ cofx]
-                                    (set db.agent
-                                         {:exit_after_response (> (length cofx.argv)
-                                                                  0)
-                                          :messages {}
-                                          :pending_tool_count 0
-                                          :pending_tools {}
-                                          :request_seq 0
-                                          :status :ready
-                                          :system_prompt config.system_prompt
-                                          :usage {:cache_read_tokens 0
-                                                  :cache_write_tokens 0
-                                                  :input_tokens 0
-                                                  :output_tokens 0}})
-                                    (if (= (length cofx.argv) 0) {: db}
-                                        (do
-                                          (local prompt
-                                                 (table.concat cofx.argv " "))
-                                          (if (and db.auth_startup
-                                                   (not db.auth_startup.ready))
-                                              (do
-                                                (set db.agent.startup_prompt
-                                                     prompt)
-                                                {: db})
-                                              {: db
-                                               :fx [{:event {: prompt
-                                                             :type :agent/submit}
-                                                     :type :dispatch}]}))))})
+                                    (local has-prompt (> (length cofx.argv) 0))
+                                    (local waiting (and db.auth_startup (not db.auth_startup.ready)))
+                                    (local prompt (when has-prompt (table.concat cofx.argv " ")))
+                                    {:patch {:agent (misa.replace
+                                                      {:exit_after_response has-prompt :messages []
+                                                       :pending_tool_count 0 :pending_tools {} :request_seq 0
+                                                       :status :ready :system_prompt config.system_prompt
+                                                       :startup_prompt (when waiting prompt)
+                                                       :usage (empty-usage)})}
+                                     :fx (if (and has-prompt (not waiting))
+                                             [{:type :dispatch :event {:type :agent/submit : prompt}}] [])})})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :auth/startup-ready
+                        {:type :register/event :name :auth/startup-ready
                          :handler (fn [db]
                                     (local agent db.agent)
-                                    (if (or (not agent)
-                                            (not agent.startup_prompt))
-                                        nil
-                                        (do
-                                          (local prompt agent.startup_prompt)
-                                          (local attachments
-                                                 agent.startup_attachments)
-                                          (set (agent.startup_prompt agent.startup_attachments)
-                                               (values nil nil))
-                                          {: db
-                                           :fx [{:event {: attachments
-                                                         : prompt
-                                                         :type :agent/submit}
-                                                 :type :dispatch}]})))})
+                                    (when (and agent agent.startup_prompt)
+                                      {:patch {:agent {:startup_prompt misa.delete :startup_attachments misa.delete}}
+                                       :fx [{:type :dispatch :event {:type :agent/submit
+                                                                    :prompt agent.startup_prompt
+                                                                    :attachments agent.startup_attachments}}]}))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/cancel-active
+                        {:type :register/event :name :agent/cancel-active
                          :handler (fn [db]
                                     (local agent db.agent)
-                                    (if (or (not agent) agent.cancel_requested)
-                                        {: db}
-                                        (do
-                                          (var effects {})
-                                          (if (and (= agent.status :working)
-                                                   agent.active_request_id)
-                                              (do
-                                                (set (agent.cancel_requested agent.status)
-                                                     (values true :cancelling))
-                                                (set effects
-                                                     [{:event {:status :cancelling
-                                                               :type :agent/status}
-                                                       :type :dispatch}
-                                                      {:id agent.active_request_id
-                                                       :type :operation/cancel}]))
-                                              (and (= agent.status :tools)
-                                                   (> agent.pending_tool_count
-                                                      0))
-                                              (do
-                                                (set (agent.cancel_requested agent.status)
-                                                     (values true :cancelling))
-                                                (tset effects 1
-                                                      {:event {:status :cancelling
-                                                               :type :agent/status}
-                                                       :type :dispatch})
-                                                (local ids {})
-                                                (each [id (pairs agent.pending_tools)]
-                                                  (tset ids (+ (length ids) 1)
-                                                        id))
-                                                (table.sort ids)
-                                                (each [_ id (ipairs ids)]
-                                                  (tset effects
-                                                        (+ (length effects) 1)
-                                                        {: id
-                                                         :type :operation/cancel}))))
-                                          {: db :fx effects})))})
+                                    (when (and agent (not agent.cancel_requested))
+                                      (local ids (if (and (= agent.status :working) agent.active_request_id)
+                                                     [agent.active_request_id]
+                                                     (and (= agent.status :tools) (> agent.pending_tool_count 0))
+                                                     (pending-ids agent) []))
+                                      (when (> (length ids) 0)
+                                        (local fx [{:type :dispatch :event {:type :agent/status :status :cancelling}}])
+                                        (each [_ id (ipairs ids)] (table.insert fx {:type :operation/cancel : id}))
+                                        {:patch {:agent {:cancel_requested true :status :cancelling}} : fx})))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/reset
+                        {:type :register/event :name :agent/reset
                          :handler (fn [db]
-                                    (local agent
-                                           (assert db.agent
-                                                   "agent state is not initialized"))
-                                    (local effects {})
+                                    (local agent (assert db.agent "agent state is not initialized"))
+                                    (local fx [])
                                     (when agent.active_request_id
-                                      (tset effects (+ (length effects) 1)
-                                            {:id agent.active_request_id
-                                             :type :operation/cancel}))
-                                    (each [id (pairs agent.pending_tools)]
-                                      (tset effects (+ (length effects) 1)
-                                            {: id :type :operation/cancel}))
-                                    (set (agent.status agent.active_request_id
-                                                       agent.accepted_request_id
-                                                       agent.stream
-                                                       agent.cancel_requested)
-                                         (values :ready nil nil nil false))
-                                    (set (agent.pending_tools agent.pending_tool_count
-                                                              agent.tool_batch)
-                                         (values {} 0 nil))
-                                    (set (agent.messages agent.error
-                                                         agent.last_usage)
-                                         (values {} nil {}))
-                                    (set agent.usage
-                                         {:cache_read_tokens 0
-                                          :cache_write_tokens 0
-                                          :input_tokens 0
-                                          :output_tokens 0})
-                                    (tset effects (+ (length effects) 1)
-                                          {:event {:type :transcript/reset}
-                                           :type :dispatch})
-                                    (tset effects (+ (length effects) 1)
-                                          {:event {:last_usage agent.last_usage
-                                                   :status :ready
-                                                   :type :agent/status
-                                                   :usage agent.usage}
-                                           :type :dispatch})
-                                    {: db :fx effects})})
+                                      (table.insert fx {:type :operation/cancel :id agent.active_request_id}))
+                                    (each [_ id (ipairs (pending-ids agent))]
+                                      (table.insert fx {:type :operation/cancel : id}))
+                                    (table.insert fx {:type :dispatch :event {:type :transcript/reset}})
+                                    (table.insert fx {:type :dispatch :event {:type :agent/status :status :ready
+                                                                            :last_usage {} :usage (empty-usage)}})
+                                    {:patch {:agent {:status :ready :active_request_id misa.delete
+                                                     :accepted_request_id misa.delete :stream misa.delete
+                                                     :cancel_requested false :pending_tools (misa.replace {})
+                                                     :pending_tool_count 0 :tool_batch misa.delete
+                                                     :messages (misa.replace []) :error misa.delete
+                                                     :startup_prompt misa.delete :startup_attachments misa.delete
+                                                     :last_usage (misa.replace {}) :usage (misa.replace (empty-usage))}}
+                                     : fx})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/submit
@@ -866,12 +792,7 @@
                     (cancelled db agent event.id (not= agent.stream nil))
                     (do
                       (local had-stream (not= agent.stream nil))
-                      (set (agent.error agent.status agent.active_request_id
-                                        agent.stream)
-                           (values (tostring (or event.message
-                                                 "provider failed"))
-                                   :ready nil nil))
-                      (set agent.accepted_request_id event.id)
+                      (local message (tostring (or event.message "provider failed")))
                       (local fx {})
                       (when had-stream
                         (tset fx (+ (length fx) 1)
@@ -880,7 +801,7 @@
                                :type :dispatch}))
                       (tset fx (+ (length fx) 1)
                             {:event {:level :error
-                                     :text agent.error
+                                     :text message
                                      :type :transcript/harness}
                              :type :dispatch})
                       (tset fx (+ (length fx) 1)
@@ -891,7 +812,9 @@
                                      :id event.id
                                      :type :agent/completed}
                              :type :dispatch})
-                      {: db : fx}))))
+                      {:patch {:agent {:error message :status :ready :active_request_id misa.delete
+                                       :stream misa.delete :accepted_request_id event.id}}
+                       : fx}))))
 
           (table.insert setup-fx
                         {:type :register/event

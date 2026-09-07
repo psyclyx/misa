@@ -125,3 +125,9 @@ generated block assembly, ownership, tool identity, argument replacement,
 nullable usage fields, opaque provider data, stale/cancelled inputs, and custom
 delta reducers. Agent request/completion/tool orchestration and transcript state
 still require migration; whole-transaction drafts have not yet been removed.
+
+Agent startup/auth handoff, cancellation intent, reset, failure, and interrupted
+stream finalization now return patches. Lifecycle tests check ownership,
+generated cancellation/reset/error sequences, sorted tool cancellation effects,
+partial text preservation, and queued startup cleanup on reset. Normal request
+submission, response completion, and tool-result draining remain mutable.
