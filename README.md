@@ -656,6 +656,12 @@ effects with `id` and `value`. A motion receives editor data and returns a
 grapheme-boundary byte offset. An action receives `(editor, editing, event, db)`
 and returns `{editor=<patch>, editing=<patch>, fx=<array>}`. Both are pure;
 the policy handles undo bookkeeping and selection projection around the result.
+Editor-owned transitions call the optional pure
+`editing_transition(editing, previous_editor, next_editor, reason, interactive)`
+service in the same transaction. It returns the next editing state; reasons are
+`insert`, `edit`, `discard`, `restore`, `steer`, `undo`, `redo`, and `preserve`.
+Undo bookkeeping does not inspect unrelated events or infer submission from a
+global before/after snapshot. Modal key routing remains an input interceptor.
 
 `config.choices.purposes` maps a purpose to ordered views; Right Arrow rotates
 the active view to the left. Extensions can supply their own projections and

@@ -90,11 +90,14 @@ derived processing; syntax requests/completions stay effects/events, and syntax
 projections stay pure subscriptions. Input normalization/routing interceptors
 are a separate concern and are not being removed indiscriminately.
 
-The other domain coupling identified by the interceptor audit is editing undo
-bookkeeping (`extensions/editing.fnl`): it snapshots the editor before input and
-infers the operation from the resulting text afterward. Undo policy needs the
-old editor, new editor and operation reason in the same transaction; moving it
-to delayed notifications would break that boundary. Startup initialization and
+Editing undo bookkeeping now receives the old editor, new editor and explicit
+operation reason synchronously from editor transition handlers through a pure
+service. The global after-hook and pre-input undo snapshots are removed. Modal
+actions use the same policy, with undo/redo excluded from new history entries;
+restore/steer clear history and structural editor selection in the owning
+transition. Focused tests exercise direct handlers without interceptors, insert
+groups, backspace-to-empty versus discard, redo invalidation, plain/noninteractive
+policy, choice submission, and restored attachments/cursor. Startup initialization and
 modal/input guards have separate ordering responsibilities and are not included
 in this domain-hook removal.
 

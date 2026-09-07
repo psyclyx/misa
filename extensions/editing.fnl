@@ -96,6 +96,21 @@
   (misa.patch state {:undo (misa.replace (appended state.undo {: text : cursor}))
                      :redo (misa.replace {})}))
 
+;; The editor supplies the operation's meaning at the transition boundary.
+;; This policy never observes unrelated transactions or retains editor snapshots.
+(fn transition [state previous editor reason]
+  (if (or (= reason :restore) (= reason :steer))
+      (misa.patch state {:anchor misa.delete :operator misa.delete :insert_group misa.delete
+                         :undo (misa.replace {}) :redo (misa.replace {})})
+      (= reason :discard)
+      (misa.patch state {:undo (misa.replace {}) :redo (misa.replace {})
+                         :insert_group misa.delete})
+      (and (not= previous.text editor.text) (= reason :insert) (not state.insert_group))
+      (misa.patch (remember state previous.text previous.cursor) {:insert_group true})
+      (and (not= previous.text editor.text) (= reason :edit))
+      (remember state previous.text previous.cursor)
+      state))
+
 (fn insert [editor _ event]
   (local action event.action)
   (local places {:append next-at :insert_start line-start :append_end line-end
@@ -204,10 +219,10 @@
             handler (or (. actions event.action) operate)
             result (handler editor state event db)
             next-editor (misa.patch editor (or result.editor {}))]
-        (var next-state (misa.patch state (or result.editing {})))
-        (when (and (not= next-editor.text previous.text)
-                   (not= event.action :undo) (not= event.action :redo))
-          (set next-state (remember next-state previous.text previous.cursor)))
+        (local next-state (transition (misa.patch state (or result.editing {}))
+                                      previous next-editor
+                                      (if (or (= event.action :undo) (= event.action :redo))
+                                          event.action :edit)))
         (local (first last) (selection next-editor next-state))
         (local fx [{:type :terminal/read}])
         (each [_ effect (ipairs (or result.fx {}))] (table.insert fx effect))
@@ -217,41 +232,16 @@
                  :editing (misa.replace next-state)}
          : fx})))
 
-(fn reset-draft [db]
-  {:patch {:editing (when db.editing
-                      {:anchor misa.delete :operator misa.delete :insert_group misa.delete
-                       :undo (misa.replace {}) :redo (misa.replace {})})
-           :editor (when db.editor {:selection_start misa.delete :selection_end misa.delete})}})
-
-(fn after-input [tx]
-  (local editor tx.db.editor)
-  (local discarded (and tx.editing_input (= editor.text "") (not= tx.editing_input.text "")
-                         (not= tx.event.type :editing/action) (not= tx.editing_input.kind :backspace)))
-  (if discarded
-      (misa.patch tx {:db {:editing {:undo (misa.replace {}) :redo (misa.replace {})
-                                    :insert_group misa.delete}}})
-      (and tx.editing_before (not= editor.text tx.editing_before.text)
-           (not tx.db.editing.insert_group))
-      (misa.patch tx {:db {:editing (misa.replace
-                                        (misa.patch (remember tx.db.editing tx.editing_before.text
-                                                              tx.editing_before.cursor)
-                                                    {:insert_group true}))}})
-      tx))
-
 (fn before-input [tx enabled]
   (if (or (not= tx.event.type :terminal/input) (not enabled)
           (not tx.cofx.terminal.interactive) tx.db.dialog tx.db.picker tx.db.selection
           (not tx.db.editor))
       tx
       (let [editor (misa.patch tx.db.editor {:mode (or tx.db.editor.mode :insert)})
-            initialized (misa.patch tx {:db {:editor (misa.replace editor)
-                                             :editing (misa.replace (or tx.db.editing {}))}
-                                       :editing_input {:kind tx.event.kind :text editor.text}})
+            initialized (misa.patch tx {:db {:editor (misa.replace editor)}})
             policy (if (= editor.mode :insert)
                        (if (= tx.event.kind :escape)
                            {:event (misa.replace {:action :normal :type :editing/action})}
-                           (or (= tx.event.kind :text) (= tx.event.kind :shift_enter) (= tx.event.kind :backspace))
-                           {:editing_before {:cursor editor.cursor :text editor.text}}
                            {})
                        (or (= tx.event.kind :ctrl_c) (= tx.event.kind :eof) (= tx.event.kind :ctrl_d))
                        {:db {:editor {:mode :insert :selection_start misa.delete
@@ -266,8 +256,12 @@
           (local mode (or (. (or context.config.editing {}) :mode) :vim))
           (assert (or (= mode :vim) (= mode :plain)) "editing.mode must be vim or plain")
           (local enabled (= mode :vim))
-          (each [_ name (ipairs [:editor/restore :editor/steer])]
-            (table.insert setup-fx {:type :register/event : name :handler reset-draft}))
+          (table.insert setup-fx
+                        {:type :register/service :name :editing_transition
+                         :value (fn [state previous editor reason interactive]
+                                  (if (or (= reason :restore) (= reason :steer)
+                                          (and enabled interactive))
+                                      (transition state previous editor reason) state))})
           (local bindings {:append [:a]
                            :append_end [:A]
                            :change [:c]
@@ -320,7 +314,7 @@
 
           (table.insert setup-fx
                         {:type :register/interceptor
-                         :value {:id :editing/input :after after-input
+                         :value {:id :editing/input
                                  :before (fn [tx] (before-input tx enabled))}})
           (table.insert setup-fx {:type :register/event :name :editing/action :handler action})
           (each [name registry (pairs {:register/editing-motion motions :register/editing-action actions})]

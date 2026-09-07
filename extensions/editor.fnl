@@ -14,15 +14,28 @@
              (length text)))
   (misa.patch editor {: text : cursor :busy (= editor.busy true)}))
 
-(fn updated [editor fx]
-  {:patch {:editor (misa.replace editor)} :fx (or fx [{:type :terminal/read}])})
+(fn updated [editor fx reason]
+  (values {:patch {:editor (misa.replace editor)} :fx (or fx [{:type :terminal/read}])}
+          (or reason :preserve)))
+
+(fn accounted [db result reason cofx]
+  (if (or (not result) (= reason :preserve) (not misa.editing_transition)) result
+      (let [previous (state db)
+            editor (. (misa.patch db (or result.patch {})) :editor)
+            editing (or db.editing {})
+            next (misa.editing_transition editing previous editor reason
+                                         (and cofx cofx.terminal.interactive))]
+        (if (= next editing) result
+            (let [patch (collect [key value (pairs (or result.patch {}))] key value)]
+              (tset patch :editing (misa.replace next))
+              {: patch :fx result.fx})))))
 
 (fn editor-db [db editor] (misa.patch db {:editor (misa.replace editor)}))
 
 (fn dispatch-input [editor event cofx]
   (updated editor (if cofx.terminal.interactive
                       [{: event :type :dispatch} {:type :terminal/read}]
-                      [{: event :type :dispatch}])))
+                      [{: event :type :dispatch}]) :discard))
 
 (fn command-input [text]
   (local (name args) (text:match "^(%S+)%s*(.-)%s*$"))
@@ -159,17 +172,17 @@
               (values {: rows} targets))))))
 
 
-(fn accept-input [editor item positional db cofx]
+(fn accept-input [editor item positional db cofx reason]
   (if (and item.invocation misa.command_invocation)
       (dispatch-input (clear-choice (with-text editor "" 0))
                       (assert (misa.command_invocation item.invocation)) cofx)
       (let [command (and (= editor.choice_kind :command) (misa.command item.value))]
         (if (and command (or command.completion command.complete))
-            (updated (sync-choice (with-text editor (.. command.name " ")) db))
+            (updated (sync-choice (with-text editor (.. command.name " ")) db) nil reason)
             (let [next (accept-choice editor item)
                   invocation (and positional misa.command_invocation (misa.command_invocation next.text))]
               (if invocation (dispatch-input (with-text next "" 0) invocation cofx)
-                  (updated next)))))))
+                  (updated next nil reason)))))))
 
 (fn choice-input [editor event action original-db cofx]
   (local db (editor-db original-db editor))
@@ -185,7 +198,8 @@
   (local result (if item (misa.choice_accept editor.choice item db)
                     (misa.choice_input editor.choice {: action :kind event.kind :text event.text} db)))
   (local next (misa.patch editor {:choice (misa.replace result.session)}))
-  (if result.accepted (accept-input next result.accepted item db cofx)
+  (local reason (if (or (= event.kind :text) (= event.kind :backspace)) :insert :preserve))
+  (if result.accepted (accept-input next result.accepted item db cofx reason)
       (or result.open_overlay result.replace_view) (when misa.picker (overlay next result.replace_view))
       result.cancelled (updated (clear-choice (misa.patch next {:dismissed_choice next.text})))
       result.favorite (updated next [{:event {:scope next.choice.preference_scope
@@ -195,7 +209,7 @@
       result.consumed
       (let [refreshed (update-dynamic-items next db)
             edited (with-text refreshed (choice-text refreshed))]
-        (updated (if (= edited.text "") (clear-choice edited) edited)))
+        (updated (if (= edited.text "") (clear-choice edited) edited) nil reason))
       nil))
 
 (local edits
@@ -230,7 +244,14 @@
                             {:attachments editor.attachments :prompt editor.text
                              :type (or misa.submit_event :agent/submit)}) cofx))
       (let [edit (. edits event.kind)]
-        (updated (sync-choice (if edit (edit editor event) editor) db)))))
+        (updated (sync-choice (if edit (edit editor event) editor) db) nil
+                 (if (= event.kind :ctrl_c) :discard
+                     ;; Forward-delete of the entire draft retains the existing
+                     ;; discard behavior; partial forward deletes do not start a group.
+                     (and (= event.kind :ctrl_d) (= editor.cursor 0)
+                          (= (next-cursor editor.text 0) (length editor.text))) :discard
+                     (or (= event.kind :text) (= event.kind :backspace)) :insert
+                     :preserve)))))
 
 (fn terminal-input [db input cofx]
   (local previous (state db))
@@ -247,9 +268,10 @@
       (raw-input editor event db cofx)
       (let [action (when (not (and (= event.kind :enter) (submit-exact-choice editor)))
                      (misa.choice_action event))]
-        (or (and editor.choice (or action (= event.kind :text) (= event.kind :backspace))
-                 (choice-input editor event action db cofx))
-            (raw-input editor event db cofx)))))
+        (local (result reason)
+               (when (and editor.choice (or action (= event.kind :text) (= event.kind :backspace)))
+                 (choice-input editor event action db cofx)))
+        (if result (values result reason) (raw-input editor event db cofx)))))
 
 (fn restore [db event]
   (local editor (state db))
@@ -266,7 +288,8 @@
                                                                        (length text)))))
   (updated (clear-choice
             (misa.patch (with-text editor text cursor)
-                        {:mode :insert :attachments (misa.replace attachments)}))))
+                        {:mode :insert :selection_start misa.delete :selection_end misa.delete
+                         :attachments (misa.replace attachments)})) nil :restore))
 
 (fn attach [db event]
   (local editor (state db))
@@ -370,14 +393,22 @@
                   :editor/detach detach
                   :editor/steer (fn [db _ cofx]
                                   (local editor (state db))
-                                  (dispatch-input (misa.patch (emptied editor) {:mode :insert})
-                                                  {:attachments editor.attachments :prompt editor.text
-                                                   :type :queue/steer} cofx))
+                                  (local result
+                                         (dispatch-input (misa.patch (emptied editor)
+                                                                    {:mode :insert :selection_start misa.delete
+                                                                     :selection_end misa.delete})
+                                                         {:attachments editor.attachments :prompt editor.text
+                                                          :type :queue/steer} cofx))
+                                  (values result :steer))
                   :ui/redraw (fn [] {:fx [{:type :terminal/read}]})
                   :editor/choice-selected selected
                   :terminal/input terminal-input})
           (each [name handler (pairs handlers)]
-            (table.insert setup-fx {:type :register/event : name : handler}))
+            (table.insert setup-fx
+                          {:type :register/event : name
+                           :handler (fn [db event cofx]
+                                      (local (result reason) (handler db event cofx))
+                                      (accounted db result (or reason :preserve) cofx))}))
           (table.insert setup-fx
                         {:type :register/setup-effect :name :register/editor-edit
                          :handler (fn [effect]

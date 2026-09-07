@@ -32,7 +32,6 @@
       (assert (not result.db))
       (set tx.db (misa.patch tx.db (or result.patch {})))
       (each [_ effect (ipairs (or result.fx {}))] (table.insert tx.fx effect))))
-  (set tx (unchanged tx #(policy.after tx)))
   (assert (= before (misa.json.encode event)) "editing mutated the input event")
   (values tx.db tx.fx))
 (fn action [db name] (transition db {:type :editing/action :action name}))
@@ -110,14 +109,52 @@
 (local unicode (misa.patch initial {:editor {:text "é🙂 x"}}))
 (assert (= (. (action unicode :right) :editor :cursor) 3))
 (assert (= (. (action unicode :delete_character) :editor :text) "🙂 x"))
-;; A choice may consume a text event and clear the draft in the same transition.
-;; Clearing that draft must win over insert-group accounting for the text event.
+;; Submission is an explicit policy reason, independent of the input key.
 (local consumed (misa.patch more {:editor {:text "" :cursor 0}}))
-(local accounted (unchanged consumed
-                            #(policy.after {:db consumed :event {:type :terminal/input}
-                                            :editing_input {:kind :text :text more.editor.text}
-                                            :editing_before {:text more.editor.text :cursor more.editor.cursor}})))
-(assert (= (length accounted.db.editing.undo) 0))
+(local accounted (unchanged [more consumed]
+                            #(misa.editing_transition more.editing more.editor consumed.editor :discard true)))
+(assert (= (length accounted.undo) 0))
+(assert (= policy.after nil) "undo policy still uses a global after hook")
+;; Calling the owner directly must account synchronously, without before hooks.
+(local direct ((. handlers :terminal/input 1) empty
+               {:type :terminal/input :kind :text :text "direct"} cofx))
+(local direct-db (misa.patch empty direct.patch))
+(assert (= (. direct-db.editing.undo 1 :text) ""))
+(assert (= direct-db.editing.insert_group true))
+(local erased (transition typed {:type :terminal/input :kind :backspace}))
+(assert (= (length erased.editing.undo) 1) "backspace split the insert group")
+(local one (transition empty {:type :terminal/input :kind :text :text "x"}))
+(local blank (transition one {:type :terminal/input :kind :backspace}))
+(assert (= blank.editor.text ""))
+(assert (= (length blank.editing.undo) 1) "deleting the last character discarded undo history")
+(local submitted (transition more {:type :terminal/input :kind :enter}))
+(assert (= submitted.editor.text ""))
+(assert (= (length submitted.editing.undo) 0))
+(local steered (transition more {:type :editor/steer}))
+(assert (= steered.editor.text ""))
+(assert (= (length steered.editing.undo) 0))
+(assert (= steered.editing.insert_group nil))
+;; Enter insert mode explicitly after undo, then invalidate its redo branch.
+(local retyped (transition (action (action normal :undo) :insert)
+                           {:type :terminal/input :kind :text :text "new"}))
+(assert (= (length retyped.editing.redo) 0))
+(local newline (transition typed {:type :terminal/input :kind :shift_enter}))
+(assert (= newline.editor.text "one\n"))
+(assert (= (length newline.editing.undo) 1))
+(local forward-deleted (transition one {:type :terminal/input :kind :arrow_left}))
+(local forward-cleared (transition forward-deleted {:type :terminal/input :kind :ctrl_d}))
+(assert (= forward-cleared.editor.text ""))
+(assert (= (length forward-cleared.editing.undo) 0))
+;; Policy configuration is orthogonal to the operation's meaning.
+(assert (= (misa.editing_transition empty.editing empty.editor typed.editor :insert false)
+           empty.editing) "noninteractive input acquired modal undo state")
+(local plain-specs ((. (fennel.dofile :extensions/editing.fnl) :setup)
+                    {:config {:editing {:mode :plain}}}))
+(local plain-policy (accumulate [found nil _ spec (ipairs plain-specs.fx)]
+                     (if (= spec.name :editing_transition) spec.value found)))
+(assert (= (plain-policy empty.editing empty.editor typed.editor :insert true) empty.editing))
+(local plain-restored (plain-policy more.editing more.editor restored.editor :restore false))
+(assert (= (length plain-restored.undo) 0) "plain restore retained the old draft history")
 (var bounded initial)
 (for [_ 1 80] (set bounded (action bounded :open_below)))
 (assert (= (length bounded.editing.undo) 64))

@@ -79,4 +79,38 @@
 (misa._setup_effects {:fx [{:type :register/editor-edit :id :test_edit
                           :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]})
 (assert (= (. (transition initial {:type :terminal/input :kind :test_edit}) :editor :text) :custom))
+
+;; The optional modal policy accounts inside these direct editor handlers too.
+(misa._setup (fennel.dofile :extensions/editing.fnl) context)
+(local command-draft (transition initial {:type :terminal/input :kind :text :text "/choose"}))
+(assert (= (. command-draft.editing.undo 1 :text) ""))
+(local command-args (transition command-draft {:type :terminal/input :kind :enter}))
+(local argument-draft (transition command-args {:type :terminal/input :kind :text :text :beta}))
+(assert (= (length argument-draft.editing.undo) 1))
+(local command-sent (transition argument-draft {:type :terminal/input :kind :enter}))
+(assert (= command-sent.editor.text ""))
+(assert (= (length command-sent.editing.undo) 0) "inline invocation retained undo history")
+(assert (= command-sent.editing.insert_group nil))
+(local overlay-draft (misa.patch argument-draft {:editor {:choice_overlay :token}}))
+(local overlay-sent (transition overlay-draft {:type :editor/choice-selected :picker :inline-choice
+                                              :picker_token :token :value :beta}))
+(assert (= overlay-sent.editor.text ""))
+(assert (= (length overlay-sent.editing.undo) 0) "overlay invocation retained undo history")
+(local selected-draft (misa.patch argument-draft
+                                 {:editor {:selection_start 0 :selection_end 2}
+                                  :editing {:anchor 0 :operator :delete}}))
+(local restored-draft (transition selected-draft {:type :editor/restore :replace true
+                                                 :text "é🙂" :cursor 3
+                                                 :attachments [{:path :draft.png}]}))
+(assert (= restored-draft.editor.cursor 3))
+(assert (= (. restored-draft.editor.attachments 1 :path) :draft.png))
+(assert (= restored-draft.editor.selection_start nil))
+(assert (= restored-draft.editing.anchor nil))
+(assert (= restored-draft.editing.operator nil))
+(assert (= (length restored-draft.editing.undo) 0))
+(local (steered-draft steer-fx) (transition selected-draft {:type :editor/steer}))
+(assert (= steered-draft.editor.selection_end nil))
+(assert (= steered-draft.editing.anchor nil))
+(assert (= (length steered-draft.editing.undo) 0))
+(assert (= (. steer-fx 1 :event :prompt) selected-draft.editor.text))
 (output "editor state properties passed\n")
