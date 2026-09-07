@@ -107,6 +107,13 @@ Tests cover cloned maps, grapheme cells/clipping, action precedence, driver inpu
 translation, and semantic-style preservation. Live-terminal acceptance remains
 part of the final interaction audit.
 
+Fresh startup attribution is recorded in `benchmarks/startup-2026-09-07.md`.
+The isolated default-profile probe repeats deterministic setup/first-dispatch
+semantics without executing native effects. Ten samples put Fennel compilation
+at 527 ms median of 546 ms CPU total, making bundled build-time compilation the
+next discriminating experiment. This is not full interactive startup latency,
+and no startup optimization has landed yet.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input
