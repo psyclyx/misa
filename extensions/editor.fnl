@@ -12,7 +12,7 @@
                   (>= editor.cursor 0) (<= editor.cursor (length text)))
              (misa.layout.boundary_at_or_before text editor.cursor)
              (length text)))
-  (misa.patch editor {: text : cursor :busy (= editor.busy true)}))
+  (misa.patch editor {: text : cursor :mode (or editor.mode :insert) :busy (= editor.busy true)}))
 
 (fn updated [editor fx reason]
   (values {:patch {:editor (misa.replace editor)} :fx (or fx [{:type :terminal/read}])}

@@ -14,7 +14,7 @@
     (when (= spec.type :register/event)
       (when (not (. handlers spec.name)) (tset handlers spec.name {}))
       (table.insert (. handlers spec.name) spec.handler))
-    (when (= spec.type :register/interceptor) (set policy spec.value)))
+    (when (= spec.type :register/event-route) (set policy spec.value)))
   (misa._setup_effects specs))
 (local cofx {:argv [] :terminal {:interactive true :columns 80 :lines 24}})
 (fn unchanged [db call]
@@ -25,7 +25,9 @@
 (fn transition [db event]
   (local before (misa.json.encode event))
   (local input {: db : event : cofx :fx {}})
-  (var tx (unchanged input #(policy.before input)))
+  (local routed (when (= event.type policy.event)
+                  (unchanged input #(policy.resolve db event cofx))))
+  (var tx {: db :event (or routed event) : cofx :fx []})
   (each [_ handler (ipairs (or (. handlers tx.event.type) {}))]
     (local result (unchanged tx.db #(handler tx.db tx.event cofx)))
     (when result
@@ -33,10 +35,16 @@
       (set tx.db (misa.patch tx.db (or result.patch {})))
       (each [_ effect (ipairs (or result.fx {}))] (table.insert tx.fx effect))))
   (assert (= before (misa.json.encode event)) "editing mutated the input event")
+  (when (= tx.event.type :editing/interrupt)
+    (set (tx.db tx.fx) (transition tx.db (. tx.fx 1 :event))))
   (values tx.db tx.fx))
 (fn action [db name] (transition db {:type :editing/action :action name}))
 (local initial {:editor {:text "one two\nthree" :cursor 0 :mode :normal :busy false}
                 :editing {}})
+(local uninitialized {:editor {:text "abc" :cursor 3} :editing {}})
+(local initialized (transition uninitialized {:type :terminal/input :kind :escape}))
+(assert (= initialized.editor.mode :normal))
+(assert (= initialized.editor.cursor 2) "Escape did not apply the implicit insert-mode cursor rule")
 (local failure
        (G.for_all (G.vector (G.elements [:left :right :up :down :line_start :line_end
                                          :word_next :word_previous :word_end :first :last
@@ -86,10 +94,19 @@
 (assert (= (length restored.editing.undo) 0))
 (local visual (action initial :visual))
 (local busy (misa.patch visual {:editor {:busy true}}))
-(local escaped (transition busy {:type :terminal/input :kind :ctrl_c}))
+(local (escaped escaped-effects) (transition busy {:type :terminal/input :kind :ctrl_c}))
 (assert (= escaped.editor.text initial.editor.text))
 (assert (= escaped.editor.selection_start nil))
 (assert (= escaped.editing.anchor nil))
+(assert (= escaped.editor.mode :insert))
+(assert (= (length escaped-effects) 2))
+(assert (= (. escaped-effects 1 :event :type) :agent/cancel-active))
+(assert (= (. escaped-effects 2 :type) :terminal/read))
+(local (exited exit-effects) (transition visual {:type :terminal/input :kind :eof}))
+(assert (= exited.editor.mode :insert))
+(assert (= exited.editing.anchor nil))
+(assert (= (length exit-effects) 1))
+(assert (= (. exit-effects 1 :type) :app/quit))
 (local pending (action initial :delete))
 (local (word-deleted word-fx) (action pending :word_next))
 (assert (= word-deleted.editor.text "two\nthree"))

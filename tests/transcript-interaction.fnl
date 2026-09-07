@@ -232,16 +232,11 @@ Second paragraph with useful words."
                              anchor)
                           "new user message displaced anchored transcript")
                   nil))
-          (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (set tx.cofx.terminal
-                                                {:columns 54
-                                                 :images true
-                                                 :interactive true
-                                                 :lines 24})
-                                           tx)
-                                 :id :test/transcript-terminal}})
+          ;; Supply native terminal facts before dispatch, never by rewriting cofx.
+          (local dispatch misa._dispatch)
+          (set misa._dispatch
+               (fn [event _ clock]
+                 (dispatch event {:columns 54 :interactive true :lines 24 :images true} clock)))
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start

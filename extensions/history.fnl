@@ -250,48 +250,21 @@
                                                        [(restore event.value)
                                                         {:type :terminal/read}])))))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (or (not= tx.event.type
-                                                         :terminal/input)
-                                                   (not (available tx.db)))
-                                               tx
-                                               (do
-                                                 (var action
-                                                      (misa.keybinding_action :history
-                                                                              tx.event))
-                                                 (local editor tx.db.editor)
-                                                 (local (text cursor)
-                                                        (values (or editor.text
-                                                                    "")
-                                                                (or editor.cursor
-                                                                    0)))
-                                                 (when (and (and (and (not action)
-                                                                      (= (or editor.mode
-                                                                             :insert)
-                                                                         :insert))
-                                                                 (= tx.event.kind
-                                                                    :arrow_up))
-                                                            (not (: (text:sub 1
-                                                                              cursor)
-                                                                    :find "\n" 1
-                                                                    true)))
-                                                   (set action :previous))
-                                                 (when (and (and (and (not action)
-                                                                      (= (or editor.mode
-                                                                             :insert)
-                                                                         :insert))
-                                                                 (= tx.event.kind
-                                                                    :arrow_down))
-                                                            (not (: (text:sub (+ cursor
-                                                                                 1))
-                                                                    :find "\n" 1
-                                                                    true)))
-                                                   (set action :next))
-                                                 (if action
-                                                   (misa.patch tx {:event (misa.replace
-                                                        {:type (.. :history/
-                                                                   action)})})
-                                                   tx))))
-                                 :id :history/input}})
+                        {:type :register/event-route
+                         :value {:id :history/input :event :terminal/input :priority 300
+                                 :context [:db/path]
+                                 :resolve (fn [db event]
+                                            (when (available db)
+                                              (var action (misa.keybinding_action :history event))
+                                              (local editor db.editor)
+                                              (local text (or editor.text ""))
+                                              (local cursor (or editor.cursor 0))
+                                              (when (and (not action) (= (or editor.mode :insert) :insert))
+                                                (if (and (= event.kind :arrow_up)
+                                                         (not (: (text:sub 1 cursor) :find "\n" 1 true)))
+                                                    (set action :previous)
+                                                    (and (= event.kind :arrow_down)
+                                                         (not (: (text:sub (+ cursor 1)) :find "\n" 1 true)))
+                                                    (set action :next)))
+                                              (when action {:type (.. :history/ action)})))}})
           {:fx setup-fx})}

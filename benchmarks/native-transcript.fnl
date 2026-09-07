@@ -57,40 +57,36 @@
               (assert (= (. blocks i :response_id) owner.id)))
             (set covered (+ covered owner.block_count)))
           (assert (= covered count))
+          (fn ready-check [] {:fx [{:type :dispatch :event {:type :bench/ready}}]})
           {:fx [{:type :register/model :value {:id :bench/model :model :model :provider :bench}}
-                {:type :register/interceptor
-                 :value {:id :bench/input
-                         :before (fn [tx]
-                                   (if (and (= tx.event.type :terminal/input) (= tx.event.kind :alt)
-                                            (or (= tx.event.text :r) (= tx.event.text :s) (= tx.event.text :q)))
-                                       (misa.patch tx {:event (misa.replace {:type (if (= tx.event.text :q) :bench/quit :bench/frame)
-                                                                            :stream (= tx.event.text :s)})})
-                                       tx))}}
-                {:type :register/interceptor
-                 :value {:id :bench/ready
-                         :after (fn [tx]
-                                  ;; Seed imports explicitly notify derived processing.
-                                  ;; Publish the initial marker only after it settles.
-                                  (if (and tx.db.benchmark (= tx.db.benchmark.step 0)
-                                           (= tx.db.editor.text "WAIT:0000")
-                                           (or (= tx.event.type :transcript/updated)
-                                               (= tx.event.type :syntax/completed))
-                                           tx.db.syntax (not (next tx.db.syntax.pending)))
-                                      (do
-                                        (var highlighted 0)
-                                        (each [_ entry (pairs tx.db.syntax.documents)]
-                                          (each [_ slot (ipairs entry.slots)]
-                                            (assert (and slot.done slot.data (> (length slot.data) 0))
-                                                    "mixed fixture requires successful native highlighting")
-                                            (set highlighted (+ highlighted 1))))
-                                        (local expected (if mixed
-                                                            (accumulate [n 0 _ block (ipairs blocks)]
-                                                              (+ n (if (= block.kind :assistant) 1 0)))
-                                                            0))
-                                        (assert (= highlighted expected) "missing highlighted documents")
-                                        (set checked-highlights true)
-                                        (misa.patch tx {:db {:editor {:text "FRAME:0000" :cursor 10}}}))
-                                      tx))}}
+                {:type :register/event-route
+                 :value {:id :bench/input :event :terminal/input :priority 2000
+                         :context [:db]
+                         :resolve (fn [_ event]
+                                    (when (and (= event.kind :alt)
+                                               (or (= event.text :r) (= event.text :s) (= event.text :q)))
+                                      {:type (if (= event.text :q) :bench/quit :bench/frame)
+                                       :stream (= event.text :s)}))}}
+                {:type :register/event :name :transcript/updated :handler ready-check}
+                {:type :register/event :name :syntax/completed :handler ready-check}
+                {:type :register/event :name :bench/ready
+                 :handler (fn [db]
+                            ;; Follow-up dispatch observes settled owner state in either setup order.
+                            (when (and db.benchmark (= db.benchmark.step 0)
+                                       (= db.editor.text "WAIT:0000")
+                                       db.syntax (not (next db.syntax.pending)))
+                              (var highlighted 0)
+                              (each [_ entry (pairs db.syntax.documents)]
+                                (each [_ slot (ipairs entry.slots)]
+                                  (assert (and slot.done slot.data (> (length slot.data) 0))
+                                          "mixed fixture requires successful native highlighting")
+                                  (set highlighted (+ highlighted 1))))
+                              (local expected (if mixed
+                                                  (accumulate [n 0 _ block (ipairs blocks)]
+                                                    (+ n (if (= block.kind :assistant) 1 0))) 0))
+                              (assert (= highlighted expected) "missing highlighted documents")
+                              (set checked-highlights true)
+                              {:patch {:editor {:text "FRAME:0000" :cursor 10}}}))}
                 {:type :register/event :name :app/start
                  :handler (fn [] {:fx [{:type :dispatch :event {:type :bench/seed}}]})}
                 {:type :register/event :name :bench/quit

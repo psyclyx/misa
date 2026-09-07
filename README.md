@@ -168,11 +168,15 @@ Registration effects use these payloads:
   callbacks or non-finite numbers. Unchanged branches retain identity, including
   equal replacement data. `misa.delete` and `misa.replace(nil)` remove a key;
   `misa.json_null` stores an explicit JSON null.
-- `{type="register/interceptor", value={id=..., before=fn?, after=fn?}}`: before callbacks run
-  in registration order and after callbacks in reverse. They receive and may
-  return `{db,event,cofx,fx}`. Treat the envelope and its contents as immutable;
-  use `misa.patch` or construct a new envelope. Dispatch preserves envelopes and
-  effect arrays retained by callbacks, including extension-owned envelope fields.
+- `{type="register/event-route", value={id,event,priority,context,resolve}}`: declares
+  a pure route for one source event type. `context` is a subscription query;
+  nil makes the route inactive. `resolve(context,event,cofx)` returns nil to
+  decline or a semantic event to handle. Highest-priority claim wins; competing
+  claims at that priority are an error, not a registration-order tie-break.
+  Priority is a finite integer. The winning event goes directly to ordinary
+  handlers in the same transaction; it is not recursively routed. If no route
+  claims, the original event is handled. Routes cannot return patches or effects.
+  Global before/after interceptors are not supported.
 - `{type="register/cofx", name=name, handler=fn}`: derives a policy value. Derivations run in
   registration order; a later derivation may read values installed by earlier
   ones. Setup context also includes `host={executable,config_path}` so subprocess
@@ -268,8 +272,8 @@ limited to 1 MiB. There is no synchronous highlighting API on `misa`.
 Recursive dispatch is
 unavailable. State commits retain unchanged branches by identity, so subscriptions can cheaply
 reuse projections that do not depend on the changed paths. Handlers, coeffect derivations,
-interceptors, and projections receive persistent state directly: dispatch does not clone or
-reconcile the database. Interceptors update state with `misa.patch`, not nested mutation.
+routes, and projections receive persistent state directly: dispatch does not clone or
+reconcile the database. State changes belong in event handlers as patches.
 These are ordinary tables, not write-protected proxies; mutating shared input violates the
 contract and cannot be rolled back. Valid patches and subscription memoization commit only
 after native validation succeeds. Views receive the pending state before that validation.
@@ -712,7 +716,17 @@ Editor-owned transitions call the optional pure
 service in the same transaction. It returns the next editing state; reasons are
 `insert`, `edit`, `discard`, `restore`, `steer`, `undo`, `redo`, and `preserve`.
 Undo bookkeeping does not inspect unrelated events or infer submission from a
-global before/after snapshot. Modal key routing remains an input interceptor.
+global before/after snapshot. Modal input uses event-scoped routes. Leaving modal
+editing through Ctrl-C, Ctrl-D, or EOF resets navigation in an explicit handler,
+then queues the original input for normal editor handling.
+
+Input routing priorities are dialog capture (1000), a picker's action-palette
+shortcut (900), picker capture (800), global action declarations (700), transcript
+selection (500), transcript scrolling (400), history (300), and modal editing
+(200). Unclaimed input reaches the editor. Model, effort, and command-picker
+shortcuts are action data, not feature-specific routing callbacks. Keybinding
+collisions within a context report an error instead of choosing by registration
+order. Raw Alt events remain intact; keybinding lookup recognizes them directly.
 
 `config.choices.purposes` maps a purpose to ordered views; Right Arrow rotates
 the active view to the left. Extensions can supply their own projections and

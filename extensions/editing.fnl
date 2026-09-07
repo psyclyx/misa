@@ -160,7 +160,7 @@
 (local actions
        {:normal (fn [editor]
                   {:editor {:mode :normal
-                            :cursor (if (and (= editor.mode :insert)
+                            :cursor (if (and (= (or editor.mode :insert) :insert)
                                              (> editor.cursor (line-start editor.text editor.cursor)))
                                         (prev editor.text editor.cursor) editor.cursor)}
                    :editing (reset-navigation)})
@@ -232,24 +232,17 @@
                  :editing (misa.replace next-state)}
          : fx})))
 
-(fn before-input [tx enabled]
-  (if (or (not= tx.event.type :terminal/input) (not enabled)
-          (not tx.cofx.terminal.interactive) tx.db.dialog tx.db.picker tx.db.selection
-          (not tx.db.editor))
-      tx
-      (let [editor (misa.patch tx.db.editor {:mode (or tx.db.editor.mode :insert)})
-            initialized (misa.patch tx {:db {:editor (misa.replace editor)}})
-            policy (if (= editor.mode :insert)
-                       (if (= tx.event.kind :escape)
-                           {:event (misa.replace {:action :normal :type :editing/action})}
-                           {})
-                       (or (= tx.event.kind :ctrl_c) (= tx.event.kind :eof) (= tx.event.kind :ctrl_d))
-                       {:db {:editor {:mode :insert :selection_start misa.delete
-                                      :selection_end misa.delete}
-                             :editing {:anchor misa.delete}}}
-                       {:event (misa.replace {:action (or (misa.keybinding_action :editor.normal tx.event) :ignore)
-                                              :type :editing/action})})]
-        (misa.patch initialized policy))))
+(local interrupt-inputs {:ctrl_c true :ctrl_d true :eof true})
+
+(fn route-input [db event cofx enabled]
+  (when (and enabled cofx.terminal.interactive (not db.dialog) (not db.picker)
+             (not db.selection) db.editor)
+    (if (= (or db.editor.mode :insert) :insert)
+        (when (= event.kind :escape) {:action :normal :type :editing/action})
+        (. interrupt-inputs event.kind)
+        {:type :editing/interrupt :input event}
+        {:action (or (misa.keybinding_action :editor.normal event) :ignore)
+         :type :editing/action})))
 
 {:setup (fn [context]
           (local setup-fx [])
@@ -313,9 +306,17 @@
                                    :label (.. "Editor: " (action:gsub "_" " "))}}))
 
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:id :editing/input
-                                 :before (fn [tx] (before-input tx enabled))}})
+                        {:type :register/event-route
+                         :value {:id :editing/input :event :terminal/input :priority 200
+                                 :context [:db/path]
+                                 :resolve (fn [db event cofx] (route-input db event cofx enabled))}})
+          (table.insert setup-fx
+                        {:type :register/event :name :editing/interrupt
+                         :handler (fn [_ event]
+                                    {:patch {:editor {:mode :insert :selection_start misa.delete
+                                                      :selection_end misa.delete}
+                                             :editing {:anchor misa.delete}}
+                                     :fx [{:type :dispatch :event event.input}]})})
           (table.insert setup-fx {:type :register/event :name :editing/action :handler action})
           (each [name registry (pairs {:register/editing-motion motions :register/editing-action actions})]
             (table.insert setup-fx

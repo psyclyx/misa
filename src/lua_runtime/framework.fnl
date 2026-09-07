@@ -2,7 +2,7 @@
 
 (local traceback debug.traceback)
 
-(local (events interceptors interceptor-ids) (values {} {} {}))
+(local (events event-routes route-ids) (values {} {} {}))
 
 (local (cofx-fns cofx-order fx-fns) (values {} {} {}))
 
@@ -67,15 +67,22 @@
   (tset handlers (+ (length handlers) 1) ___fn___)
   nil)
 
-(fn registrations.reg_interceptor [value]
+(fn registrations.reg_event_route [value]
   (open)
-  (assert (and (and (= (type value) :table) (= (type value.id) :string))
-               (not= value.id "")))
-  (assert (not (. interceptor-ids value.id)) "duplicate interceptor")
-  (assert (or (= value.before nil) (= (type value.before) :function)))
-  (assert (or (= value.after nil) (= (type value.after) :function)))
-  (tset interceptor-ids value.id true)
-  (tset interceptors (+ (length interceptors) 1) value)
+  (assert (and (= (type value) :table) (= (type value.id) :string)
+               (not= value.id "") (= (type value.event) :string)
+               (not= value.event "") (= (type value.priority) :number)
+               (> value.priority (- math.huge)) (< value.priority math.huge)
+               (= value.priority (math.floor value.priority))
+               (= (type value.context) :table) (= (type value.resolve) :function))
+          "invalid event route")
+  (assert (not (. route-ids value.id)) "duplicate event route")
+  (tset route-ids value.id true)
+  (local routes (or (. event-routes value.event) []))
+  (tset event-routes value.event routes)
+  (table.insert routes value)
+  (table.sort routes (fn [a b] (if (= a.priority b.priority) (< a.id b.id)
+                                  (> a.priority b.priority))))
   nil)
 
 (fn registrations.reg_cofx [name ___fn___]
@@ -560,8 +567,8 @@
 (local builtin-setup {:register/event (fn [e]
                                         (registrations.reg_event e.name
                                                                  e.handler))
-                      :register/interceptor (fn [e]
-                                              (registrations.reg_interceptor e.value))
+                      :register/event-route (fn [e]
+                                              (registrations.reg_event_route e.value))
                       :register/cofx (fn [e]
                                        (registrations.reg_cofx e.name e.handler))
                       :register/fx (fn [e]
@@ -689,27 +696,25 @@
                                 : terminal})
                    (each [_ name (ipairs cofx-order)]
                      (tset cofx name ((. cofx-fns name) cofx event db)))
-                   (var tx {: cofx : db : event :fx {}})
-
-                   (fn validate [value]
-                     (assert (and (and (and (= (type value) :table)
-                                            (= (type value.db) :table))
-                                       (= (type value.cofx) :table))
-                                  (= (type value.fx) :table))
-                             "invalid interceptor transaction")
-                     nil)
-
-                   (for [i 1 (length interceptors)]
-                     (local before (. interceptors i :before))
-                     (when before
-                       (set tx (or (before tx) tx))
-                       (validate tx)))
-                   ;; Interceptors may retain their input or returned envelope.
-                   ;; Own the two containers dispatch mutates, sharing all state
-                   ;; and effect records rather than cloning application data.
-                   (local owned (collect [key value (pairs tx)] key value))
-                   (set owned.fx (icollect [_ effect (ipairs tx.fx)] effect))
-                   (set tx owned)
+                   ;; Routes inspect only their declared source event. A route is
+                   ;; a pure choice of semantic event, never a transaction hook.
+                   (var routed nil)
+                   (var winning-priority nil)
+                   (each [_ route (ipairs (or (. event-routes event.type) []))]
+                     (when (and winning-priority (< route.priority winning-priority))
+                       (lua :break))
+                     (local context (misa.sub db route.context))
+                     (when (not= context nil)
+                       (local candidate (route.resolve context event cofx))
+                       (when (not= candidate nil)
+                         (assert (and (= (type candidate) :table)
+                                      (= (type candidate.type) :string)
+                                      (not= candidate.type ""))
+                                 "event route must return nil or an event")
+                         (assert (= routed nil) "ambiguous event routes at winning priority")
+                         (set routed candidate)
+                         (set winning-priority route.priority))))
+                   (var tx {: cofx : db :event (or routed event) :fx []})
                    (each [_ handler (ipairs (or (. events tx.event.type) {}))]
                      (local result (handler tx.db tx.event tx.cofx))
                      (assert (or (= result nil) (= (type result) :table))
@@ -720,11 +725,6 @@
                        (when (not= result.patch nil)
                          (set tx.db (misa.patch tx.db result.patch)))
                        (when (not= result.fx nil) (append tx.fx result.fx))))
-                   (for [i (length interceptors) 1 (- 1)]
-                     (local after (. interceptors i :after))
-                     (when after
-                       (set tx (or (after tx) tx))
-                       (validate tx)))
                    (local effects {})
                    (each [_ effect (ipairs tx.fx)]
                      (local kind (. (runtime-effect effect) :type))

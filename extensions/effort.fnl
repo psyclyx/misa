@@ -57,15 +57,6 @@
                                              (misa.request_option_value db
                                                                         option-name))}})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (local event (if (and (= tx.event.type :terminal/input) misa.keybinding_action
-                                                                 (= (misa.keybinding_action :global tx.event) :cycle_effort))
-                                                            {:type :effort/cycle}
-                                                            tx.event))
-                                           (misa.patch tx {:event (misa.replace event)}))
-                                 :id :effort/input}})
-          (table.insert setup-fx
                         {:type :register/action
                          :value {:binding {:action :cycle_effort
                                            :context :global}

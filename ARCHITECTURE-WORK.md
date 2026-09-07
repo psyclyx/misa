@@ -9,7 +9,7 @@ Completion requires behavioral evidence, not just passing existing tests.
   sharing and rollback, and cover nested replacement/deletion and collections.
 - [x] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
   cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
-- [ ] Dispatch cutover: remove the global interceptor chain; command policy uses
+- [x] Dispatch cutover: remove the global interceptor chain; command policy uses
   explicit handlers and input routing uses an extensible, scoped dispatcher with
   verified modal precedence rather than extension registration order.
 - [x] Presentation: semantic render data, open dispatch registries, unified
@@ -36,6 +36,40 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Event-scoped routing replaces global middleware (2026-09-07)
+
+The framework no longer registers or executes global before/after interceptors.
+`register/event-route` declares a source event type, subscription context, integer
+priority, and pure resolver. Only routes for that source event run. Nil context
+is inactive; false is a valid context. A winning resolver returns one semantic
+event, handled in the same transaction without recursive routing. Equal winning
+claims fail rather than depending on registration order. State/effects remain
+ordinary handler results; input routes cannot modify transaction envelopes.
+
+Dialog capture, picker palette access, picker capture, global actions, selection,
+scrolling, history, and editing now have explicit precedence. Model, effort, and
+omnipicker shortcuts use action declarations, with no parallel routing callback.
+Alt decoding is recognized directly by keybinding lookup. Ambiguous bindings
+within a context fail instead of silently selecting the first registration.
+Modal interruption resets state in an explicit editing handler before queuing
+normal editor input. Editor state initialization owns the insert-mode default;
+Escape's cursor rule no longer depends on an input interceptor initializing it.
+
+`tests/routing-state.fnl` exercises real dispatch in reversed route registration
+orders, overlapping modal states, raw Alt/Escape, selection scrolling, multiline
+history boundaries, unknown-key capture, source-event isolation, nonrecursive
+routing, false/nil contexts, tie/invalid-result errors, rollback, and exactly-once
+effects. Editing properties include missing-mode Escape, busy cancellation, and
+EOF after modal reset. Test fixtures now observe ordinary handlers/effects or
+declare scoped routes instead of requiring production middleware.
+
+Verification passed: full ReleaseSafe baseline tests, installed build, installed
+PTY interactions, and a 16-block/one-sample redraw/stream smoke check of the
+migrated benchmark fixture (compatibility only, not new performance evidence).
+Effort input profiles now explicitly load shared action routing. A final bounded
+review found no remaining cutover blocker; only overall handoff reconciliation
+remains on the checklist.
+
 ### Explicit command dispatch (2026-09-07)
 
 Command producers now emit `commands/invoke`. Its owning handler normalizes
@@ -47,11 +81,8 @@ The focused test checks immutable inputs, correlation sharing, resumed choices,
 unavailable choices, and real queued execution with exactly-once preference use.
 The full ReleaseSafe baseline suite and installed build passed.
 
-The remaining global input hooks still need the scoped dispatcher cutover.
-The read-only routing audit identified modal capture, picker palette exceptions,
-selection/scroll precedence, history boundaries, modal reset before editor input,
-and ambiguous keybindings as explicit migration contracts. Registration order
-must not silently decide which route handles a key. This remains unfinished.
+The routing audit's remaining input-hook findings are addressed by the
+event-scoped cutover above.
 
 ### Live Kimi and final performance evidence (2026-09-07)
 

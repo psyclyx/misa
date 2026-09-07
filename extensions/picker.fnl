@@ -142,19 +142,10 @@
                                                  (misa.patch state {:session (misa.replace (misa.choice_refresh session db))})))
                                           (updated state []))))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (= tx.event.type
-                                                         :terminal/input)
-                                                      tx.db.picker)
-                                             (misa.patch tx {:event (misa.replace
-                                                  {:action tx.event.action
-                                                   :key tx.event.key
-                                                   :kind tx.event.kind
-                                                   :text tx.event.text
-                                                   :type :picker/input})})
-                                             tx))
-                                 :id :picker/input}})
+                        {:type :register/event-route
+                         :value {:id :picker/input :event :terminal/input :priority 800
+                                 :context [:db/path :picker]
+                                 :resolve (fn [_ event] (misa.patch event {:type :picker/input}))}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :picker/input

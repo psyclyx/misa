@@ -63,13 +63,9 @@
                                                         :provider :openai-codex}]
                                              :selected :openai-codex/gpt-5.4}}})}]})
 
-(misa._setup_effects {:fx [{:type :register/interceptor
-                            :value {:before (fn [tx]
-                                              (tset observed
-                                                    (+ (length observed) 1)
-                                                    tx.event)
-                                              tx)
-                                    :id :observe}}]})
+(misa._setup_effects {:fx [{:type :register/event :name :editor/restore
+                            :handler (fn [_ event]
+                                       (table.insert observed event) nil)}]})
 
 (misa._seal context)
 

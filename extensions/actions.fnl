@@ -32,50 +32,32 @@
                          :event {:type :actions/open}
                          :id :actions.open
                          :label "Open action palette / key reference"}}
-                {:type :register/interceptor
-                 :value {:before (fn [tx]
-                                   (if (or (not= tx.event.type :terminal/input)
-                                           tx.db.dialog)
-                                       tx
-                                       (if tx.db.picker
-                                           (if (= (misa.keybinding_action :global
-                                                                              tx.event)
-                                                      :action_palette)
-                                               (misa.patch tx {:event (misa.replace {:type :actions/open})})
-                                             tx)
-                                           (do
-                                             (local editor (or tx.db.editor {}))
-                                             (local bound
-                                                    (misa.keybinding_action :global
-                                                                            tx.event))
-                                             (when bound
-                                               (each [_ action (ipairs (misa.actions))]
-                                                 (when (and (and (= action.binding.context
-                                                                    :global)
-                                                                 (= action.binding.action
-                                                                    bound))
-                                                            (or (not action.available)
-                                                                (action.available tx.db)))
-                                                   (local routed (misa.patch tx {:event (misa.replace action.event)}))
-                                                   (lua "return routed"))))
-                                             (if (and (and (= tx.event.kind
-                                                                :text)
-                                                             (= (tx.event.text:sub 1
-                                                                                   1)
-                                                                ":"))
-                                                        (or (= (or editor.text
-                                                                   "")
-                                                               "")
-                                                            (= editor.mode
-                                                               :normal)))
-                                               (misa.patch tx {:event (misa.replace
-                                                    {:query (or (and (= tx.event.kind
-                                                                        :text)
-                                                                     (tx.event.text:sub 2))
-                                                                "")
-                                                     :type :actions/open})})
-                                               tx)))))
-                         :id :actions/input}}
+                {:type :register/event-route
+                 :value {:id :actions/picker-palette :event :terminal/input :priority 900
+                         :context [:db/path :picker]
+                         :resolve (fn [_ event]
+                                    (when (= (misa.keybinding_action :global event) :action_palette)
+                                      {:type :actions/open}))}}
+                {:type :register/event-route
+                 :value {:id :actions/input :event :terminal/input :priority 700
+                         :context [:db/path]
+                         :resolve (fn [db event]
+                                    (when (and (not db.dialog) (not db.picker))
+                                      (local bound (misa.keybinding_action :global event))
+                                      (var selected nil)
+                                      (when bound
+                                        (each [_ action (ipairs (misa.actions))]
+                                          (when (and action.binding (= action.binding.context :global)
+                                                     (= action.binding.action bound)
+                                                     (or (not action.available) (action.available db)))
+                                            (assert (= selected nil) "ambiguous global action binding")
+                                            (set selected action.event))))
+                                      (local editor (or db.editor {}))
+                                      (or selected
+                                          (when (and (= event.kind :text)
+                                                     (= (event.text:sub 1 1) ":")
+                                                     (or (= (or editor.text "") "") (= editor.mode :normal)))
+                                            {:type :actions/open :query (event.text:sub 2)}))))}}
                 {:type :register/event
                  :name :actions/open
                  :handler (fn [db event]

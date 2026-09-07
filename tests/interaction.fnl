@@ -37,15 +37,11 @@
 
           (fn input [kind text] {: kind : text :type :terminal/input})
 
-          (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (set tx.cofx.terminal
-                                                {:columns 60
-                                                 :interactive true
-                                                 :lines 24})
-                                           tx)
-                                 :id :interaction/terminal}})
+          ;; This fixture supplies terminal input at the harness boundary.
+          (local dispatch misa._dispatch)
+          (set misa._dispatch
+               (fn [event _ clock]
+                 (dispatch event {:columns 60 :interactive true :lines 24} clock)))
           (step {:key :alt+z :kind :key :type :terminal/input}
                 (fn [db]
                   (assert db.custom_action

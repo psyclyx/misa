@@ -13,8 +13,7 @@
 (each [_ name (ipairs [:json :request_options :models])]
   (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
   (each [_ spec (ipairs specs.fx)]
-    (when (= spec.type :register/interceptor)
-      (assert (= spec.value.id :models/input) "model initialization installed middleware")))
+    (assert (not= spec.type :register/interceptor) "model initialization installed middleware"))
   (misa._setup_effects specs))
 (var observed nil)
 (misa._setup_effects {:fx [{:type :register/event :name :test/read

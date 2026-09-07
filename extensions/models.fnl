@@ -170,19 +170,6 @@
                                                        :type :choices/command-open}
                                                 :type :dispatch}]}))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (= tx.event.type :terminal/input)
-                                                      (not tx.db.picker)
-                                                      (not tx.db.dialog)
-                                                      misa.keybinding_action
-                                                      (= (misa.keybinding_action :global
-                                                                                 tx.event)
-                                                         :open_model_picker))
-                                             (misa.patch tx {:event (misa.replace {:type :model/picker-open})})
-                                               tx))
-                                 :id :models/input}})
-          (table.insert setup-fx
                         {:type :register/event
                          :name :model/open
                          :handler (fn [db event]

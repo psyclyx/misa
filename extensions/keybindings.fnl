@@ -24,6 +24,7 @@
                          :name :keybinding_action
                          :value (fn [context-name event]
                                   (local key (key-of event))
+                                  (var matched nil)
                                   (each [_ binding (ipairs (misa.keybindings))]
                                     (when (= binding.context context-name)
                                       (local section
@@ -42,9 +43,10 @@
                                               "configured keybinding must be a string or array")
                                       (each [_ candidate (ipairs keys)]
                                         (when (= candidate key)
-                                          (let [___antifnl_rtn_1___ binding.action]
-                                            (lua "return ___antifnl_rtn_1___"))))))
-                                  nil)})
+                                          (assert (or (= matched nil) (= matched binding.action))
+                                                  "ambiguous keybinding in context")
+                                          (set matched binding.action)))))
+                                  matched)})
           (table.insert setup-fx
                         {:type :register/service
                          :name :keybinding_hint
@@ -139,23 +141,4 @@
                                            :style :label
                                            :text (.. " " entry.label)}))
                                   spans)})
-          ;; The native decoder already distinguishes standalone Escape from Alt
-          ;; chords. Normalizing only completed Alt events avoids swallowing Escape
-          ;; while waiting for a byte that may never arrive.
-          (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (and (= tx.event.type
-                                                              :terminal/input)
-                                                           (= tx.event.kind
-                                                              :alt))
-                                                      (= (type tx.event.text)
-                                                         :string))
-                                             (misa.patch tx {:event (misa.replace
-                                                  {:key (.. :alt+
-                                                            (tx.event.text:lower))
-                                                   :kind :key
-                                                   :type :terminal/input})})
-                                             tx))
-                                 :id :keybindings/normalize-alt}})
           {:fx setup-fx})}

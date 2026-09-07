@@ -106,16 +106,4 @@
                                                              "invalid command palette invocation"))
                                               {:fx [{:event invocation
                                                      :type :dispatch}]}))))})
-          (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (and (= tx.event.type
-                                                              :terminal/input)
-                                                           (not tx.db.picker))
-                                                      (= (misa.keybinding_action :global
-                                                                                 tx.event)
-                                                         :open_omnipicker))
-                                             (misa.patch tx {:event (misa.replace {:type :omnipicker/open})})
-                                             tx))
-                                 :id :omnipicker/global}})
           {:fx setup-fx})}

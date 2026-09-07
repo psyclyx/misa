@@ -4,6 +4,8 @@
 
 ;; between a user's navigation keystroke and copy.
 
+(local scrolling-inputs {:wheel_up true :wheel_down true :page_up true :page_down true})
+
 (fn focus [state]
   (let [frame (. state.frames (length state.frames))]
     (values (. frame.nodes frame.index) frame)))
@@ -289,37 +291,14 @@
                                    :id (.. :selection. action)
                                    :label (.. "Selection: " action)}}))
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (or (or (not= tx.event.type
-                                                             :terminal/input)
-                                                       tx.db.picker)
-                                                   tx.db.dialog)
-                                               tx
-                                               (if (or (or (or (= tx.event.kind
-                                                                  :wheel_up)
-                                                               (= tx.event.kind
-                                                                  :wheel_down))
-                                                           (= tx.event.kind
-                                                              :page_up))
-                                                       (= tx.event.kind
-                                                          :page_down))
-                                                   tx
-                                                   (do
-                                                     (var next-event tx.event)
-                                                     (if tx.db.selection
-                                                         (set next-event
-                                                              {:action (or (misa.keybinding_action :selection
-                                                                                                   tx.event)
-                                                                           :ignore)
-                                                               :type :selection/action})
-                                                         (= (misa.keybinding_action :global
-                                                                                    tx.event)
-                                                            :select_transcript)
-                                                         (set next-event
-                                                              {:type :selection/open}))
-                                                     (misa.patch tx {:event (misa.replace next-event)})))))
-                                 :id :selection/input}})
+                        {:type :register/event-route
+                         :value {:id :selection/input :event :terminal/input :priority 500
+                                 :context [:db/path]
+                                 :resolve (fn [db event]
+                                            (when (and db.selection (not db.picker) (not db.dialog)
+                                                       (not (. scrolling-inputs event.kind)))
+                                              {:type :selection/action
+                                               :action (or (misa.keybinding_action :selection event) :ignore)}))}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :selection/open

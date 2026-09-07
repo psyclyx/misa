@@ -7,16 +7,13 @@
                                  :model :model
                                  :provider :smoke}})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (and (= tx.event.type
-                                                              :terminal/input)
-                                                           (= tx.event.kind
-                                                              :alt))
-                                                      (= tx.event.text :z))
-                                             (misa.patch tx {:event (misa.replace {:type :smoke/inspect})})
-                                             tx))
-                                 :id :smoke/inspect}})
+                        {:type :register/event-route
+                         :value {:id :smoke/inspect :event :terminal/input
+                                 :priority 2000 :context [:db/path]
+                                 :resolve (fn [_ input]
+                                            (when (or (and (= input.kind :alt) (= input.text :z))
+                                                      (and (= input.kind :key) (= input.key :alt+z)))
+                                              {:type :smoke/inspect}))}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :smoke/inspect

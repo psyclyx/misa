@@ -65,21 +65,13 @@
                                                    :type :dialog/input}
                                            :type :dispatch}]})})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:after (fn [tx]
-                                          (when (and (= tx.event.type
-                                                        :dialog/open)
-                                                     (= tx.event.id :one))
-                                            (tset tx.fx (+ (length tx.fx) 1)
-                                                  {:event {:correlation :stale
-                                                           :id :one
-                                                           :message :bad
-                                                           :type :dialog/update}
-                                                   :type :dispatch})
-                                            (tset tx.fx (+ (length tx.fx) 1)
-                                                  {:event {:type :dialog/begin-cancel}
-                                                   :type :dispatch}))
-                                          tx)
-                                 :id :dialog-test-cancel}})
+                        {:type :register/event :name :dialog/open
+                         :handler (fn [_ event]
+                                    (when (= event.id :one)
+                                      {:fx [{:type :dispatch
+                                             :event {:type :dialog/update :id :one
+                                                     :correlation :stale :message :bad}}
+                                            {:type :dispatch
+                                             :event {:type :dialog/begin-cancel}}]}))})
           nil
           {:fx setup-fx})}

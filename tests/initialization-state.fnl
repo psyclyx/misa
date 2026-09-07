@@ -8,8 +8,7 @@
                        :animation/default :auth :models])]
   (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
   (each [_ spec (ipairs specs.fx)]
-    (when (= spec.type :register/interceptor)
-      (assert (= spec.value.id :models/input) "startup policy installed global middleware"))
+    (assert (not= spec.type :register/interceptor) "startup policy installed global middleware")
     (when (and (= spec.type :register/event) (= spec.name :app/start))
       (table.insert initializers {:id name :handler spec.handler})))
   (misa._setup_effects specs))

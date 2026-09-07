@@ -130,12 +130,10 @@
 
 {:setup (fn []
           (local fx [{:type :register/service :name :dialogs :value true}
-                     {:type :register/interceptor
-                      :value {:id :dialogs/input
-                              :before (fn [tx]
-                                        (if (and (= tx.event.type :terminal/input) tx.db.dialog)
-                                          (misa.patch tx {:event (misa.replace {:kind tx.event.kind :text tx.event.text :type :dialog/input})})
-                                          tx))}}
+                     {:type :register/event-route
+                      :value {:id :dialogs/input :event :terminal/input :priority 1000
+                              :context [:db/path :dialog]
+                              :resolve (fn [_ event] (misa.patch event {:type :dialog/input}))}}
                      {:type :register/setup-effect :name :register/dialog-input
                       :handler (fn [effect]
                                  (assert (and (= (type effect.id) :string) (not= effect.id "")

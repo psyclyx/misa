@@ -11,40 +11,25 @@
             (tset steps (+ (length steps) 1) {: check : event})
             nil)
 
+          ;; Observe native effect boundaries without running real timers.
+          (local observed {:starts 0 :stops 0 :redraws 0})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:after (fn [tx]
-                                          (local state
-                                                 (or tx.db.test_animation
-                                                     {:redraws 0
-                                                      :starts 0
-                                                      :stops 0}))
-                                          (var starts state.starts)
-                                          (var stops state.stops)
-                                          (var redraws state.redraws)
-                                          (local keep {})
-                                          (each [_ effect (ipairs tx.fx)]
-                                            (if (= effect.type :timer/start)
-                                                (do
-                                                  (assert (and (= effect.id
-                                                                  :animation/service)
-                                                               (= effect.interval_ms
-                                                                  160)))
-                                                  (set starts (+ starts 1)))
-                                                (= effect.type :timer/stop)
-                                                (set stops (+ stops 1))
-                                                (do
-                                                  (when (and (= effect.type
-                                                                :dispatch)
-                                                             (= effect.event.type
-                                                                :ui/redraw))
-                                                    (set redraws (+ redraws 1)))
-                                                  (tset keep
-                                                        (+ (length keep) 1)
-                                                        effect))))
-                                          (misa.patch tx {:db {:test_animation {: starts : stops : redraws}}
-                                                          :fx (misa.replace keep)}))
-                                 :id :test/animation-effects}})
+                        {:type :register/fx :name :timer/start
+                         :handler (fn [effect]
+                                    (assert (and (= effect.id :animation/service)
+                                                 (= effect.interval_ms 160)))
+                                    (set observed.starts (+ observed.starts 1))
+                                    {})})
+          (table.insert setup-fx
+                        {:type :register/fx :name :timer/stop
+                         :handler (fn []
+                                    (set observed.stops (+ observed.stops 1))
+                                    {})})
+          (table.insert setup-fx
+                        {:type :register/event :name :ui/redraw
+                         :handler (fn []
+                                    (set observed.redraws (+ observed.redraws 1))
+                                    nil)})
           (table.insert setup-fx
                         {:type :register/component
                          :id :default.test-animation
@@ -90,9 +75,9 @@
             nil)
 
           (fn counts [db starts stops]
-            (assert (= db.test_animation.starts (or (and enabled starts) 0))
+            (assert (= observed.starts (or (and enabled starts) 0))
                     "unexpected animation timer starts")
-            (assert (= db.test_animation.stops (or (and enabled stops) 0))
+            (assert (= observed.stops (or (and enabled stops) 0))
                     "unexpected animation timer stops")
             nil)
 
@@ -133,7 +118,7 @@
                 (fn [db]
                   (assert (= (misa.animation_frame db :status)
                              (or (and enabled "•") "…")))
-                  (assert (= db.test_animation.redraws (or (and enabled 1) 0)))
+                  (assert (= observed.redraws (or (and enabled 1) 0)))
                   nil))
           (step {:role :other :type :animations/start}
                 (fn [db] (counts db 1 0) nil))
@@ -145,7 +130,7 @@
                 (fn [db] (counts db 1 1) nil))
           (step {:id :animation/service :type :animations/tick}
                 (fn [db]
-                  (assert (= db.test_animation.redraws (or (and enabled 1) 0))
+                  (assert (= observed.redraws (or (and enabled 1) 0))
                           "stale tick redrew idle UI")
                   nil))
           (step {:animation :static :type :animations/swap})
@@ -195,8 +180,14 @@
                                         {:fx [{:event current.event
                                                :type :dispatch}
                                               {:event {:index event.index
-                                                       :type :test/animation-check}
+                                                       :type :test/animation-settle}
                                                :type :dispatch}]}))})
+          ;; Let queued redraw observations complete before checking the step.
+          (table.insert setup-fx
+                        {:type :register/event :name :test/animation-settle
+                         :handler (fn [_ event]
+                                    {:fx [{:type :dispatch
+                                           :event {:type :test/animation-check :index event.index}}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/animation-check

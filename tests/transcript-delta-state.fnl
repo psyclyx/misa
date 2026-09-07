@@ -9,7 +9,7 @@
 (var (register input-policy blocks-for) nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (when (= spec.type :register/interceptor) (set input-policy spec.value.before))
+  (when (= spec.type :register/event-route) (set input-policy spec.value.resolve))
   (when (= spec.name :transcript_blocks) (set blocks-for spec.value))
   (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]}))
   (when (= spec.name :register/transcript-delta) (set register spec.handler)))
@@ -117,10 +117,10 @@
   (local tx {:db boot :event {:type :terminal/input :kind example.kind :action example.action}
              :cofx {:terminal {:lines 24}}})
   (local before (misa.json.encode tx))
-  (local next (input-policy tx))
+  (local next (input-policy tx.db tx.event tx.cofx))
   (assert (= before (misa.json.encode tx)) "transcript input policy mutated its transaction")
-  (assert (= next.event.type :messages/scroll))
-  (assert (= next.event.delta example.delta)))
+  (assert (= next.type :messages/scroll))
+  (assert (= next.delta example.delta)))
 (local response-started (transition boot {:type :transcript/response-start :role :assistant}))
 (local block-started (transition response-started {:type :transcript/block-start :kind :assistant}))
 (assert (= (. block-started.messages.responses 1 :block_count) 1))

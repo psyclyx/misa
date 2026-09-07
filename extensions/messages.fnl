@@ -433,20 +433,18 @@
                                                                :scroll (math.max 0 (- bottom first))}}
                                            :fx [{:type :terminal/read}]})))})
           (local scroll-inputs {:wheel_up (fn [] 3) :wheel_down (fn [] -3)
-                                :transcript_up (fn [tx] (math.max 1 (math.floor (/ tx.cofx.terminal.lines 2))))
-                                :transcript_down (fn [tx] (- (math.max 1 (math.floor (/ tx.cofx.terminal.lines 2)))))})
+                                :transcript_up (fn [cofx] (math.max 1 (math.floor (/ cofx.terminal.lines 2))))
+                                :transcript_down (fn [cofx] (- (math.max 1 (math.floor (/ cofx.terminal.lines 2)))))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:id :messages/global-keys
-                                 :before (fn [tx]
-                                           (if (or (not= tx.event.type :terminal/input) tx.db.picker
-                                                   (not misa.keybinding_action)) tx
-                                               (let [action (misa.keybinding_action :global tx.event)
-                                                     scroll (or (. scroll-inputs tx.event.kind) (. scroll-inputs action))
-                                                     event (if scroll {:type :messages/scroll :delta (scroll tx)}
-                                                               (= action :toggle_verbose) {:type :messages/toggle-verbose}
-                                                               tx.event)]
-                                                 (misa.patch tx {:event (misa.replace event)}))))}})
+                        {:type :register/event-route
+                         :value {:id :messages/global-keys :event :terminal/input :priority 400
+                                 :context [:db/path]
+                                 :resolve (fn [db event cofx]
+                                            (when (and (not db.picker) (not db.dialog) misa.keybinding_action)
+                                              (local action (misa.keybinding_action :global event))
+                                              (local scroll (or (. scroll-inputs event.kind) (. scroll-inputs action)))
+                                              (if scroll {:type :messages/scroll :delta (scroll cofx)}
+                                                  (= action :toggle_verbose) {:type :messages/toggle-verbose})))}})
           (table.insert setup-fx
                         {:type :register/action
                          :value {:binding {:action :toggle_verbose

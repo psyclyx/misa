@@ -14,14 +14,9 @@
                          :name :ordered
                          :handler (fn [cofx] (.. cofx.policy ":ordered"))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:after (fn [tx]
-                                          (misa.patch tx {:db {:order (misa.replace
-                                                                       (append tx.db.order :after))}}))
-                                 :before (fn [tx]
-                                           (misa.patch tx {:db {:order (misa.replace
-                                                                        (append tx.db.order :before))}}))
-                                 :id :trace}})
+                        {:type :register/event :name :app/start
+                         :handler (fn [db]
+                                    {:patch {:order (misa.replace (append db.order :before))}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
@@ -35,10 +30,18 @@
                          :handler (fn [db]
                                     {:patch {:order (misa.replace (append db.order :second))}})})
           (table.insert setup-fx
+                        {:type :register/event :name :app/start
+                         :handler (fn [db]
+                                    {:patch {:order (misa.replace (append db.order :after))}})})
+          (table.insert setup-fx
                         {:type :register/fx
                          :name :test/next
                          :handler (fn []
                                     {:event {:type :test/done} :type :dispatch})})
+          (table.insert setup-fx
+                        {:type :register/event :name :test/done
+                         :handler (fn [db]
+                                    {:patch {:order (misa.replace (append db.order :before))}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/done

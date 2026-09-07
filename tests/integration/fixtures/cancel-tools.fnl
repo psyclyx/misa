@@ -71,31 +71,27 @@
                                     {:fx [{:id :cancel-delay :type :timer/stop}
                                           {:event {:type :agent/cancel-active}
                                            :type :dispatch}]})})
+          (local cancelled {})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:after (fn [tx]
-                                          (when (= tx.event.type
-                                                   :agent/cancel-active)
-                                            (assert (and tx.db.agent.cancel_requested
-                                                         (= tx.db.agent.status
-                                                            :cancelling))
-                                                    "tool cancellation intent was not recorded")
-                                            (local ids {})
-                                            (each [_ effect (ipairs tx.fx)]
-                                              (when (= effect.type
-                                                       :operation/cancel)
-                                                (tset ids effect.id true)))
-                                            (assert (and (. ids :slow-1)
-                                                         (. ids :slow-2))
-                                                    "not every pending native tool call was cancelled"))
-                                          tx)
-                                 :id :test/cancel-effects}})
+                        {:type :register/fx :name :operation/cancel
+                         :handler (fn [effect]
+                                    (tset cancelled effect.id true)
+                                    effect)})
+          (table.insert setup-fx
+                        {:type :register/event :name :agent/cancel-active
+                         :handler (fn [db]
+                                    (assert (and db.agent.cancel_requested
+                                                 (= db.agent.status :cancelling))
+                                            "tool cancellation intent was not recorded")
+                                    nil)})
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/completed
                          :handler (fn [db]
                                     (if (not cancel-started) nil
                                         (do
+                                          (assert (and (. cancelled :slow-1) (. cancelled :slow-2))
+                                                  "not every pending native tool call was cancelled")
                                           (assert (and (and (= db.agent.status
                                                                :ready)
                                                             (= db.agent.pending_tool_count
