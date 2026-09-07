@@ -5,15 +5,16 @@
 (local misa _G.misa)
 (local specs ((. (fennel.dofile :extensions/costs.fnl) :setup)
               {:config {:costs {:models {:test {:input 2 :output 4}}}}}))
-(var account nil)
+(local handlers {})
 (each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/interceptor) (set account spec.value.before)))
-(local transition account)
-(set account (fn [tx]
-               (local before (fennel.view tx))
-               (local result (transition tx))
-               (assert (= before (fennel.view tx)) "cost accounting mutated its transaction")
-               result))
+  (assert (not= spec.type :register/interceptor) "accounting must use explicit event handlers")
+  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(fn account [tx]
+  (local before (fennel.view tx))
+  (local result ((assert (. handlers tx.event.type)) tx.db tx.event))
+  (assert (= before (fennel.view tx)) "cost accounting mutated its input")
+  (assert (not (and result result.db)) "accounting returned legacy mutable state")
+  {:db (misa.patch tx.db (or (and result result.patch) {}))})
 (local original {:costs {:responses {:earlier {:model :test :cost {:usd 7}}}}})
 (local started (account {:db original
                          :event {:type :transcript/response-start

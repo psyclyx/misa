@@ -235,11 +235,10 @@
                                                            (if event.usage
                                                                (estimate response.pricing event.usage)
                                                                {:estimated true :unknown true :usd 0}))}))))})
-          (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (local transition (. transitions tx.event.type))
-                                           (local patch (and transition (transition tx.db tx.event)))
-                                           (if patch (misa.patch tx {:db patch}) tx))
-                                 :id :costs/account}})
+          (each [name transition (pairs transitions)]
+            (table.insert setup-fx
+                          {:type :register/event : name
+                           :handler (fn [db event]
+                                      (local patch (transition db event))
+                                      (when patch {: patch}))}))
           {:fx setup-fx})}

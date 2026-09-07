@@ -33,6 +33,26 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Interceptor responsibilities (2026-09-07)
+
+Immutable ownership does not by itself justify putting a domain transition in
+an interceptor. Cost accounting's five-entry event switch has been removed from
+the global `before` chain: its existing transition table now registers ordinary
+patch-returning event handlers. Pricing snapshots, completion replay, interruption
+and reset still belong to accounting; numeric and display subscriptions remain
+separate. `tests/cost-state.fnl` checks handler purity and rejects an interceptor
+registration, while the native costs fixture exercises actual event dispatch,
+catalogue changes, reported costs, replay and reset.
+
+Syntax remains an unresolved dependency boundary (`extensions/syntax.fnl`): its
+global hook captures transcript length before every event, detects appended
+blocks afterward, and knows response ownership and several transcript event
+types. Moving its code to a differently named global hook would not address
+that coupling. The transcript owner should expose explicit lifecycle facts for
+derived processing; syntax requests/completions stay effects/events, and syntax
+projections stay pure subscriptions. Input normalization/routing interceptors
+are a separate concern and are not being removed indiscriminately.
+
 ### State and patch ownership audit (2026-09-07)
 
 The remaining framework ownership gap was the transaction envelope returned by
