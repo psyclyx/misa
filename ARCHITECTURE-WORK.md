@@ -52,8 +52,31 @@ completion orders, no providers, no auth extension, and no prompt.
 `tests/model-startup.fnl` registers request options before models and checks
 configured false values, switching, unavailable models, and restored availability.
 `tests/initialization-state.fnl` now tests five direct owner handlers and rejects
-initialization middleware. Queue/image lifecycle guards remain unfinished.
+initialization middleware.
 Input routing is a separate ordered concern.
+
+Queue/image lifecycle policies now contribute named subscription queries through
+the setup-only `editor_lifecycle` service namespace. Contributors return boolean
+`hold_exit` and `block_draft` facts, combined by `editor/lifecycle`; neither queue
+nor images installs an interceptor or rewrites `agent/completed.keep_alive`.
+The editor owns submission eligibility and queues its completion check after
+other completion owners commit. Queue reservations clear through an explicit
+submission-settled continuation rather than arbitrary completion notifications.
+
+`tests/editor-lifecycle.fnl` covers both registration orders and terminal modes,
+reserved/queued/rejected/auth-deferred submissions, interactive-only unsent draft
+protection, independent third-party query contributions, preserved selection and
+undo state, modal/command Enter during acquisition, and image completion without
+automatic submission. These are real framework transactions with simulated
+native effects; they do not alone prove native headless termination.
+Review identified a rejection-ordering gap: releasing a reservation immediately
+after `agent/submit` let an older exit check run before the rejection's queued
+diagnostic/completion. Submission settlement now queues acknowledgement behind
+those immediate events. The native `queued-rejection.fnl` fixture requires the
+diagnostic and second completion before headless exit in both registration orders.
+Verification passed: focused lifecycle/ownership regressions, direct native
+headless runs in both orders, the full ReleaseSafe baseline suite (including
+the native regression), installed build, and installed PTY interaction checks.
 
 Verification: the focused startup/auth/model tests, full ReleaseSafe baseline
 suite, installed build, and installed Ghostty PTY protocol/input suite passed.

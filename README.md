@@ -893,6 +893,27 @@ The dock renders the `pending-prompt` component role with
 components keep existing resting styles and use shared action-hover backgrounds;
 override either role through `config.components.roles` to change presentation.
 
+Extensions contribute lifecycle facts through named subscription queries, not
+by rewriting completion or input events. Register a subscription and expose its
+query with `{type="register/service", name="editor_lifecycle.<extension>",
+value={"<query-id>"}}`. Registration may precede or follow the editor extension;
+duplicate names are rejected by the service registry. Each query declares its
+normal subscription inputs and returns boolean flags: `hold_exit` prevents
+one-shot completion from quitting; `block_draft` prevents draft submit/steer
+without clearing draft text, attachments, selection, or undo state. Omitted
+flags mean false, and contributors combine with logical OR.
+
+The editor checks completion through a queued `editor/completion-check` event,
+after the completion transaction commits. Queue reservations and active agent
+work both prevent premature exit. Pending image acquisition contributes both
+flags, but does not block command, picker, or dialog Enter, nor an already-owned
+queue payload. Acquisition completion attaches the image without auto-submitting.
+An unsent draft independently prevents exit only in interactive sessions. The
+former `agent/completed.keep_alive` event rewrite is no longer consumed.
+Queue submission acknowledgement runs behind the immediate events emitted by
+`agent/submit`, so an older completion check cannot discard a newer rejection's
+diagnostic while releasing its reservation.
+
 Ctrl-V pastes a PNG/JPEG image from the system clipboard; `/image <path>` loads
 a file. Ghostty, Kitty, and WezTerm receive bounded inline previews through the
 [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/); other terminals show attachment metadata. Images keep

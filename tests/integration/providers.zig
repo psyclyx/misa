@@ -1,5 +1,17 @@
 const Harness = @import("harness.zig").Harness;
 
+test "headless completion drains queued rejection diagnostics before exit" {
+    for ([_][]const u8{
+        "{\"extensions\":[\"json\",\"layout\",\"commands\",\"choices\",\"agent\",\"queue\",\"editor\",\"@ROOT@/tests/integration/fixtures/queued-rejection.fnl\"]}",
+        "{\"extensions\":[\"json\",\"layout\",\"commands\",\"choices\",\"agent\",\"editor\",\"queue\",\"@ROOT@/tests/integration/fixtures/queued-rejection.fnl\"]}",
+    }) |config| {
+        var h = try Harness.init();
+        defer h.deinit();
+        try h.config(config);
+        try h.expect(.{ .args = &.{"startup"}, .input = "", .timeout_ms = 3000 }, "rejection completed\n");
+    }
+}
+
 test "Claude reports a failed MCP connection instead of silently running without tools" {
     var h = try Harness.init();
     defer h.deinit();

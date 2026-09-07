@@ -13,24 +13,14 @@
             {:patch {:images (misa.replace (misa.patch current patch))} : fx})
 
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and tx.db.images
-                                                      (not= (next tx.db.images.pending)
-                                                            nil))
-                                             (if (= tx.event.type
-                                                    :agent/completed)
-                                                 (misa.patch tx {:event {:keep_alive true}})
-                                                 (or (= tx.event.type
-                                                        :editor/steer)
-                                                     (and (= tx.event.type
-                                                             :terminal/input)
-                                                          (= tx.event.kind
-                                                             :enter)))
-                                                 (misa.patch tx {:event (misa.replace {:type :ui/redraw})})
-                                                 tx)
-                                               tx))
-                                 :id :images/pending}})
+                        {:type :register/sub
+                         :value {:id :images/lifecycle :inputs [[:db/path :images :pending]]
+                                 :compute (fn [inputs]
+                                            (local pending (. inputs 1))
+                                            (local acquiring (and (not= pending nil) (not= (next pending) nil)))
+                                            {:hold_exit acquiring :block_draft acquiring})}})
+          (table.insert setup-fx
+                        {:type :register/service :name :editor_lifecycle.images :value [:images/lifecycle]})
           (table.insert setup-fx
                         {:type :register/action
                          :value {:available (fn [db]

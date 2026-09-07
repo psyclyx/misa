@@ -18,18 +18,23 @@
   (assert (= before (misa.json.encode tx)) (.. name " changed its transaction or incoming event"))
   result)
 (each [_ name (ipairs [:queue :images])]
+  (each [_ spec (ipairs (. specs name :fx))]
+    (assert (not= spec.type :register/interceptor) "lifecycle policy still installs middleware")
+    (when (or (= spec.type :register/sub) (= spec.type :register/service))
+      (misa._setup_effects {:fx [spec]})))
   (local db {:queue {:pending :queued :sending false :attachments []}
              :images {:pending {:request true}}})
-  (local result (input name db {:type :agent/completed :exit true}))
-  (assert result.event.keep_alive)
-  (assert result.event.exit)
-  (assert (= result.db db))
-  (local idle (input name {} {:type :agent/completed}))
-  (assert (= idle.event.keep_alive nil)))
-(local image-enter (input :images {:images {:pending {:request true}}}
-                         {:type :terminal/input :kind :enter :text :secret}))
-(assert (= image-enter.event.type :ui/redraw))
-(assert (= image-enter.event.text nil))
+  (local before (misa.json.encode db))
+  (local query (. misa.editor_lifecycle name))
+  (local result (misa.sub db query))
+  (assert result.hold_exit)
+  (assert (= (= result.block_draft true) (= name :images)))
+  (assert (= before (misa.json.encode db)))
+  (assert (not (. (misa.sub {} query) :hold_exit))))
+(assert (. (misa.sub {:queue {:pending "" :sending true :attachments []}}
+                    misa.editor_lifecycle.queue) :hold_exit))
+(assert (. (misa.sub {:queue {:pending "" :sending false :attachments [{}]}}
+                    misa.editor_lifecycle.queue) :hold_exit))
 (assert (= (. (input :effort {} {:type :choices/command-open :command :/effort}) :event :type)
            :effort/unsupported))
 (assert (= (. (input :effort {} {:type :terminal/input :action :cycle_effort}) :event :type)

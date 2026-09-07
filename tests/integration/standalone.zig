@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "editor lifecycle queries preserve queued work and draft submission boundaries" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/editor-lifecycle.fnl"} }, "editor lifecycle contracts passed\n");
+}
+
 test "input layer controls share semantic components and hover resolution" {
     var h = try Harness.init();
     defer h.deinit();

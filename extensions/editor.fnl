@@ -239,10 +239,12 @@
       (and (= event.kind :enter)
            (or (not= editor.text "") (> (length (or editor.attachments {})) 0)))
       (let [(command args) (command-input editor.text)]
-        (dispatch-input (emptied editor)
-                        (if command {:arguments args :command command.name :type command.event}
-                            {:attachments editor.attachments :prompt editor.text
-                             :type (or misa.submit_event :agent/submit)}) cofx))
+        (if (and (not command) (. (misa.sub db [:editor/lifecycle]) :block_draft))
+            (updated editor)
+            (dispatch-input (emptied editor)
+                            (if command {:arguments args :command command.name :type command.event}
+                                {:attachments editor.attachments :prompt editor.text
+                                 :type (or misa.submit_event :agent/submit)}) cofx)))
       (let [edit (. edits event.kind)]
         (updated (sync-choice (if edit (edit editor event) editor) db) nil
                  (if (= event.kind :ctrl_c) :discard
@@ -315,6 +317,28 @@
                             nil))
           (local plain-prompt
                  (and (= (type config) :table) (= config.plain_prompt true)))
+          ;; Setup-only named query contributors can precede or follow editor.
+          ;; Example: register/service editor_lifecycle.images => [:images/lifecycle].
+          ;; Contributors return data flags, never transaction callbacks.
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :editor/lifecycle
+                                 :inputs (fn []
+                                           (local contributors (or misa.editor_lifecycle {}))
+                                           (local names (icollect [name (pairs contributors)] name))
+                                           (table.sort names)
+                                           (icollect [_ name (ipairs names)] (. contributors name)))
+                                 :compute (fn [inputs]
+                                            (local result {:hold_exit false :block_draft false})
+                                            (for [index 1 inputs.n]
+                                              (local flags (. inputs index))
+                                              (assert (= (type flags) :table) "editor lifecycle query must return flags")
+                                              (each [key value (pairs flags)]
+                                                (assert (and (or (= key :hold_exit) (= key :block_draft))
+                                                             (= (type value) :boolean))
+                                                        "invalid editor lifecycle flag")
+                                                (when value (tset result key true))))
+                                            result)}})
           (table.insert setup-fx
                         {:type :register/service
                          :name :editor_projection
@@ -378,28 +402,35 @@
                                        {:fx [{:event {:level :error :text event.message :type :transcript/harness}
                                               :type :dispatch}
                                              {:type (if cofx.terminal.interactive :terminal/read :app/quit)}]})
-                  :agent/completed (fn [db event cofx]
-                                     (local editor db.editor)
-                                     (local pending (and cofx.terminal.interactive editor
-                                                         (or (not= editor.text "")
-                                                             (> (length (or editor.attachments {})) 0))))
-                                     {:fx [(if (and event.exit (not event.keep_alive) (not pending))
-                                               {:type :app/quit}
-                                               cofx.terminal.interactive
-                                               {:event {:type :ui/redraw} :type :dispatch}
-                                               {:type :terminal/read})]})
+                  :agent/completed (fn [_ event]
+                                     {:fx [{:type :dispatch :event {:type :editor/completion-check :exit event.exit}}]})
+                  :editor/completion-check (fn [db event cofx]
+                                             (local editor db.editor)
+                                             (local pending (and cofx.terminal.interactive editor
+                                                                 (or (not= editor.text "")
+                                                                     (> (length (or editor.attachments {})) 0))))
+                                             (local active (and db.agent
+                                                                (or (not= db.agent.status :ready)
+                                                                    db.agent.startup_prompt)))
+                                             {:fx [(if (and event.exit (not active) (not pending)
+                                                            (not (. (misa.sub db [:editor/lifecycle]) :hold_exit)))
+                                                       {:type :app/quit}
+                                                       cofx.terminal.interactive
+                                                       {:event {:type :ui/redraw} :type :dispatch}
+                                                       {:type :terminal/read})]})
                   :editor/restore restore
                   :editor/attach attach
                   :editor/detach detach
                   :editor/steer (fn [db _ cofx]
                                   (local editor (state db))
-                                  (local result
-                                         (dispatch-input (misa.patch (emptied editor)
-                                                                    {:mode :insert :selection_start misa.delete
-                                                                     :selection_end misa.delete})
-                                                         {:attachments editor.attachments :prompt editor.text
-                                                          :type :queue/steer} cofx))
-                                  (values result :steer))
+                                  (if (. (misa.sub db [:editor/lifecycle]) :block_draft)
+                                      (updated editor)
+                                      (let [result (dispatch-input (misa.patch (emptied editor)
+                                                                              {:mode :insert :selection_start misa.delete
+                                                                               :selection_end misa.delete})
+                                                                   {:attachments editor.attachments :prompt editor.text
+                                                                    :type :queue/steer} cofx)]
+                                        (values result :steer))))
                   :ui/redraw (fn [] {:fx [{:type :terminal/read}]})
                   :editor/choice-selected selected
                   :terminal/input terminal-input})
