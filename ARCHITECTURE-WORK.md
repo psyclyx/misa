@@ -33,6 +33,19 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Selection highlighting follows content provenance (2026-09-07)
+
+Whole-document decoration incorrectly colored title chrome, rails and padding;
+plain-text rendering lacked the source flags needed for partial range decoration.
+Decoration now applies to source-marked content only. Plain-text output and
+thematic rules carry source provenance; a fully covered source block can highlight
+derived content (such as a rendered rule) without pretending its glyphs occur
+literally in the original text. Unselected documents retain their original view
+identity. Regression tests cover title/rail/padding exclusion, plain ranges,
+unselected identity and selecting a rule within a larger document.
+Focused selection tests, the complete ReleaseSafe baseline-CPU suite, installed
+build, and PTY interaction regression passed.
+
 ### Frozen selection and live syntax source mismatch fixed (2026-09-07)
 
 A regression test reproduced future stream text appearing inside a frozen

@@ -859,9 +859,11 @@ Alt-S enters structural transcript selection. `j`/`k` select siblings, `l`
 narrows, and `h` widens. A message can narrow to sections, a section's heading
 or content, paragraphs, code blocks, tables, rows, cells, lines, words, and
 individual graphemes. The selected range is highlighted in the existing rich
-transcript; a small input dock shows its path and keys. `y` copies its exact
+transcript; titles, rails, and layout padding keep their resting appearance.
+Plain text and rendered Markdown content both carry source markers for range
+decoration. A small input dock shows its path and keys. `y` copies its exact
 source, including Markdown syntax; Escape returns to the editor. The selected
-source is frozen so streaming cannot move the range before copying. F1 remains
+source is frozen so streaming cannot move the range during navigation. F1 remains
 available. The `selection` component role renders the dock independently of
 transcript decoration. Page Up/Down, Alt-K/J, and the mouse wheel scroll the
 transcript; its viewport stays anchored while new content arrives.

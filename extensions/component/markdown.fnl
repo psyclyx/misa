@@ -323,8 +323,8 @@
                                prefix)))
         (= block.kind :thematic_rule)
         (tset result (+ (length result) 1)
-              {:spans [(span (string.rep "─" columns)
-                             (compose base :markdown.rule))]})
+              {:spans [{:text (string.rep "─" columns)
+                        :style (compose base :markdown.rule) :source true}]})
         (= block.kind :table)
         (append result (render-table block columns base))
         (= block.kind :code_block)
@@ -384,7 +384,7 @@
   (var source (: (: (tostring (or text "")) :gsub "\r\n" "\n") :gsub "\r" "\n"))
   (when (= (source:sub -1) "\n") (set source (source:sub 1 -2)))
   (icollect [line (: (.. source "\n") :gmatch "(.-)\n")]
-    {:spans [(span line base)]}))
+    {:spans [{:text line :style base :source true}]}))
 
 {:setup (fn []
           (local setup-fx [])

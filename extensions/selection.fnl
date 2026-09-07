@@ -198,8 +198,12 @@
                                               (local piece
                                                      (item.text:sub (+ at 1)
                                                                     after))
-                                              (var active whole)
+                                              (var active false)
                                               (when item.source
+                                                (set active (or whole
+                                                                (and line.source_start line.source_end
+                                                                     (<= selected.first line.source_start)
+                                                                     (>= selected.last line.source_end))))
                                                 (local found
                                                        (text:find piece
                                                                   (+ cursor 1)
