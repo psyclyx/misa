@@ -89,4 +89,8 @@ Anthropic-compatible model discovery now accumulates pages with persistent
 updates, sorts only owned results, and explicitly clears completed/failed state.
 `tests/anthropic-discovery-state.fnl` checks generated page-boundary invariance,
 input ownership, provider isolation, cursors, and empty authoritative results.
-The Anthropic-compatible stream reducer remains to be migrated.
+Anthropic-compatible stream records now use persistent state and open record,
+block-start, and block-delta registries. Generated batching tests and focused
+checks cover signed/redacted thinking, tool fragments, usage, terminal gating,
+stream isolation, and credential-profile mismatch reporting. The Claude CLI
+adapter and the agent/transcript owners remain to be migrated.

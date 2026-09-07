@@ -139,6 +139,12 @@ test "Anthropic model discovery preserves state across pagination" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/anthropic-discovery-state.fnl"} }, "Anthropic discovery state properties passed\n");
 }
 
+test "Anthropic streaming preserves signed state and batching semantics" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/anthropic-stream-state.fnl"} }, "Anthropic stream state properties passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

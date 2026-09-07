@@ -857,3 +857,9 @@ Its record handlers are pure and extensible through
 Handlers return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`.
 Completion records mark `terminal=true`; failures mark `failed=true`. Either
 stops subsequent records from emitting output for that stream.
+Anthropic-compatible streams expose `register/anthropic-record`,
+`register/anthropic-block-start`, and `register/anthropic-block-delta` with `id`
+and `value` fields. Pure handlers receive `(state, record, request_id, provider)`
+and return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`. This keeps
+signed provider state separate from visible thinking deltas. Terminal handlers
+set `terminal=true` or `failed=true` and request `finish=true`.

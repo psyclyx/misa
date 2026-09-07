@@ -1,3 +1,126 @@
+;; Record reducers keep opaque provider state independent of its presentation.
+(fn emit [id kind data]
+  {:type :dispatch :event (misa.patch (or data {}) {:id id :type kind})})
+
+(fn delta [id value] (emit id :agent/stream-delta {:delta value}))
+(fn provider-state [id provider value]
+  (emit id :agent/stream-state {: provider : value}))
+
+(local starts
+       {:thinking (fn [_ record id]
+                    (local block record.content_block)
+                    {:patch {:blocks {(tostring record.index)
+                                      (misa.replace {:type :thinking :signature (or block.signature "")
+                                                     :thinking (or block.thinking "")})}}
+                     :fx (if (and (= (type block.thinking) :string) (not= block.thinking ""))
+                             [(delta id {:type :thinking :text block.thinking})] [])})
+        :redacted_thinking (fn [_ record id provider]
+                             {:fx [(provider-state id provider record.content_block)]})
+        :text (fn [_ record id]
+                (local text record.content_block.text)
+                (when (and (= (type text) :string) (not= text ""))
+                  {:fx [(delta id {:type :text : text})]}))
+        :tool_use (fn [_ record id]
+                    {:fx [(delta id {:type :tool_call :arguments_json ""
+                                    :id record.content_block.id :name record.content_block.name
+                                    :index record.index})]})})
+
+(local deltas
+       {:text_delta (fn [_ record id]
+                      {:fx [(delta id {:type :text :text (or record.delta.text "")})]})
+        :thinking_delta (fn [state record id]
+                          (local key (tostring record.index))
+                          (local block (. state.blocks key))
+                          (local text (or record.delta.thinking ""))
+                          {:patch (when block {:blocks {key {:thinking (.. block.thinking text)}}})
+                           :fx [(delta id {:type :thinking : text})]})
+        :signature_delta (fn [state record]
+                           (local key (tostring record.index))
+                           (local block (. state.blocks key))
+                           (when block
+                             {:patch {:blocks {key {:signature (.. block.signature (or record.delta.signature ""))}}}}))
+        :input_json_delta (fn [_ record id]
+                            {:fx [(delta id {:type :tool_call :index record.index
+                                            :arguments_json_delta (or record.delta.partial_json "")})]})})
+
+(fn nested [registry field]
+  (fn [state record id provider]
+    (local value (. record field))
+    (local handler (and (= (type value) :table) (. registry value.type)))
+    (when handler (handler state record id provider))))
+
+(local records
+       {:message_stop (fn [] {:patch {:terminal true} :finish true})
+        :content_block_start (nested starts :content_block)
+        :content_block_delta (nested deltas :delta)
+        :content_block_stop (fn [state record id provider]
+                              (local key (tostring record.index))
+                              (local block (. state.blocks key))
+                              {:patch {:blocks {key misa.delete}}
+                               :fx (if (and block (not= block.signature ""))
+                                       [(provider-state id provider block)] [])})
+        :message_start (fn [_ record id]
+                         (when (= (type record.message) :table)
+                           (local usage (if (= (type record.message.usage) :table) record.message.usage {}))
+                           {:fx [(emit id :agent/stream-usage
+                                       {:usage {:cache_read_tokens (or usage.cache_read_input_tokens 0)
+                                                :cache_write_tokens (or usage.cache_creation_input_tokens 0)
+                                                :input_includes_cache false
+                                                :input_tokens (or usage.input_tokens 0)
+                                                :output_tokens (or usage.output_tokens 0)}})]}))
+        :message_delta (fn [_ record id]
+                         (local usage (if (= (type record.usage) :table) record.usage {}))
+                         {:fx [(emit id :agent/stream-usage
+                                     {:stop_reason (and (= (type record.delta) :table) record.delta.stop_reason)
+                                      :usage {:output_tokens (or usage.output_tokens 0)}})]})
+        :error (fn [_ record id]
+                 {:patch {:failed true} :finish true
+                  :fx [(emit id :agent/stream-error
+                             {:message (tostring (or (and (= (type record.error) :table) record.error.message)
+                                                     "Anthropic request failed"))})]})})
+
+(fn stream-update [id state fx]
+  {:patch {:providers {:anthropic_streams {id (misa.replace state)}}} : fx})
+
+(fn stream [provider db event]
+  (local state (or (and db.providers db.providers.anthropic_streams
+                        (. db.providers.anthropic_streams event.id)) {:blocks {}}))
+  (if (= event.phase :start)
+      (stream-update event.id {:blocks {}} [(emit event.id :agent/stream-start)])
+      (= event.phase :end)
+      (let [body (when (and (= (type event.body) :string) (not= event.body "")) event.body)
+            http (when (and (= (type event.status) :number) (>= event.status 400))
+                   (.. "HTTP " event.status (if body (.. ": " body) "")))
+            mismatch (= event.message :CredentialProfileMismatch)
+            next-event (if (and event.ok state.terminal) (emit event.id :agent/stream-end)
+                           (emit event.id :agent/stream-error
+                                 {:message (or (when mismatch
+                                                 "credential endpoint profile changed; run /login kimi-coding for the selected region")
+                                               http body event.message
+                                               (when (not state.terminal) "Anthropic stream ended without message_stop")
+                                               "Anthropic request failed")}))
+            fx (if state.failed [] [next-event])]
+        (when mismatch
+          (table.insert fx {:type :dispatch
+                            :event {:type :models/provider-availability :available false
+                                    :provider provider :reason :relogin-required}}))
+        (stream-update event.id nil fx))
+      (or state.terminal state.failed) nil
+      (do
+        (var next-state state)
+        (local fx [])
+        (var finished false)
+        (each [_ record (ipairs (or event.records [])) &until finished]
+          (local handler (. records record.type))
+          (local result (and handler (handler next-state record event.id provider)))
+          (when result
+            (set next-state (misa.patch next-state (or result.patch {})))
+            (each [_ effect (ipairs (or result.fx []))] (table.insert fx effect))
+            (when result.finish
+              (set finished true)
+              (table.insert fx {:id event.id :type :operation/finish}))))
+        (stream-update event.id next-state fx))))
+
 {:setup (fn [context]
           (local setup-fx [])
           ;; Anthropic Messages protocol adapter shared by provider declarations.
@@ -253,305 +376,17 @@
                                                                :type :http/request
                                                                :url spec.url}))})
                                   (table.insert setup-fx
-                                                {:type :register/event
-                                                 :name (.. :provider/ spec.id
-                                                           :-complete)
-                                                 :handler (fn [db event]
-                                                            (set db.providers
-                                                                 (or db.providers
-                                                                     {}))
-                                                            (set db.providers.anthropic_streams
-                                                                 (or db.providers.anthropic_streams
-                                                                     {}))
-                                                            (local streams
-                                                                   db.providers.anthropic_streams)
-                                                            (if (= event.phase
-                                                                   :start)
-                                                                (do
-                                                                  (tset streams
-                                                                        event.id
-                                                                        {:blocks {}})
-                                                                  {: db
-                                                                   :fx [{:event {:id event.id
-                                                                                 :type :agent/stream-start}
-                                                                         :type :dispatch}]})
-                                                                (let [state (or (. streams
-                                                                                   event.id)
-                                                                                {:blocks {}})]
-                                                                  (if (= event.phase
-                                                                         :end)
-                                                                      (let [terminal (= state.terminal
-                                                                                        true)]
-                                                                        (tset streams
-                                                                              event.id
-                                                                              nil)
-                                                                        (local body
-                                                                               (or (and (and (= (type event.body)
-                                                                                                :string)
-                                                                                             (not= event.body
-                                                                                                   ""))
-                                                                                        event.body)
-                                                                                   nil))
-                                                                        (local http
-                                                                               (or (and (and (= (type event.status)
-                                                                                                :number)
-                                                                                             (>= event.status
-                                                                                                 400))
-                                                                                        (.. "HTTP "
-                                                                                            (tostring event.status)
-                                                                                            (or (and body
-                                                                                                     (.. ": "
-                                                                                                         body))
-                                                                                                "")))
-                                                                                   nil))
-                                                                        (local mismatch
-                                                                               (= event.message
-                                                                                  :CredentialProfileMismatch))
-                                                                        (local next-event
-                                                                               (or (and (and event.ok
-                                                                                             terminal)
-                                                                                        {:id event.id
-                                                                                         :type :agent/stream-end})
-                                                                                   {:id event.id
-                                                                                    :message (or (or (or (or (or (and mismatch
-                                                                                                                      "credential endpoint profile changed; run /login kimi-coding for the selected region")
-                                                                                                                 http)
-                                                                                                             body)
-                                                                                                         event.message)
-                                                                                                     (and (not terminal)
-                                                                                                          "Anthropic stream ended without message_stop"))
-                                                                                                 "Anthropic request failed")
-                                                                                    :type :agent/stream-error}))
-                                                                        (local fx
-                                                                               [{:event next-event
-                                                                                 :type :dispatch}])
-                                                                        (when mismatch
-                                                                          (tset fx
-                                                                                (+ (length fx)
-                                                                                   1)
-                                                                                {:event {:available false
-                                                                                         :provider spec.id
-                                                                                         :reason :relogin-required
-                                                                                         :type :models/provider-availability}
-                                                                                 :type :dispatch}))
-                                                                        {: db
-                                                                         : fx})
-                                                                      (do
-                                                                        (var (fx terminal)
-                                                                             (values {}
-                                                                                     false))
-                                                                        (each [_ record (ipairs (or event.records
-                                                                                                    {}))]
-                                                                          (if (= record.type
-                                                                                 :message_stop)
-                                                                              (do
-                                                                                (set (state.terminal terminal)
-                                                                                     (values true
-                                                                                             true))
-                                                                                (lua :break))
-                                                                              (and (= record.type
-                                                                                      :content_block_start)
-                                                                                   (= (type record.content_block)
-                                                                                      :table))
-                                                                              (let [block record.content_block]
-                                                                                (if (= block.type
-                                                                                       :thinking)
-                                                                                    (do
-                                                                                      (tset state.blocks
-                                                                                            (tostring record.index)
-                                                                                            {:signature (or block.signature
-                                                                                                            "")
-                                                                                             :thinking (or block.thinking
-                                                                                                           "")
-                                                                                             :type :thinking})
-                                                                                      (when (and (= (type block.thinking)
-                                                                                                    :string)
-                                                                                                 (not= block.thinking
-                                                                                                       ""))
-                                                                                        (tset fx
-                                                                                              (+ (length fx)
-                                                                                                 1)
-                                                                                              {:event {:delta {:text block.thinking
-                                                                                                               :type :thinking}
-                                                                                                       :id event.id
-                                                                                                       :type :agent/stream-delta}
-                                                                                               :type :dispatch})))
-                                                                                    (= block.type
-                                                                                       :redacted_thinking)
-                                                                                    (tset fx
-                                                                                          (+ (length fx)
-                                                                                             1)
-                                                                                          {:event {:id event.id
-                                                                                                   :provider spec.id
-                                                                                                   :type :agent/stream-state
-                                                                                                   :value block}
-                                                                                           :type :dispatch})
-                                                                                    (and (and (= block.type
-                                                                                                 :text)
-                                                                                              (= (type block.text)
-                                                                                                 :string))
-                                                                                         (not= block.text
-                                                                                               ""))
-                                                                                    (tset fx
-                                                                                          (+ (length fx)
-                                                                                             1)
-                                                                                          {:event {:delta {:text block.text
-                                                                                                           :type :text}
-                                                                                                   :id event.id
-                                                                                                   :type :agent/stream-delta}
-                                                                                           :type :dispatch})
-                                                                                    (= block.type
-                                                                                       :tool_use)
-                                                                                    (tset fx
-                                                                                          (+ (length fx)
-                                                                                             1)
-                                                                                          {:event {:delta {:arguments_json ""
-                                                                                                           :id block.id
-                                                                                                           :index record.index
-                                                                                                           :name block.name
-                                                                                                           :type :tool_call}
-                                                                                                   :id event.id
-                                                                                                   :type :agent/stream-delta}
-                                                                                           :type :dispatch})))
-                                                                              (and (= record.type
-                                                                                      :content_block_delta)
-                                                                                   (= (type record.delta)
-                                                                                      :table))
-                                                                              (let [delta record.delta]
-                                                                                (if (= delta.type
-                                                                                       :text_delta)
-                                                                                    (tset fx
-                                                                                          (+ (length fx)
-                                                                                             1)
-                                                                                          {:event {:delta {:text (or delta.text
-                                                                                                                     "")
-                                                                                                           :type :text}
-                                                                                                   :id event.id
-                                                                                                   :type :agent/stream-delta}
-                                                                                           :type :dispatch})
-                                                                                    (= delta.type
-                                                                                       :thinking_delta)
-                                                                                    (do
-                                                                                      (tset fx
-                                                                                            (+ (length fx)
-                                                                                               1)
-                                                                                            {:event {:delta {:text (or delta.thinking
-                                                                                                                       "")
-                                                                                                             :type :thinking}
-                                                                                                     :id event.id
-                                                                                                     :type :agent/stream-delta}
-                                                                                             :type :dispatch})
-                                                                                      (local block
-                                                                                             (. state.blocks
-                                                                                                (tostring record.index)))
-                                                                                      (when block
-                                                                                        (set block.thinking
-                                                                                             (.. block.thinking
-                                                                                                 (or delta.thinking
-                                                                                                     "")))))
-                                                                                    (= delta.type
-                                                                                       :signature_delta)
-                                                                                    (let [block (. state.blocks
-                                                                                                   (tostring record.index))]
-                                                                                      (when block
-                                                                                        (set block.signature
-                                                                                             (.. block.signature
-                                                                                                 (or delta.signature
-                                                                                                     "")))))
-                                                                                    (= delta.type
-                                                                                       :input_json_delta)
-                                                                                    (tset fx
-                                                                                          (+ (length fx)
-                                                                                             1)
-                                                                                          {:event {:delta {:arguments_json_delta (or delta.partial_json
-                                                                                                                                     "")
-                                                                                                           :index record.index
-                                                                                                           :type :tool_call}
-                                                                                                   :id event.id
-                                                                                                   :type :agent/stream-delta}
-                                                                                           :type :dispatch})))
-                                                                              (= record.type
-                                                                                 :content_block_stop)
-                                                                              (let [block (. state.blocks
-                                                                                             (tostring record.index))]
-                                                                                (when (and block
-                                                                                           (not= block.signature
-                                                                                                 ""))
-                                                                                  (tset fx
-                                                                                        (+ (length fx)
-                                                                                           1)
-                                                                                        {:event {:id event.id
-                                                                                                 :provider spec.id
-                                                                                                 :type :agent/stream-state
-                                                                                                 :value block}
-                                                                                         :type :dispatch}))
-                                                                                (tset state.blocks
-                                                                                      (tostring record.index)
-                                                                                      nil))
-                                                                              (and (= record.type
-                                                                                      :message_start)
-                                                                                   (= (type record.message)
-                                                                                      :table))
-                                                                              (let [usage (or (and (= (type record.message.usage)
-                                                                                                      :table)
-                                                                                                   record.message.usage)
-                                                                                              {})]
-                                                                                (tset fx
-                                                                                      (+ (length fx)
-                                                                                         1)
-                                                                                      {:event {:id event.id
-                                                                                               :type :agent/stream-usage
-                                                                                               :usage {:cache_read_tokens (or usage.cache_read_input_tokens
-                                                                                                                              0)
-                                                                                                       :cache_write_tokens (or usage.cache_creation_input_tokens
-                                                                                                                               0)
-                                                                                                       :input_includes_cache false
-                                                                                                       :input_tokens (or usage.input_tokens
-                                                                                                                         0)
-                                                                                                       :output_tokens (or usage.output_tokens
-                                                                                                                          0)}}
-                                                                                       :type :dispatch}))
-                                                                              (= record.type
-                                                                                 :message_delta)
-                                                                              (let [usage (or (and (= (type record.usage)
-                                                                                                      :table)
-                                                                                                   record.usage)
-                                                                                              {})]
-                                                                                (tset fx
-                                                                                      (+ (length fx)
-                                                                                         1)
-                                                                                      {:event {:id event.id
-                                                                                               :stop_reason (or (and (= (type record.delta)
-                                                                                                                        :table)
-                                                                                                                     record.delta.stop_reason)
-                                                                                                                nil)
-                                                                                               :type :agent/stream-usage
-                                                                                               :usage {:output_tokens (or usage.output_tokens
-                                                                                                                          0)}}
-                                                                                       :type :dispatch}))
-                                                                              (= record.type
-                                                                                 :error)
-                                                                              (tset fx
-                                                                                    (+ (length fx)
-                                                                                       1)
-                                                                                    {:event {:id event.id
-                                                                                             :message (tostring (or (and (= (type record.error)
-                                                                                                                            :table)
-                                                                                                                         record.error.message)
-                                                                                                                    "Anthropic request failed"))
-                                                                                             :type :agent/stream-error}
-                                                                                     :type :dispatch})))
-                                                                        (tset streams
-                                                                              event.id
-                                                                              state)
-                                                                        (when terminal
-                                                                          (tset fx
-                                                                                (+ (length fx)
-                                                                                   1)
-                                                                                {:id event.id
-                                                                                 :type :operation/finish}))
-                                                                        {: db
-                                                                         : fx})))))})
-                                  nil
+                                                {:type :register/event :name (.. :provider/ spec.id :-complete)
+                                                 :handler (fn [db event] (stream spec.id db event))})
                                   {:fx setup-fx})})
+          (each [name registry (pairs {:register/anthropic-record records
+                                       :register/anthropic-block-start starts
+                                       :register/anthropic-block-delta deltas})]
+            (table.insert setup-fx
+                          {:type :register/setup-effect : name
+                           :handler (fn [effect]
+                                      (assert (and (= (type effect.id) :string) (not= effect.id "")
+                                                   (= (type effect.value) :function) (not (. registry effect.id)))
+                                              "invalid or duplicate Anthropic record handler")
+                                      (tset registry effect.id effect.value))}))
           {:fx setup-fx})}
