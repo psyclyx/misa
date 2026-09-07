@@ -78,6 +78,14 @@ unrelated-state projection reuse, and existing rejected-completion/reset paths.
 This is a correctness change, not a measured speedup: the cost of carrying parsed
 data through patch validation still needs representative streaming measurements.
 
+Model selection/status projections now use explicit `models/selected` and
+`models/projection` subscription dependencies, rather than rebuilding from the
+whole database. Affordance tests cover unrelated-state reuse, default changes,
+missing selection, and retained-state reads. Model picker previews also copy cost
+detail lines before adding context metadata, preventing repeated completions
+from modifying shared provider cost data. This establishes dependency/ownership
+contracts; end-to-end rendering performance remains unmeasured.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

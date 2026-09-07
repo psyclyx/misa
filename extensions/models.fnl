@@ -83,7 +83,7 @@
                                                (when cost
                                                  (set metadata.summary
                                                       cost.summary)
-                                                 (set metadata.lines cost.lines)
+                                                 (set metadata.lines (icollect [_ line (ipairs cost.lines)] line))
                                                  (when model.context_window
                                                    (table.insert metadata.lines
                                                                  1
@@ -116,28 +116,33 @@
                                                       db.models.selected)
                                                  nil))}})
           (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :models/selected
+                                 :inputs (fn [] [[:db/path :models :entries]
+                                                 [:db/path :models :selected]])
+                                 :compute (fn [inputs]
+                                            (local model (find (or (. inputs 1) []) (. inputs 2)))
+                                            (when model
+                                              {:context_window model.context_window
+                                               :id model.id
+                                               :label (.. model.provider "/" model.model)
+                                               :pricing model.pricing}))}})
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :models/projection
+                                 :inputs (fn [] [[:db/path :models :configured_default]
+                                                 [:models/selected]])
+                                 :compute (fn [inputs]
+                                            {:configured_default (. inputs 1)
+                                             :selected (. inputs 2)})}})
+          (table.insert setup-fx
                         {:type :register/service
                          :name :selected_model_projection
-                         :value (fn [db]
-                                  (local state (or db.models {}))
-                                  (local model
-                                         (find (or state.entries {})
-                                               state.selected))
-                                  (if (not model) nil
-                                      {:context_window model.context_window
-                                       :id model.id
-                                       :label (.. model.provider "/"
-                                                  model.model)
-                                       :pricing model.pricing}))})
+                         :value (fn [db] (misa.sub db [:models/selected]))})
           (table.insert setup-fx
                         {:type :register/service
                          :name :models_projection
-                         :value (fn [db]
-                                  (local selected
-                                         (misa.selected_model_projection db))
-                                  {:configured_default (. (or db.models {})
-                                                          :configured_default)
-                                   : selected})})
+                         :value (fn [db] (misa.sub db [:models/projection]))})
           (local configured (or (and (= (type context.config) :table)
                                      context.config.models)
                                 nil))
