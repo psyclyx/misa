@@ -33,6 +33,31 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Syntax deltas remove whole-catalog validation (2026-09-07)
+
+Deeper profiling identified a larger cost than transcript block-vector updates:
+the syntax interceptor replaced its complete state, including every parsed
+document, after every event. Request construction now returns data; model updates
+publish narrow document/pending-request patches. Completion similarly updates
+only its pending request and document slots/revision. Unchanged input returns
+the transaction itself. State validation and the public patch API are unchanged.
+
+Ten same-binary alternating native comparisons with matching complete frame
+hashes measured 300-block streaming at 7.839 → 4.474 ms (median of run medians),
+and redraw at 4.206 → 3.245 ms. A separate 200-frame streaming observation was
+4.299 ms median / 18.926 ms maximum; this does not close the every-frame budget
+or representative-workload requirements. Unicode clipping and transcript
+projection are now the dominant visible profile stacks. Small-workload results,
+methodology and the rejected entry-merge API experiment are recorded in
+`benchmarks/syntax-deltas-2026-09-07.md`.
+
+Tests add 300-document request/coalescing/sharing checks and unchanged transaction
+identity. The patch audit also corrected two tests that accidentally used table
+keys instead of numeric keys (`1f39336`). No entry-merge API is retained.
+Verification: focused syntax/state tests, the complete ReleaseSafe baseline-CPU
+suite, installed build, and both installed-catalog and worktree-catalog PTY
+interaction regressions passed.
+
 ### Packaged catalog verification (2026-09-07)
 
 `nix-build -A default --no-out-link` passed build, check and fixup for the runtime

@@ -1,8 +1,12 @@
 ;; Lua-side attribution for the native transcript fixture; not native latency.
-;; tools/fennel benchmarks/transcript-profile.fnl
+;; tools/fennel benchmarks/transcript-profile.fnl [stack-depth] [extension-directory]
 (local fennel (require :fennel))
 (local profiler (require :jit.profile))
 (local output print)
+(local stack-depth (tonumber (or (. arg 1) "12")))
+(assert (and stack-depth (>= stack-depth 1) (<= stack-depth 128) (= (% stack-depth 1) 0))
+        "stack depth must be an integer from 1 to 128")
+(local extension-directory (or (. arg 2) :extensions))
 (local file (assert (io.open :config/default.json :r)))
 (local config-source (file:read :*a))
 (file:close)
@@ -19,7 +23,7 @@
 (each [_ name (ipairs config.extensions)]
   (when (and (not= name :json) (not= name :auth)
              (not (name:match "^provider%.")) (not (name:match "^protocol%.")))
-    (misa._setup (fennel.dofile (.. :extensions/ (name:gsub "%." "/") :.fnl)) context)))
+    (misa._setup (fennel.dofile (.. extension-directory "/" (name:gsub "%." "/") :.fnl)) context)))
 (misa._seal context)
 (local terminal {:columns 100 :lines 32 :interactive true :images false})
 (local clock {:wall_ms 0 :monotonic_ms 0})
@@ -36,7 +40,7 @@
 (for [_ 1 6] (dispatch {:type :bench/frame :stream true}))
 (local samples {})
 (profiler.start "fi1" (fn [thread count state]
-                        (local key (.. state " " (profiler.dumpstack thread "pfZ < " 3)))
+                        (local key (.. state " " (profiler.dumpstack thread "pfZ < " stack-depth)))
                         (tset samples key (+ (or (. samples key) 0) count))))
 (for [_ 1 200] (dispatch {:type :bench/frame :stream true}))
 (profiler.stop)

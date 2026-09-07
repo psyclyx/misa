@@ -83,4 +83,64 @@
 (event reset-later {:type :syntax/completed :id :unrelated})
 (assert (= expected (fennel.view (misa.syntax_projection (misa.syntax_projections retained) model)))
         "later syntax work invalidated a retained state's projection")
+;; Collection updates preserve other documents and request identities. No-op
+;; events return the transaction itself rather than rebuilding a syntax snapshot.
+(local many-blocks (fcollect [i 1 300]
+                     {:id (tostring i) :response_id :many :kind :assistant : text}))
+(local many-input {:db (misa.patch (initial)
+                                 {:messages {:blocks many-blocks :by_response {:many 1}
+                                             :responses [{:block_start 1 :block_count 300}]}})
+                   :event {:type :seed} :cofx {:terminal {:interactive true}}
+                   :syntax_count 0 :fx [{:type :sentinel}]})
+(local seeded (unchanged many-input #(policy.after many-input)))
+(assert (= (length seeded.fx) 301))
+(assert (= seeded.db.syntax.next_id 300))
+(for [i 1 300]
+  (local request (. seeded.fx (+ i 1)))
+  (assert (= request.id (.. :syntax/ i)))
+  (assert (= (. seeded.db.syntax.pending request.id :key) (.. "4:many" i))))
+(assert (= (. seeded.fx 1) (. many-input.fx 1)))
+(assert (= (next many-input.db.syntax.documents) nil))
+(assert (= (policy.after seeded) seeded) "unchanged syntax rebuilt transaction")
+(local delta-input (misa.patch (policy.before seeded)
+                              {:event (misa.replace {:type :transcript/block-delta
+                                                     :response_id :many :block_id :300})
+                               :db {:messages {:blocks (misa.replace
+                                                         (icollect [i block (ipairs many-blocks)]
+                                                           (if (= i 300)
+                                                               (misa.patch block {:text "```lua\nlocal x=2\n```"})
+                                                               block)))}}
+                               :fx (misa.replace [])}))
+(local many-changed (unchanged delta-input #(policy.after delta-input)))
+(assert (= (length many-changed.fx) 0) "pending slot spawned a concurrent request")
+(for [i 1 299]
+  (local key (.. "4:many" i))
+  (assert (= (. many-changed.db.syntax.documents key) (. seeded.db.syntax.documents key))))
+(assert (= many-changed.db.syntax.pending seeded.db.syntax.pending))
+(local (many-completed followup)
+       (event many-changed.db {:type :syntax/completed :id (. seeded.fx 301 :id)
+                               :ok true :data []}))
+(assert (= (length followup) 1))
+(assert (= (. followup 1 :source) "local x=2"))
+(for [i 1 299]
+  (local key (.. "4:many" i))
+  (assert (= (. many-completed.syntax.documents key) (. seeded.db.syntax.documents key))))
+(assert (= (length seeded.fx) 301))
+;; Multiple slots allocate independent requests; out-of-order completions must
+;; leave the other slot and its pending request intact.
+(local (multi multi-fx) (source (initial) (.. text "\n\n```python\nx=1\n```")))
+(assert (= (length multi-fx) 2))
+(assert (not= (. multi-fx 1 :id) (. multi-fx 2 :id)))
+(local second-done (event multi {:type :syntax/completed :id (. multi-fx 2 :id)
+                                 :ok true :data []}))
+(assert (. second-done.syntax.pending (. multi-fx 1 :id)))
+(assert (= (. second-done.syntax.pending (. multi-fx 2 :id)) nil))
+(assert (= (. second-done.syntax.documents "5:replybody" :slots 1)
+           (. multi.syntax.documents "5:replybody" :slots 1)))
+(local all-done (event second-done {:type :syntax/completed :id (. multi-fx 1 :id)
+                                   :ok true :data []}))
+(assert (= (next all-done.syntax.pending) nil))
+(each [_ slot (ipairs (. all-done.syntax.documents "5:replybody" :slots))]
+  (assert slot.done)
+  (assert (= slot.request nil)))
 (output "syntax state properties passed\n")

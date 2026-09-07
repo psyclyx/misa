@@ -10,22 +10,21 @@
           (local enabled (not= (. (or (. (or context.config {}) :messages) {})
                                   :markdown)
                                false))
-          (fn request [state key index slot fx]
-            (if (or slot.request slot.done) (values state slot)
-                (let [next-id (+ state.next_id 1)
+          (fn request [sequence key index slot]
+            (if (or slot.request slot.done) {:next_id sequence : slot}
+                (let [next-id (+ sequence 1)
                       id (.. :syntax/ next-id)]
-                  (table.insert fx
-                            {:type :syntax/highlight
+                  {:next_id next-id
+                   :slot (misa.patch slot {:request id})
+                   :pending {id {: key : index :source slot.source :language slot.language}}
+                   :fx [{:type :syntax/highlight
                              : id
                              :source slot.source
                              :language slot.language
-                             :completion :syntax/completed})
-                  (values (misa.patch state {:next_id next-id
-                                            :pending {id {: key : index :source slot.source :language slot.language}}})
-                          (misa.patch slot {:request id})))))
+                             :completion :syntax/completed}]})))
 
-          (fn update-model [previous-state model fx]
-            (var state previous-state)
+          (fn model-update [state model]
+            (var result nil)
             (when (and model.id
                        (or (= model.kind :assistant) (= model.kind :thinking)
                            (= model.kind :user) (= model.kind :harness)))
@@ -33,6 +32,9 @@
               (local source (source-for model))
               (local old (. state.documents key))
               (when (or (not old) (not= old.source source))
+                (var next-id state.next_id)
+                (local pending {})
+                (local effects [])
                 (local parsed (misa.markdown.parse source (and old old.document)))
                 (local next {: source
                              :document parsed
@@ -54,12 +56,25 @@
                                {:source block.text
                                 :language block.language
                                 :request (and previous previous.request)}))
-                    (local (next-state slot)
-                           (request state key index (misa.patch previous-slot {:start block.source_start}) fx))
-                    (set state next-state)
-                    (table.insert next.slots slot)))
-                (set state (misa.patch state {:documents {key (misa.replace next)}}))))
-            state)
+                    (local requested
+                           (request next-id key index (misa.patch previous-slot {:start block.source_start})))
+                    (set next-id requested.next_id)
+                    (each [id item (pairs (or requested.pending {}))] (tset pending id item))
+                    (each [_ effect (ipairs (or requested.fx []))] (table.insert effects effect))
+                    (table.insert next.slots requested.slot)))
+                (set result {:patch {:next_id next-id : pending
+                                     :documents {key (misa.replace next)}}
+                             :fx effects})))
+            result)
+
+          (fn update-model [tx model]
+            (local update (model-update tx.db.syntax model))
+            (if (not update) tx
+                (let [effects (when (> (length update.fx) 0)
+                                (local combined (icollect [_ effect (ipairs tx.fx)] effect))
+                                (each [_ effect (ipairs update.fx)] (table.insert combined effect))
+                                (misa.replace combined))]
+                  (misa.patch tx {:db {:syntax update.patch} :fx effects}))))
 
           {:fx [{:type :register/sub
                  :value {:id :syntax/projections
@@ -118,10 +133,9 @@
                                              tx.db.syntax tx.db.messages)
                                     (do
                                     (local blocks tx.db.messages.blocks)
-                                    (var state tx.db.syntax)
-                                    (local effects (icollect [_ effect (ipairs tx.fx)] effect))
+                                    (var result tx)
                                     (for [index (+ tx.syntax_count 1) (length blocks)]
-                                      (set state (update-model state (. blocks index) effects)))
+                                      (set result (update-model result (. blocks index))))
                                     (when (and tx.event.response_id
                                                (or (= tx.event.type
                                                       :transcript/block-delta)
@@ -146,17 +160,16 @@
                                           (when (or (not tx.event.block_id)
                                                     (= model.id
                                                        tx.event.block_id))
-                                            (set state (update-model state model effects))))))
-                                    (misa.patch tx {:db {:syntax (misa.replace state)}
-                                                    :fx (misa.replace effects)}))
+                                            (set result (update-model result model))))))
+                                    result)
                                     tx))}}
                 {:type :register/event
                  :name :syntax/completed
                  :handler (fn [db event]
                             (local pending (. db.syntax.pending event.id))
                             (when pending
-                              (var state (misa.patch db.syntax {:pending {event.id misa.delete}}))
-                              (local entry (. state.documents pending.key))
+                              (local patch {:pending {event.id misa.delete}})
+                              (local entry (. db.syntax.documents pending.key))
                               (local previous (and entry (. entry.slots pending.index)))
                               (local fx {})
                               (when (and previous (= previous.request event.id))
@@ -171,15 +184,14 @@
                                         (set slot (misa.patch slot {:data (misa.replace event.data)}))
                                         (set revision (+ revision 1))
                                         (table.insert fx {:type :dispatch :event {:type :ui/redraw}})))
-                                    (let [(next-state next-slot) (request state pending.key pending.index slot fx)]
-                                      (set state next-state)
-                                      (set slot next-slot)))
-                                (local slots {})
-                                (each [index value (ipairs entry.slots)]
-                                  (tset slots index (if (= index pending.index) slot value)))
-                                (set state (misa.patch state
-                                                       {:documents {pending.key
-                                                                    (misa.replace (misa.patch entry
-                                                                                              {:slots (misa.replace slots)
-                                                                                               : revision}))}})))
-                              {:patch {:syntax (misa.replace state)} : fx}))}]})}
+                                    (let [requested (request db.syntax.next_id pending.key pending.index slot)]
+                                      (set patch.next_id requested.next_id)
+                                      (each [id item (pairs (or requested.pending {}))] (tset patch.pending id item))
+                                      (each [_ effect (ipairs (or requested.fx []))] (table.insert fx effect))
+                                      (set slot requested.slot)))
+                                (local slots (icollect [index value (ipairs entry.slots)]
+                                               (if (= index pending.index) slot value)))
+                                (set patch.documents
+                                     {pending.key {:slots (misa.replace slots)
+                                                   : revision}}))
+                              {:patch {:syntax patch} : fx}))}]})}
