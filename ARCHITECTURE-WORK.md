@@ -161,3 +161,10 @@ a mutable closure and must be replaced before claiming rollback-safe rendering.
 The redundant `messages.transcript` mirror has been removed; `messages.blocks`
 is the sole block collection. Integration fixtures now inspect that canonical
 collection instead of requiring two copies to remain synchronized.
+
+Transcript creation/standalone handlers now retain immutable append results.
+Generated creation/reset sequences validate response indexes, block ownership,
+and input preservation; focused checks cover streaming creation, tool-result
+attachment, and interrupted fallback messages. Generated legacy response IDs now
+advance the counter. No transcript event handler returns a legacy `db` result;
+viewport closure ownership and renderer-input mutation still require an audit.

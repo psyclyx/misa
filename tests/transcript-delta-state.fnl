@@ -114,4 +114,34 @@
   (assert (= before (misa.json.encode tx)) "transcript input policy mutated its transaction")
   (assert (= next.event.type :messages/scroll))
   (assert (= next.event.delta example.delta)))
+(local response-started (transition boot {:type :transcript/response-start :role :assistant}))
+(local block-started (transition response-started {:type :transcript/block-start :kind :assistant}))
+(assert (= (. block-started.messages.responses 1 :block_count) 1))
+(assert (= (. block-started.messages.blocks 1 :response_id) :reply))
+(assert (= (. response-started.messages.responses 1 :block_count) 0))
+(local complete-path (transition (transition block-started {:text :hello}) {:type :transcript/response-end}))
+(assert (= (. complete-path.messages.blocks 1 :text) :hello))
+(local creation-failure
+       (G.for_all (G.vector (G.elements [:transcript/user :transcript/harness :transcript/tool-call
+                                         :transcript/tool-result :transcript/assistant :transcript/reset]))
+                  (fn [events]
+                    (var db boot)
+                    (each [_ type (ipairs events)]
+                      (set db (transition db {: type :text :text :name :tool :id :call
+                                             :content [{:type :text :text :assistant}]}))
+                      (each [index owner (ipairs db.messages.responses)]
+                        (assert (= (. db.messages.by_response owner.id) index))
+                        (for [i owner.block_start (- (+ owner.block_start owner.block_count) 1)]
+                          (assert (= (. db.messages.blocks i :response_id) owner.id))))))
+                  {:cases 500 :size 20}))
+(assert (not creation-failure) (and creation-failure (fennel.view creation-failure)))
+(local called (transition boot {:type :transcript/tool-call :id :call :name :tool :arguments {:x 1}}))
+(local returned (transition called {:type :transcript/tool-result :id :call :text :done}))
+(assert (= (length returned.messages.blocks) 1))
+(assert (= (. returned.messages.blocks 1 :result) :done))
+(assert (= (. returned.messages.blocks 1 :status) :success))
+(local interrupted-new (transition boot {:type :transcript/interrupted :request_id :new
+                                         :content [{:type :text :text :partial}]}))
+(assert (= (. interrupted-new.messages.responses 1 :status) :interrupted))
+(assert (. interrupted-new.messages.blocks 1 :interrupted))
 (output "transcript delta state properties passed\n")
