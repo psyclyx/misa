@@ -14,9 +14,9 @@ Completion requires behavioral evidence, not just passing existing tests.
 - [ ] Rendering performance: verify selective recomputation and streaming costs
   with representative transcripts, preserving interaction metadata through layout.
 - [ ] Startup: profile and improve default startup; record reproducible measurements.
-- [ ] Default theme: remove unwanted angled decoration; model value and picker
+- [x] Default theme: remove unwanted angled decoration; model value and picker
   binding must be distinct from semantic labels and correctly presented.
-- [ ] Hover: pointer motion highlights clickable backgrounds only while hovered,
+- [x] Hover: pointer motion highlights clickable backgrounds only while hovered,
   with unchanged resting appearance and working click routing.
 - [ ] Transcript interaction: structural navigation, Vim-style visual ranges,
   Markdown list structure, and a selection model independent of copying.
@@ -32,6 +32,21 @@ product workflows require later data-model decisions. The interaction architectu
 must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
+
+### Default-theme and pointer acceptance (2026-09-07)
+
+`tests/model-affordances.fnl` verifies the installed profile's value-only model
+presentation, retained semantic label, displayed Alt-M binding, picker routing,
+and corner-free default header/editor across modes, widths and Unicode input.
+The native PTY now also opens the model picker by an SGR mouse click and Alt-M,
+checks that both open the same picker, and cancels each through real input.
+The installed-catalog run passes, including existing action and OSC-only link
+hover/background/leave checks and actual all-motion reporting enablement.
+`tests/component-resolution.fnl` verifies that leaving a target restores its
+resting style without mutating shared semantic output. Action spans do not
+implicitly acquire link styling; the default hover style supplies background
+only. These close the theme/hover requirements. This is native protocol/output
+verification, not a claim of testing an actual Ghostty GUI window.
 
 ### Interceptor responsibilities (2026-09-07)
 

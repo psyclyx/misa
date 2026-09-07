@@ -127,6 +127,15 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         state, frame = move_and_render(100, 1)
         assert not state.get('hover_action'), 'leaving an action retained hover state'
         assert b'48;2;59;82;96' not in frame, 'leaving an action retained its background'
+        send(b'\x1b[<0;20;4M\x1b[<0;20;4m')
+        clicked_picker = snapshot().get('picker')
+        assert clicked_picker and clicked_picker['count'] > 0, 'clicking the model button did not open its picker'
+        send(b'\x03')
+        assert not snapshot().get('picker'), 'model picker did not cancel'
+        send(b'\x1bm')
+        assert snapshot().get('picker') == clicked_picker, 'Alt-M did not open the same model picker'
+        send(b'\x03')
+        assert not snapshot().get('picker'), 'keyboard-opened model picker did not cancel'
         send(b'\x16')
         until(lambda: b'\x1b_Ga=t' in output)
         assert snapshot()['attachments'] == 1
@@ -196,7 +205,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         assert re.search(rb'\x1b\[[0-9;]*38;2;', output) and re.search(rb'\x1b\[[0-9;]*48;2;', output), 'truecolor styles were absent'
         assert b'\x1b]8;;https://example.test' in output, 'Markdown links were not clickable'
         assert b'\x1b[?2026h' in output and b'\x1b[<u' in output
-        print('Ghostty PTY passed: action/link hover background/leave, images, Shift-Enter, queue editing/steering, history, selection, scrolling, RGB and links')
+        print('Ghostty PTY passed: model click/Alt-M, action/link hover background/leave, images, Shift-Enter, queue editing/steering, history, selection, scrolling, RGB and links')
     finally:
         if process.poll() is None: process.kill(); process.wait()
         os.close(master)
