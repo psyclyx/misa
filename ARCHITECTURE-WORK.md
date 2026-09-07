@@ -51,6 +51,15 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The per-message subscription-cache prototype was rejected after a working-set
+probe: three redraws of 300 messages rose from 34.399 ms median to 1075.684 ms,
+with identical semantic output. Per-message entries exceeded the shared bounded
+scope and repeatedly evicted one another. The prototype and its prior-result
+compute hint are reverted; `benchmarks/message-cache-2026-09-07.md` and the
+archived patch preserve evidence. The next cutover must own a structurally shared
+transcript projection collection rather than compete for one cache slot per
+historical message. Message-cache replacement remains unfinished.
+
 Incremental Markdown layout is now explicit immutable data:
 `markdown_view.project(text, options, previous?)`. It returns reusable block
 entries and lines without mutating any prior projection, replacing the mutable

@@ -1,0 +1,159 @@
+diff --git a/extensions/component/message.fnl b/extensions/component/message.fnl
+index 69e7801..52d5071 100644
+--- a/extensions/component/message.fnl
++++ b/extensions/component/message.fnl
+@@ -31,32 +31,34 @@
+ (fn rail [model]
+   (assert model.rail "message model requires a semantic rail token"))
+ 
+-(var documents {})
+-
+-(fn markdown-lines [model style columns prefix]
+-  (local syntax model.syntax)
+-  (local owner (tostring (or model.response_id "")))
+-  (local key (and model.id (.. (length owner) ":" owner (tostring model.id))))
+-  (local previous (and key (. documents key)))
++(fn project-body [inputs _query previous]
++  (local (text document captures style columns prefix rail-token)
++         (values (. inputs 1) (. inputs 2) (. inputs 3) (. inputs 4)
++                 (. inputs 5) (. inputs 6) (. inputs 7)))
+   (local projection
+-         (misa.markdown_view.project model.text
++         (misa.markdown_view.project text
+                             {:base style
+-                             :document (and syntax syntax.document)
+-                             :captures (and syntax syntax.captures)
++                             : document : captures
+                              :columns (math.max 1
+                                                 (- columns
+                                                    (misa.layout.width prefix)))}
+                                     (and previous previous.projection)))
+   (local entry
+          (if (and previous (= projection previous.projection)
+-                  (= prefix previous.prefix) (= (rail model) previous.rail)
++                  (= prefix previous.prefix) (= rail-token previous.rail)
+                   (= columns previous.columns))
+              previous
+-             {: projection : prefix : columns :rail (rail model)
++             {: projection : prefix : columns :rail rail-token
+               :wrapped (misa.layout.wrap_spans projection.lines columns
+-                                               [{:style (rail model) :text prefix}])}))
+-  (when key (tset documents key entry))
+-  entry.wrapped)
++                                               [{:style rail-token :text prefix}])}))
++  entry)
++
++(fn markdown-lines [model style columns prefix]
++  (local syntax model.syntax)
++  (local input {:text model.text :document (and syntax syntax.document)
++                :captures (and syntax syntax.captures) : style : columns : prefix
++                :rail (rail model)})
++  (. (misa.sub input [:message/body (or model.response_id false) (or model.id false)]) :wrapped))
+ 
+ (fn body-lines [model context style columns prefix]
+   (if (= context.markdown false)
+@@ -97,16 +99,14 @@
+           (assert misa.layout "component.message requires layout")
+           (assert (and misa.markdown_view misa.markdown)
+                   "component.message requires markdown and component.markdown")
+-          ;; One derived document per transcript block, released with its transcript.
+-          ;; No parser state enters the transactional database or persisted history.
+-          (table.insert setup-fx
+-                        {:type :register/event
+-                         :name :app/start
+-                         :handler (fn [] (set documents {}))})
+           (table.insert setup-fx
+-                        {:type :register/event
+-                         :name :transcript/reset
+-                         :handler (fn [] (set documents {}))})
++                        {:type :register/sub
++                         :value {:id :message/body
++                                 :inputs (fn [] [[:db/path :text] [:db/path :document]
++                                                 [:db/path :captures] [:db/path :style]
++                                                 [:db/path :columns] [:db/path :prefix]
++                                                 [:db/path :rail]])
++                                 :compute project-body}})
+ 
+           (fn reg [role render]
+             (table.insert setup-fx
+diff --git a/src/lua_runtime/subscriptions.fnl b/src/lua_runtime/subscriptions.fnl
+index c6e5cf0..8c5ce1c 100644
+--- a/src/lua_runtime/subscriptions.fnl
++++ b/src/lua_runtime/subscriptions.fnl
+@@ -87,7 +87,9 @@
+                     (var same (and previous previous.inputs (= previous.inputs.n n)))
+                     (when same
+                       (for [i 1 n] (when (not= (. inputs i) (. previous.inputs i)) (set same false))))
+-                    (set entry {: inputs :value (if same previous.value (definition.compute inputs q))})))
++                    ;; Prior output is a disposable incremental-work hint, never a dependency.
++                    (set entry {: inputs :value (if same previous.value
++                                                   (definition.compute inputs q (and previous previous.value)))})))
+               (set depth (- depth 1))
+               (tset active key nil)
+               (tset staged key entry)
+diff --git a/tests/component-resolution.fnl b/tests/component-resolution.fnl
+index 1e9533f..1400aec 100644
+--- a/tests/component-resolution.fnl
++++ b/tests/component-resolution.fnl
+@@ -57,6 +57,12 @@
+                                          cached)}})
+ 
+ (var db nil)
++(table.insert effects
++              {:type :register/event :name :test/speculative-body
++               :handler (fn [state event]
++                          ((. (misa.component state :transcript.assistant) :render)
++                           event.model {:columns 40 :interactive true})
++                          (error "reject speculative body"))})
+ (table.insert effects
+               {:type :register/event
+                :name :test/read
+@@ -181,4 +187,19 @@
+ (assert (= (misa.json.encode (. resting.lines 1 :spans 2 :style))
+            (misa.json.encode (. link-departed.lines 1 :spans 2 :style))))
+ (assert (= (misa.json.encode cached) semantic))
++;; Render computations fork with the transaction, including incremental hints.
++(local retained-model {:id :rollback :response_id :reply :rail :rail.assistant
++                       :text "first **body**"})
++(local render-body (. (misa.component db :transcript.assistant) :render))
++(local body-context {:columns 40 :interactive true})
++(local retained (render-body retained-model body-context))
++(local rejected (pcall misa._dispatch
++                       {:type :test/speculative-body
++                        :model (misa.patch retained-model {:text "different *body*"})}
++                       {:columns 40 :lines 24 :interactive true}
++                       {:wall_ms 0 :monotonic_ms 0}))
++(assert (not rejected))
++(local recovered (render-body retained-model body-context))
++(assert (= (. retained.lines 2 :spans) (. recovered.lines 2 :spans))
++        "rejected render replaced committed body projection")
+ (output "component resolution regressions passed\n")
+diff --git a/tests/subscriptions.fnl b/tests/subscriptions.fnl
+index 78f72de..e2e533f 100644
+--- a/tests/subscriptions.fnl
++++ b/tests/subscriptions.fnl
+@@ -35,6 +35,24 @@
+ (assert (<= (scope.size) 8))
+ (scope.clear)
+ (assert (= (scope.size) 0))
++(var hint :unset)
++(registry.register {:id :incremental :inputs (fn [] [[:path :a]])
++                    :compute (fn [inputs _ previous]
++                               (set hint previous)
++                               {:value (. inputs 1)})})
++(local initial (scope.query {:a 1} [:incremental]))
++(assert (= hint nil) "cold compute received prior output")
++(local updated (scope.query {:a 2} [:incremental]))
++(assert (= hint initial) "incremental compute did not receive immutable prior output")
++(assert (= initial.value 1) "prior output changed")
++(local branch (scope.fork))
++(branch.query {:a 3} [:incremental])
++(assert (= hint updated) "fork did not inherit prior output")
++(branch.close)
++(assert (= updated (scope.query {:a 2} [:incremental])) "branch changed committed output")
++(scope.clear)
++(assert (= (. (scope.query {:a 2} [:incremental]) :value) updated.value))
++(assert (= hint nil) "cleared scope retained incremental hint")
+ (assert (= (registry.key [:path {:x 1 :y false}]) (registry.key [:path {:y false :x 1}])))
+ (assert (not= (registry.key [:path "a\31string\31b"]) (registry.key [:path :a :b])))
+ (assert (not= (registry.key [:path {:x 1}]) (registry.key [:path {:y 1}])))
