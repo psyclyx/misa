@@ -7,7 +7,7 @@ Completion requires behavioral evidence, not just passing existing tests.
   updates; remove the transaction draft and whole-database reconciliation.
 - [ ] Patches: settle empty-table semantics, validate data and controls, preserve
   sharing and rollback, and cover nested replacement/deletion and collections.
-- [ ] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
+- [x] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
   cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
 - [ ] Presentation: semantic render data, open dispatch registries, unified
   renderable composition, and subscriptions replacing ad-hoc projections.
@@ -32,6 +32,32 @@ product workflows require later data-model decisions. The interaction architectu
 must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
+
+### Subscription-core requirement audit (2026-09-07)
+
+Direct inspection of `src/lua_runtime/subscriptions.fnl`, framework dispatch/
+commit/rollback, the native decoding-rejection test, and subscription test sources
+establishes the core guarantees below. This closes the subscription-core checklist
+item, not the separate migration of all presentation consumers or rendering costs.
+
+| Requirement | Implementation and evidence |
+| --- | --- |
+| Explicit dependencies | Registration validates static query vectors; dynamic declarations are checked during evaluation. Tests cover constant/static/dynamic computations and invalid declarations. |
+| Safe keys | Typed, length-delimited canonical encoding rejects nonfinite numbers, metatables, cycles and invalid vectors. Generated tests compare copied queries and distinguish extended queries. |
+| Missing values | Dependency vectors carry `n`; tests distinguish trailing nil from false and verify memoization identity. |
+| Cycles/depth/re-entry | Active-query and depth guards reject recursive graphs; tests cover changing-key deep chains and callback attempts to query/clear/close/fork the evaluating scope. |
+| Bounded ownership | Per-consumer caches evict to capacity, copy only their index on fork, and clear references on close. Capacity must now be a positive finite integer; public construction cannot inject inherited entries. |
+| Transaction isolation | Staged entries publish only after successful evaluation; framework forks commit with state. Lua-failure, explicit rollback, component-cache rollback and native-decoding rejection tests retain committed identities. |
+| UI independence | The core imports no renderer or framework globals; standalone scope tests use ordinary data. Explicit consumer tests query and close a separate scope without rendering. |
+
+The audit found and fixed two constructor boundary holes: false silently selected
+the default capacity, and the internal inherited cache argument was exposed
+through the public constructor. Infinity was already rejected by the modulo-based
+integer check; a finite check is now explicit and regression-tested. Callback purity and
+immutable inputs remain documented caller contracts, not a mutation sandbox.
+Verification: focused scope/transaction tests, the complete ReleaseSafe
+baseline-CPU suite (including native rejection), installed build, and PTY
+interaction regression passed.
 
 ### Unpainted selections retain navigation targets (2026-09-07)
 

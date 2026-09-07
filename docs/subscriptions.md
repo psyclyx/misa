@@ -73,6 +73,10 @@ Other consumers can own a scope explicitly:
 bounded cache index while sharing immutable entries; its cost is proportional
 to the cache size, not application-state size. Explicit consumer scopes are
 consumer-owned: the framework does not automatically roll them back.
+Capacity defaults to 256 only when omitted/nil and otherwise must be a positive
+finite integer. False, fractions, infinities and NaN are rejected. New scopes
+start empty; inherited memoization is private to `fork()`. A callback cannot
+query, clear, close or fork its evaluating scope: dependencies belong in `inputs`.
 
 Dispatch passes persistent state directly to handlers and projections; it does
 not clone the database or reconcile a mutable draft. Updates enter through

@@ -55,8 +55,9 @@
     (tset definitions definition.id {:read definition.read :compute definition.compute :inputs definition.inputs}))
 
   (fn scope [capacity inherited]
-    (local limit (or capacity 256))
-    (assert (and (= (type limit) :number) (>= limit 1) (= (% limit 1) 0)) "invalid subscription capacity")
+    (local limit (if (= capacity nil) 256 capacity))
+    (assert (and (= (type limit) :number) (>= limit 1) (< limit math.huge) (= (% limit 1) 0))
+            "invalid subscription capacity")
     (local cache {})
     (var (clock count closed evaluating) (values 0 0 false false))
     (each [key entry (pairs (or inherited {}))]
@@ -122,6 +123,6 @@
                   (each [key (pairs cache)] (tset cache key nil)) (set count 0))
      :close (fn [] (assert (not evaluating) "subscription scope is evaluating")
                   (each [key (pairs cache)] (tset cache key nil)) (set count 0) (set closed true))})
-  {: register : scope :key query-key})
+  {: register :scope (fn [capacity] (scope capacity)) :key query-key})
 
 new-registry

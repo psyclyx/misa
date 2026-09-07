@@ -9,6 +9,9 @@
                                (assert (= inputs.n 2))
                                {:a (. inputs 1) :b (. inputs 2)})})
 (local scope (registry.scope 8))
+(each [_ capacity (ipairs [false 0 -1 1.5 math.huge (- math.huge) :eight {}])]
+  (assert (not (pcall registry.scope capacity)) "invalid capacity escaped the scope bound"))
+(assert (not (pcall registry.scope (/ 0 0))))
 (local first (scope.query {:a 1} [:pair]))
 (assert (= (scope.query {:a 1 :other true} [:pair]) first))
 (assert (= computes 1))
@@ -58,6 +61,25 @@
 (local constant (scope.query {} [:constant]))
 (assert (= constant (scope.query {:changed true} [:constant])))
 (assert (= constants 1))
+;; Scope mutation and recursive reads from callbacks cannot corrupt a consumer.
+(each [_ operation (ipairs [:clear :close :fork])]
+  (local id (.. :reentrant- operation))
+  (registry.register {: id :inputs [] :compute (fn [] ((. scope operation)))})
+  (local before (scope.size))
+  (assert (not (pcall scope.query {} [id])))
+  (assert (= before (scope.size)))
+  (assert (= constant (scope.query {} [:constant]))))
+(registry.register {:id :reentrant-query :read (fn [] (scope.query {} [:constant]))})
+(assert (not (pcall scope.query {} [:reentrant-query])))
+(registry.register {:id :depth :inputs (fn [q] [[:depth (+ (. q 2) 1)]]) :compute (fn [])})
+(assert (not (pcall scope.query {} [:depth 0])))
+(assert (= constant (scope.query {} [:constant])) "failed deep query poisoned the scope")
+(var nested {})
+(for [_ 1 128] (set nested {:child nested}))
+(assert (not (pcall registry.key [:path nested])))
+;; Inherited memoization is an internal fork detail, not a public scope argument.
+(local external (registry.scope 1 {:injected {:used 1 :value :invalid}}))
+(assert (= (external.size) 0))
 ;; Dynamic dependency declarations still receive the requested arguments.
 (registry.register {:id :argument :inputs (fn [q] [[:path (. q 2)]])
                     :compute (fn [inputs q] {:key (. q 2) :value (. inputs 1)})})
