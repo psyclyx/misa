@@ -8,6 +8,7 @@ const c = @cImport({
 
 const framework = @embedFile("framework.fnl");
 const state_updates = @embedFile("state.fnl");
+const subscriptions = @embedFile("subscriptions.fnl");
 const fennel = @embedFile("vendor/fennel.lua");
 pub const max_nesting_depth: usize = 128;
 
@@ -130,6 +131,20 @@ pub const Runtime = struct {
         c.lua_setfield(state, -2, "misa.runtime.state");
         self.pop(3);
         c.lua_getfield(state, 1, "eval");
+        _ = c.lua_pushlstring(state, subscriptions.ptr, subscriptions.len);
+        c.lua_createtable(state, 0, 1);
+        _ = c.lua_pushstring(state, "subscriptions.fnl");
+        c.lua_setfield(state, -2, "filename");
+        if (c.lua_pcall(state, 2, 1, 2) != 0) {
+            self.failLua("initializing subscriptions");
+            return error.LuaInitializationFailed;
+        }
+        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "package");
+        c.lua_getfield(state, -1, "loaded");
+        c.lua_pushvalue(state, 3);
+        c.lua_setfield(state, -2, "misa.runtime.subscriptions");
+        self.pop(3);
+        c.lua_getfield(state, 1, "eval");
         _ = c.lua_pushlstring(state, framework.ptr, framework.len);
         c.lua_createtable(state, 0, 1);
         _ = c.lua_pushstring(state, "framework.fnl");
@@ -225,6 +240,7 @@ pub const Runtime = struct {
     /// Dispatch one event and copy only its effects/view out of Lua.
     pub fn dispatch(self: *Runtime, event_json: []const u8, clock: ClockInfo) !Transaction {
         self.assertStack(0);
+        errdefer self.rollbackTransaction();
         var event = std.json.parseFromSlice(std.json.Value, self.allocator, event_json, .{}) catch {
             self.setError("invalid native event JSON", .{});
             return error.EventDispatchFailed;
@@ -329,6 +345,15 @@ pub const Runtime = struct {
             return error.EventDispatchFailed;
         }
         self.pop(1);
+    }
+
+    pub fn rollbackTransaction(self: *Runtime) void {
+        c.lua_settop(self.state, 0);
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_getfield(self.state, -1, "_rollback");
+        c.lua_remove(self.state, -2);
+        _ = c.lua_pcall(self.state, 0, 0, 0);
+        c.lua_settop(self.state, 0);
     }
 
     pub fn lastError(self: *const Runtime) []const u8 {
@@ -534,6 +559,40 @@ pub const Runtime = struct {
         std.debug.assert(c.lua_gettop(self.state) == count);
     }
 };
+
+test "native decoding rejection discards speculative subscription results" {
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
+    defer runtime.deinit();
+    const source =
+        \\local original
+        \\misa._setup_effects({fx = {
+        \\  {type="register/sub", value={id="probe", inputs=function() return {{"db/path", "value"}} end,
+        \\    compute=function(inputs) return {value=inputs[1]} end}},
+        \\  {type="register/event", name="set", handler=function(_, event)
+        \\    return {patch={value=event.value, invalid=event.invalid or false}} end},
+        \\  {type="register/view", handler=function(db)
+        \\    local current = misa.sub(db, {"probe"})
+        \\    if db.value == 1 then
+        \\      if original then assert(current == original, "rejected native view replaced cache") end
+        \\      original = current
+        \\    end
+        \\    return {lines={}, invalid=db.invalid and function() end or nil}
+        \\  end}
+        \\}})
+        \\misa._seal({argv={}, config={}})
+    ;
+    try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@subscription-rejection.lua"));
+    try std.testing.expectEqual(@as(c_int, 0), c.lua_pcall(runtime.state, 0, 0, 0));
+    runtime.setTerminalInfo(.{ .interactive = true, .columns = 80, .lines = 24, .images = false });
+    const clock: ClockInfo = .{ .wall_ms = 0, .monotonic_ms = 0 };
+    var first = try runtime.dispatch("{\"type\":\"set\",\"value\":1}", clock);
+    defer first.deinit();
+    try runtime.commitTransaction();
+    try std.testing.expectError(error.EventDispatchFailed, runtime.dispatch("{\"type\":\"set\",\"value\":2,\"invalid\":true}", clock));
+    var recovered = try runtime.dispatch("{\"type\":\"set\",\"value\":1}", clock);
+    defer recovered.deinit();
+    try runtime.commitTransaction();
+}
 
 test "bundled Fennel loads extensions after framework restrictions" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});

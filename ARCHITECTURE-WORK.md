@@ -206,3 +206,11 @@ forks. Direct tests cover typed canonical keys, nullable dependency counts,
 identity reuse, dependency cycles, failed-query isolation, bounds, and disposal.
 It is not yet wired into framework transactions: replacing the provisional
 framework cache and connecting native commit/rejection ownership remain required.
+
+The replacement evaluator is now embedded and wired into framework registration,
+`misa.sub`, and explicit consumer scopes. Each dispatch forks the committed scope;
+only `_commit` publishes it. `_rollback` discards pending state and memoization,
+and native decoding/session-validation failures invoke that rejection path.
+Direct transaction tests and a native decoding-rejection test verify memoized
+identity survives rejection. The old draft/reconciliation mechanism still needs
+removal; subscription reuse during that interim is not a performance claim.

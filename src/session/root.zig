@@ -120,6 +120,7 @@ pub const Session = struct {
             };
             var transaction = self.runtime.dispatch(event, clock) catch return error.LuaTransactionFailed;
             defer transaction.deinit();
+            errdefer self.runtime.rollbackTransaction();
             const view = transaction.view;
             var effects: std.ArrayList(native_effect.Effect) = .empty;
             defer effects.deinit(self.allocator);

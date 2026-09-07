@@ -23,6 +23,15 @@
 
 (local (view-layers view-layer-ids) (values {} {}))
 
+;; Subscriptions are pure read models.  A query vector names a registered
+;; subscription and carries only serializable arguments.  The registry is
+;; deliberately independent of views so other consumers (subagents,
+;; background work, tests) can use the same projections.
+(local subscription-registry ((require :misa.runtime.subscriptions)))
+(var subscription-scope (subscription-registry.scope))
+(var active-sub-scope nil)
+(var pending-sub-scope nil)
+
 (var (view sealed dispatching db pending-db base-context)
      (values nil false false {} nil nil))
 
@@ -105,6 +114,15 @@
   (tset view-layer-ids id true)
   (tset view-layers (+ (length view-layers) 1) ___fn___)
   nil)
+
+(fn registrations.reg_sub [definition]
+  (open)
+  (subscription-registry.register definition))
+
+(fn misa.subscription_scope [capacity] (subscription-registry.scope capacity))
+
+(fn misa.sub [state query]
+  ((. (or active-sub-scope subscription-scope) :query) state query))
 
 (fn misa.view_layers [state cofx]
   (let [result {}]
@@ -370,6 +388,8 @@
   nil)
 
 (fn misa.auth_providers [] auth-providers)
+(fn misa.auth_provider [id] (. auth-by-id id))
+(fn misa.auth_provider_for_model [id] (. auth-by-model id))
 
 (fn misa.command_completions [command prefix state]
   (assert (and (= (type command) :table) (= (type prefix) :string))
@@ -460,8 +480,6 @@
           (do
             (assert (= kind :table) "state must contain only data")
             (set-forcibly! active (or active {}))
-(fn misa.auth_provider [id] (. auth-by-id id))
-(fn misa.auth_provider_for_model [id] (. auth-by-model id))
             (assert (not (. active value)) "cyclic state")
             (tset active value true)
             (local result {})
@@ -475,6 +493,35 @@
               (tset result key (clone item active (+ depth 1))))
             (tset active value nil)
             result))))
+
+;; Reducers currently receive a private mutable draft because that keeps the
+;; extension API pleasant during the migration.  Reconcile turns that draft
+;; back into a persistent value: unchanged branches are returned from the
+;; previous state, while changed branches are rebuilt recursively.
+(fn reconcile [previous next depth]
+  (set-forcibly! depth (or depth 0))
+  (assert (<= depth MAX_DEPTH) "maximum state nesting depth exceeded")
+  (if (= previous next) previous
+      (if (or (or (= next misa.json_null) (= (type next) :nil))
+              (= (type next) :boolean) (= (type next) :string)
+              (= (type next) :number))
+          next
+          (if (not= (type next) :table)
+              next
+              (if (not= (type previous) :table)
+                  (clone next nil depth)
+                  (do
+                    (var changed false)
+                    (local result {})
+                    (each [key value (pairs next)]
+                      (local old-value (. previous key))
+                      (local new-value (reconcile old-value value (+ depth 1)))
+                      (when (not= new-value old-value) (set changed true))
+                      (tset result key new-value))
+                    (each [key _ (pairs previous)]
+                      (when (= (. next key) nil) (set changed true)))
+                    (if changed result previous)))))))
+
 
 ;; Public to projection infrastructure only. Projection models may contain
 
@@ -548,6 +595,8 @@
                       :register/view-layer (fn [e]
                                              (registrations.reg_view_layer e.id
                                                                            e.handler))
+                      :register/sub (fn [e]
+                                      (registrations.reg_sub e.value))
                       :register/request-options-serializer (fn [e]
                                                              (registrations.reg_request_options_serializer e.id
                                                                                                            e.serializer))
@@ -587,6 +636,20 @@
 
 (each [name handler (pairs builtin-setup)]
   (tset setup-handlers name handler))
+
+;; Primitive state reads keep ordinary subscriptions declarative.  Feature
+;; extensions should register named projections rather than reaching into
+;; arbitrary state from their views.
+(registrations.reg_sub {:id :db
+                        :read (fn [state] state)})
+(registrations.reg_sub {:id :db/path
+                        :read (fn [state query]
+                                (var value state)
+                                (for [index 2 (length query)]
+                                  (if (= value nil)
+                                      (lua "return nil")
+                                      (set value (. value (. query index)))))
+                                value)})
 
 (fn misa.has_setup_effect [name] (not= (. setup-handlers name) nil))
 
@@ -638,6 +701,7 @@
                (not= event.type ""))
           "event.type must be a nonempty string")
   (set dispatching true)
+  (set active-sub-scope (subscription-scope.fork))
   (local (ok native projection)
          (xpcall (fn []
                    (assert (and (and (= (type clock) :table)
@@ -685,6 +749,7 @@
                      (when after
                        (set tx (or (after tx) tx))
                        (validate tx)))
+                   (set tx.db (reconcile db tx.db))
                    (local effects {})
                    (each [_ effect (ipairs tx.fx)]
                      (local kind (. (runtime-effect effect) :type))
@@ -717,20 +782,33 @@
                                (append effects translated)))
                          (tset effects (+ (length effects) 1) effect)))
                    (each [_ effect (ipairs effects)] (runtime-effect effect))
-                   ;; Projection receives snapshots, never the transaction's working state.
-                   ;; A misbehaving view can only mutate its private copies.
+                   ;; The reconciled database is persistent by convention:
+                   ;; views receive it directly so subscription inputs retain
+                   ;; identity across transactions.  Views are projections
+                   ;; and must not mutate it.
                    (var frame misa.json_null)
                    (when view
-                     (set frame (view (clone tx.db) (clone tx.cofx)))
+                     (set frame (view tx.db (clone tx.cofx)))
                      (assert (= (type frame) :table) "view must return a table"))
+                   (set pending-sub-scope active-sub-scope)
                    (set pending-db tx.db)
                    (values effects frame)) traceback))
   (set dispatching false)
+  (when (not ok) (active-sub-scope.close))
+  (set active-sub-scope nil)
   (when (not ok) (error native 0))
   (values native projection))
 
 (fn misa._commit [] (assert (not= pending-db nil) "no transaction to commit")
   (set (db pending-db) (values pending-db nil))
+  (subscription-scope.close)
+  (set (subscription-scope pending-sub-scope) (values pending-sub-scope nil))
+  nil)
+
+(fn misa._rollback []
+  (assert (not dispatching) "cannot roll back while dispatching")
+  (when pending-sub-scope (pending-sub-scope.close))
+  (set (pending-db pending-sub-scope) (values nil nil))
   nil)
 
 ;; Extensions are trusted policy. Keep ordinary Lua loading/composition, while

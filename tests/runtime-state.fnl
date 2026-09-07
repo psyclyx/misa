@@ -41,6 +41,20 @@
                             :handler (fn [db] (set snapshot db) nil)}]})
 
 (misa._setup_effects {:fx [{:type :register/event
+                            :name :test/patch
+                            :handler (fn [_]
+                                       {:patch {:patch_probe {:value :updated}}})}]})
+
+(var subscription-evaluations 0)
+(misa._setup_effects {:fx [{:type :register/sub
+                            :value {:id :test/doubled
+                                    :inputs (fn [_] [[:db/path :value]])
+                                    :compute (fn [inputs _]
+                                               (set subscription-evaluations
+                                                    (+ subscription-evaluations 1))
+                                               (* (. inputs 1) 2))}}]})
+
+(misa._setup_effects {:fx [{:type :register/event
                             :name :app/start
                             :handler (fn [db]
                                        (set db.models
@@ -285,6 +299,38 @@
 (assert (and (= (length (. switched 1 :content)) 1)
              (= (. switched 1 :content 1 :type) :text))
         "provider switch replayed a foreign reasoning signature")
+
+;; Immutable patches preserve identity for unrelated branches and are no-ops
+;; when they do not change the value.
+(local patch-state {:left {:value 1} :right {:value 2}})
+(local patch-noop (misa.patch patch-state {:left {:value 1}}))
+(local patch-next (misa.patch patch-state {:left {:value 3}}))
+(assert (= patch-noop patch-state) "no-op patch rebuilt state")
+(assert (and (not= patch-next patch-state)
+             (= patch-next.right patch-state.right)
+             (= patch-next.left.value 3))
+        "patch did not preserve structural sharing")
+(local patch-replaced (misa.patch patch-state
+                                  {:left (misa.replace {:only :this})}))
+(local patch-deleted (misa.patch patch-state {:right misa.delete}))
+(assert (and (= patch-replaced.left.only :this)
+             (= patch-replaced.left.value nil)
+             (= patch-deleted.right nil))
+        "patch replace/delete semantics failed")
+(local nested-delete (misa.patch {:new {:keep true :remove true}}
+                                 {:new {:remove misa.delete}}))
+(assert (and nested-delete.new.keep (= nested-delete.new.remove nil))
+        "nested delete leaked patch control data")
+
+(dispatch {:type :test/patch})
+(assert (= snapshot.patch_probe.value :updated)
+        "event patch was not committed")
+
+(local subscription-state {:value 21})
+(assert (= (misa.sub subscription-state [:test/doubled]) 42))
+(assert (= (misa.sub subscription-state [:test/doubled]) 42))
+(assert (= subscription-evaluations 1)
+        "subscription did not reuse unchanged input values")
 
 (output "runtime state regressions passed\n")
 
