@@ -102,8 +102,7 @@
 (fn render []
   (local model (. db.messages.blocks 1))
   (local syntax (assert (misa.syntax_projection db model)))
-  (set syntax.columns 80)
-  (view:render (or model.text (table.concat model.chunks)) syntax))
+  (view:render (or model.text (table.concat model.chunks)) (misa.patch syntax {:columns 80})))
 
 (fn keyword? [lines]
   (accumulate [found false _ line (ipairs lines) &until found]
@@ -155,9 +154,10 @@
 
 (assert (= colored (render)) "unchanged captures discarded cached rendering")
 (each [_ entry (pairs db.syntax.documents)]
-  (assert (= entry.document nil))
+  (assert (= entry.document.kind :document))
   (each [_ slot (ipairs entry.slots)]
-    (assert (= slot.data nil) "capture arrays entered transactional db")))
+    (assert (= (. slot.data 1 :capture) :keyword)
+            "accepted capture payload is not owned by syntax state")))
 
 (local reset-ok (pcall misa._dispatch {:type :transcript/reset :reject true}
                        terminal {:wall_ms 0 :monotonic_ms 0}))

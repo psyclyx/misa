@@ -67,6 +67,17 @@ separate projection-ownership audit; this change does not make that cache a
 subscription. Remaining event-routing interceptors still replace tx.event in
 place and need the same envelope contract.
 
+Syntax projection ownership is now cut over: a regression first demonstrated
+that later resets erased the projection of a retained state. Parsed documents
+and accepted capture arrays now belong to immutable syntax state; incremental
+parsing takes the previous document explicitly. The external document/result
+cache, pruning, and epoch protocol are removed. `syntax/projection` declares one
+document-entry dependency and memoizes its projection through the subscription
+engine. Tests cover retained-state rendering after subsequent updates/reset,
+unrelated-state projection reuse, and existing rejected-completion/reset paths.
+This is a correctness change, not a measured speedup: the cost of carrying parsed
+data through patch validation still needs representative streaming measurements.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

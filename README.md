@@ -213,8 +213,11 @@ ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
 `keyword`, `type`, `function`, `constant`, `variable`, `property`, `tag`,
 `attribute`, `operator`, `punctuation`, `escape`, and `embedded`). Highlighting
 is derived data: the `syntax` extension tracks pending requests and accepted
-revisions in transactional state, retaining capture arrays in a derived cache
-and passing them into rendering. Source parsing and grammar
+revisions, immutable parsed documents, and accepted capture arrays in transactional
+state. The `syntax/projection` subscription depends on one document entry and
+passes that data into rendering; retained states do not depend on an external
+cache. Projection results are immutable, including when adding layout options.
+Source parsing and grammar
 loading run on native workers with a reusable parser cache. Missing, unknown,
 incompatible, or timed-out grammars produce plain-text fallback. Source is
 limited to 1 MiB. There is no synchronous highlighting API on `misa`.

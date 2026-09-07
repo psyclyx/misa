@@ -10,27 +10,6 @@
           (local enabled (not= (. (or (. (or context.config {}) :messages) {})
                                   :markdown)
                                false))
-          (local documents {})
-          (local dirty {})
-          (var cache-epoch 0)
-
-          (fn prune-results [cached entry]
-            (local keep {})
-            (each [_ slot (ipairs (or (and entry entry.slots) {}))]
-              (when slot.result (tset keep slot.result true)))
-            (each [id (pairs cached.results)]
-              (when (not (. keep id)) (tset cached.results id nil))))
-
-          (fn document [key source]
-            (var cached (. documents key))
-            (when (not cached)
-              (set cached {:parser (misa.markdown.new_document) :results {}})
-              (tset documents key cached))
-            (when (not= cached.source source)
-              (set cached.document (cached.parser:update source))
-              (set cached.source source))
-            cached.document)
-
           (fn request [state key index slot fx]
             (if (or slot.request slot.done) (values state slot)
                 (let [next-id (+ state.next_id 1)
@@ -54,9 +33,9 @@
               (local source (source-for model))
               (local old (. state.documents key))
               (when (or (not old) (not= old.source source))
-                (local parsed (document key source))
-                (tset dirty key true)
+                (local parsed (misa.markdown.parse source (and old old.document)))
                 (local next {: source
+                             :document parsed
                              :revision (+ (or (and old old.revision) 0) 1)
                              :slots {}})
                 (each [_ block (ipairs parsed.blocks)]
@@ -82,60 +61,38 @@
                 (set state (misa.patch state {:documents {key (misa.replace next)}}))))
             state)
 
-          {:fx [{:type :register/service
+          {:fx [{:type :register/sub
+                 :value {:id :syntax/projection
+                         :inputs (fn [query] [[:db/path :syntax :documents (. query 2)]])
+                         :compute (fn [inputs]
+                                    (local entry (. inputs 1))
+                                    (when entry
+                                      (local captures {})
+                                      (each [_ slot (ipairs entry.slots)]
+                                        (when slot.data (tset captures slot.start slot.data)))
+                                      {:document entry.document : captures
+                                       :source entry.source :revision entry.revision}))}}
+                {:type :register/service
                  :name :syntax_projection
                  :value (fn [db model]
                           (local key (key-for model))
                           (local source (source-for model))
-                          (local entry
-                                 (and db.syntax (. db.syntax.documents key)))
-                          (local cached (. documents key))
-                          (when (and entry cached (= entry.source source))
-                            (local captures {})
-                            (each [_ slot (ipairs entry.slots)]
-                              (local result
-                                     (and slot.result
-                                          (. cached.results slot.result)))
-                              (when (and result (= result.source slot.source)
-                                         (= result.language slot.language))
-                                (tset captures slot.start result.data)))
-                            {:document (and (= cached.source source)
-                                            cached.document)
-                             : captures
-                             :revision entry.revision}))}
+                          (local projection (misa.sub db [:syntax/projection key]))
+                          (when (and projection (= projection.source source)) projection))}
                 {:type :register/event
                  :name :app/start
                  :handler (fn [db]
                             {:patch {:syntax (misa.replace {:next_id 0
-                                  :epoch 0
                                   :pending {}
                                   :documents {}})}})}
                 {:type :register/event
                  :name :transcript/reset
                  :handler (fn [db]
                             {:patch {:syntax {:pending (misa.replace {})
-                                              :documents (misa.replace {})
-                                              :epoch (+ db.syntax.epoch 1)}}})}
+                                              :documents (misa.replace {})}}})}
                 {:type :register/interceptor
                  :value {:id :syntax/transcript
                          :before (fn [tx]
-                                   ;; Release a reset cache only after its epoch was committed.
-                                   (when (and tx.db.syntax
-                                              (not= tx.db.syntax.epoch
-                                                    cache-epoch))
-                                     (each [key (pairs documents)]
-                                       (tset documents key nil))
-                                     (set cache-epoch tx.db.syntax.epoch))
-                                   ;; Only changed document memos need pruning. At this boundary,
-                                   ;; tx.db identifies the last accepted result IDs even after rollback.
-                                   (each [key (pairs dirty)]
-                                     (local cached (. documents key))
-                                     (when cached
-                                       (prune-results cached
-                                                      (and tx.db.syntax
-                                                           (. tx.db.syntax.documents
-                                                              key))))
-                                     (tset dirty key nil))
                                    (misa.patch tx {:syntax_count
                                         (length (or (and tx.db.messages
                                                          tx.db.messages.blocks)
@@ -194,13 +151,9 @@
                                     (do
                                       (set slot (misa.patch slot {:done true}))
                                       (when (and event.ok (= (type event.data) :table))
-                                        (local cached (assert (. documents pending.key)))
-                                        (tset dirty pending.key true)
-                                        ;; External memo data stays behind an accepted result ID.
-                                        (tset cached.results event.id
-                                              {:source pending.source :language pending.language
-                                               :data (misa.snapshot event.data)})
-                                        (set slot (misa.patch slot {:result event.id}))
+                                        ;; Patch validation owns the capture payload; no external
+                                        ;; cache may change the meaning of a retained state.
+                                        (set slot (misa.patch slot {:data (misa.replace event.data)}))
                                         (set revision (+ revision 1))
                                         (table.insert fx {:type :dispatch :event {:type :ui/redraw}})))
                                     (let [(next-state next-slot) (request state pending.key pending.index slot fx)]
