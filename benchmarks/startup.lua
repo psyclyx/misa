@@ -2,6 +2,7 @@
 -- CPU-time phase attribution, not end-to-end interactive startup latency.
 -- Native effects are collected but never executed.
 local clock, write, open, loader = os.clock, io.write, io.open, loadstring
+local precompiled = os.getenv("MISA_STARTUP_PRECOMPILED")
 local started = clock()
 local environment = {}
 for key, value in pairs(_G) do environment[key] = value end
@@ -17,10 +18,10 @@ local function source(path)
   return text
 end
 local function load_fennel(path)
-  local text = source(path)
+  local text = source(precompiled and (precompiled .. "/" .. path:gsub("%.fnl$", ".lua")) or path)
   local start = clock()
-  local lua = compiler.compileString(text, {filename = path, allowedGlobals = false})
-  local compiled = clock() - start
+  local lua = precompiled and text or compiler.compileString(text, {filename = path, allowedGlobals = false})
+  local compiled = precompiled and 0 or clock() - start
   start = clock()
   local value = assert(loader(lua, "@" .. path))()
   local loaded = clock() - start

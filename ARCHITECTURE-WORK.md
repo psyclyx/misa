@@ -114,6 +114,14 @@ at 527 ms median of 546 ms CPU total, making bundled build-time compilation the
 next discriminating experiment. This is not full interactive startup latency,
 and no startup optimization has landed yet.
 
+The build-time compilation experiment now has 10 interleaved samples per mode
+with identical startup output: probe median wall time was 565 ms from source and
+21 ms from freshly generated Lua. See
+`benchmarks/startup-precompiled-2026-09-07.md` for raw results and limits.
+`tools/compile-fennel.lua` emits portable Lua sources, not bytecode. Installed
+loading/build integration, custom-source diagnostics, and actual binary latency
+remain required; this experiment does not change production startup.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input
