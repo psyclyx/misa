@@ -39,6 +39,8 @@
           (table.insert setup-fx
                         {:type :register/command
                          :value {:choice_purpose :command
+                                 :choice_available (fn [db] (> (length (choices db)) 0))
+                                 :choice_unavailable :effort/unsupported
                                  :complete (fn [_ db]
                                              (local result {})
                                              (each [_ value (ipairs (choices db))]
@@ -54,15 +56,10 @@
                                  :selected (fn [db]
                                              (misa.request_option_value db
                                                                         option-name))}})
-          ;; Intercept the shared command-choice transaction when effort is unsupported.
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (local event (if (and (= tx.event.type :choices/command-open)
-                                                                 (= tx.event.command :/effort)
-                                                                 (= (length (choices tx.db)) 0))
-                                                            {:type :effort/unsupported}
-                                                            (and (= tx.event.type :terminal/input) misa.keybinding_action
+                                           (local event (if (and (= tx.event.type :terminal/input) misa.keybinding_action
                                                                  (= (misa.keybinding_action :global tx.event) :cycle_effort))
                                                             {:type :effort/cycle}
                                                             tx.event))

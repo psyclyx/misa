@@ -229,10 +229,10 @@ test "initializers preserve transaction ownership" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/initialization-state.fnl"} }, "initialization transaction ownership passed\n");
 }
 
-test "command normalization preserves transaction ownership" {
+test "command invocation uses explicit queued execution" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/command-state.fnl"} }, "command transaction ownership passed\n");
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/command-state.fnl"} }, "explicit command invocation ownership passed\n");
 }
 
 test "event routing preserves transaction ownership" {

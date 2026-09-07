@@ -9,6 +9,11 @@
 (local specs {})
 (each [_ name (ipairs [:effort :images :queue])]
   (tset specs name ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) {:config {}})))
+(each [_ spec (ipairs specs.effort.fx)]
+  (when (= spec.type :register/command)
+    (assert (= spec.value.choice_unavailable :effort/unsupported))
+    (assert (not (spec.value.choice_available {})))
+    (assert (spec.value.choice_available {:options [:low]}))))
 (fn input [name db event]
   (local tx {: db : event :cofx {} :fx []})
   (local before (misa.json.encode tx))
@@ -36,7 +41,7 @@
 (assert (. (misa.sub {:queue {:pending "" :sending false :attachments [{}]}}
                     misa.editor_lifecycle.queue) :hold_exit))
 (assert (= (. (input :effort {} {:type :choices/command-open :command :/effort}) :event :type)
-           :effort/unsupported))
+           :choices/command-open))
 (assert (= (. (input :effort {} {:type :terminal/input :action :cycle_effort}) :event :type)
            :effort/cycle))
 (local handlers {})

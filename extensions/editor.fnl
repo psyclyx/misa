@@ -242,7 +242,7 @@
         (if (and (not command) (. (misa.sub db [:editor/lifecycle]) :block_draft))
             (updated editor)
             (dispatch-input (emptied editor)
-                            (if command {:arguments args :command command.name :type command.event}
+                            (if command {:arguments args :command command.name :type :commands/invoke}
                                 {:attachments editor.attachments :prompt editor.text
                                  :type (or misa.submit_event :agent/submit)}) cofx)))
       (let [edit (. edits event.kind)]

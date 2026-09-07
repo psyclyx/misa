@@ -208,6 +208,11 @@ Registration effects use these payloads:
 - `{type="register/command", value={name,description,event,completion?,complete?}}`: adds a
   generic slash command. `completion` names a shared static candidate group;
   `complete(prefix,db)` supplies dynamic candidates when needed.
+  `misa.command_invocation(text)` returns a `commands/invoke` event. Its handler
+  normalizes arguments, records preferences, and dispatches the declared execution
+  event; unrelated events carrying a `command` field are not intercepted.
+  Optional `choice_available(db)` and `choice_unavailable` (an event name) declare
+  how opening an unavailable command choice is handled.
 - `{type="register/completion", group=group, value={value,label?,description?}}`: lets any plugin add
   a candidate to a shared completion group. The UI handles filtering, sorting,
   display, and insertion, so providers only declare their authentication ID.

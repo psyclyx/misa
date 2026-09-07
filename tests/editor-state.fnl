@@ -63,7 +63,7 @@
 (assert (= arguments.editor.text "/choose "))
 (local picked (transition arguments {:type :terminal/input :kind :text :text :beta}))
 (local (executed execute-fx) (transition picked {:type :terminal/input :kind :enter}))
-(assert (= (. execute-fx 1 :event :type) :test/choose))
+(assert (= (. execute-fx 1 :event :type) :commands/invoke))
 (assert (= (. execute-fx 1 :event :arguments) :beta))
 (assert (= executed.editor.text ""))
 (local busy (transition restored {:type :agent/status :status :running}))

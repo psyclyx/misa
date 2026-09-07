@@ -36,6 +36,23 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Explicit command dispatch (2026-09-07)
+
+Command producers now emit `commands/invoke`. Its owning handler normalizes
+arguments and records preferences, then queues the declared execution event.
+No command interceptor remains: execution events containing command metadata
+are not reinterpreted. Choice availability is an explicit command predicate and
+unavailable-event declaration; effort no longer intercepts command-choice events.
+The focused test checks immutable inputs, correlation sharing, resumed choices,
+unavailable choices, and real queued execution with exactly-once preference use.
+The full ReleaseSafe baseline suite and installed build passed.
+
+The remaining global input hooks still need the scoped dispatcher cutover.
+The read-only routing audit identified modal capture, picker palette exceptions,
+selection/scroll precedence, history boundaries, modal reset before editor input,
+and ambiguous keybindings as explicit migration contracts. Registration order
+must not silently decide which route handles a key. This remains unfinished.
+
 ### Live Kimi and final performance evidence (2026-09-07)
 
 At `0c14a02`, a read-only native auth status check found the existing Kimi login.

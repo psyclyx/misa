@@ -9,6 +9,33 @@
   (let [args (trim arguments)]
     (.. name (or (and (not= args "") (.. " " args)) ""))))
 
+(fn invoke [db event]
+  (local command (assert (misa.command event.command) "unknown command"))
+  (local args (trim event.arguments))
+  (if (and (= args "") (or command.completion command.complete)
+           (not event.resumed_choice))
+      {:fx [{:type :dispatch :event {:type :choices/command-open :command command.name}}]}
+      (let [invocation (canonical command.name args)
+            execution (misa.patch event {:type command.event :arguments args
+                                        :canonical invocation})
+            effects []]
+        (var patch {})
+        (when misa.preference_use
+          (var preferences (misa.preference_use db :commands invocation))
+          (local used (misa.patch db {:preferences (misa.replace preferences)}))
+          (when (and (not= args "") (or command.completion command.complete))
+            (each [_ candidate (ipairs (misa.command_completions command args used))]
+              (when (= candidate.value args)
+                (set preferences
+                     (misa.preference_use used
+                                          (or command.preference_scope (.. "command:" command.name))
+                                          (or candidate.id (tostring candidate.value))))
+                (lua :break))))
+          (set patch {:preferences (misa.replace preferences)})
+          (table.insert effects {:type :state/save :namespace :preferences :data preferences}))
+        (table.insert effects {:type :dispatch :event execution})
+        {: patch :fx effects})))
+
 {:setup (fn []
           {:fx [{:type :register/service
                  :name :command_invocation
@@ -23,8 +50,7 @@
                                 {:arguments args
                                  :canonical (canonical command.name args)
                                  :command command.name
-                                 :normalized_command true
-                                 :type command.event})))}
+                                 :type :commands/invoke})))}
                 {:type :register/service
                  :name :command_canonical
                  :value canonical}
@@ -79,84 +105,31 @@
                            :selected (and command.selected
                                           (command.selected db))
                            :title (command.name:sub 2)})}
-                {:type :register/interceptor
-                 :value {:before (fn [tx]
-                                   (local event tx.event)
-                                   (if (not= (type event.command) :string)
-                                       tx
-                                       (do
-                                         (local command
-                                                (misa.command event.command))
-                                         (if (not command) tx
-                                             (do
-                                               (local args
-                                                      (trim event.arguments))
-                                               (if (and (and (= args "")
-                                                             (or command.completion
-                                                                 command.complete))
-                                                        (not event.resumed_choice))
-                                                   (misa.patch tx {:event (misa.replace
-                                                                          {:command command.name
-                                                                           :type :choices/command-open})})
-                                                   (do
-                                                     (local invocation (canonical command.name args))
-                                                     (local normalized (misa.patch tx
-                                                          {:event {:arguments args :canonical invocation
-                                                                   :normalized_command true}}))
-                                                     ;; Invocation normalization owns usage, so typing, inline choices, and
-                                                     ;; overlay replay all update the same canonical preference exactly once.
-                                                     (if misa.preference_use
-                                                       (do
-                                                       (var preferences
-                                                            (misa.preference_use tx.db
-                                                                                 :commands
-                                                                                 invocation))
-                                                       (local used (misa.patch tx.db {:preferences (misa.replace preferences)}))
-                                                       (when (and (not= args "")
-                                                                  (or command.completion
-                                                                      command.complete))
-                                                         (each [_ candidate (ipairs (misa.command_completions command
-                                                                                                              args
-                                                                                                              used))]
-                                                           (when (= candidate.value
-                                                                    args)
-                                                             (set preferences
-                                                                  (misa.preference_use used
-                                                                                       (or command.preference_scope
-                                                                                           (.. "command:"
-                                                                                               command.name))
-                                                                                       (or candidate.id
-                                                                                           (tostring candidate.value))))
-                                                             (lua :break))))
-                                                       (local effects (icollect [_ effect (ipairs tx.fx)] effect))
-                                                       (table.insert effects
-                                                             {:type :state/save
-                                                              :namespace :preferences
-                                                              :data preferences})
-                                                       (misa.patch normalized {:db {:preferences (misa.replace preferences)}
-                                                                               :fx (misa.replace effects)}))
-                                                       normalized))))))))
-                         :id :commands/normalize}}
+                {:type :register/event :name :commands/invoke :handler invoke}
                 {:type :register/event
                  :name :choices/command-open
                  :handler (fn [db event]
                             (local command
                                    (assert (misa.command event.command)))
-                            (local state (or db.choice_commands {:pending {} :sequence 0}))
-                            (local sequence (+ state.sequence 1))
-                            (local token (.. "command:" sequence))
-                            {:patch {:choice_commands {: sequence
-                                                       :pending {token {:command command.name}}}}
-                             :fx [{:event {:completion :choices/command-selected
-                                           :id :command-choice
-                                           :session (misa.choice_session (misa.command_choice_spec command
-                                                                                                   ""
-                                                                                                   db)
-                                                                         db)
-                                           :title (command.name:sub 2)
-                                           : token
-                                           :type :picker/open}
-                                   :type :dispatch}]})}
+                            (if (and command.choice_available
+                                     (not (command.choice_available db)))
+                                {:fx [{:type :dispatch :event {:type command.choice_unavailable}}]}
+                                (do
+                                    (local state (or db.choice_commands {:pending {} :sequence 0}))
+                                    (local sequence (+ state.sequence 1))
+                                    (local token (.. "command:" sequence))
+                                    {:patch {:choice_commands {: sequence
+                                                               :pending {token {:command command.name}}}}
+                                     :fx [{:event {:completion :choices/command-selected
+                                                   :id :command-choice
+                                                   :session (misa.choice_session (misa.command_choice_spec command
+                                                                                                           ""
+                                                                                                           db)
+                                                                                 db)
+                                                   :title (command.name:sub 2)
+                                                   : token
+                                                   :type :picker/open}
+                                           :type :dispatch}]})))}
                 {:type :register/event
                  :name :choices/command-selected
                  :handler (fn [db event]
