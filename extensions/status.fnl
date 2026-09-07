@@ -67,7 +67,8 @@
                    {:label "Plan usage"
                     :value (if (= (type usage) :table)
                                (or usage.summary usage.used
-                                   (if (> (length (or usage.windows [])) 0) "Available" "Unavailable"))
+                                   (if (and (not usage.unavailable) (> (length (or usage.windows [])) 0))
+                                       "Available" "Unavailable"))
                                (or usage "Unavailable"))}])
     (each [_ window (ipairs (or (and (= (type usage) :table) usage.windows) []))]
       (each [_ field (ipairs [{:key :used :label "used"} {:key :limit :label "limit"}
@@ -78,6 +79,8 @@
         (when (not= (. window field.key) nil)
           (table.insert fields {:label (.. (or window.label "Quota") " " field.label)
                                 :value (. window field.key)}))))
+    (each [_ field (ipairs (or (and (= (type usage) :table) usage.fields) []))]
+      (table.insert fields field))
     (table.insert sections
                   {:id provider :title provider : fields}))
   sections)

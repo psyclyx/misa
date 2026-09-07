@@ -33,6 +33,34 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### On-demand Claude quota retrieval (2026-09-07)
+
+The installed Claude Code 2.1.261 accepts the first-party SDK's experimental
+`get_usage` control request with no inference prompt. The direct CLI probe exited
+zero with a matching successful control response. Misa's actual native process
+runner then retrieved and normalized the live account snapshot: `source=cli`,
+`plan=max`, four quota windows and four extra-usage fields. No credential file was
+read by Misa, and no model request was sent for either verification.
+
+The provider now handles `usage/refresh` with correlated, coalesced, bounded
+process requests. Failed/unsupported/malformed completions clear stale quota
+values; stale request IDs cannot publish. The normalizer accepts zero/exhausted
+percentages, leaves invalid/missing percentages unknown, preserves model-scoped
+windows and extra-usage amounts, and only scales money with an explicit decimal
+exponent. The new process's session totals are deliberately excluded. Stream
+observations replace only their named window and retain other fetched windows.
+The dashboard renders the additional semantic fields and respects unavailable
+status even when reset-only windows exist.
+
+`tests/claude-usage.fnl` covers transport declarations without launching a CLI,
+coalescing/correlation, malformed records, unavailable/non-plan responses,
+window validation, monetary scaling and stream merging. Claude stream/status
+checks and the full ReleaseSafe/baseline suite pass. The external API remains
+experimental; unsupported versions degrade to unavailable. See the linked
+official SDK release and behavior documentation in README. This supersedes the
+earlier on-demand Claude retrieval gap, not every provider/dashboard acceptance
+item or billing feature.
+
 ### Structural-selection acceptance (2026-09-07)
 
 The native PTY now verifies `v` plus `k` extends a range across two transcript

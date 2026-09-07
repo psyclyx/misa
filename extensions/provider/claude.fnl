@@ -198,8 +198,78 @@
   (when (and (= (type value) :number) (= value value) (>= value 0) (< value math.huge)) value))
 
 (local quota-labels {:five_hour "Claude · 5h" :seven_day "Claude · 7d"
+                     :seven_day_oauth_apps "Claude OAuth apps · 7d"
                      :seven_day_opus "Claude Opus · 7d" :seven_day_sonnet "Claude Sonnet · 7d"
                      :overage "Claude overage"})
+
+(fn quota-window [id label value]
+  (local amount (quota-number value.utilization))
+  (local used (when (and amount (<= amount 100)) amount))
+  {: id : label :source :cli :unit :percent : used
+   :limit (when used 100) :remaining (when used (- 100 used))
+   :reset_at (when (= (type value.resets_at) :string) value.resets_at)})
+
+;; Isolate the experimental get_usage shape here. Never interpret the new
+;; probe session's zero cost as this application's conversation cost.
+(fn quota-snapshot [data]
+  (local windows [])
+  (local fields [])
+  (local limits (and (= data.rate_limits_available true)
+                     (= (type data.rate_limits) :table) data.rate_limits))
+  (when limits
+    (local keys (icollect [key value (pairs limits)]
+                  (when (and (= (type key) :string) (not= key :extra_usage)
+                             (= (type value) :table)
+                             (or (not= value.utilization nil) (not= value.resets_at nil))) key)))
+    (table.sort keys)
+    (each [_ key (ipairs keys)]
+      (table.insert windows (quota-window key (or (. quota-labels key) key) (. limits key))))
+    (when (= (type limits.model_scoped) :table)
+      (each [index value (ipairs limits.model_scoped)]
+        (when (and (= (type value) :table) (= (type value.display_name) :string))
+          (table.insert windows (quota-window (.. :model/ index "/" value.display_name)
+                                              (.. value.display_name " · 7d") value)))))
+    (local extra limits.extra_usage)
+    (when (and (= (type extra) :table) (= (type extra.is_enabled) :boolean))
+      (table.insert fields {:label "Extra usage enabled" :value extra.is_enabled})
+      (local currency (when (= (type extra.currency) :string) extra.currency))
+      (local decimals (quota-number extra.decimal_places))
+      (local scaled (and decimals (<= decimals 9) (= (% decimals 1) 0)))
+      (local divisor (if scaled (^ 10 decimals) 1))
+      (local unit (if scaled (or currency :currency) "minor units"))
+      (when currency (table.insert fields {:label "Extra usage currency" :value currency}))
+      (each [_ item (ipairs [{:key :monthly_limit :label "Extra usage monthly limit"}
+                             {:key :used_credits :label "Extra usage used"}])]
+        (local amount (quota-number (. extra item.key)))
+        (when amount
+          (table.insert fields {:label (.. item.label " (" unit ")") :value (/ amount divisor)})))))
+  (local available (accumulate [found false _ window (ipairs windows)] (or found (not= window.used nil))))
+  {:source :cli : windows : fields :unavailable (not available)})
+
+(fn usage-response [event]
+  (when (and event.ok (= (type event.data) :table))
+    (each [_ record (ipairs event.data)]
+      (local response (and (= (type record) :table) record.response))
+      (when (and (= (type record) :table) (= record.type :control_response) (= (type response) :table)
+                 (= response.request_id event.id) (= response.subtype :success)
+                 (= (type response.response) :table))
+        (lua "return response.response")))))
+
+(fn merge-quota [previous incoming]
+  (local update (and incoming.windows (. incoming.windows 1)))
+  (if (or (not previous) (not update) (not update.id)) incoming
+      (let [windows []]
+        (var found false)
+        (each [_ window (ipairs (or previous.windows []))]
+          (if (= window.id update.id)
+              (do (table.insert windows update) (set found true))
+              (table.insert windows window)))
+        (when (not found) (table.insert windows update))
+        (local available (accumulate [known false _ window (ipairs windows)]
+                           (or known (not= window.used nil))))
+        (misa.patch previous {:windows (misa.replace windows) :partial true
+                              :source (if (= previous.source :stream) :stream :cli_stream)
+                              :unavailable (not available)}))))
 
 (fn quota-record [_ record]
   (local info record.rate_limit_info)
@@ -213,7 +283,7 @@
     ;; Do not retain older percentages when a new report omits utilization.
     {:fx [{:type :dispatch :event {:type :provider/claude-quota
                                   :usage {:source :stream :unavailable (= used nil)
-                                          :windows [{:label (or (. quota-labels (or kind "")) kind "Claude")
+                                          :windows [{:id kind :source :stream :label (or (. quota-labels (or kind "")) kind "Claude")
                                                      :unit :percent :status status :reset_at_unix reset
                                                      :used used :limit (when used 100)
                                                      :remaining (when used (math.max 0 (- 100 used)))}]}}}]}))
@@ -281,6 +351,43 @@
           (local executable (or config.executable :claude))
           (assert (and (= (type executable) :string) (not= executable ""))
                   "config.providers.claude.executable must be nonempty")
+          (table.insert setup-fx
+                        {:type :register/event :name :usage/refresh
+                         :handler (fn [db event]
+                                    (when (or (not event.provider) (= event.provider :claude))
+                                      (local provider (and db.providers db.providers.claude))
+                                      (if (and provider provider.usage_request)
+                                          {:patch {:providers {:claude {:usage_again true}}}}
+                                          (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
+                                                id (.. :claude-usage- sequence)]
+                                            {:patch {:providers {:claude {:usage_sequence sequence :usage_request id}}}
+                                             :fx [{:type :process/run : id :completion :provider/claude-usage
+                                                   :argv [executable :--print :--input-format :stream-json
+                                                          :--output-format :stream-json :--verbose
+                                                          :--no-session-persistence :--setting-sources ""
+                                                          :--settings "{\"disableAllHooks\":true}"
+                                                          :--strict-mcp-config :--mcp-config "{\"mcpServers\":{}}"]
+                                                   :stdin_json {:type :control_request :request_id id
+                                                                :request {:subtype :get_usage}}
+                                                   :stdout_format :json_lines
+                                                   :timeouts (or config.usage_timeouts
+                                                                 {:startup_ms 10000 :idle_ms 10000 :overall_ms 30000})}]}))))})
+          (table.insert setup-fx
+                        {:type :register/event :name :provider/claude-usage
+                         :handler (fn [db event]
+                                    (local provider (and db.providers db.providers.claude))
+                                    (when (and provider provider.usage_request (= provider.usage_request event.id))
+                                      (local data (usage-response event))
+                                      (local snapshot (misa.patch (quota-snapshot (or data {}))
+                                                                 {:summary (when (not data) "Claude CLI usage unavailable")}))
+                                      (local plan (and data (= (type data.subscription_type) :string) data.subscription_type))
+                                      (local updated {:type :dispatch :event {:type :usage/updated}})
+                                      {:patch {:providers {:claude {:usage_request misa.delete :usage_again misa.delete
+                                                                    :subscription_type (when data (misa.replace plan))
+                                                                    :usage (misa.replace snapshot)}}}
+                                       :fx (if provider.usage_again
+                                               [updated {:type :dispatch :event {:type :usage/refresh :provider :claude}}]
+                                               [updated])}))})
           (local host (or context.host {}))
           (local mcp-command (or (or config.mcp_command host.executable) :misa))
           (local mcp-arguments (or config.mcp_arguments
@@ -448,8 +555,9 @@
           (table.insert setup-fx {:type :register/event :name :provider/claude-complete :handler stream})
           (table.insert setup-fx
                         {:type :register/event :name :provider/claude-quota
-                         :handler (fn [_ event]
-                                    {:patch {:providers {:claude {:usage (misa.replace event.usage)}}}
+                         :handler (fn [db event]
+                                    (local previous (and db.providers db.providers.claude db.providers.claude.usage))
+                                    {:patch {:providers {:claude {:usage (misa.replace (merge-quota previous event.usage))}}}
                                      :fx [{:type :dispatch :event {:type :usage/updated}}]})})
           (each [name registry (pairs {:register/claude-record records :register/claude-stream-event partials})]
             (table.insert setup-fx

@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "Claude usage control requests preserve isolation and reject stale results" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/claude-usage.fnl"} }, "Claude usage contracts passed\n");
+}
+
 test "Codex quota requests preserve account binding and normalize usage windows" {
     var h = try Harness.init();
     defer h.deinit();

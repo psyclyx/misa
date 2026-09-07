@@ -813,13 +813,24 @@ backend. An explicit `config.providers.openai_codex.usage_url` override still ne
 native credential-origin authorization. Account identifiers are not retained in
 quota state.
 
-Claude consumes the CLI's `rate_limit_event` records through its existing process
-transport. The latest reported window, status, reset time, and optional utilization
-feed the same dashboard/widget contract. Missing utilization stays unknown; an
-`allowed` status does not imply zero usage. These are stream observations, not a
-complete account snapshot: `/usage` does not yet fetch Claude's full quota set on
-demand. No additional Claude credential access or model request is used to obtain
-these observations. The wire fields and fractional utilization follow the
+Claude refreshes full plan quota snapshots through the CLI's experimental
+`get_usage` control request, introduced in the
+[official Agent SDK release](https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.169).
+The query sends no prompt, disables hooks and MCP configuration for the probe,
+and leaves credential handling inside Claude Code. It reports available quota
+windows, model-scoped limits, subscription type and extra-usage amounts. Monetary
+scaling requires an explicit decimal-place field; otherwise amounts are labeled
+as minor units. The probe session's cost is not used as Misa's conversation cost.
+Refreshes coalesce; stale completions are ignored. Unsupported CLI versions,
+failed queries and missing quota data show unavailable instead of invented limits.
+The experimental response may change; CLI 2.1.261 was checked against a live account.
+`providers.claude.executable` selects the CLI, and `usage_timeouts` can override
+the bounded probe's startup/idle/overall millisecond timeouts (10s/10s/30s).
+
+Claude also consumes `rate_limit_event` records through its existing stream.
+A named window updates its prior observation without erasing other fetched
+windows; missing utilization clears that window's percentage. An `allowed`
+status does not imply zero usage. The stream wire fields and fractional utilization follow the
 [official SDK parser](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/message_parser.py)
 and [rate-limit types](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py).
 Provider-reported USD takes precedence over estimates; missing prices remain

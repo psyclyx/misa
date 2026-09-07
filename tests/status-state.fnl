@@ -63,6 +63,18 @@
 (assert (= (. sections 3 :fields 2 :value) "Unavailable"))
 (assert (= (. sections 4 :fields 1 :value) :Max))
 (assert (= (. sections 4 :fields 2 :value) 0))
+(local extra-fields [{:label "Extra usage enabled" :value false}
+                     {:label "Extra usage used (USD)" :value 0}])
+(local (_ extra-fx) (transition (misa.patch initial
+                                          {:providers {:claude {:usage {:unavailable true
+                                                                       :windows [{:label "Unknown"}]
+                                                                       :fields extra-fields}}}})
+                                {:type :usage/open}))
+(local extra-section (. extra-fx 1 :event :sections 3))
+(assert (= (. extra-section.fields 2 :value) "Unavailable"))
+(assert (= (. extra-section.fields 3 :value) false))
+(assert (= (. extra-section.fields 4 :value) 0))
+(assert (= (. extra-fields 2 :value) 0))
 (local dialogs ((. (fennel.dofile :extensions/dialogs.fnl) :setup)))
 (local dialog-handlers {})
 (each [_ spec (ipairs dialogs.fx)]
