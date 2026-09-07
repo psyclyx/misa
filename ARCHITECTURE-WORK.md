@@ -51,6 +51,14 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Markdown layout now compares actual parsed-document and capture identities,
+not syntax revision bookkeeping. A regression reproduced wrong highlighting when
+independent snapshots shared text and revision but had different captures. Tests
+cover switching back to the retained snapshot, replacing the explicit document,
+unchanged-input reuse, and revision-only changes. This corrects the existing
+cache's dependency contract; it does not remove the render-owned document cache
+or establish an end-to-end rendering speedup.
+
 Cost projections now use explicit subscription dependencies: collection-level
 numeric totals, a dependent formatted projection, and per-response projections.
 Tests verify unrelated-hover reuse, untouched-response identity, discarded scope

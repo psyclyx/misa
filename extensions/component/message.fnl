@@ -48,7 +48,6 @@
                             {:base style
                              :document (and syntax syntax.document)
                              :captures (and syntax syntax.captures)
-                             :revision (and syntax syntax.revision)
                              :columns (math.max 1
                                                 (- columns
                                                    (misa.layout.width prefix)))}))

@@ -517,7 +517,10 @@ not repeatedly search the same suffix. Quote prefixes and highlighted code lines
 are scanned by source offset. Deep list/quote indentation is fitted to the
 viewport without changing the parsed depth or hiding the body.
 `misa.markdown_view.new_document():render(text, options)` adds per-block layout
-reuse keyed by width and semantic styles. Both APIs return read-only derived
+reuse keyed by parsed-block identity, capture identity, width, and semantic styles.
+Explicit `options.document` and `options.captures` are immutable inputs; changing
+either invalidates document-level reuse. Revision counters are not layout inputs.
+Both APIs return read-only derived
 snapshots. Default message components keep these documents for the transcript's
 lifetime and copy cached bodies before applying titles, rails, and theme colors.
 Animation-only redraws therefore reuse parsing, highlighting, and body layout.

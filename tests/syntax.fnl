@@ -113,6 +113,30 @@
                    &until found]
         (= token :syntax.keyword)))))
 
+;; Equal revision numbers in independent snapshots are not equal dependencies.
+(let [source "```lua\nlocal value = 1\n```"
+      document (misa.markdown.parse source)
+      other-document (misa.markdown.parse source)
+      cache (misa.markdown_view.new_document)
+      options {:document document :columns 80 :revision 1}
+      plain (cache:render source options)
+      colored-options {:document document :columns 80 :revision 1
+                       :captures {(. document.blocks 1 :source_start)
+                                  [{:start_byte 0 :end_byte 5 :capture :keyword}]}}
+      colored (cache:render source colored-options)]
+  (assert (not (keyword? plain)))
+  (assert (keyword? colored) "equal revision hid changed capture input")
+  (assert (= colored (cache:render source colored-options))
+          "identical explicit dependencies discarded layout")
+  (assert (= colored (cache:render source {:document document :columns 80 :revision 2
+                                          :captures colored-options.captures}))
+          "revision bookkeeping invalidated unchanged layout inputs")
+  (local restored (cache:render source options))
+  (assert (not (keyword? restored))
+          "retained snapshot reused another snapshot's captures")
+  (local replaced (cache:render source {:document other-document :columns 80 :revision 1}))
+  (assert (not= replaced restored) "replacement document identity was ignored"))
+
 (dispatch {:type :app/start})
 (start)
 (delta "intro\n\n```lua\nlocal a")

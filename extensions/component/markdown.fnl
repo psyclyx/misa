@@ -382,7 +382,7 @@
                                                                       {:__mode :k}))
                                                  (var (previous previous-source
                                                                 columns base
-                                                                revision lines)
+                                                                captures lines)
                                                       nil)
                                                  {:render (fn [_ text options]
                                                             (local opts
@@ -393,17 +393,12 @@
                                                                        (parser:update text)))
                                                             (local next-base
                                                                    (style-key opts.base))
-                                                            (when (or (if opts.document
-                                                                          (not= text
-                                                                                previous-source)
-                                                                          (not= document
-                                                                                previous))
+                                                            (when (or (not= document previous)
+                                                                      (not= text previous-source)
+                                                                      (not= opts.captures captures)
                                                                       (not= opts.columns
                                                                             columns)
-                                                                      (or (not= next-base
-                                                                                base)
-                                                                          (not= opts.revision
-                                                                                revision)))
+                                                                      (not= next-base base))
                                                               (set lines
                                                                    (render document
                                                                            opts
@@ -411,12 +406,12 @@
                                                               (set (previous previous-source
                                                                              columns
                                                                              base
-                                                                             revision)
+                                                                             captures)
                                                                    (values document
                                                                            text
                                                                            opts.columns
                                                                            next-base
-                                                                           opts.revision)))
+                                                                           opts.captures)))
                                                             ;; Semantic lines are read-only; consumers decorate copies.
                                                             lines)})
                                  : plain
