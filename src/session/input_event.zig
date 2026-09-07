@@ -24,6 +24,7 @@ pub fn serialize(allocator: std.mem.Allocator, event: terminal.Event) ![]u8 {
         .wheel_up => serializeKind(allocator, "wheel_up"),
         .wheel_down => serializeKind(allocator, "wheel_down"),
         .mouse => |position| std.json.Stringify.valueAlloc(allocator, .{ .type = "terminal/input", .kind = "mouse", .row = position.row, .column = position.column }, .{}),
+        .mouse_move => |position| std.json.Stringify.valueAlloc(allocator, .{ .type = "terminal/input", .kind = "mouse_move", .row = position.row, .column = position.column }, .{}),
         .escape => serializeKind(allocator, "escape"),
         .ctrl_c => serializeKind(allocator, "ctrl_c"),
         .ctrl_d => serializeKind(allocator, "ctrl_d"),

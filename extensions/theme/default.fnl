@@ -108,6 +108,7 @@
                                           :italic {:italic true}
                                           :keybinding {:dim true
                                                        :foreground :accent}
+                                          :hover {:background :selection}
                                           :label {:dim true :foreground :text}
                                           :link {:foreground :accent
                                                  :underline true}

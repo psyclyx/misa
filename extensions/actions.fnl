@@ -4,6 +4,14 @@
 
 {:setup (fn []
           {:fx [{:type :register/event
+                 :name :ui/hover
+                 :handler (fn [db event]
+                            (set db.hover_action
+                                 (if (and (= (type event.action) :string)
+                                          (not= event.action ""))
+                                     event.action nil))
+                            {: db})}
+                {:type :register/event
                  :name :ui/action
                  :handler (fn [db event]
                             (local action (misa.action event.action))

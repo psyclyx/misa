@@ -15,9 +15,10 @@ pub const View = struct {
 pub const Input = union(enum) {
     key: terminal_module.Event,
     action: []u8,
+    hover: []u8,
     pub fn deinit(self: Input, allocator: std.mem.Allocator) void {
         switch (self) {
-            .action => |value| allocator.free(value),
+            .action, .hover => |value| allocator.free(value),
             .key => |event| {
                 switch (event) {
                     .text, .alt => |bytes| std.crypto.secureZero(u8, bytes),
@@ -328,9 +329,13 @@ fn drainDecoded(self: *Driver) !void {
         if (full) return;
         const event = self.decoded.items[self.decoded_head];
         var value: Input = .{ .key = event };
-        if (event == .mouse) if (self.decoded_actions.at(event.mouse.row, event.mouse.column)) |action| {
-            value = .{ .action = try self.allocator.dupe(u8, action) };
-        };
+        if (event == .mouse) {
+            if (self.decoded_actions.at(event.mouse.row, event.mouse.column)) |action| {
+                value = .{ .action = try self.allocator.dupe(u8, action) };
+            }
+        } else if (event == .mouse_move) {
+            value = .{ .hover = try self.allocator.dupe(u8, self.decoded_actions.at(event.mouse_move.row, event.mouse_move.column) orelse "") };
+        }
         self.decoded_head += 1;
         if (event == .eof) self.eof = true;
         self.mutex.lockUncancelable(self.io);

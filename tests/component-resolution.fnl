@@ -11,6 +11,7 @@
                        :themes
                        :theme/default
                        :components
+                       :actions
                        :layout
                        :markdown
                        :component/markdown
@@ -42,6 +43,7 @@
                                    :flash spec.flash}
                          :styles {:plain {:foreground :ink}
                                   :panel {:background :paper}
+                                  :hover {:background :flash}
                                   :highlight {:foreground :flash}}}}))
 
 (table.insert effects {:type :register/component
@@ -134,4 +136,28 @@
 (assert (= (length raw-third.lines) 2))
 (assert (= (. raw-third.lines 2 :spans) first-body.spans)
         "resolved render invalidated cached body")
+;; Hover changes only the resolved background and clears when the pointer leaves.
+;; Reused semantic component output must remain untouched.
+(fn hover [action]
+  (misa._dispatch {:type :ui/hover : action}
+                  {:columns 80 :lines 24 :interactive true}
+                  {:wall_ms 0 :monotonic_ms 0})
+  (misa._commit)
+  (misa._dispatch {:type :test/read}
+                  {:columns 80 :lines 24 :interactive true}
+                  {:wall_ms 0 :monotonic_ms 0})
+  (misa._commit)
+  (misa.swap_theme db :first)
+  (misa.render_component db :cached model render-context))
+(local resting (hover ""))
+(local hovered (hover :fixture))
+(local departed (hover ""))
+(assert (not= (. resting.lines 1 :spans 1 :style :background)
+              (. hovered.lines 1 :spans 1 :style :background))
+        "hover did not change button background")
+(assert (= (misa.json.encode (. resting.lines 1 :spans 1 :style))
+           (misa.json.encode (. departed.lines 1 :spans 1 :style)))
+        "leaving a button retained hover styling")
+(assert (= (misa.json.encode cached) semantic)
+        "hover mutated reusable component data")
 (output "component resolution regressions passed\n")

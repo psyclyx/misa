@@ -44,6 +44,7 @@
                   :strikethrough
                   :underline
                   :accent
+                  :hover
                   :code
                   :link
                   :quote

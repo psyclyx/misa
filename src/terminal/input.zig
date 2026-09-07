@@ -19,6 +19,7 @@ pub const Event = union(enum) {
     wheel_up,
     wheel_down,
     mouse: struct { row: usize, column: usize },
+    mouse_move: struct { row: usize, column: usize },
     escape,
     ctrl_c,
     ctrl_d,
@@ -83,10 +84,14 @@ pub const Decoder = struct {
                     const button = std.fmt.parseInt(usize, fields.next() orelse "", 10) catch 999;
                     const column = std.fmt.parseInt(usize, fields.next() orelse "", 10) catch 0;
                     const row = std.fmt.parseInt(usize, fields.next() orelse "", 10) catch 0;
-                    if (fields.next() == null and row > 0 and column > 0 and p[end] == 'M') {
+                    if (fields.next() == null and row > 0 and column > 0 and button < 128 and p[end] == 'M') {
                         if (button & 64 != 0 and button & 3 <= 1 and button < 128) {
                             try out.append(allocator, if (button & 1 == 0) .wheel_up else .wheel_down);
-                        } else if (button & 35 == 0) try out.append(allocator, .{ .mouse = .{ .row = row, .column = column } });
+                        } else if (button & 64 == 0 and button & 32 != 0) {
+                            try out.append(allocator, .{ .mouse_move = .{ .row = row, .column = column } });
+                        } else if (p[end] == 'M' and button & 35 == 0) {
+                            try out.append(allocator, .{ .mouse = .{ .row = row, .column = column } });
+                        }
                     }
                     self.consume(end + 1);
                     continue;
@@ -331,6 +336,27 @@ fn altPrintable(bytes: []const u8) AltPrintable {
     const cp = std.unicode.utf8Decode(bytes[0..len]) catch return .control;
     if (cp < 0x20 or cp == 0x7f or (cp >= 0x80 and cp <= 0x9f)) return .control;
     return .{ .printable = len };
+}
+
+test "SGR motion distinguishes hover drag click release and wheel" {
+    const allocator = std.testing.allocator;
+    var decoder: Decoder = .{};
+    defer decoder.deinit(allocator);
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try decoder.feed(allocator, "\x1b[<35;7;", &events);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try decoder.feed(allocator, "3M\x1b[<32;8;3M\x1b[<0;8;3M\x1b[<0;8;3m\x1b[<64;8;3M\x1b[<999;8;3M", &events);
+    try std.testing.expectEqual(@as(usize, 4), events.items.len);
+    try std.testing.expect(events.items[0] == .mouse_move);
+    try std.testing.expectEqual(@as(usize, 7), events.items[0].mouse_move.column);
+    try std.testing.expectEqual(@as(usize, 3), events.items[0].mouse_move.row);
+    try std.testing.expect(events.items[1] == .mouse_move);
+    try std.testing.expect(events.items[2] == .mouse);
+    try std.testing.expect(events.items[3] == .wheel_up);
 }
 
 test "decoder handles fragmented safe multiline paste, escape timeout, ctrl-d, and utf8" {

@@ -93,6 +93,11 @@
                                                                                   (or span.style
                                                                                       :plain)))]
                                           (tset style key value))
+                                        (when (and span.action
+                                                   (= span.action db.hover_action))
+                                          (each [key value (pairs (misa.theme_style db
+                                                                                    :hover))]
+                                            (tset style key value)))
                                         (set resolved-span.style style)
                                         (when span.animation
                                           (var animation nil)

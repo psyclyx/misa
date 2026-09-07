@@ -305,6 +305,13 @@ pub const Session = struct {
                 self.read_requested = true;
                 return;
             },
+            .hover => |action| {
+                const json = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "ui/hover", .action = action }, .{});
+                defer self.allocator.free(json);
+                try self.enqueue(json);
+                self.read_requested = true;
+                return;
+            },
         };
         if (self.protected) |*input| {
             const result = input.accept(event);

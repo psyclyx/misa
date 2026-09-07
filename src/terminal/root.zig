@@ -43,8 +43,8 @@ pub const PreparedPresentation = struct {
 
 const frame_end = "\x1b[?7h\x1b[?2026l";
 const show_cursor = "\x1b[?25h";
-const enter_managed_screen = "\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[>1u";
-const leave_managed_screen = "\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l";
+const enter_managed_screen = "\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1003h\x1b[?1006h\x1b[>1u";
+const leave_managed_screen = "\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?2004l\x1b[?25h\x1b[?1049l";
 
 const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM };
 const SignalState = struct {
@@ -524,8 +524,8 @@ fn parseDimension(value: ?[]const u8, fallback: usize) usize {
 }
 
 test "managed screen lifetime and frames use distinct control sequences" {
-    try std.testing.expectEqualStrings("\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[>1u", enter_managed_screen);
-    try std.testing.expectEqualStrings("\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l", leave_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1003h\x1b[?1006h\x1b[>1u", enter_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?2004l\x1b[?25h\x1b[?1049l", leave_managed_screen);
     try std.testing.expect(std.mem.indexOf(u8, enter_managed_screen, leave_managed_screen) == null);
 }
 
