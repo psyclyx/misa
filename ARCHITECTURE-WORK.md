@@ -33,6 +33,17 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Width-table lower-bound experiment rejected (2026-09-07)
+
+A table-derived early exit from Unicode interval searches passed exhaustive
+codepoint-width parity and 500 generated mixed-text cases, plus complete native
+frame hashes across ten A/B pairs. Native timings did not establish a win:
+300-block streaming median-of-run-medians changed from 7.242 to 7.550 ms and
+other workloads were mixed. The production edit was reverted. The new
+`benchmarks/layout-parity.fnl` probe is retained, with the exact rejected change
+and results in `benchmarks/layout-range-bound-2026-09-07.md`. Clipping remains
+an open performance target; no runtime speedup is claimed from this experiment.
+
 ### Syntax collection read once per transcript projection (2026-09-07)
 
 The profiled repeated-query cost came from calling the syntax collection
