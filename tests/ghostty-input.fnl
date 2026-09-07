@@ -72,7 +72,7 @@
                                                                   1)
                                                                :2)
                                                           :0.1)
-                                                      "); print('# Response\\n\\nA **bold** [link](https://example.test).\\n\\n' + 'Paragraph for scrolling.\\n\\n' * 20)")]
+                                                      "); print('# Response\\n\\nA **bold** [link](https://example.test).\\n\\n' + 'Paragraph for scrolling.\\n\\n' * 20 + '[footer](https://hover.test)')")]
                                            :completion :smoke/response
                                            :id event.id
                                            :type :process/run}]})})

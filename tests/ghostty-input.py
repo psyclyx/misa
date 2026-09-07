@@ -114,6 +114,27 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         send(b'\x10\r')
         state = ready(4)
         assert state['history'] == ['first\nline', 'second\nthird', 'again'], 'consecutive history was not deduplicated'
+        # Each response ends with an OSC-only Markdown link, visible at the
+        # transcript tail. Locate it through real hit testing without assuming
+        # how many rows the editor/status/footer layout consumes.
+        target = None
+        for row in range(32, 0, -1):
+            start = len(output)
+            send(f'\x1b[<35;4;{row}M'.encode())
+            state = snapshot()
+            if state.get('hover_link') == 'https://hover.test':
+                until(lambda: b'\x1b[?2026l' in output[start:])
+                target = (4, row)
+                frame = bytes(output[start:])
+                break
+        assert target, 'Markdown OSC link was absent from native hover hit testing'
+        assert not state.get('hover_action'), 'OSC link was routed as an action'
+        assert b'48;2;59;82;96' in frame, 'Markdown link hover did not change its background'
+        assert b'\x1b]8;;https://hover.test' in frame, 'hover removed the OSC link'
+        state, frame = move_and_render(100, 1)
+        assert not state.get('hover_link'), 'leaving a Markdown link retained hover state'
+        assert b'48;2;59;82;96' not in frame, 'leaving a Markdown link retained its background'
+        assert b'\x1b]8;;https://hover.test' in frame, 'leaving hover removed the OSC link'
         send(b'draft\x10')
         assert snapshot()['text'] == 'again'
         send(b'\x0e')
@@ -140,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         assert re.search(rb'\x1b\[[0-9;]*38;2;', output) and re.search(rb'\x1b\[[0-9;]*48;2;', output), 'truecolor styles were absent'
         assert b'\x1b]8;;https://example.test' in output, 'Markdown links were not clickable'
         assert b'\x1b[?2026h' in output and b'\x1b[<u' in output
-        print('Ghostty PTY passed: hover background/leave, images, Shift-Enter, queue editing/steering, history, selection, scrolling, RGB and links')
+        print('Ghostty PTY passed: action/link hover background/leave, images, Shift-Enter, queue editing/steering, history, selection, scrolling, RGB and links')
     finally:
         if process.poll() is None: process.kill(); process.wait()
         os.close(master)

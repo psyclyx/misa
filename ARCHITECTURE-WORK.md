@@ -51,6 +51,13 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The Ghostty-protocol PTY fixture now includes a visible Markdown footer link.
+Native SGR motion must set `hover_link` rather than `hover_action`, emit the hover
+background, and remove it on exit while preserving OSC hyperlink sequences in
+both frames. Together with the model-button test, this covers action and OSC-only
+link hover through decoding, hit testing, state, and presentation after the render
+cutover. This remains a PTY protocol test, not a live Ghostty GUI acceptance check.
+
 Transcript rendering now uses a collection-owned component projection. Semantic
 output, incremental Markdown hints, and themed views survive unchanged items;
 hover/theme changes do not rerun semantic component callbacks. The global message
