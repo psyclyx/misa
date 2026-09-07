@@ -11,7 +11,7 @@
                          :handler (fn [db event]
                                     (assert (= (type event.text) :string)
                                             "clipboard text must be a string")
-                                    (set db.clipboard
+                                    (local clipboard
                                          {:linewise (= event.linewise true)
                                           :sequence (+ (or (. (or db.clipboard
                                                                   {})
@@ -27,17 +27,17 @@
                                            {:argv config.command
                                             :completion :clipboard/completed
                                             :id (.. "clipboard:"
-                                                    db.clipboard.sequence)
+                                                    clipboard.sequence)
                                             :stdin event.text
                                             :type :process/run}))
-                                    {: db :fx [effect {:type :terminal/read}]})})
+                                    {:patch {:clipboard (misa.replace clipboard)}
+                                     :fx [effect {:type :terminal/read}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :clipboard/completed
                          :handler (fn [db event]
-                                    (if event.ok {: db}
-                                        {: db
-                                         :fx [{:event {:level :error
+                                    (if event.ok nil
+                                        {:fx [{:event {:level :error
                                                        :text (.. "Clipboard command failed: "
                                                                  (or (or event.stderr
                                                                          event.status)

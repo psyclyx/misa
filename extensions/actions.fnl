@@ -5,12 +5,11 @@
 {:setup (fn []
           {:fx [{:type :register/event
                  :name :ui/hover
-                 :handler (fn [db event]
-                            (set db.hover_action
-                                 (if (and (= (type event.action) :string)
-                                          (not= event.action ""))
-                                     event.action nil))
-                            {: db})}
+                 :handler (fn [_ event]
+                            {:patch {:hover_action
+                                     (if (and (= (type event.action) :string)
+                                              (not= event.action ""))
+                                         event.action misa.delete)}})}
                 {:type :register/event
                  :name :ui/action
                  :handler (fn [db event]
@@ -18,11 +17,10 @@
                             (if (and action
                                      (or (not action.available)
                                          (action.available db)))
-                                {: db
-                                 :fx [{:event (misa.snapshot action.event)
+                                {:fx [{:event (misa.snapshot action.event)
                                        :type :dispatch}
                                       {:type :terminal/read}]}
-                                {: db :fx [{:type :terminal/read}]}))}
+                                {:fx [{:type :terminal/read}]}))}
                 {:type :register/keybinding
                  :value {:action :action_palette
                          :context :global
@@ -84,7 +82,7 @@
                  :handler (fn [db event]
                             (if (or (and db.picker (= db.picker.id :actions))
                                     db.dialog)
-                                {: db :fx [{:type :terminal/read}]}
+                                {:fx [{:type :terminal/read}]}
                                 (do
                                   (local items {})
                                   (each [_ action (ipairs (misa.actions))]
@@ -111,9 +109,9 @@
                                              :label action.label
                                              :search action.id
                                              :value action.id})))
-                                  (set db.action_sequence
+                                  (local sequence
                                        (+ (or db.action_sequence 0) 1))
-                                  {: db
+                                  {:patch {:action_sequence sequence}
                                    :fx [{:event {:completion :actions/selected
                                                  :id :actions
                                                  :nested (not= db.picker nil)
@@ -125,7 +123,7 @@
                                                                                 :title ": Actions"}
                                                                                db)
                                                  :title ": Actions"
-                                                 :token (tostring db.action_sequence)
+                                                 :token (tostring sequence)
                                                  :type :picker/open}
                                          :type :dispatch}]})))}
                 {:type :register/event
@@ -146,4 +144,4 @@
                                     (table.insert fx 1
                                                   {:event (misa.snapshot action.event)
                                                    :type :dispatch}))
-                                  {: db : fx})))}]})}
+                                  {: fx})))}]})}

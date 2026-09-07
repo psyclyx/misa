@@ -77,12 +77,12 @@
                         {:type :register/event
                          :name :omnipicker/open
                          :handler (fn [db]
-                                    (set db.omnipicker_sequence
+                                    (local sequence
                                          (+ (or db.omnipicker_sequence 0) 1))
                                     (local token
                                            (.. "omnipicker:"
-                                               db.omnipicker_sequence))
-                                    {: db
+                                               sequence))
+                                    {:patch {:omnipicker_sequence sequence}
                                      :fx [{:event {:completion :omnipicker/selected
                                                    :id :omnipicker
                                                    :nested (not= db.picker nil)
@@ -98,14 +98,13 @@
                          :handler (fn [db event]
                                     (if (not= event.picker :omnipicker) nil
                                         (if event.cancelled
-                                            {: db :fx [{:type :terminal/read}]}
+                                            {:fx [{:type :terminal/read}]}
                                             (do
                                               (local invocation
                                                      (assert (misa.command_invocation (or event.invocation
                                                                                           (tostring event.value)))
                                                              "invalid command palette invocation"))
-                                              {: db
-                                               :fx [{:event invocation
+                                              {:fx [{:event invocation
                                                      :type :dispatch}]}))))})
           (table.insert setup-fx
                         {:type :register/interceptor

@@ -147,14 +147,11 @@
                  :handler (fn [db event]
                             (local command
                                    (assert (misa.command event.command)))
-                            (set db.choice_commands
-                                 (or db.choice_commands
-                                     {:pending {} :sequence 0}))
-                            (local state db.choice_commands)
-                            (set state.sequence (+ state.sequence 1))
-                            (local token (.. "command:" state.sequence))
-                            (tset state.pending token {:command command.name})
-                            {: db
+                            (local state (or db.choice_commands {:pending {} :sequence 0}))
+                            (local sequence (+ state.sequence 1))
+                            (local token (.. "command:" sequence))
+                            {:patch {:choice_commands {: sequence
+                                                       :pending {token {:command command.name}}}}
                              :fx [{:event {:completion :choices/command-selected
                                            :id :command-choice
                                            :session (misa.choice_session (misa.command_choice_spec command
@@ -176,16 +173,16 @@
                                     (not pending))
                                 nil
                                 (do
-                                  (tset db.choice_commands.pending
-                                        event.picker_token nil)
+                                  (local patch {:choice_commands
+                                                {:pending {event.picker_token misa.delete}}})
                                   (if event.cancelled
-                                      {: db :fx [{:type :terminal/read}]}
+                                      {: patch :fx [{:type :terminal/read}]}
                                       (do
                                         (local invocation
                                                (assert (misa.command_invocation (.. pending.command
                                                                                     " "
                                                                                     (tostring event.value)))))
                                         (set invocation.resumed_choice true)
-                                        {: db
+                                        {: patch
                                          :fx [{:event invocation
                                                :type :dispatch}]})))))}]})}
