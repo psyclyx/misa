@@ -89,6 +89,17 @@
 (local rule-lines (. (misa.markdown_view.project rule-text {:columns 8}) :lines))
 (local rule-decorated (misa.selection_decorate rule-selection :rule rule-text rule-lines))
 (assert (. rule-decorated 1 :selected) "selected rule inside a document was not highlighted")
+(local blank-document {:id :blank :text "\n" :kind :document :label :Blank
+                       :first 0 :last 1 :children []})
+(local blank-selection (transition {:document blank-document} :selection/open))
+(local blank-lines [{:spans [{:text "Blank title" :style {}}]}
+                    {:spans [{:text "" :style {} :source true}]}])
+(local blank-decorated (misa.selection_decorate blank-selection :blank "\n" blank-lines))
+(assert (. blank-decorated 1 :selection_anchor)
+        "selection with no visible source lost its navigation anchor")
+(assert (= (. blank-decorated 1 :selection_id) :blank))
+(assert (= (. blank-decorated 1 :spans 1 :style :background) nil))
+(assert (= (. blank-lines 1 :selection_anchor) nil) "anchor mutated retained output")
 (misa._setup_effects {:fx [{:type :register/selection-action :id :custom
                           :value (fn [state] {:state (misa.patch state {:custom true})})}]})
 (assert (. (act selected :custom) :selection :custom))

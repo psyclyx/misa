@@ -147,6 +147,7 @@
                                         (var (cursor block-start)
                                              (values 0 nil))
                                         (local decorated [])
+                                        (var anchored false)
                                         (each [_ original (ipairs lines)]
                                           (local line {})
                                           (each [key value (pairs original)] (tset line key value))
@@ -229,8 +230,15 @@
                                               (set at after))
                                             (flush))
                                           (set line.spans spans)
-                                          (when line.selected (set line.selection_id id))
+                                          (when line.selected
+                                            (set line.selection_id id)
+                                            (set anchored true))
                                           (table.insert decorated line))
+                                        ;; Whitespace-only or nonliteral content can have
+                                        ;; no painted span and still be a navigation target.
+                                        (when (and (not anchored) (. decorated 1))
+                                          (set (. decorated 1 :selection_anchor) true)
+                                          (set (. decorated 1 :selection_id) id))
                                         decorated)))})
           (table.insert setup-fx
                         {:type :register/keybinding

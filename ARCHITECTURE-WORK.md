@@ -33,6 +33,18 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Unpainted selections retain navigation targets (2026-09-07)
+
+Removing selection color from chrome exposed a viewport dependency on painted
+spans: whitespace-only selected documents could no longer reveal themselves.
+Decoration now supplies an explicit `selection_anchor` on the first output line
+when no visible span can be highlighted. The viewport recognizes that target
+without requiring a background change, and still filters by the focused document
+ID for cross-document ranges. Tests reproduce both the missing anchor and the
+viewport failure, then verify that original output and title styling are unchanged.
+Focused selection/viewport tests, the complete ReleaseSafe baseline-CPU suite,
+installed build, and PTY interaction regression passed.
+
 ### Selection highlighting follows content provenance (2026-09-07)
 
 Whole-document decoration incorrectly colored title chrome, rails and padding;

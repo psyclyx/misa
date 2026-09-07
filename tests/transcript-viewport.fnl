@@ -76,4 +76,16 @@
 (assert (= (. (project selected 10) :first) 12)
         "cross-document range revealed the anchor instead of the focused document")
 (set misa.transcript_projection original-projection)
+(set misa.transcript_projection
+     (fn [db]
+       (local lines (original-projection db))
+       (set (. lines 12 :selected) false)
+       (set (. lines 12 :selection_anchor) true)
+       (set (. lines 12 :selection_id) :doc)
+       (set (. lines 1 :selection_anchor) true)
+       (set (. lines 1 :selection_id) :earlier-document)
+       lines))
+(assert (= (. (project selected 10) :first) 12)
+        "an unpainted selection anchor was not revealed")
+(set misa.transcript_projection original-projection)
 (output "transcript viewport contracts passed\n")
