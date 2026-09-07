@@ -33,32 +33,30 @@
           {:fx [{:type :register/event
                  :name :app/start
                  :handler (fn [db]
-                            (set db.mode :active)
-                            (set db.ticks 0)
-                            (set db.gates 0)
-                            {: db
+                            (local initial {:mode :active :ticks 0 :gates 0})
+                            {:patch initial
                              :fx (if context.config.headless
                                      [{:type :view/commit
-                                       :lines (. (view db) :lines)}
+                                       :lines (. (view (misa.patch db initial)) :lines)}
                                       {:type :app/quit}]
                                      [{:type :terminal/read}])})}
                 {:type :register/event
                  :name :animations/tick
                  :handler (fn [db]
-                            (set db.ticks (+ db.ticks 1))
-                            {: db})}
+                            {:patch {:ticks (+ db.ticks 1)}})}
                 {:type :register/event
                  :name :terminal/input
                  :handler (fn [db event]
                             (if (= event.kind :ctrl_d)
                                 {:fx [{:type :app/quit}]}
                                 (do
-                                  (match event.kind
+                                  (local patch (match event.kind
                                     :ctrl_r (do
                                               ;; Deterministic test-only gate.
                                               ((assert (loadfile context.config.gate)))
-                                              (set db.gates (+ db.gates 1)))
-                                    :tab (set db.mode :static)
-                                    :backspace (set db.mode :removed))
-                                  {: db :fx [{:type :terminal/read}]})))}
+                                              {:gates (+ db.gates 1)})
+                                    :tab {:mode :static}
+                                    :backspace {:mode :removed}
+                                    _ {}))
+                                  {: patch :fx [{:type :terminal/read}]})))}
                 {:type :register/view :handler view}]})}

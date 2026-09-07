@@ -129,7 +129,7 @@ return 42
                                                       (<= narrow-top 30))
                                                  (> wide-top narrow-top))
                                             "table columns did not respond to streaming width")
-                                    {: db
+                                    {
                                      :fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :markdown}]}]
                                            :type :view/commit}

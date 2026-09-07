@@ -3,9 +3,7 @@
           {:fx [{:type :register/event
                  :name :app/start
                  :handler (fn [db]
-                            (set (db.count db.notices db.healthy)
-                                 (values 0 0 0))
-                            {: db
+                            {:patch {:count 0 :notices 0 :healthy 0}
                              :fx [{:type (if context.config.headless
                                              :dispatch
                                              :terminal/read)
@@ -13,8 +11,7 @@
                 {:type :register/event
                  :name :fixture/spin
                  :handler (fn [db]
-                            (set db.count (+ db.count 1))
-                            {: db
+                            {:patch {:count (+ db.count 1)}
                              :fx [{:type :dispatch
                                    :event {:type :fixture/spin}}]})}
                 {:type :register/event
@@ -25,8 +22,7 @@
                             (assert (and (= (type event.text) :string)
                                          (event.text:find "previously committed"
                                                           1 true)))
-                            (set db.notices (+ db.notices 1))
-                            {: db})}
+                            {:patch {:notices (+ db.notices 1)}})}
                 {:type :register/event
                  :name :terminal/input
                  :handler (fn [db event]
@@ -34,9 +30,7 @@
                               :ctrl_d {:fx [{:type :app/quit}]}
                               :tab {:fx [{:type :dispatch
                                           :event {:type :fixture/spin}}]}
-                              :arrow_down (do
-                                            (set db.healthy (+ db.healthy 1))
-                                            {: db :fx [{:type :terminal/read}]})
+                              :arrow_down {:patch {:healthy (+ db.healthy 1)} :fx [{:type :terminal/read}]}
                               _ {:fx [{:type :terminal/read}]}))}
                 {:type :register/view
                  :handler (fn [db]

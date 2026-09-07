@@ -14,7 +14,7 @@
                         {:type :register/event
                          :name :test/choose
                          :handler (fn [db]
-                                    {: db
+                                    {
                                      :fx [{:event {:completion :test/chosen
                                                    :id :test
                                                    :items [{:label :Alpha
@@ -30,7 +30,7 @@
                         {:type :register/event
                          :name :test/panels
                          :handler (fn [db]
-                                    {: db
+                                    {
                                      :fx [{:event {:completion :test/chosen
                                                    :id :panels
                                                    :panels [{:id :one

@@ -22,7 +22,7 @@
                                           (assert (and event.cancelled
                                                        (= db.dialog nil))
                                                   "cancel did not close its dialog")
-                                          {: db
+                                          {
                                            :fx [{:event {:actions [{:id :submit
                                                                     :label :submit}]
                                                          :completion :dialog/done

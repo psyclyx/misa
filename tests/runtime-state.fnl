@@ -57,12 +57,11 @@
 (misa._setup_effects {:fx [{:type :register/event
                             :name :app/start
                             :handler (fn [db]
-                                       (set db.models
+                                       {:patch {:models
                                             {:entries [{:id :openai-codex/gpt-5.4
                                                         :model :gpt-5.4
                                                         :provider :openai-codex}]
-                                             :selected :openai-codex/gpt-5.4})
-                                       {: db})}]})
+                                             :selected :openai-codex/gpt-5.4}}})}]})
 
 (misa._setup_effects {:fx [{:type :register/interceptor
                             :value {:before (fn [tx]

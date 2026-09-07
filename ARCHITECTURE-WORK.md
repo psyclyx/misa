@@ -214,3 +214,9 @@ and native decoding/session-validation failures invoke that rejection path.
 Direct transaction tests and a native decoding-rejection test verify memoized
 identity survives rejection. The old draft/reconciliation mechanism still needs
 removal; subscription reuse during that interim is not a performance claim.
+
+Mutation-dependent terminal/worker fixtures are being migrated before enforcing
+patch-only dispatch. Settled-frame, threaded-input, animation-clock, syntax-worker,
+dispatch-limit, timer, and reset fixtures now declare patches; effect-only
+transcript/picker/dialog fixtures no longer return state. The remaining fixture
+migrations and actual removal of clone/reconcile are still required.

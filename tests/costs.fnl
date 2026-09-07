@@ -115,7 +115,7 @@
                                                :type :transcript/response-end
                                                :usage {:cost_usd 0.012}})
                                     (dispatch {:type :test/costs-check})
-                                    {: db : fx})})
+                                    { : fx})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/costs-check
@@ -139,7 +139,7 @@
                                                                  0.0148))
                                                     1e-09))
                                             "cost response replay was counted twice")
-                                    {: db
+                                    {
                                      :fx [{:event {:type :transcript/reset}
                                            :type :dispatch}
                                           {:event {:type :test/costs-reset}
@@ -155,7 +155,7 @@
                                                        :responses)
                                                     0))
                                             "clear retained conversation cost")
-                                    {: db
+                                    {
                                      :fx [{:lines [{:spans [{:text :costs}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})})

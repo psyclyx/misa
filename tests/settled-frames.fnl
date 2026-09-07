@@ -4,10 +4,7 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (set db.phase :INTERMEDIATE_START)
-                                    (set db.count 0)
-                                    (set db.typed "")
-                                    {: db
+                                    {:patch {:phase :INTERMEDIATE_START :count 0 :typed ""}
                                      :fx [{:event {:type :fixture/settle}
                                            :type :dispatch}
                                           {:type :terminal/read}
@@ -24,22 +21,17 @@
                          :handler (fn [db event]
                                     (if event.records
                                         (do
-                                          (set db.phase :INTERMEDIATE_STREAM)
-                                          (set db.count
-                                               (+ db.count
-                                                  (length (or event.records {}))))
-                                          {: db
+                                          {:patch {:phase :INTERMEDIATE_STREAM
+                                                   :count (+ db.count (length event.records))}
                                            :fx [{:event {:type :fixture/settle}
                                                  :type :dispatch}]})
                                         (= event.phase :end)
-                                        (do
-                                          (set db.done true)
-                                          {: db})
+                                        {:patch {:done true}}
                                         nil))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :fixture/settle
-                         :handler (fn [db] (set db.phase :SETTLED) {: db})})
+                         :handler (fn [_] {:patch {:phase :SETTLED}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :terminal/input
@@ -48,10 +40,7 @@
                                         {:fx [{:type :app/quit}]}
                                         (if (= event.kind :text)
                                             (do
-                                              (set db.typed
-                                                   (.. db.typed event.text))
-                                              (set db.phase :INTERMEDIATE_INPUT)
-                                              {: db
+                                              {:patch {:typed (.. db.typed event.text) :phase :INTERMEDIATE_INPUT}
                                                :fx [{:event {:type :fixture/settle}
                                                      :type :dispatch}
                                                     {:type :terminal/read}]})

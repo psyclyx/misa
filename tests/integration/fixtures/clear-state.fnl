@@ -4,7 +4,7 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    {: db
+                                    {
                                      :fx [{:event {:last_usage {:input_tokens 7
                                                                 :output_tokens 2}
                                                    :type :agent/usage
@@ -25,7 +25,7 @@
                                           (assert (= (next db.status.last_usage)
                                                      nil)
                                                   "status context survived clear")
-                                          {: db
+                                          {
                                            :fx [{:lines [{:spans [{:style {:foreground :default}
                                                                    :text :cleared}]}]
                                                  :type :view/commit}

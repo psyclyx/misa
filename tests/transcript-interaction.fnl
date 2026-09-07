@@ -246,7 +246,7 @@ Second paragraph with useful words."
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    {: db
+                                    {
                                      :fx [{:event {:index 1
                                                    :type :test/transcript-step}
                                            :type :dispatch}]})})
@@ -256,11 +256,11 @@ Second paragraph with useful words."
                          :handler (fn [db event]
                                     (local item (. steps event.index))
                                     (if (not item)
-                                        {: db
+                                        {
                                          :fx [{:lines [{:spans [{:text "transcript interaction"}]}]
                                                :type :view/commit}
                                               {:type :app/quit}]}
-                                        {: db
+                                        {
                                          :fx [{:event item.event
                                                :type :dispatch}
                                               {:event {:index event.index
@@ -270,7 +270,7 @@ Second paragraph with useful words."
                         {:type :register/event
                          :name :test/transcript-wait
                          :handler (fn [db event]
-                                    {: db
+                                    {
                                      :fx [{:event {:index event.index
                                                    :type :test/transcript-check}
                                            :type :dispatch}]})})
@@ -280,7 +280,7 @@ Second paragraph with useful words."
                          :handler (fn [db event]
                                     (when (. steps event.index :check)
                                       ((. steps event.index :check) db))
-                                    {: db
+                                    {
                                      :fx [{:event {:index (+ event.index 1)
                                                    :type :test/transcript-step}
                                            :type :dispatch}]})})
