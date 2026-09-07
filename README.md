@@ -236,7 +236,9 @@ ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
 `attribute`, `operator`, `punctuation`, `escape`, and `embedded`). Highlighting
 is derived data: the `syntax` extension tracks pending requests and accepted
 revisions, immutable parsed documents, and accepted capture arrays in transactional
-state. The `syntax/projections` subscription incrementally projects document
+state. It consumes explicit `transcript/updated` notifications, not a global
+before/after interceptor; projections never schedule highlighting.
+The `syntax/projections` subscription incrementally projects document
 entries, retaining unchanged results. Point queries use `syntax/projection`;
 collection consumers call `misa.syntax_projections(db)` once and pass that
 immutable snapshot to `misa.syntax_projection(snapshot, model)`. The latter is a
@@ -597,6 +599,15 @@ Transcript block updates expose
 Pure reducers return a block patch or nil; the transcript owner applies it without
 mutating the event or earlier blocks. `policy` provides the configured preview
 limits and redaction keys. This registry handles deltas, not block creation.
+
+The transcript owner publishes `{type="transcript/updated", response_id=...,
+block_id=...}` after changing blocks. `block_id` is optional for a whole-response
+update. Consumers call `misa.transcript_blocks(db, response_id, block_id?)` for
+the current immutable blocks without depending on response indices or storage
+layout. Missing targets return an empty array. An explicit notification without
+`response_id` requests processing of all blocks, for bulk imports that install
+canonical transcript state. Notifications identify what to read, not a copied
+text snapshot; queued duplicates safely observe the latest committed source.
 
 `register/transcript-presentation` takes `id=<block kind>` and
 `value=function(model, transcript_state, selected_range) ... end`. Pure projectors

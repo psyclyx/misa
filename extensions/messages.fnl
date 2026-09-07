@@ -140,6 +140,10 @@
   (table.insert next value)
   next)
 
+(fn updated-fx [fx response-id block-id]
+  (appended (or fx []) {:type :dispatch
+                        :event {:type :transcript/updated :response_id response-id :block_id block-id}}))
+
 (fn message-update [db fx]
   {:patch {:messages (misa.replace db.messages)} : fx})
 
@@ -155,8 +159,22 @@
 
 (fn response [db id]
   (local state db.messages)
-  (local index (and state (. state.by_response id)))
+  (local index (and state state.by_response (. state.by_response id)))
   (and index (. state.responses index)))
+
+(fn transcript-blocks [db response-id block-id]
+  ;; Nil owner is an explicit full-transcript lookup for imports/fixture sync.
+  ;; Scoped lookups allocate only the array; its records remain canonical.
+  (local blocks (or (and db.messages db.messages.blocks) []))
+  (if (= response-id nil) blocks
+      (let [owner (response db response-id)
+            result []]
+        (when owner
+          (for [index owner.block_start (- (+ owner.block_start owner.block_count) 1)]
+            (local block (. blocks index))
+            (when (and block (or (= block-id nil) (= block.id block-id)))
+              (table.insert result block))))
+        result)))
 
 (fn append-block [db response-model block]
   (local owner (assert (response db response-model.id) "unknown transcript response"))
@@ -224,9 +242,11 @@
    :arguments (when (not= event.arguments nil) (misa.replace (copy-structural event.arguments policy 0)))})
 
 (fn replace-transcript-block [db block patch]
+  (local replacement (misa.patch block patch))
   (local blocks (icollect [_ previous (ipairs db.messages.blocks)]
-                 (if (= previous block) (misa.patch previous patch) previous)))
-  {:patch {:messages {:blocks (misa.replace blocks)}}})
+                 (if (= previous block) replacement previous)))
+  {:patch {:messages {:blocks (misa.replace blocks)}}
+   :fx (when (not= replacement block) (updated-fx nil block.response_id block.id))})
 
 (fn finish-block [block event policy]
   (local value (or event {}))
@@ -258,7 +278,7 @@
                      (if (= previous.id owner.id) owner previous)))
   {:patch {:messages {:responses (misa.replace responses) :blocks (misa.replace blocks)
                       }}
-   : fx})
+   :fx (if (> owner.block_count 0) (updated-fx fx owner.id) fx)})
 
 (fn timestamp [ms]
   (let [seconds (% (math.floor (/ (or (tonumber ms) 0) 1000)) 86400)]
@@ -571,6 +591,7 @@
                                                 line))))
                                   result)})
           (table.insert setup-fx {:type :register/service :name :transcript_viewport :value transcript-viewport})
+          (table.insert setup-fx {:type :register/service :name :transcript_blocks :value transcript-blocks})
           (table.insert setup-fx
                         {:type :register/service :name :transcript_window
                          :value (fn [db context room] (. (transcript-viewport db context room) :lines))})
@@ -633,7 +654,8 @@
                                           (set block.argument_bytes 0))
                                         (error (.. "unsupported streaming transcript block: "
                                                    (tostring kind))))
-                                    (message-update (append-block db owner block) nil))})
+                                    (message-update (append-block db owner block)
+                                                    (updated-fx nil owner.id block.id)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/block-delta
@@ -663,7 +685,9 @@
                                     (local block (assert (find-block db owner event.block_id) "unknown transcript block"))
                                     (let [finished (finish-block block event policy)
                                           blocks (icollect [_ previous (ipairs db.messages.blocks)] (if (= previous block) finished previous))]
-                                      {:patch {:messages {:blocks (misa.replace blocks)}}}))})
+                                      {:patch {:messages {:blocks (misa.replace blocks)}}
+                                       :fx (when (not= finished block)
+                                             (updated-fx nil owner.id block.id))}))})
           (table.insert setup-fx
                         {:type :register/event :name :transcript/response-end
                          :handler (fn [db event cofx]
@@ -719,7 +743,9 @@
                            :handler (fn [db event cofx]
                                       (local (next model) (standalone db kind event.text event cofx
                                                                      {:attachments (when (= kind :user) event.attachments)}))
-                                      (message-update next (noninteractive-commit next (.. :transcript. kind) model cofx markdown)))}))
+                                      (message-update next
+                                                      (updated-fx (noninteractive-commit next (.. :transcript. kind) model cofx markdown)
+                                                                  model.response_id model.id)))}))
           (table.insert setup-fx
                         {:type :register/event :name :transcript/tool-result
                          :handler (fn [db event cofx]
@@ -731,15 +757,17 @@
                                                                                :is_error (= event.is_error true) : status :streaming false})]
                                           (tset result.patch.messages :scroll 0)
                                           result)
-                                        (message-update (standalone db :tool_result event.text event cofx {: status}) nil)))})
+                                        (let [(next block) (standalone db :tool_result event.text event cofx {: status})]
+                                          (message-update next (updated-fx nil block.response_id block.id)))))})
           (table.insert setup-fx
                         {:type :register/event :name :transcript/tool-call
                          :handler (fn [db event cofx]
                                     (local name (printable-text (tostring (or event.name :tool))))
-                                    (message-update (standalone db :tool_call "" event cofx
+                                    (local (next block) (standalone db :tool_call "" event cofx
                                                                 {:call_id event.id : name :description (tool-description name)
                                                                  :status :pending
-                                                                 :arguments (misa.replace (copy-structural (or event.arguments event.arguments_json {}) policy 0))}) nil))})
+                                                                 :arguments (misa.replace (copy-structural (or event.arguments event.arguments_json {}) policy 0))}))
+                                    (message-update next (updated-fx nil block.response_id block.id)))})
           ;; Compatibility completion input for custom agents. It is normalized once
           ;; into the same response/block lifecycle rather than maintained as a shadow.
           (table.insert setup-fx
@@ -791,7 +819,8 @@
                                                                                      cofx
                                                                                      markdown))]
                                         (tset fx (+ (length fx) 1) effect)))
-                                    (message-update next fx))})
+                                    (message-update next (if (> (. (response next id) :block_count) 0)
+                                                            (updated-fx fx id) fx)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/interrupted
@@ -811,7 +840,8 @@
                                                     (if (and (>= index owner.block_start) (< index (+ owner.block_start owner.block_count)))
                                                         (misa.patch block {:interrupted true}) block)))
                                     (message-update (misa.patch next {:messages {:responses (misa.replace responses)
-                                                                                :blocks (misa.replace blocks)}})))})
+                                                                                :blocks (misa.replace blocks)}})
+                                                    (when (> owner.block_count 0) (updated-fx nil owner.id))))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :runtime/dispatch-limit

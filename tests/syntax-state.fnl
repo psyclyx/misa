@@ -7,36 +7,40 @@
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
 (local specs ((. (fennel.dofile :extensions/syntax.fnl) :setup) {:config {}}))
 (local handlers {})
-(var policy nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (when (= spec.type :register/interceptor) (set policy spec.value)))
+  (assert (not= spec.type :register/interceptor) "syntax must consume explicit transcript events"))
 (misa._setup_effects specs)
+(misa._setup_effects {:fx [{:type :register/service :name :transcript_blocks
+                          :value (fn [db response-id block-id]
+                                   (icollect [_ block (ipairs (or (and db.messages db.messages.blocks) []))]
+                                     (when (and (or (not response-id) (= block.response_id response-id))
+                                                (or (not block-id) (= block.id block-id))) block)))}]})
 (fn unchanged [db call]
   (local before (misa.json.encode db))
   (local result (call))
   (assert (= before (misa.json.encode db)) "syntax transition mutated prior state")
   result)
 (fn event [db input]
-  (local incoming {: db :event input})
-  (local tx (unchanged incoming #(policy.before incoming)))
-  (local result (unchanged tx.db #((. handlers input.type) tx.db input)))
+  (local result (unchanged db #((. handlers input.type) db input {:terminal {:interactive true}})))
   (assert (not (and result result.db)))
-  (values (misa.patch tx.db (or (and result result.patch) {})) (or (and result result.fx) [])))
+  (values (misa.patch db (or (and result result.patch) {})) (or (and result result.fx) [])))
 (fn source [db text]
-  (local incoming {: db :event {:type :transcript/block-delta
-                                                      :response_id :reply :block_id :body}
-                                         :cofx {:terminal {:interactive true}} :fx []})
-  (var tx (unchanged incoming #(policy.before incoming)))
-  (set tx.db (misa.patch tx.db {:messages {:blocks (misa.replace [{:id :body :kind :assistant
-                                                                 :response_id :reply : text}])
-                                         :by_response {:reply 1}
-                                         :responses [{:block_start 1 :block_count 1}]}}))
-  (set tx (unchanged tx #(policy.after tx)))
-  (values tx.db tx.fx))
+  (local next (misa.patch db {:messages {:blocks (misa.replace [{:id :body :kind :assistant
+                                                               :response_id :reply : text}])}}))
+  (event next {:type :transcript/updated :response_id :reply :block_id :body}))
 (fn initial [] (event {} {:type :app/start}))
 (local text "```lua\nlocal x=1\n```")
 (local (first requests) (source (initial) text))
+(assert (= ((. handlers :transcript/updated) first {:type :transcript/updated}
+            {:terminal {:interactive false}}) nil) "headless transcript requested highlighting")
+(local disabled ((. (fennel.dofile :extensions/syntax.fnl) :setup)
+                 {:config {:messages {:markdown false}}}))
+(each [_ spec (ipairs disabled.fx)]
+  (when (= spec.name :transcript/updated)
+    (assert (= (spec.handler first {:type :transcript/updated}
+                            {:terminal {:interactive true}}) nil)
+            "disabled Markdown requested highlighting")))
 (local id (. requests 1 :id))
 (local (_ entry) (next first.syntax.documents))
 (local start (. entry.slots 1 :start))
@@ -84,48 +88,41 @@
 (assert (= expected (fennel.view (misa.syntax_projection (misa.syntax_projections retained) model)))
         "later syntax work invalidated a retained state's projection")
 ;; Collection updates preserve other documents and request identities. No-op
-;; events return the transaction itself rather than rebuilding a syntax snapshot.
+;; notifications return no patch rather than rebuilding a syntax snapshot.
 (local many-blocks (fcollect [i 1 300]
                      {:id (tostring i) :response_id :many :kind :assistant : text}))
-(local many-input {:db (misa.patch (initial)
-                                 {:messages {:blocks many-blocks :by_response {:many 1}
-                                             :responses [{:block_start 1 :block_count 300}]}})
-                   :event {:type :seed} :cofx {:terminal {:interactive true}}
-                   :syntax_count 0 :fx [{:type :sentinel}]})
-(local seeded (unchanged many-input #(policy.after many-input)))
-(assert (= (length seeded.fx) 301))
-(assert (= seeded.db.syntax.next_id 300))
+(local many-input (misa.patch (initial) {:messages {:blocks many-blocks}}))
+(local (seeded seeded-fx) (event many-input {:type :transcript/updated}))
+(assert (= (length seeded-fx) 300))
+(assert (= seeded.syntax.next_id 300))
 (for [i 1 300]
-  (local request (. seeded.fx (+ i 1)))
+  (local request (. seeded-fx i))
   (assert (= request.id (.. :syntax/ i)))
-  (assert (= (. seeded.db.syntax.pending request.id :key) (.. "4:many" i))))
-(assert (= (. seeded.fx 1) (. many-input.fx 1)))
-(assert (= (next many-input.db.syntax.documents) nil))
-(assert (= (policy.after seeded) seeded) "unchanged syntax rebuilt transaction")
-(local delta-input (misa.patch (policy.before seeded)
-                              {:event (misa.replace {:type :transcript/block-delta
-                                                     :response_id :many :block_id :300})
-                               :db {:messages {:blocks (misa.replace
+  (assert (= (. seeded.syntax.pending request.id :key) (.. "4:many" i))))
+(assert (= (next many-input.syntax.documents) nil))
+(assert (= (event seeded {:type :transcript/updated}) seeded) "unchanged syntax rebuilt state")
+(assert (= (event seeded {:type :transcript/updated :response_id :missing}) seeded))
+(local delta-input (misa.patch seeded
+                              {:messages {:blocks (misa.replace
                                                          (icollect [i block (ipairs many-blocks)]
                                                            (if (= i 300)
                                                                (misa.patch block {:text "```lua\nlocal x=2\n```"})
-                                                               block)))}}
-                               :fx (misa.replace [])}))
-(local many-changed (unchanged delta-input #(policy.after delta-input)))
-(assert (= (length many-changed.fx) 0) "pending slot spawned a concurrent request")
+                                                               block)))}}))
+(local (many-changed changed-fx) (event delta-input {:type :transcript/updated :response_id :many :block_id :300}))
+(assert (= (length changed-fx) 0) "pending slot spawned a concurrent request")
 (for [i 1 299]
   (local key (.. "4:many" i))
-  (assert (= (. many-changed.db.syntax.documents key) (. seeded.db.syntax.documents key))))
-(assert (= many-changed.db.syntax.pending seeded.db.syntax.pending))
+  (assert (= (. many-changed.syntax.documents key) (. seeded.syntax.documents key))))
+(assert (= many-changed.syntax.pending seeded.syntax.pending))
 (local (many-completed followup)
-       (event many-changed.db {:type :syntax/completed :id (. seeded.fx 301 :id)
+       (event many-changed {:type :syntax/completed :id (. seeded-fx 300 :id)
                                :ok true :data []}))
 (assert (= (length followup) 1))
 (assert (= (. followup 1 :source) "local x=2"))
 (for [i 1 299]
   (local key (.. "4:many" i))
-  (assert (= (. many-completed.syntax.documents key) (. seeded.db.syntax.documents key))))
-(assert (= (length seeded.fx) 301))
+  (assert (= (. many-completed.syntax.documents key) (. seeded.syntax.documents key))))
+(assert (= (length seeded-fx) 300))
 ;; Multiple slots allocate independent requests; out-of-order completions must
 ;; leave the other slot and its pending request intact.
 (local (multi multi-fx) (source (initial) (.. text "\n\n```python\nx=1\n```")))

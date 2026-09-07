@@ -81,14 +81,20 @@ separate. `tests/cost-state.fnl` checks handler purity and rejects an intercepto
 registration, while the native costs fixture exercises actual event dispatch,
 catalogue changes, reported costs, replay and reset.
 
-Syntax remains an unresolved dependency boundary (`extensions/syntax.fnl`): its
-global hook captures transcript length before every event, detects appended
-blocks afterward, and knows response ownership and several transcript event
-types. Moving its code to a differently named global hook would not address
-that coupling. The transcript owner should expose explicit lifecycle facts for
-derived processing; syntax requests/completions stay effects/events, and syntax
-projections stay pure subscriptions. Input normalization/routing interceptors
-are a separate concern and are not being removed indiscriminately.
+Syntax's global transcript hook is removed. Canonical transcript mutations emit
+scoped `transcript/updated` notifications after their existing effects. Syntax
+consumes the notification and obtains current blocks through the transcript
+owner's pure `transcript_blocks` service; it no longer infers append counts or
+reads response storage indices. Highlight requests/completions stay effects and
+events, while projections stay pure subscriptions. Tests cover scoped targets,
+effect ordering, no-op mutations, missing/reset targets, duplicate notifications,
+stale completions, and request coalescing. Bulk imports explicitly notify once
+without a response target; the native fixture now follows that contract too.
+The full ReleaseSafe/baseline suite and installed native interaction smoke pass;
+single-sample fixture checks cover mixed streaming and Markdown redraw startup.
+Those fixture checks are correctness checks, not a speedup measurement.
+Input normalization/routing interceptors are a separate concern and are not
+being removed indiscriminately.
 
 Editing undo bookkeeping now receives the old editor, new editor and explicit
 operation reason synchronously from editor transition handlers through a pure

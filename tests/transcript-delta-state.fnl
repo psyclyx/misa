@@ -6,23 +6,24 @@
 (misa._setup (fennel.dofile :extensions/json.fnl) {})
 (local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) {:config {:messages {:max_string 12}}}))
 (local handlers {})
-(var (register input-policy) nil)
+(var (register input-policy blocks-for) nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
   (when (= spec.type :register/interceptor) (set input-policy spec.value.before))
+  (when (= spec.name :transcript_blocks) (set blocks-for spec.value))
   (when (= spec.name :register/transcript-delta) (set register spec.handler)))
 (fn initial [kind]
-  (local blocks [{:id :block :kind kind :streaming true :chunks [] :byte_count 0
+  (local blocks [{:id :block :response_id :reply :kind kind :streaming true :chunks [] :byte_count 0
                  :argument_chunks [] :argument_bytes 0}])
-  {:messages {:blocks blocks :by_response {:reply 1}
+  {:messages {:blocks blocks :next_id 0 :by_response {:reply 1}
               :responses [{:id :reply :role :assistant :block_start 1 :block_count 1 :status :streaming
                            :started_monotonic_ms 100 :started_wall_ms 0}]}})
-(fn transition [db fields]
+(fn transition [db fields interactive]
   (local event (misa.patch fields {:type (or fields.type :transcript/block-delta) :response_id :reply :block_id :block}))
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))
   (local result ((. handlers event.type) db event {:clock {:wall_ms 1000 :monotonic_ms 1100}
-                                                 :terminal {:interactive true}}))
+                                                 :terminal {:interactive (not= interactive false)}}))
   (assert (= before (misa.json.encode db)) "delta mutated prior transcript")
   (assert (= input (misa.json.encode event)) "delta mutated provider event")
   (assert (not (and result result.db)))
@@ -30,7 +31,7 @@
   (when (= event.type :transcript/block-delta)
     (assert (= next.messages.responses db.messages.responses)))
   (assert (= next.messages.transcript nil) "transcript blocks were duplicated")
-  next)
+  (values next (or (and result result.fx) [])))
 (local failure
        (G.for_all (G.vector (G.elements [{:text :hello} {:text ""} {:text "世界"}
                                          {:arguments_json "{}"} {:arguments_json_delta "long argument fragment"}
@@ -144,6 +145,82 @@
                                          :content [{:type :text :text :partial}]}))
 (assert (= (. interrupted-new.messages.responses 1 :status) :interrupted))
 (assert (. interrupted-new.messages.blocks 1 :interrupted))
+
+;; Notifications are scoped to canonical owners and appended after prior effects.
+(fn notification [db event response-id block-id interactive]
+  (local (next fx) (transition db event interactive))
+  (local last (. fx (length fx)))
+  (assert (= last.type :dispatch))
+  (assert (= last.event.type :transcript/updated))
+  (assert (= last.event.response_id response-id))
+  (assert (= last.event.block_id block-id))
+  (var count 0)
+  (each [_ effect (ipairs fx)]
+    (when (and (= effect.type :dispatch) (= effect.event.type :transcript/updated))
+      (set count (+ count 1))))
+  (assert (= count 1) "mutation emitted duplicate transcript notifications")
+  (values next fx))
+(notification response-started {:type :transcript/block-start :kind :assistant} :reply :block)
+(notification text {:text :new} :reply :block)
+(notification tool {:arguments_json_delta "{}"} :reply :block)
+(notification streamed {:type :transcript/block-end} :reply :block)
+(notification streamed {:type :transcript/response-end} :reply nil)
+(notification streamed {:type :transcript/response-interrupted} :reply nil)
+(notification called {:type :transcript/tool-result :id :call :text :done} :transcript-1 :transcript-1/1)
+(each [_ type (ipairs [:transcript/user :transcript/harness :transcript/tool-call :transcript/tool-result])]
+  (notification boot {: type :text :standalone :id :call} :transcript-1 :transcript-1/1))
+(notification boot {:type :transcript/assistant :request_id :legacy
+                    :content [{:type :text :text :first} {:type :thinking :text :second}]} :legacy nil)
+(notification boot {:type :transcript/interrupted :request_id :legacy
+                    :content [{:type :text :text :partial}]} :legacy nil)
+(notification streamed {:type :transcript/interrupted :request_id :reply} :reply nil)
+(each [_ sample (ipairs [[boot {:type :transcript/response-start}]
+                         [text {:text ""}]
+                         [truncated {:arguments_json_delta :ignored}]
+                         [boot {:type :transcript/assistant :content []}]
+                         [boot {:type :transcript/response-interrupted}]
+                         [response-started {:type :transcript/response-end}]])]
+  (local (_ fx) (transition (. sample 1) (. sample 2)))
+  (assert (= (length fx) 0) "empty/no-op lifecycle emitted a notification"))
+(local combined (transition streamed {:type :transcript/user :text :other}))
+(local before-blocks (misa.json.encode combined))
+(assert (= (blocks-for combined nil) combined.messages.blocks) "all-block lookup copied the canonical array")
+(local reply-blocks (blocks-for combined :reply))
+(assert (= (length reply-blocks) 1))
+(assert (= (. reply-blocks 1) (. combined.messages.blocks 1)))
+(assert (= (. (blocks-for combined :transcript-1 :transcript-1/1) 1) (. combined.messages.blocks 2)))
+(assert (= (length (blocks-for combined :reply :transcript-1/1)) 0))
+(assert (= (length (blocks-for combined :missing)) 0))
+(assert (= (length (blocks-for {} :missing)) 0))
+(assert (= (length (blocks-for {:messages {}} :missing)) 0))
+(assert (= (length (blocks-for {} nil)) 0))
+(assert (= before-blocks (misa.json.encode combined)))
+(assert (= (. combined.messages.blocks 1) (. streamed.messages.blocks 1)) "standalone creation replaced another owner's block")
+(local multiple (notification combined {:type :transcript/assistant :request_id :multiple
+                                        :content [{:type :text :text :first}
+                                                  {:type :thinking :text :second}]} :multiple nil))
+(local matched (blocks-for multiple :multiple))
+(assert (= (length matched) 2))
+(assert (= (. matched 1) (. multiple.messages.blocks 3)))
+(assert (= (. matched 2) (. multiple.messages.blocks 4)))
+(local delta (notification multiple {:text :more} :reply :block))
+(assert (= (. delta.messages.blocks 2) (. multiple.messages.blocks 2)))
+(assert (= (. delta.messages.blocks 3) (. multiple.messages.blocks 3)))
+(assert (= (. delta.messages.blocks 4) (. multiple.messages.blocks 4)))
+(local finalized (notification multiple {:type :transcript/response-end} :reply nil))
+(assert (= (. finalized.messages.blocks 3) (. multiple.messages.blocks 3)))
+(local committed-lines [{:spans [{:text :committed}]}])
+(set misa.render_component (fn [] {:lines committed-lines}))
+(each [_ sample (ipairs [[boot {:type :transcript/user :text :user} :transcript-1 :transcript-1/1]
+                         [boot {:type :transcript/harness :text :harness} :transcript-1 :transcript-1/1]
+                         [boot {:type :transcript/assistant :request_id :legacy
+                                :content [{:type :text :text :answer}]} :legacy]
+                         [streamed {:type :transcript/response-end} :reply]])]
+  (local (_ fx) (notification (. sample 1) (. sample 2) (. sample 3) (. sample 4) false))
+  (assert (= (length fx) 2))
+  (assert (= (. fx 1 :type) :view/commit))
+  (assert (= (. fx 1 :lines) committed-lines)))
+(set misa.render_component nil)
 (var (project register-presentation) nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.name :transcript_projection) (set project spec.value))

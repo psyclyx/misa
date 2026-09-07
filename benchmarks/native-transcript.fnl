@@ -69,10 +69,12 @@
                 {:type :register/interceptor
                  :value {:id :bench/ready
                          :after (fn [tx]
-                                  ;; Mixed fixtures issue real native syntax requests.
-                                  ;; Publish the initial marker only after they settle.
+                                  ;; Seed imports explicitly notify derived processing.
+                                  ;; Publish the initial marker only after it settles.
                                   (if (and tx.db.benchmark (= tx.db.benchmark.step 0)
                                            (= tx.db.editor.text "WAIT:0000")
+                                           (or (= tx.event.type :transcript/updated)
+                                               (= tx.event.type :syntax/completed))
                                            tx.db.syntax (not (next tx.db.syntax.pending)))
                                       (do
                                         (var highlighted 0)
@@ -81,8 +83,10 @@
                                             (assert (and slot.done slot.data (> (length slot.data) 0))
                                                     "mixed fixture requires successful native highlighting")
                                             (set highlighted (+ highlighted 1))))
-                                        (local expected (accumulate [n 0 _ block (ipairs blocks)]
-                                                          (+ n (if (= block.kind :assistant) 1 0))))
+                                        (local expected (if mixed
+                                                            (accumulate [n 0 _ block (ipairs blocks)]
+                                                              (+ n (if (= block.kind :assistant) 1 0)))
+                                                            0))
                                         (assert (= highlighted expected) "missing highlighted documents")
                                         (set checked-highlights true)
                                         (misa.patch tx {:db {:editor {:text "FRAME:0000" :cursor 10}}}))
@@ -95,8 +99,9 @@
                  :handler (fn []
                             {:patch {:messages {:blocks (misa.replace blocks) :by_response (misa.replace by-response)
                                                 :responses (misa.replace responses) :verbose (when mixed true)}
-                                     :editor {:text (if mixed "WAIT:0000" "FRAME:0000") :cursor 10}
-                                     :benchmark {:step 0 :streamed 0}}})}
+                                     :editor {:text "WAIT:0000" :cursor 10}
+                                     :benchmark {:step 0 :streamed 0}}
+                             :fx [{:type :dispatch :event {:type :transcript/updated}}]})}
                 {:type :register/event :name :bench/frame
                  :handler (fn [db event]
                             (assert (= (length db.messages.blocks) count))

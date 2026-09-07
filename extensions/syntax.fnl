@@ -67,14 +67,19 @@
                              :fx effects})))
             result)
 
-          (fn update-model [tx model]
-            (local update (model-update tx.db.syntax model))
-            (if (not update) tx
-                (let [effects (when (> (length update.fx) 0)
-                                (local combined (icollect [_ effect (ipairs tx.fx)] effect))
-                                (each [_ effect (ipairs update.fx)] (table.insert combined effect))
-                                (misa.replace combined))]
-                  (misa.patch tx {:db {:syntax update.patch} :fx effects}))))
+          (fn update-models [state models]
+            (var current state)
+            (local patch {:documents {} :pending {}})
+            (local fx [])
+            (each [_ model (ipairs models)]
+              (local update (model-update current model))
+              (when update
+                (set current (misa.patch current update.patch))
+                (set patch.next_id update.patch.next_id)
+                (each [key value (pairs update.patch.documents)] (tset patch.documents key value))
+                (each [id value (pairs update.patch.pending)] (tset patch.pending id value))
+                (each [_ effect (ipairs update.fx)] (table.insert fx effect))))
+            (when (not= current state) {:patch {:syntax patch} : fx}))
 
           {:fx [{:type :register/sub
                  :value {:id :syntax/projections
@@ -120,49 +125,13 @@
                  :handler (fn [db]
                             {:patch {:syntax {:pending (misa.replace {})
                                               :documents (misa.replace {})}}})}
-                {:type :register/interceptor
-                 :value {:id :syntax/transcript
-                         :before (fn [tx]
-                                   (misa.patch tx {:syntax_count
-                                        (length (or (and tx.db.messages
-                                                         tx.db.messages.blocks)
-                                                    {}))}))
-                         :after (fn [tx]
-                                  (if (and enabled
-                                             tx.cofx.terminal.interactive
-                                             tx.db.syntax tx.db.messages)
-                                    (do
-                                    (local blocks tx.db.messages.blocks)
-                                    (var result tx)
-                                    (for [index (+ tx.syntax_count 1) (length blocks)]
-                                      (set result (update-model result (. blocks index))))
-                                    (when (and tx.event.response_id
-                                               (or (= tx.event.type
-                                                      :transcript/block-delta)
-                                                   (= tx.event.type
-                                                      :transcript/block-end)
-                                                   (= tx.event.type
-                                                      :transcript/response-end)
-                                                   (= tx.event.type
-                                                      :transcript/response-interrupted)))
-                                      (local position
-                                             (. tx.db.messages.by_response
-                                                tx.event.response_id))
-                                      (local owner
-                                             (and position
-                                                  (. tx.db.messages.responses
-                                                     position)))
-                                      (when owner
-                                        (for [index owner.block_start (- (+ owner.block_start
-                                                                            owner.block_count)
-                                                                         1)]
-                                          (local model (. blocks index))
-                                          (when (or (not tx.event.block_id)
-                                                    (= model.id
-                                                       tx.event.block_id))
-                                            (set result (update-model result model))))))
-                                    result)
-                                    tx))}}
+                {:type :register/event
+                 :name :transcript/updated
+                 :handler (fn [db event cofx]
+                            (when (and enabled cofx.terminal.interactive db.syntax
+                                       misa.transcript_blocks)
+                              (update-models db.syntax
+                                             (misa.transcript_blocks db event.response_id event.block_id))))}
                 {:type :register/event
                  :name :syntax/completed
                  :handler (fn [db event]
