@@ -88,15 +88,9 @@
                                                                                  true)))}})
 
                                   (fn model-api [source]
-                                    (if (not= (type source) :table) source
-                                        (let [api {}]
-                                          (each [key value (pairs source)]
-                                            (tset api key value))
-                                          (when (= (type api.request_options)
-                                                   :table)
-                                            (set api.request_options_serializer
-                                                 serializer-id))
-                                          api)))
+                                    (if (and (= (type source) :table)
+                                             (= (type source.request_options) :table))
+                                        (misa.patch source {:request_options_serializer serializer-id}) source))
 
                                   (each [_ model (ipairs spec.models)]
                                     (table.insert setup-fx
@@ -149,124 +143,62 @@
                                          :type :http/request
                                          : url}))
 
-                                    (fn discover [db]
-                                      (set db.model_discovery
-                                           (or db.model_discovery {}))
-                                      (tset db.model_discovery spec.id {})
-                                      {: db :fx [(request nil)]})
+                                    (fn finished [effects]
+                                      (table.insert effects
+                                                    {:type :dispatch
+                                                     :event {:type :models/discovery-complete :provider spec.id}})
+                                      {:patch {:model_discovery {spec.id misa.delete}} :fx effects})
+
+                                    (fn discover [_]
+                                      {:patch {:model_discovery {spec.id (misa.replace {})}}
+                                       :fx [(request nil)]})
+
+                                    (fn discovered-model [item]
+                                      {:api (model-api (or item.api
+                                                          (when (= (type item.request_options) :table)
+                                                            {:request_options item.request_options})))
+                                       :context_window (or item.context_window item.context_length
+                                                           (when (and (= (type item.max_input_tokens) :number)
+                                                                      (> item.max_input_tokens 0))
+                                                             item.max_input_tokens))
+                                       :id (.. spec.id "/" item.id)
+                                       :label (or item.display_name item.name item.id)
+                                       :model item.id})
+
+                                    (fn page [db event]
+                                      (if (or (not event.ok) (not= (type event.data) :table)
+                                              (not= (type event.data.data) :table))
+                                          (finished [])
+                                          (let [discovered []]
+                                            (each [_ item (ipairs (or (and db.model_discovery
+                                                                          (. db.model_discovery spec.id)) []))]
+                                              (table.insert discovered item))
+                                            (each [_ item (ipairs event.data.data)]
+                                              (when (and (= (type item) :table) (= (type item.id) :string)
+                                                         (or (not spec.model_filter) (spec.model_filter item)))
+                                                (table.insert discovered (discovered-model item))))
+                                            (if (= event.data.has_more true)
+                                                (let [cursor event.data.last_id]
+                                                  (if (or (not= (type cursor) :string) (= cursor ""))
+                                                      (finished [])
+                                                      {:patch {:model_discovery {spec.id (misa.replace discovered)}}
+                                                       :fx [(request cursor)]}))
+                                                (let [effects []]
+                                                  (when (or (> (length discovered) 0) (= spec.catalogue_authoritative true))
+                                                    (table.sort discovered (fn [left right] (< left.id right.id)))
+                                                    (table.insert effects
+                                                                  {:type :dispatch
+                                                                   :event {:type :models/replace-provider
+                                                                           :provider spec.id :models discovered
+                                                                           :authoritative (= spec.catalogue_authoritative true)}}))
+                                                  (finished effects))))))
 
                                     (table.insert setup-fx
-                                                  {:type :register/event
-                                                   :name :models/discover
+                                                  {:type :register/event :name :models/discover
                                                    :handler (fn [db event]
-                                                              (if (and event.provider
-                                                                       (not= event.provider
-                                                                             spec.id))
-                                                                  nil
-                                                                  (discover db)))})
-                                    (table.insert setup-fx
-                                                  {:type :register/event
-                                                   :name completion
-                                                   :handler (fn [db event]
-                                                              (if (or (or (not event.ok)
-                                                                          (not= (type event.data)
-                                                                                :table))
-                                                                      (not= (type event.data.data)
-                                                                            :table))
-                                                                  (do
-                                                                    (when db.model_discovery
-                                                                      (tset db.model_discovery
-                                                                            spec.id
-                                                                            nil))
-                                                                    {: db
-                                                                     :fx [{:event {:provider spec.id
-                                                                                   :type :models/discovery-complete}
-                                                                           :type :dispatch}]})
-                                                                  (do
-                                                                    (set db.model_discovery
-                                                                         (or db.model_discovery
-                                                                             {}))
-                                                                    (local discovered
-                                                                           (or (. db.model_discovery
-                                                                                  spec.id)
-                                                                               {}))
-                                                                    (tset db.model_discovery
-                                                                          spec.id
-                                                                          discovered)
-                                                                    (each [_ item (ipairs event.data.data)]
-                                                                      (when (and (and (= (type item)
-                                                                                         :table)
-                                                                                      (= (type item.id)
-                                                                                         :string))
-                                                                                 (or (not spec.model_filter)
-                                                                                     (spec.model_filter item)))
-                                                                        (tset discovered
-                                                                              (+ (length discovered)
-                                                                                 1)
-                                                                              {:api (model-api (or item.api
-                                                                                                   (or (and (= (type item.request_options)
-                                                                                                               :table)
-                                                                                                            {:request_options item.request_options})
-                                                                                                       nil)))
-                                                                               :context_window (or (or item.context_window
-                                                                                                       item.context_length)
-                                                                                                   (or (and (and (= (type item.max_input_tokens)
-                                                                                                                    :number)
-                                                                                                                 (> item.max_input_tokens
-                                                                                                                    0))
-                                                                                                            item.max_input_tokens)
-                                                                                                       nil))
-                                                                               :id (.. spec.id
-                                                                                       "/"
-                                                                                       item.id)
-                                                                               :label (or (or item.display_name
-                                                                                              item.name)
-                                                                                          item.id)
-                                                                               :model item.id})))
-                                                                    (if (= event.data.has_more
-                                                                           true)
-                                                                        (let [cursor event.data.last_id]
-                                                                          (if (or (not= (type cursor)
-                                                                                        :string)
-                                                                                  (= cursor
-                                                                                     ""))
-                                                                              (do
-                                                                                (tset db.model_discovery
-                                                                                      spec.id
-                                                                                      nil)
-                                                                                {: db
-                                                                                 :fx [{:event {:provider spec.id
-                                                                                               :type :models/discovery-complete}
-                                                                                       :type :dispatch}]})
-                                                                              {: db
-                                                                               :fx [(request cursor)]}))
-                                                                        (do
-                                                                          (tset db.model_discovery
-                                                                                spec.id
-                                                                                nil)
-                                                                          (local effects
-                                                                                 [{:event {:provider spec.id
-                                                                                           :type :models/discovery-complete}
-                                                                                   :type :dispatch}])
-                                                                          (when (or (> (length discovered)
-                                                                                       0)
-                                                                                    (= spec.catalogue_authoritative
-                                                                                       true))
-                                                                            (table.sort discovered
-                                                                                        (fn [left
-                                                                                             right]
-                                                                                          (< left.id
-                                                                                             right.id)))
-                                                                            (table.insert effects
-                                                                                          1
-                                                                                          {:event {:authoritative (= spec.catalogue_authoritative
-                                                                                                                     true)
-                                                                                                   :models discovered
-                                                                                                   :provider spec.id
-                                                                                                   :type :models/replace-provider}
-                                                                                           :type :dispatch}))
-                                                                          {: db
-                                                                           :fx effects})))))}))
+                                                              (when (or (not event.provider) (= event.provider spec.id))
+                                                                (discover db)))})
+                                    (table.insert setup-fx {:type :register/event :name completion :handler page}))
                                   (table.insert setup-fx
                                                 {:type :register/fx
                                                  :name (.. :provider. spec.id)

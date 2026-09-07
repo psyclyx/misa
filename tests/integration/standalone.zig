@@ -133,6 +133,12 @@ test "OpenAI-compatible streams preserve state and batching semantics" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/openai-stream-state.fnl"} }, "OpenAI stream state properties passed\n");
 }
 
+test "Anthropic model discovery preserves state across pagination" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/anthropic-discovery-state.fnl"} }, "Anthropic discovery state properties passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

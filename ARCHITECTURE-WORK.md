@@ -84,3 +84,9 @@ an ordered `register/openai-delta` projection registry. Its generated tests
 check batching invariance and record ownership; focused tests cover tool-call
 fragments, stream isolation, terminal gating, transport errors, and explicitly
 disabled discovery credentials.
+
+Anthropic-compatible model discovery now accumulates pages with persistent
+updates, sorts only owned results, and explicitly clears completed/failed state.
+`tests/anthropic-discovery-state.fnl` checks generated page-boundary invariance,
+input ownership, provider isolation, cursors, and empty authoritative results.
+The Anthropic-compatible stream reducer remains to be migrated.
