@@ -15,21 +15,20 @@
   (each [_ model (ipairs entries)] (when (= model.id id) (lua "return model")))
   nil)
 
-(fn select-model [state id] (set state.selected id) nil)
-
 (fn rebuild [state preferred]
   (let [entries {}]
     (each [_ model (ipairs state.catalogue)]
       (when (not= (. state.available model.provider) false)
         (tset entries (+ (length entries) 1) model)))
-    (set state.entries entries)
-    (when (not (find entries state.selected))
-      (set state.selected (or (and (find entries preferred) preferred)
-                              (or (and (and (= preferred nil)
-                                            (> (length entries) 0))
-                                       (. entries 1 :id))
-                                  nil))))
-    nil))
+    (local selected (if (find entries state.selected) state.selected
+                        (find entries preferred) preferred
+                        (and (= preferred nil) (> (length entries) 0)) (. entries 1 :id)
+                        nil))
+    (misa.patch state {:entries (misa.replace entries)
+                       :selected (misa.replace selected)})))
+
+(fn updated [state]
+  {:patch {:models (misa.replace state)}})
 
 {:setup (fn [context]
           (local setup-fx [])
@@ -155,8 +154,9 @@
                                                          :configured_default default
                                                          :entries {}
                                                          :selected default})
-                                                 (rebuild state default)
-                                                 (set tx.db.models state)
+                                                 (set tx.db
+                                                      (misa.patch tx.db
+                                                                  (. (updated (rebuild state default)) :patch)))
                                                  tx)))
                                  :id :models/initialize}})
           (table.insert setup-fx
@@ -174,8 +174,8 @@
                                     (assert (and requested
                                                  (find state.entries requested))
                                             "unknown or unavailable model")
-                                    (select-model state requested)
-                                    {: db :fx [{:type :terminal/read}]})})
+                                    {:patch {:models {:selected requested}}
+                                     :fx [{:type :terminal/read}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :models/provider-availability
@@ -188,10 +188,10 @@
                                     (local state
                                            (assert db.models
                                                    "model state is not initialized"))
-                                    (tset state.available event.provider
-                                          event.available)
-                                    (rebuild state default)
-                                    {: db})})
+                                    (updated
+                                      (rebuild
+                                        (misa.patch state {:available {event.provider event.available}})
+                                        default)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :models/update
@@ -224,15 +224,17 @@
                                                          event.provider)
                                                       (. updates model.id))
                                                  nil))
-                                      (when update
-                                        (set model.context_window
-                                             update.context_window)
-                                        (when (not= update.api nil)
-                                          (set model.api update.api))
-                                        (when (not= update.pricing nil)
-                                          (set model.pricing update.pricing))))
-                                    (rebuild state default)
-                                    {: db})})
+                                      (tset catalogue index
+                                            (if update
+                                                (misa.patch model
+                                                            {:context_window (misa.replace update.context_window)
+                                                             :api (when (not= update.api nil)
+                                                                    (misa.replace update.api))
+                                                             :pricing (when (not= update.pricing nil)
+                                                                        (misa.replace update.pricing))})
+                                                model)))
+                                    (updated (rebuild (misa.patch state {:catalogue (misa.replace catalogue)})
+                                                      default)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :models/replace-provider
@@ -247,7 +249,8 @@
                                            (values (assert db.models
                                                            "model state is not initialized")
                                                    {} {}))
-                                    (each [_ model (ipairs state.catalogue)]
+                                    (local catalogue {})
+                                    (each [index model (ipairs state.catalogue)]
                                       (when (or (not= model.provider
                                                       event.provider)
                                                 (and (= model.id state.selected)
@@ -292,9 +295,8 @@
                                              :model model.model
                                              :pricing model.pricing
                                              :provider event.provider}))
-                                    (set state.catalogue catalogue)
-                                    (rebuild state default)
-                                    {: db})})
+                                    (updated (rebuild (misa.patch state {:catalogue (misa.replace catalogue)})
+                                                      default)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :model/select
@@ -303,6 +305,5 @@
                                                  (find db.models.entries
                                                        event.id))
                                             "unknown or unavailable model")
-                                    (select-model db.models event.id)
-                                    {: db})})
+                                    {:patch {:models {:selected event.id}}})})
           {:fx setup-fx})}
