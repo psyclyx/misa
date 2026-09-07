@@ -20,7 +20,7 @@ Completion requires behavioral evidence, not just passing existing tests.
   with unchanged resting appearance and working click routing.
 - [ ] Transcript interaction: structural navigation, Vim-style visual ranges,
   Markdown list structure, and a selection model independent of copying.
-- [ ] Claude: tool calls appear once across streamed and final records; regression
+- [x] Claude: tool calls appear once across streamed and final records; regression
   fixtures cover provider-owned tools and completion boundaries.
 - [ ] Usage: actual Claude, Codex OAuth, and Kimi coding-plan usage retrieval,
   a common dashboard, selected-provider indicators, and graceful unavailable states.
@@ -93,4 +93,12 @@ Anthropic-compatible stream records now use persistent state and open record,
 block-start, and block-delta registries. Generated batching tests and focused
 checks cover signed/redacted thinking, tool fragments, usage, terminal gating,
 stream isolation, and credential-profile mismatch reporting. The Claude CLI
-adapter and the agent/transcript owners remain to be migrated.
+adapter is covered below; the agent/transcript owners remain to be migrated.
+
+The Claude CLI adapter now uses persistent stream state and open record/event
+registries. `tests/claude-stream-state.fnl` covers generated batching invariance,
+input ownership, streamed-first/final-first tool identity, repeated tool results,
+per-message text fallback, metadata-only blocks, terminal gating, and extensions.
+The runtime regression fixture repeats final tool records and verifies exactly
+two transcript tool starts for two distinct calls, provider-owned tool results,
+and successful request completion.

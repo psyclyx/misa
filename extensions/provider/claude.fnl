@@ -59,6 +59,185 @@
                  (or (= server.status :failed) (= server.status :needs-auth)))
         (.. "Claude could not connect to Misa's MCP tools (" server.status ").")))))
 
+
+(fn emit [id type data]
+  {:type :dispatch :event (misa.patch (or data {}) {: id : type})})
+(fn delta [id value] (emit id :agent/stream-delta {:delta value}))
+(fn fresh [] {:message_seq 0 :messages {} :tools {} :block_tools {} :tool_results {}
+              :result false :saw_content false})
+(fn message-key [state] (or state.current_message "seq:0"))
+(fn block-key [state index] (.. (message-key state) ":" (tostring index)))
+
+(fn body [state index value fx id]
+  (local key (message-key state))
+  (local slot (tostring index))
+  (local finalized (and (. state.messages key) (. state.messages key :final_blocks)
+                        (. state.messages key :final_blocks slot)))
+  (if (and value (not= value.text "") (not finalized))
+      (do
+        (table.insert fx (delta id value))
+        (misa.patch state {:messages {key {:streamed_blocks {slot true}}}
+                           :saw_content true}))
+      state))
+
+(fn tool [state index block complete fx id]
+  (local call-id (assert block.id "Claude tool call requires an id"))
+  (local previous (. state.tools call-id))
+  (local key (or (and previous previous.index) (block-key state index)))
+  (when (or (not previous) (and complete (not previous.complete)))
+    (table.insert fx (delta id {:type :tool_call :execution :provider :index key
+                               :id call-id :name block.name
+                               :arguments (when complete (or block.input {}))
+                               :arguments_json (when (not complete) "")})))
+  (misa.patch state {:saw_content true
+                     :tools {call-id {:index key :complete (or complete (and previous previous.complete) false)}}
+                     :block_tools {(block-key state index) call-id}}))
+
+(fn usage [id raw cost]
+  (local value (if (= (type raw) :table) raw {}))
+  (emit id :agent/stream-usage
+        {:usage {:input_tokens (or value.input_tokens 0) :output_tokens (or value.output_tokens 0)
+                 :cache_read_tokens (or value.cache_read_input_tokens 0)
+                 :cache_write_tokens (or value.cache_creation_input_tokens 0)
+                 :input_includes_cache false :cost_usd cost}}))
+
+(local partials
+       {:message_start (fn [state record id]
+                         (when (= (type record.message) :table)
+                           (local sequence (+ state.message_seq 1))
+                           (local key (if record.message.id (.. "id:" record.message.id) (.. "seq:" sequence)))
+                           {:state (misa.patch state {:message_seq sequence :current_message key})
+                            :fx [(usage id record.message.usage)]}))
+        :message_delta (fn [_ record id]
+                         {:fx [(emit id :agent/stream-usage
+                                     {:stop_reason (and (= (type record.delta) :table) record.delta.stop_reason)
+                                      :usage {:output_tokens (or (and (= (type record.usage) :table)
+                                                                     record.usage.output_tokens) 0)}})]})
+        :content_block_start
+        (fn [state record id]
+          (when (= (type record.content_block) :table)
+            (local block record.content_block)
+            (local fx [])
+            (local value (if (and (= block.type :text) (= (type block.text) :string) (not= block.text ""))
+                             {:type :text :text block.text}
+                             (and (= block.type :thinking) (= (type block.thinking) :string) (not= block.thinking ""))
+                             {:type :thinking :text block.thinking} nil))
+            (local next (body state record.index value fx id))
+            {:state (if (= block.type :tool_use) (tool next record.index block false fx id) next) : fx}))
+        :content_block_delta
+        (fn [state record id]
+          (when (= (type record.delta) :table)
+            (local value record.delta)
+            (local fx [])
+            (local content (if (and (= value.type :text_delta) (= (type value.text) :string))
+                               {:type :text :text value.text}
+                               (and (= value.type :thinking_delta) (= (type value.thinking) :string))
+                               {:type :thinking :text value.thinking} nil))
+            (local next (body state record.index content fx id))
+            (when (= value.type :input_json_delta)
+              (local call-id (. state.block_tools (block-key state record.index)))
+              (local call (and call-id (. state.tools call-id)))
+              (when (not (and call call.complete))
+                (table.insert fx (delta id {:type :tool_call :index (or (and call call.index) (block-key state record.index))
+                                           :arguments_json_delta (or value.partial_json "")}))))
+            {:state (if (= value.type :input_json_delta) (misa.patch next {:saw_content true}) next) : fx}))})
+
+(fn assistant-record [previous record id]
+  (when (= (type record.message) :table)
+    (local current (message-key previous))
+    (local advance (and (not record.message.id) (. previous.messages current)
+                        (. previous.messages current :finalized)))
+    (local sequence (+ previous.message_seq (if advance 1 0)))
+    (local key (if record.message.id (.. "id:" record.message.id)
+                  advance (.. "seq:" sequence) current))
+    (var state (misa.patch previous {:current_message key :message_seq sequence}))
+    (local fx [])
+    (each [index block (ipairs (or record.message.content []))]
+      (local slot (tostring (- index 1)))
+      (local entry (or (. state.messages key) {}))
+      (if (= block.type :tool_use)
+          (set state (tool state (- index 1) block true fx id))
+          (and (not (and entry.streamed_blocks (. entry.streamed_blocks slot)))
+               (not (and entry.final_blocks (. entry.final_blocks slot))))
+          (let [value (if (and (= block.type :text) (= (type block.text) :string))
+                          {:type :text :text block.text}
+                          (and (= block.type :thinking) (= (type block.thinking) :string))
+                          {:type :thinking :text block.thinking} nil)]
+            (when value
+              (table.insert fx (delta id value))
+              (set state (misa.patch state {:saw_content true})))))
+      (set state (misa.patch state {:messages {key {:final_blocks {slot true}}}})))
+    {:state (misa.patch state {:messages {key {:finalized true}}}) : fx}))
+
+(fn user-record [previous record id]
+  (when (= (type record.message) :table)
+    (var state previous)
+    (local fx [])
+    (each [_ block (ipairs (or record.message.content []))]
+      (when (and (= block.type :tool_result) (not (. state.tool_results block.tool_use_id)))
+        (local parts [])
+        (if (= (type block.content) :string) (table.insert parts block.content)
+            (each [_ item (ipairs (or block.content []))]
+              (when (= item.type :text) (table.insert parts item.text))))
+        (table.insert fx (emit id :agent/stream-tool-result
+                              {:tool_call_id block.tool_use_id :is_error (= block.is_error true)
+                               :text (table.concat parts "\n")}))
+        (set state (misa.patch state {:tool_results {block.tool_use_id true}}))))
+    {: state : fx}))
+
+(fn result-record [state record id]
+  (local fx [])
+  (if record.is_error
+      (table.insert fx (emit id :agent/stream-error {:message (tostring (or record.result "Claude request failed"))}))
+      (and (not state.saw_content) (= (type record.result) :string))
+      (table.insert fx (delta id {:type :text :text record.result})))
+  (table.insert fx (usage id record.usage record.total_cost_usd))
+  {:state (misa.patch state {:result true :failed (= record.is_error true)}) : fx :finish true})
+
+(local records
+       {:stream_event (fn [state record id]
+                         (local streamed (and (= (type record.event) :table) record.event))
+                         (local handler (and streamed (. partials streamed.type)))
+                         (when handler (handler state streamed id)))
+        :assistant assistant-record :user user-record :result result-record})
+
+(fn stream-update [id state fx]
+  {:patch {:providers {:claude_streams {id (misa.replace state)}}} : fx})
+
+(fn stream [db event]
+  (local state (or (and db.providers db.providers.claude_streams
+                        (. db.providers.claude_streams event.id)) (fresh)))
+  (if (= event.phase :start)
+      (stream-update event.id (fresh) [(emit event.id :agent/stream-start)])
+      (= event.phase :end)
+      (let [next-event (if (not event.ok)
+                          (emit event.id :agent/stream-error
+                                {:message (or event.message (when (not= event.body "") event.body)
+                                              (.. "claude exited " (tostring event.status)))})
+                          (not state.result)
+                          (emit event.id :agent/stream-error {:message "Claude returned no result record"})
+                          (emit event.id :agent/stream-end))]
+        (stream-update event.id nil (if state.failed [] [next-event])))
+      state.result nil
+      (do
+        (var next state)
+        (local fx [])
+        (var finished false)
+        (each [_ record (ipairs (or event.records [])) &until finished]
+          (local problem (mcp-problem record))
+          (local handler (. records record.type))
+          (local result (if problem
+                           {:state (misa.patch next {:result true :failed true}) :finish true
+                            :fx [(emit event.id :agent/stream-error {:message problem})]}
+                           (and handler (handler next record event.id))))
+          (when result
+            (set next (or result.state next))
+            (each [_ effect (ipairs (or result.fx []))] (table.insert fx effect))
+            (when result.finish
+              (set finished true)
+              (table.insert fx {:id event.id :type :operation/finish}))))
+        (stream-update event.id next fx))))
+
 {:setup (fn [context]
           (local setup-fx [])
           (table.insert setup-fx
@@ -144,13 +323,9 @@
                               (= (type model.id) :string))
                          (= (type model.model) :string))
                     "invalid Claude model")
-            (var api (or model.api reasoning-api))
-            (when (and (= (type api) :table)
-                       (= (type api.request_options) :table))
-              (local copy {})
-              (each [key value (pairs api)] (tset copy key value))
-              (set copy.request_options_serializer serializer-id)
-              (set api copy))
+            (local source (or model.api reasoning-api))
+            (local api (if (and (= (type source) :table) (= (type source.request_options) :table))
+                           (misa.patch source {:request_options_serializer serializer-id}) source))
             (table.insert setup-fx
                           {:type :register/model
                            :value {: api
@@ -187,13 +362,7 @@
                                                                                 1000000)
                                                                            200000)
                                                        :id model.id})))
-                                            (set db.providers
-                                                 (or db.providers {}))
-                                            (set db.providers.claude
-                                                 (or db.providers.claude {}))
-                                            (set db.providers.claude.subscription_type
-                                                 event.subscription_type)
-                                            {: db
+                                            {:patch {:providers {:claude {:subscription_type event.subscription_type}}}
                                              :fx [{:event {:models updates
                                                            :provider :claude
                                                            :type :models/update}
@@ -251,394 +420,13 @@
                                                   :type :user}
                                      :stdout_format :json_lines_stream
                                      :type :process/run})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :provider/claude-complete
-                         :handler (fn [db event]
-                                    (set db.providers (or db.providers {}))
-                                    (set db.providers.claude_streams
-                                         (or db.providers.claude_streams {}))
-                                    (if (= event.phase :start)
-                                        (do
-                                          (tset db.providers.claude_streams
-                                                event.id
-                                                {:message_seq 0
-                                                 :result false
-                                                 :saw_content false
-                                                 :saw_stream_event false})
-                                          {: db
-                                           :fx [{:event {:id event.id
-                                                         :type :agent/stream-start}
-                                                 :type :dispatch}]})
-                                        (do
-                                          (local state
-                                                 (or (. db.providers.claude_streams
-                                                        event.id)
-                                                     {:message_seq 0
-                                                      :result false
-                                                      :saw_content false
-                                                      :saw_stream_event false}))
-                                          (if (= event.phase :end)
-                                              (do
-                                                (tset db.providers.claude_streams
-                                                      event.id nil)
-                                                (var next-event nil)
-                                                (if (not event.ok)
-                                                    (set next-event
-                                                         {:id event.id
-                                                          :message (or event.message
-                                                                       (or (and (not= event.body
-                                                                                      "")
-                                                                                event.body)
-                                                                           (.. "claude exited "
-                                                                               (tostring event.status))))
-                                                          :type :agent/stream-error})
-                                                    (not state.result)
-                                                    (set next-event
-                                                         {:id event.id
-                                                          :message "Claude returned no result record"
-                                                          :type :agent/stream-error})
-                                                    (set next-event
-                                                         {:id event.id
-                                                          :type :agent/stream-end}))
-                                                {: db
-                                                 :fx [{:event next-event
-                                                       :type :dispatch}]})
-                                              (do
-                                                (var (fx terminal)
-                                                     (values {} false))
-                                                (each [_ record (ipairs (or event.records
-                                                                            {}))]
-                                                  (local ___partial___
-                                                         (or (and (= record.type
-                                                                     :stream_event)
-                                                                  record.event)
-                                                             nil))
-                                                  (when (and (= (type ___partial___)
-                                                                :table)
-                                                             (or (= ___partial___.type
-                                                                    :content_block_start)
-                                                                 (= ___partial___.type
-                                                                    :content_block_delta)))
-                                                    (set state.saw_stream_event
-                                                         true)
-                                                    (lua :break)))
-                                                (each [_ record (ipairs (or event.records
-                                                                            {}))]
-                                                  (local problem
-                                                         (mcp-problem record))
-                                                  (when problem
-                                                    (set (state.result terminal)
-                                                         (values true true))
-                                                    (table.insert fx
-                                                                  {:type :dispatch
-                                                                   :event {:type :agent/stream-error
-                                                                           :id event.id
-                                                                           :message problem}})
-                                                    (lua :break))
-                                                  (if (and (= record.type
-                                                              :stream_event)
-                                                           (= (type record.event)
-                                                              :table))
-                                                      (do
-                                                        (local ___partial___
-                                                               record.event)
-                                                        (if (and (= ___partial___.type
-                                                                    :content_block_start)
-                                                                 (= (type ___partial___.content_block)
-                                                                    :table))
-                                                            (do
-                                                              (local block
-                                                                     ___partial___.content_block)
-                                                              (if (= block.type
-                                                                     :tool_use)
-                                                                  (do
-                                                                    (set state.saw_content
-                                                                         true)
-                                                                    (tset fx
-                                                                          (+ (length fx)
-                                                                             1)
-                                                                          {:event {:delta {:arguments_json ""
-                                                                                           :execution :provider
-                                                                                           :id block.id
-                                                                                           :index (.. (tostring state.message_seq)
-                                                                                                      ":"
-                                                                                                      (tostring ___partial___.index))
-                                                                                           :name block.name
-                                                                                           :type :tool_call}
-                                                                                   :id event.id
-                                                                                   :type :agent/stream-delta}
-                                                                           :type :dispatch}))
-                                                                  (and (and (= block.type
-                                                                               :text)
-                                                                            (= (type block.text)
-                                                                               :string))
-                                                                       (not= block.text
-                                                                             ""))
-                                                                  (do
-                                                                    (set state.saw_content
-                                                                         true)
-                                                                    (tset fx
-                                                                          (+ (length fx)
-                                                                             1)
-                                                                          {:event {:delta {:text block.text
-                                                                                           :type :text}
-                                                                                   :id event.id
-                                                                                   :type :agent/stream-delta}
-                                                                           :type :dispatch}))
-                                                                  (and (and (= block.type
-                                                                               :thinking)
-                                                                            (= (type block.thinking)
-                                                                               :string))
-                                                                       (not= block.thinking
-                                                                             ""))
-                                                                  (do
-                                                                    (set state.saw_content
-                                                                         true)
-                                                                    (tset fx
-                                                                          (+ (length fx)
-                                                                             1)
-                                                                          {:event {:delta {:text block.thinking
-                                                                                           :type :thinking}
-                                                                                   :id event.id
-                                                                                   :type :agent/stream-delta}
-                                                                           :type :dispatch}))))
-                                                            (and (= ___partial___.type
-                                                                    :content_block_delta)
-                                                                 (= (type ___partial___.delta)
-                                                                    :table))
-                                                            (do
-                                                              (local delta
-                                                                     ___partial___.delta)
-                                                              (if (and (= delta.type
-                                                                          :text_delta)
-                                                                       (= (type delta.text)
-                                                                          :string))
-                                                                  (do
-                                                                    (set state.saw_content
-                                                                         true)
-                                                                    (tset fx
-                                                                          (+ (length fx)
-                                                                             1)
-                                                                          {:event {:delta {:text delta.text
-                                                                                           :type :text}
-                                                                                   :id event.id
-                                                                                   :type :agent/stream-delta}
-                                                                           :type :dispatch}))
-                                                                  (and (= delta.type
-                                                                          :thinking_delta)
-                                                                       (= (type delta.thinking)
-                                                                          :string))
-                                                                  (do
-                                                                    (set state.saw_content
-                                                                         true)
-                                                                    (tset fx
-                                                                          (+ (length fx)
-                                                                             1)
-                                                                          {:event {:delta {:text delta.thinking
-                                                                                           :type :thinking}
-                                                                                   :id event.id
-                                                                                   :type :agent/stream-delta}
-                                                                           :type :dispatch}))
-                                                                  (= delta.type
-                                                                     :input_json_delta)
-                                                                  (do
-                                                                    (set state.saw_content
-                                                                         true)
-                                                                    (tset fx
-                                                                          (+ (length fx)
-                                                                             1)
-                                                                          {:event {:delta {:arguments_json_delta (or delta.partial_json
-                                                                                                                     "")
-                                                                                           :index (.. (tostring state.message_seq)
-                                                                                                      ":"
-                                                                                                      (tostring ___partial___.index))
-                                                                                           :type :tool_call}
-                                                                                   :id event.id
-                                                                                   :type :agent/stream-delta}
-                                                                           :type :dispatch}))))
-                                                            (and (= ___partial___.type
-                                                                    :message_start)
-                                                                 (= (type ___partial___.message)
-                                                                    :table))
-                                                            (do
-                                                              (set state.message_seq
-                                                                   (+ state.message_seq
-                                                                      1))
-                                                              (local usage
-                                                                     (or (and (= (type ___partial___.message.usage)
-                                                                                 :table)
-                                                                              ___partial___.message.usage)
-                                                                         {}))
-                                                              (tset fx
-                                                                    (+ (length fx)
-                                                                       1)
-                                                                    {:event {:id event.id
-                                                                             :type :agent/stream-usage
-                                                                             :usage {:cache_read_tokens (or usage.cache_read_input_tokens
-                                                                                                            0)
-                                                                                     :cache_write_tokens (or usage.cache_creation_input_tokens
-                                                                                                             0)
-                                                                                     :input_includes_cache false
-                                                                                     :input_tokens (or usage.input_tokens
-                                                                                                       0)
-                                                                                     :output_tokens (or usage.output_tokens
-                                                                                                        0)}}
-                                                                     :type :dispatch}))
-                                                            (= ___partial___.type
-                                                               :message_delta)
-                                                            (do
-                                                              (local usage
-                                                                     (or (and (= (type ___partial___.usage)
-                                                                                 :table)
-                                                                              ___partial___.usage)
-                                                                         {}))
-                                                              (tset fx
-                                                                    (+ (length fx)
-                                                                       1)
-                                                                    {:event {:id event.id
-                                                                             :stop_reason (or (and (= (type ___partial___.delta)
-                                                                                                      :table)
-                                                                                                   ___partial___.delta.stop_reason)
-                                                                                              nil)
-                                                                             :type :agent/stream-usage
-                                                                             :usage {:output_tokens (or usage.output_tokens
-                                                                                                        0)}}
-                                                                     :type :dispatch}))))
-                                                      (and (and (= record.type
-                                                                   :assistant)
-                                                                (= (type record.message)
-                                                                   :table))
-                                                           (not state.saw_stream_event))
-                                                      (each [_ block (ipairs (or record.message.content
-                                                                                 {}))]
-                                                        (if (and (= block.type
-                                                                    :text)
-                                                                 (= (type block.text)
-                                                                    :string))
-                                                            (do
-                                                              (set state.saw_content
-                                                                   true)
-                                                              (tset fx
-                                                                    (+ (length fx)
-                                                                       1)
-                                                                    {:event {:delta {:text block.text
-                                                                                     :type :text}
-                                                                             :id event.id
-                                                                             :type :agent/stream-delta}
-                                                                     :type :dispatch}))
-                                                            (and (= block.type
-                                                                    :thinking)
-                                                                 (= (type block.thinking)
-                                                                    :string))
-                                                            (do
-                                                              (set state.saw_content
-                                                                   true)
-                                                              (tset fx
-                                                                    (+ (length fx)
-                                                                       1)
-                                                                    {:event {:delta {:text block.thinking
-                                                                                     :type :thinking}
-                                                                             :id event.id
-                                                                             :type :agent/stream-delta}
-                                                                     :type :dispatch}))
-                                                            (= block.type
-                                                               :tool_use)
-                                                            (do
-                                                              (set state.saw_content
-                                                                   true)
-                                                              (tset fx
-                                                                    (+ (length fx)
-                                                                       1)
-                                                                    {:event {:delta {:arguments block.input
-                                                                                     :execution :provider
-                                                                                     :id block.id
-                                                                                     :name block.name
-                                                                                     :type :tool_call}
-                                                                             :id event.id
-                                                                             :type :agent/stream-delta}
-                                                                     :type :dispatch}))))
-                                                      (and (= record.type :user)
-                                                           (= (type record.message)
-                                                              :table))
-                                                      (each [_ block (ipairs (or record.message.content
-                                                                                 {}))]
-                                                        (when (= block.type
-                                                                 :tool_result)
-                                                          (local parts {})
-                                                          (if (= (type block.content)
-                                                                 :string)
-                                                              (tset parts 1
-                                                                    block.content)
-                                                              (each [_ item (ipairs (or block.content
-                                                                                        {}))]
-                                                                (when (= item.type
-                                                                         :text)
-                                                                  (tset parts
-                                                                        (+ (length parts)
-                                                                           1)
-                                                                        item.text))))
-                                                          (tset fx
-                                                                (+ (length fx)
-                                                                   1)
-                                                                {:event {:id event.id
-                                                                         :is_error (= block.is_error
-                                                                                      true)
-                                                                         :text (table.concat parts
-                                                                                             "\n")
-                                                                         :tool_call_id block.tool_use_id
-                                                                         :type :agent/stream-tool-result}
-                                                                 :type :dispatch})))
-                                                      (= record.type :result)
-                                                      (do
-                                                        (set (state.result terminal)
-                                                             (values true true))
-                                                        (if record.is_error
-                                                            (tset fx
-                                                                  (+ (length fx)
-                                                                     1)
-                                                                  {:event {:id event.id
-                                                                           :message (tostring (or record.result
-                                                                                                  "Claude request failed"))
-                                                                           :type :agent/stream-error}
-                                                                   :type :dispatch})
-                                                            (and (not state.saw_content)
-                                                                 (= (type record.result)
-                                                                    :string))
-                                                            (tset fx
-                                                                  (+ (length fx)
-                                                                     1)
-                                                                  {:event {:delta {:text record.result
-                                                                                   :type :text}
-                                                                           :id event.id
-                                                                           :type :agent/stream-delta}
-                                                                   :type :dispatch}))
-                                                        (local usage
-                                                               (or (and (= (type record.usage)
-                                                                           :table)
-                                                                        record.usage)
-                                                                   {}))
-                                                        (tset fx
-                                                              (+ (length fx) 1)
-                                                              {:event {:id event.id
-                                                                       :type :agent/stream-usage
-                                                                       :usage {:cache_read_tokens (or usage.cache_read_input_tokens
-                                                                                                      0)
-                                                                               :cache_write_tokens (or usage.cache_creation_input_tokens
-                                                                                                       0)
-                                                                               :cost_usd record.total_cost_usd
-                                                                               :input_includes_cache false
-                                                                               :input_tokens (or usage.input_tokens
-                                                                                                 0)
-                                                                               :output_tokens (or usage.output_tokens
-                                                                                                  0)}}
-                                                               :type :dispatch})
-                                                        (lua :break))))
-                                                (tset db.providers.claude_streams
-                                                      event.id state)
-                                                (when terminal
-                                                  (tset fx (+ (length fx) 1)
-                                                        {:id event.id
-                                                         :type :operation/finish}))
-                                                {: db : fx})))))})
+          (table.insert setup-fx {:type :register/event :name :provider/claude-complete :handler stream})
+          (each [name registry (pairs {:register/claude-record records :register/claude-stream-event partials})]
+            (table.insert setup-fx
+                          {:type :register/setup-effect : name
+                           :handler (fn [effect]
+                                      (assert (and (= (type effect.id) :string) (not= effect.id "")
+                                                   (= (type effect.value) :function) (not (. registry effect.id)))
+                                              "invalid or duplicate Claude record handler")
+                                      (tset registry effect.id effect.value))}))
           {:fx setup-fx})}

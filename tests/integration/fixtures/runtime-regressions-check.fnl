@@ -1,6 +1,11 @@
 {:setup (fn []
           (local setup-fx [])
           (table.insert setup-fx
+                        {:type :register/event :name :transcript/block-start
+                         :handler (fn [db event]
+                                    (when (= event.kind :tool_call)
+                                      {:patch {:test_tool_starts (+ (or db.test_tool_starts 0) 1)}}))})
+          (table.insert setup-fx
                         {:type :register/event
                          :name :agent/completed
                          :handler (fn [db]
@@ -13,6 +18,8 @@
                                             "provider tool results missing from history")
                                     (local blocks
                                            (. db.agent.messages 2 :content))
+                                    (assert (= (length blocks) 3) "final records duplicated agent content")
+                                    (assert (= db.test_tool_starts 2) "tool calls were displayed twice")
                                     (assert (and (= (. blocks 1 :id) :one)
                                                  (= (. blocks 2 :id) :two))
                                             "provider message indices merged distinct tool calls")

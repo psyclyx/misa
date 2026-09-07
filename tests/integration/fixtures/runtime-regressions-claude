@@ -9,10 +9,13 @@ cat <<'JSON'
 {"type":"stream_event","event":{"type":"message_start","message":{}}}
 {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"one","name":"mcp__misa__shell"}}}
 {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"first\"}"}}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"one","name":"mcp__misa__shell","input":{"command":"first"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"one","name":"mcp__misa__shell","input":{"command":"first"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"one","content":"first result"}]}}
 {"type":"stream_event","event":{"type":"message_start","message":{}}}
 {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"two","name":"mcp__misa__shell"}}}
 {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"second\"}"}}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"two","name":"mcp__misa__shell","input":{"command":"second"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"two","content":[{"type":"text","text":"second result"}]}]}}
 {"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"finished"}}}
 {"type":"result","is_error":false,"result":"finished"}

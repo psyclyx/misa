@@ -863,3 +863,10 @@ and `value` fields. Pure handlers receive `(state, record, request_id, provider)
 and return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`. This keeps
 signed provider state separate from visible thinking deltas. Terminal handlers
 set `terminal=true` or `failed=true` and request `finish=true`.
+
+Claude CLI records expose `register/claude-record` and
+`register/claude-stream-event`, with `id` and `value` fields. Pure handlers receive
+`(state, record, request_id)` and return `{state=<new immutable stream state>,
+fx=<array>, finish=<boolean>}`; omitted state is unchanged. Terminal handlers set
+`result=true` and request `finish=true`. Tools retain one identity across partial
+and final assistant records; visible text fallback is tracked per message/block.
