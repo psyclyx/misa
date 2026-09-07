@@ -33,6 +33,26 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Mixed transcript and back-to-back input baseline (2026-09-07)
+
+The native benchmark now has a `mixed` scenario: at 300 blocks it contains 150
+responses, 75 completed tools with arguments/results, plans, and 75 code-fenced
+replies. Measurement starts only after actual native highlighting returns
+nonempty captures for every expected document. Ownership, retained identities,
+stream bytes, visible code/tool output and OSC links are checked. Ten runs have
+stable frame hashes; all six original Markdown hashes are unchanged.
+
+The 300-block streaming baseline is 4.960 ms median of run medians. A separate
+1,000-frame observation is 4.712 ms median / 19.681 ms maximum with a 25 ms idle
+gap. Back-to-back input gives 17.019 ms median / 17.873 ms maximum, including the
+driver's 16 ms presenter pacing; both runs have identical output and no missing
+stream bytes. These measure input to complete PTY output, not terminal painting.
+This is a closed-loop workload, not an independent-rate producer.
+The every-frame target remains open, as do image/selection/streaming-tool and
+populated-cost stress cases. See `benchmarks/mixed-transcript-2026-09-07.md` for
+methods, limits and the next cost-lookup experiment lead. No production runtime
+or rendering API was changed in this slice.
+
 ### Grapheme returns no longer allocate a closure (2026-09-07)
 
 Compiled-code inspection identified a per-grapheme closure in the layout

@@ -31,6 +31,8 @@ parser.add_argument('--rest-ms', type=float, default=0,
 parser.add_argument('--blocks', type=int, choices=(1, 16, 300), help='run only this transcript size')
 parser.add_argument('--mode', choices=('redraw', 'stream'), help='run only this workload')
 parser.add_argument('--samples', type=int, default=10)
+parser.add_argument('--scenario', choices=('markdown', 'mixed'), default='markdown',
+                    help='single Markdown response, or multi-response user/thinking/tool/code transcript')
 parser.add_argument('--extension-dir', type=Path, help='saved extension tree for source-level A/B comparisons')
 parser.add_argument('--perf-output', type=Path,
                     help='attach perf after warm-up; requires --blocks and --mode; timings are diagnostic only')
@@ -43,7 +45,7 @@ if not 0 <= args.rest_ms <= 1000:
     parser.error('--rest-ms must be between 0 and 1000')
 root = Path(__file__).resolve().parent.parent
 begin, end = b'\x1b[?2026h', b'\x1b[?2026l'
-print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256,p95_ms,p99_ms', flush=True)
+print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256,p95_ms,p99_ms,scenario', flush=True)
 for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
     for mode in ((args.mode,) if args.mode else ('redraw', 'stream')):
         with tempfile.TemporaryDirectory(prefix='misa-native-transcript-') as directory:
@@ -54,7 +56,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
             config['extensions'].insert(0, str(root / 'benchmarks/native-transcript.fnl'))
             settings = config['config']
             settings['models']['default'] = 'bench/model'
-            settings['benchmark'] = {'blocks': count}
+            settings['benchmark'] = {'blocks': count, 'scenario': args.scenario}
             for name in ('history', 'themes', 'components', 'preferences'):
                 settings.setdefault(name, {})['persist'] = False
             path = work / 'config.json'
@@ -119,14 +121,18 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                     rendered = frame(f'FRAME:{step:04d}'.encode())
                     elapsed = (time.perf_counter() - started) * 1000
                     frame_hash.update(rendered)
+                    plain = re.sub(rb'\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)', b'', rendered)
+                    plain = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', plain)
+                    if args.scenario == 'mixed' and step == 1:
+                        assert b'answer = 42' in plain, 'mixed fixture did not render its code block'
+                        if count > 1:
+                            assert b'new value' in plain, 'mixed fixture did not expose its tool result'
                     if mode == 'redraw':
                         canonical = re.sub(rb'FRAME:[0-9]{4}', b'FRAME:XXXX', rendered)
                         if redraw_oracle is None:
                             redraw_oracle = canonical
                         assert canonical == redraw_oracle, 'unchanged transcript produced different frame bytes'
                     else:
-                        plain = re.sub(rb'\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)', b'', rendered)
-                        plain = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', plain)
                         # Count the synthetic tail across wrapped lines. Other fixture
                         # text has no words consisting solely of x characters.
                         assert sum(map(len, re.findall(rb'\bx+\b', plain))) == step, \
@@ -147,7 +153,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                 percentiles = statistics.quantiles(samples, n=100, method='inclusive') if len(samples) > 1 else samples * 99
                 print(f'{count},{mode},{args.rest_ms:g},{bool(args.perf_output)},{len(samples)},{statistics.median(samples):.3f},'
                       f'{min(samples):.3f},{max(samples):.3f},{first:.3f},{frame_hash.hexdigest()},'
-                      f'{percentiles[94]:.3f},{percentiles[98]:.3f}', flush=True)
+                      f'{percentiles[94]:.3f},{percentiles[98]:.3f},{args.scenario}', flush=True)
             finally:
                 if profiler and profiler.poll() is None:
                     profiler.send_signal(signal.SIGINT)
