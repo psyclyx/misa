@@ -26,17 +26,18 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (and (= tx.event.type
+                                           (if (and (= tx.event.type
                                                          :app/start)
                                                       (not tx.db.auth_startup))
-                                             (local pending {})
-                                             (each [_ provider (ipairs providers)]
-                                               (tset pending provider.model_provider true))
-                                             (set tx.db (misa.patch tx.db
-                                                  {:auth_startup (misa.replace {:pending_discovery {}
-                                                                               :pending_status pending
-                                                                               :ready (= (length providers) 0)})})))
-                                           tx)
+                                             (do
+                                               (local pending {})
+                                               (each [_ provider (ipairs providers)]
+                                                 (tset pending provider.model_provider true))
+                                               (misa.patch tx
+                                                    {:db {:auth_startup (misa.replace {:pending_discovery {}
+                                                                                     :pending_status pending
+                                                                                     :ready (= (length providers) 0)})}}))
+                                             tx))
                                  :id :auth/startup-state}})
           (table.insert setup-fx
                         {:type :register/event

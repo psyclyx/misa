@@ -173,8 +173,8 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (= tx.event.type :app/start)
-                                             (when (not tx.db.animations)
+                                           (if (and (= tx.event.type :app/start) (not tx.db.animations))
+                                             (do
                                                (local roles {})
                                                (each [role id (pairs configured-roles)]
                                                  (assert (and (and (and (= (type role)
@@ -186,12 +186,12 @@
                                                               (. entries id))
                                                          "invalid configured animation role")
                                                  (tset roles role id))
-                                               (set tx.db (misa.patch tx.db
-                                                    {:animations (misa.replace {:active configured
+                                               (misa.patch tx
+                                                    {:db {:animations (misa.replace {:active configured
                                                      : roles
                                                      :running {}
-                                                     :ticks {}})}))))
-                                           tx)
+                                                     :ticks {}})}}))
+                                             tx))
                                  :id :animations/initialize}})
           (table.insert setup-fx
                         {:type :register/event

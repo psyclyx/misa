@@ -51,6 +51,13 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Editing before/after policies, startup initializers (themes, components,
+animations, auth, models), and cost accounting now return new transaction
+envelopes. Editing properties check the whole input transaction and retain the
+after-policy result. Initializer tests assert input preservation, unchanged
+branch identity, idempotence, and no-op handling of unrelated events; cost tests
+also check envelope ownership. Command and syntax policies remain to audit.
+
 Choice-session services now return immutable sessions, including narrowing and
 view replacement. Input dispatch is extensible through `register/choice-input`;
 rows and layout no longer mutate their input. The picker lifecycle returns

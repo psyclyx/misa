@@ -20,18 +20,19 @@
 (fn unchanged [db call]
   (local before (misa.json.encode db))
   (local result (call))
-  (assert (= before (misa.json.encode db)) "editing mutated prior state")
+  (assert (= before (misa.json.encode db)) "editing mutated input data")
   result)
 (fn transition [db event]
   (local before (misa.json.encode event))
-  (local tx (unchanged db #(policy.before {: db : event : cofx :fx {}})))
+  (local input {: db : event : cofx :fx {}})
+  (var tx (unchanged input #(policy.before input)))
   (each [_ handler (ipairs (or (. handlers tx.event.type) {}))]
     (local result (unchanged tx.db #(handler tx.db tx.event cofx)))
     (when result
       (assert (not result.db))
       (set tx.db (misa.patch tx.db (or result.patch {})))
       (each [_ effect (ipairs (or result.fx {}))] (table.insert tx.fx effect))))
-  (unchanged tx.db #(policy.after tx))
+  (set tx (unchanged tx #(policy.after tx)))
   (assert (= before (misa.json.encode event)) "editing mutated the input event")
   (values tx.db tx.fx))
 (fn action [db name] (transition db {:type :editing/action :action name}))

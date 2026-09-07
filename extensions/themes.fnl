@@ -332,11 +332,9 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (= tx.event.type :app/start)
-                                             (when (not tx.db.themes)
-                                               (set tx.db (misa.patch tx.db
-                                                                      {:themes {:active configured}}))))
-                                           tx)
+                                           (if (and (= tx.event.type :app/start) (not tx.db.themes))
+                                               (misa.patch tx {:db {:themes {:active configured}}})
+                                               tx))
                                  :id :themes/initialize}})
           (table.insert setup-fx
                         {:type :register/event

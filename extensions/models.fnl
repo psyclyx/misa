@@ -168,10 +168,8 @@
                                                          :configured_default default
                                                          :entries {}
                                                          :selected default})
-                                                 (set tx.db
-                                                      (misa.patch tx.db
-                                                                  (. (updated (rebuild state default)) :patch)))
-                                                 tx)))
+                                                 (misa.patch tx
+                                                             {:db (. (updated (rebuild state default)) :patch)}))))
                                  :id :models/initialize}})
           (table.insert setup-fx
                         {:type :register/event

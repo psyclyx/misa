@@ -228,38 +228,38 @@
   (local discarded (and tx.editing_input (= editor.text "") (not= tx.editing_input.text "")
                          (not= tx.event.type :editing/action) (not= tx.editing_input.kind :backspace)))
   (if discarded
-      (set tx.db (misa.patch tx.db {:editing {:undo (misa.replace {}) :redo (misa.replace {})
-                                             :insert_group misa.delete}}))
+      (misa.patch tx {:db {:editing {:undo (misa.replace {}) :redo (misa.replace {})
+                                    :insert_group misa.delete}}})
       (and tx.editing_before (not= editor.text tx.editing_before.text)
            (not tx.db.editing.insert_group))
-      (set tx.db (misa.patch tx.db
-                             {:editing (misa.replace
+      (misa.patch tx {:db {:editing (misa.replace
                                         (misa.patch (remember tx.db.editing tx.editing_before.text
                                                               tx.editing_before.cursor)
-                                                    {:insert_group true}))})))
-  tx)
+                                                    {:insert_group true}))}})
+      tx))
 
 (fn before-input [tx enabled]
   (if (or (not= tx.event.type :terminal/input) (not enabled)
           (not tx.cofx.terminal.interactive) tx.db.dialog tx.db.picker tx.db.selection
           (not tx.db.editor))
       tx
-      (let [editor (misa.patch tx.db.editor {:mode (or tx.db.editor.mode :insert)})]
-        (set tx.db (misa.patch tx.db {:editor (misa.replace editor)
-                                     :editing (misa.replace (or tx.db.editing {}))}))
-        (set tx.editing_input {:kind tx.event.kind :text editor.text})
-        (if (= editor.mode :insert)
-            (if (= tx.event.kind :escape)
-                (set tx.event {:action :normal :type :editing/action})
-                (or (= tx.event.kind :text) (= tx.event.kind :shift_enter) (= tx.event.kind :backspace))
-                (set tx.editing_before {:cursor editor.cursor :text editor.text}))
-            (or (= tx.event.kind :ctrl_c) (= tx.event.kind :eof) (= tx.event.kind :ctrl_d))
-            (set tx.db (misa.patch tx.db {:editor {:mode :insert :selection_start misa.delete
-                                                  :selection_end misa.delete}
-                                         :editing {:anchor misa.delete}}))
-            (set tx.event {:action (or (misa.keybinding_action :editor.normal tx.event) :ignore)
-                           :type :editing/action}))
-        tx)))
+      (let [editor (misa.patch tx.db.editor {:mode (or tx.db.editor.mode :insert)})
+            initialized (misa.patch tx {:db {:editor (misa.replace editor)
+                                             :editing (misa.replace (or tx.db.editing {}))}
+                                       :editing_input {:kind tx.event.kind :text editor.text}})
+            policy (if (= editor.mode :insert)
+                       (if (= tx.event.kind :escape)
+                           {:event (misa.replace {:action :normal :type :editing/action})}
+                           (or (= tx.event.kind :text) (= tx.event.kind :shift_enter) (= tx.event.kind :backspace))
+                           {:editing_before {:cursor editor.cursor :text editor.text}}
+                           {})
+                       (or (= tx.event.kind :ctrl_c) (= tx.event.kind :eof) (= tx.event.kind :ctrl_d))
+                       {:db {:editor {:mode :insert :selection_start misa.delete
+                                      :selection_end misa.delete}
+                             :editing {:anchor misa.delete}}}
+                       {:event (misa.replace {:action (or (misa.keybinding_action :editor.normal tx.event) :ignore)
+                                              :type :editing/action})})]
+        (misa.patch initialized policy))))
 
 {:setup (fn [context]
           (local setup-fx [])

@@ -157,6 +157,12 @@ test "modal editing preserves state and undo boundaries" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/editing-state.fnl"} }, "editing state properties passed\n");
 }
 
+test "initializers preserve transaction ownership" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/initialization-state.fnl"} }, "initialization transaction ownership passed\n");
+}
+
 test "dialogs preserve state and protected input ownership" {
     var h = try Harness.init();
     defer h.deinit();

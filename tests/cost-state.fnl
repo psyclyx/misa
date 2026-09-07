@@ -7,6 +7,12 @@
 (var account nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/interceptor) (set account spec.value.before)))
+(local transition account)
+(set account (fn [tx]
+               (local before (fennel.view tx))
+               (local result (transition tx))
+               (assert (= before (fennel.view tx)) "cost accounting mutated its transaction")
+               result))
 (local original {:costs {:responses {:earlier {:model :test :cost {:usd 7}}}}})
 (local started (account {:db original
                          :event {:type :transcript/response-start

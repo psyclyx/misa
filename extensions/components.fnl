@@ -152,8 +152,8 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (= tx.event.type :app/start)
-                                             (when (not tx.db.components)
+                                           (if (and (= tx.event.type :app/start) (not tx.db.components))
+                                             (do
                                                (local roles {})
                                                (each [role id (pairs configured)]
                                                  (when (not= role :persist)
@@ -163,9 +163,8 @@
                                                                    :string))
                                                            "invalid configured component role")
                                                    (tset roles role id)))
-                                               (set tx.db (misa.patch tx.db
-                                                                      {:components (misa.replace {: roles})}))))
-                                           tx)
+                                               (misa.patch tx {:db {:components (misa.replace {: roles})}}))
+                                             tx))
                                  :id :components/initialize}})
           (table.insert setup-fx
                         {:type :register/event

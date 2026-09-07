@@ -218,8 +218,6 @@
                          :value {:before (fn [tx]
                                            (local transition (. transitions tx.event.type))
                                            (local patch (and transition (transition tx.db tx.event)))
-                                           (when patch
-                                             (set tx.db (misa.patch tx.db patch)))
-                                           tx)
+                                           (if patch (misa.patch tx {:db patch}) tx))
                                  :id :costs/account}})
           {:fx setup-fx})}
