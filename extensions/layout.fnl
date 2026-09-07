@@ -244,7 +244,11 @@
                          (values true (+ next-at following-size)))
                     (set done true))
                   (set done true))))
-          (values next-at (if emoji (math.max cells 2) cells))))))
+          ;; A conditional in the final values position compiles to a thunk in
+          ;; Fennel. Bind the scalar first: segmentation must not allocate one
+          ;; closure per grapheme merely to return its cell count.
+          (local cluster-cells (if emoji (math.max cells 2) cells))
+          (values next-at cluster-cells)))))
 
 (fn boundary-at-or-before [text cursor]
   (let [target (math.max 0

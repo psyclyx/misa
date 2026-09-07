@@ -33,6 +33,29 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Grapheme returns no longer allocate a closure (2026-09-07)
+
+Compiled-code inspection identified a per-grapheme closure in the layout
+primitive's final conditional return value. Binding that scalar first eliminates
+the allocation without changing the compiler, width tables, segmentation or
+public API. Exhaustive codepoint-width and generated mixed-text layout parity
+passed against the saved baseline. An allocation probe shows that 64 ASCII width
+calls dropped from 3648.203 to 0.203 KiB median allocated.
+
+Ten alternating same-binary native comparisons improved all six workload
+medians; 300-block streaming moved from 4.603 to 3.711 ms. A separate 1,000-frame
+candidate observation measured 3.073 ms median, 13.703 ms p99 and 15.140 ms maximum,
+with identical output to the baseline. The harness now reports empirical p95/p99.
+This rested synthetic case does not close sustained or representative-workload
+requirements. Methodology and limits are in
+`benchmarks/grapheme-return-2026-09-07.md`.
+Verification: complete ReleaseSafe baseline-CPU suite, installed build, compiled
+Lua inspection and Unicode parity passed. PTY verification exposed and reproduced
+a reader race accepting the tail of an older frame as the hover frame; the next
+complete frame had the correct highlight. The test now requires both delimiters,
+has partial-frame boundary checks, and passed 60 consecutive installed-catalog
+runs. No hover implementation change was needed.
+
 ### Syntax deltas remove whole-catalog validation (2026-09-07)
 
 Deeper profiling identified a larger cost than transcript block-vector updates:

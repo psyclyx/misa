@@ -43,7 +43,7 @@ if not 0 <= args.rest_ms <= 1000:
     parser.error('--rest-ms must be between 0 and 1000')
 root = Path(__file__).resolve().parent.parent
 begin, end = b'\x1b[?2026h', b'\x1b[?2026l'
-print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256', flush=True)
+print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256,p95_ms,p99_ms', flush=True)
 for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
     for mode in ((args.mode,) if args.mode else ('redraw', 'stream')):
         with tempfile.TemporaryDirectory(prefix='misa-native-transcript-') as directory:
@@ -142,8 +142,12 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                 os.write(master, b'\x1bq')
                 process.wait(timeout=3)
                 assert process.returncode == 0
+                # Inclusive empirical quantiles; with one sample every quantile
+                # is that observation. Report n alongside these estimates.
+                percentiles = statistics.quantiles(samples, n=100, method='inclusive') if len(samples) > 1 else samples * 99
                 print(f'{count},{mode},{args.rest_ms:g},{bool(args.perf_output)},{len(samples)},{statistics.median(samples):.3f},'
-                      f'{min(samples):.3f},{max(samples):.3f},{first:.3f},{frame_hash.hexdigest()}', flush=True)
+                      f'{min(samples):.3f},{max(samples):.3f},{first:.3f},{frame_hash.hexdigest()},'
+                      f'{percentiles[94]:.3f},{percentiles[98]:.3f}', flush=True)
             finally:
                 if profiler and profiler.poll() is None:
                     profiler.send_signal(signal.SIGINT)
