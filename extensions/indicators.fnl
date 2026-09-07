@@ -13,7 +13,7 @@
           (local configured
                  (or root.indicators
                      [{:id :activity :priority 100 :representation :icon}
-                      {:id :model :priority 90 :representation :label}
+                      {:id :model :priority 90 :representation :value :hotkey true}
                       {:hotkey true
                        :id :effort
                        :priority 70
@@ -85,8 +85,10 @@
                                                (or selection.representation
                                                    :label))
                                         (assert (or (= representation :label)
-                                                    (= representation :icon))
-                                                "indicator representation must be label or icon")
+                                                    (= representation :icon)
+                                                    (= representation :value)
+                                                    (= representation :label_value))
+                                                "indicator representation must be label, value, icon, or label_value")
                                         (local label
                                                (or (and (= representation :icon)
                                                         (or (or definition.icon
@@ -121,6 +123,7 @@
                                                : hotkey
                                                :id selection.id
                                                : label
+                                               :representation representation
                                                :priority (or (tonumber selection.priority)
                                                              (- 1000 index))
                                                :value (if (= (type value)

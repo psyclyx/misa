@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "model picker controls and value-only status presentation" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/model-affordances.fnl"} }, "model affordance contracts passed\n");
+}
+
 test "effect-only controls and keepalive policies preserve inputs" {
     var h = try Harness.init();
     defer h.deinit();

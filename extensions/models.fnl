@@ -38,11 +38,25 @@
                            :value {:icon "◆"
                                    :id :model
                                    :label :model
+                                   :hotkey {:action :open_model_picker
+                                            :context :global}
                                    :value (fn [db]
                                             (local model
                                                    (and misa.selected_model_projection
                                                         (misa.selected_model_projection db)))
-                                            (or (and model model.id) :none))}}))
+                                            (or (and model model.label) :none))}}))
+          (table.insert setup-fx
+                        {:type :register/keybinding
+                         :value {:action :open_model_picker
+                                 :context :global
+                                 :default [:alt+m]}})
+          (table.insert setup-fx
+                        {:type :register/action
+                         :value {:binding {:action :open_model_picker
+                                           :context :global}
+                                 :event {:type :model/picker-open}
+                                 :id :models.open
+                                 :label "Choose active model"}})
           (table.insert setup-fx
                         {:type :register/command
                          :value {:choice_purpose :models
@@ -161,6 +175,28 @@
                                  :id :models/initialize}})
           (table.insert setup-fx
                         {:type :register/event
+                         :name :model/picker-open
+                         :handler (fn [db]
+                                    (if (or db.picker db.dialog)
+                                        {:fx [{:type :terminal/read}]}
+                                        {                                         :fx [{:event {:command :/model
+                                                       :type :choices/command-open}
+                                                :type :dispatch}]}))})
+          (table.insert setup-fx
+                        {:type :register/interceptor
+                         :value {:before (fn [tx]
+                                           (if (and (= tx.event.type :terminal/input)
+                                                      (not tx.db.picker)
+                                                      (not tx.db.dialog)
+                                                      misa.keybinding_action
+                                                      (= (misa.keybinding_action :global
+                                                                                 tx.event)
+                                                         :open_model_picker))
+                                             (misa.patch tx {:event (misa.replace {:type :model/picker-open})})
+                                               tx))
+                                 :id :models/input}})
+          (table.insert setup-fx
+                        {:type :register/event
                          :name :model/open
                          :handler (fn [db event]
                                     (local state
@@ -218,7 +254,8 @@
                                                           0)))
                                               "invalid context window")
                                       (tset updates update.id update))
-                                    (each [_ model (ipairs state.catalogue)]
+                                    (local catalogue {})
+                                    (each [index model (ipairs state.catalogue)]
                                       (local update
                                              (or (and (= model.provider
                                                          event.provider)
@@ -249,8 +286,7 @@
                                            (values (assert db.models
                                                            "model state is not initialized")
                                                    {} {}))
-                                    (local catalogue {})
-                                    (each [index model (ipairs state.catalogue)]
+                                    (each [_ model (ipairs state.catalogue)]
                                       (when (or (not= model.provider
                                                       event.provider)
                                                 (and (= model.id state.selected)

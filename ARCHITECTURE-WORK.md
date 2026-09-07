@@ -191,3 +191,11 @@ modify incoming events in place. `tests/control-ownership.fnl` checks original
 event/transaction preservation, pending-image input replacement, effort cycling,
 selection, and unsupported options. Remaining model affordances and the framework
 cutover are still pending.
+
+Model controls now expose Alt-M and route it through the shared command picker
+without mutating input. Default model status uses value plus hotkey while keeping
+its semantic label. Indicator width comes from actual rendered spans, so hidden
+labels no longer consume space and icon representations retain their icon.
+`tests/model-affordances.fnl` covers those contracts and shared keybinding-span
+ownership. Premature model subscription wiring was removed pending the framework
+subscription contract; the selected-model projection remains pure.
