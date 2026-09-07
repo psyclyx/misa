@@ -51,6 +51,15 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Structural visual ranges now retain a document-position anchor across depth and
+document navigation. `selection_ranges` exposes ordered frozen source slices;
+copy joins those slices while per-document projection drives transcript freezing
+and decoration. Selected lines retain document IDs so the viewport reveals focus
+rather than an earlier highlighted document. Tests cover forward/backward ranges,
+partial endpoints, CRLF/Unicode copying, live-source changes, decoration, and
+focus-following. Live-terminal acceptance and broader selection affordances remain
+separate verification work.
+
 The bundled extension catalog now declares ID/path pairs once as data. Discovery
 IDs derive from those entries, runtime resolution searches them, and build-time
 translation consumes their paths directly. Tests retain exact public mappings

@@ -16,14 +16,34 @@
   (local (_ frame) (focus state))
   (local next-frame (misa.patch frame {:index (math.max 1 (math.min (length frame.nodes) index))}))
   (local current (. next-frame.nodes next-frame.index))
-  ;; Source offsets are local to a document; changing documents resets the anchor.
-  (local anchor (if (and extending (> depth 1) (= state.anchor_depth depth))
+  (local document-index (if (= depth 1) next-frame.index (. state.frames 1 :index)))
+  (local anchor (if extending
                     state.anchor current))
+  (local anchor-document (if extending state.anchor_document document-index))
+  (local forward (and anchor-document (<= anchor-document document-index)))
   (misa.patch state {:frames (misa.replace (frames-with state.frames depth next-frame))
-                     :anchor (misa.replace anchor) :anchor_depth depth
+                     :anchor (misa.replace anchor) :anchor_document anchor-document
                      :range (misa.replace (when (and extending anchor current)
-                                            {:first (math.min anchor.first current.first)
-                                             :last (math.max anchor.last current.last)}))}))
+                                            {:first_document (math.min anchor-document document-index)
+                                             :last_document (math.max anchor-document document-index)
+                                             :first (if (= anchor-document document-index)
+                                                        (math.min anchor.first current.first)
+                                                        forward anchor.first current.first)
+                                             :last (if (= anchor-document document-index)
+                                                       (math.max anchor.last current.last)
+                                                       forward current.last anchor.last)}))}))
+
+(fn selected-at [state index]
+  (local current (focus state))
+  (local focused (. state.frames 1 :index))
+  (local range (or state.range (and current {:first_document focused :last_document focused
+                                            :first current.first :last current.last})))
+  (local document (. state.documents index))
+  (when (and range document (<= range.first_document index range.last_document))
+    {:id document.id :text document.text
+     :kind (if (= index focused) current.kind document.kind)
+     :first (if (= index range.first_document) range.first 0)
+     :last (if (= index range.last_document) range.last (length document.text))}))
 
 (fn descend [state]
   (local current (focus state))
@@ -32,14 +52,14 @@
   (if (and children (> (length children) 0))
       (let [frames (icollect [_ frame (ipairs state.frames)] frame)]
         (table.insert frames {:index 1 :nodes children})
-        (move (misa.patch state {:frames (misa.replace frames)}) 1 false))
+        (move (misa.patch state {:frames (misa.replace frames)}) 1 state.visual))
       state))
 
 (fn ascend [state]
   (if (> (length state.frames) 1)
       (let [frames (icollect [i frame (ipairs state.frames) &until (= i (length state.frames))] frame)
             next (misa.patch state {:frames (misa.replace frames)})]
-        (move next (. frames (length frames) :index) false))
+        (move next (. frames (length frames) :index) state.visual))
       state))
 
 (local motions {:previous (fn [frame] (- frame.index 1))
@@ -60,11 +80,14 @@
                             {:state (misa.patch (move state frame.index false)
                                                 {:visual (not state.visual)})})
                   :copy (fn [state db]
-                          (local selected (misa.selection_projection db))
-                          (when selected
+                          (local slices (misa.selection_ranges db))
+                          (when (> (length slices) 0)
                             {:state (misa.patch state {:copied true})
                              :fx [{:type :dispatch :event {:type :clipboard/copy
-                                                          :text (selected.text:sub (+ selected.first 1) selected.last)}}]}))})
+                                                          :text (table.concat
+                                                                  (icollect [_ selected (ipairs slices)]
+                                                                    (selected.text:sub (+ selected.first 1) selected.last))
+                                                                  "\n\n")}}]}))})
           (each [name motion (pairs motions)]
             (tset actions name
                   (fn [state]
@@ -97,22 +120,17 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :selection_projection
-                         :value (fn [db]
+                         :value (fn [db id]
                                   (local state db.selection)
-                                  (if (not state) nil
-                                      (do
-                                        (local current (focus state))
-                                        (local document
-                                               (. state.documents
-                                                  (. state.frames 1 :index)))
-                                        (if (and current document)
-                                            (let [range (or state.range current)]
-                                              {:first range.first
-                                               :id document.id
-                                               :kind current.kind
-                                               :last range.last
-                                               :text document.text})
-                                            nil))))})
+                                  (when state
+                                    (local index (if id (. state.indices id) (. state.frames 1 :index)))
+                                    (when index (selected-at state index))))})
+          (table.insert setup-fx
+                        {:type :register/service :name :selection_ranges
+                         :value (fn [db]
+                                  (if (not db.selection) []
+                                      (icollect [index _ (ipairs db.selection.documents)]
+                                        (selected-at db.selection index))))})
           ;; Decorate the existing rich transcript. Source-marked spans come from the
           ;; document renderer; chrome and table padding are never mistaken for content.
           (table.insert setup-fx
@@ -120,7 +138,7 @@
                          :name :selection_decorate
                          :value (fn [db id text lines]
                                   (local selected
-                                         (misa.selection_projection db))
+                                         (misa.selection_projection db id))
                                   (if (or (not selected) (not= selected.id id))
                                       lines
                                       (do
@@ -207,6 +225,7 @@
                                               (set at after))
                                             (flush))
                                           (set line.spans spans)
+                                          (when line.selected (set line.selection_id id))
                                           (table.insert decorated line))
                                         decorated)))})
           (table.insert setup-fx
@@ -306,8 +325,14 @@
                                                                   (length documents))
                                                   :nodes documents})
                                     (local current (. frame.nodes frame.index))
+                                    (local indices {})
+                                    (each [index document (ipairs documents)]
+                                      (assert (and (= (type document.id) :string)
+                                                   (not (. indices document.id)))
+                                              "selection documents require unique string IDs")
+                                      (tset indices document.id index))
                                     {:patch {:selection (misa.replace
-                                                          {:anchor current :anchor_depth 1
+                                                          {:anchor current :anchor_document frame.index : indices
                                                            :documents documents :frames [frame]})}
                                      :fx [{:type :terminal/read}]})})
           (table.insert setup-fx

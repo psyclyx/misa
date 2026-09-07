@@ -823,7 +823,8 @@ binding under its ID; `keys` supplies optional defaults. Configure it through
 bindings and supplies the palette.
 `selection` accepts `{type="register/selection-source", id=id, value=function(db) ... end}`
 in setup effects, with the function returning
-source documents with `{id,label,text,kind,first,last,children}`. Ranges are
+source documents with `{id,label,text,kind,first,last,children}` and unique string
+IDs across all sources. Ranges are
 zero-based, half-open byte offsets. `selection_document` derives semantic
 ranges from Markdown and lazily supplies finer ranges; selection policy and
 rendering can both be replaced independently.
@@ -831,9 +832,14 @@ Lists expose sibling items and nested lists; an item's range includes its nested
 content and continuation lines. Range offsets refer to the original source bytes,
 including CRLF line endings.
 
-Within a document, `v` anchors a visual range and sibling motions extend it;
-`v` again returns to the focused node. Changing structural depth or documents
-resets the range. Selection actions are extensible through
+`v` anchors a visual range and navigation extends it across structural depths
+and documents; `v` again returns to the focused node. `selection_ranges(db)`
+returns ordered `{id,text,kind,first,last}` slices of the frozen sources.
+`selection_projection(db, id?)` returns the selected slice for an ID, or the
+focused document when no ID is supplied. Copy preserves each slice's original
+bytes and inserts a blank line (`\n\n`) between documents. The viewport follows
+the focused document, not the beginning of the whole range.
+Selection actions are extensible through
 `{type="register/selection-action", id="my_action", value=function(state, db, event) ... end}`.
 Pure handlers return `{state=<new selection state>, fx=<array>, close=<boolean>}`.
 Omitted state is unchanged; `close=true` dismisses selection. Copying is one

@@ -285,7 +285,7 @@
         (var first (math.max 1 (math.min (or db.messages.top bottom) bottom)))
         (when (and selected (not (same-selection db.messages.scroll_selection key)))
           (each [index line (ipairs lines)]
-            (when line.selected
+            (when (and line.selected (or (not line.selection_id) (= line.selection_id selected.id)))
               (set first (math.max 1 (math.min first index)))
               (when (>= index (+ first room)) (set first (+ (- index room) 1)))
               (lua :break))))
@@ -509,7 +509,7 @@
                                            (table.concat model.chunks)))
                                     (local selected
                                            (and misa.selection_projection
-                                                (misa.selection_projection db)))
+                                                (misa.selection_projection db (selection-id model))))
                                     (local selecting
                                            (and selected
                                                 (= selected.id
