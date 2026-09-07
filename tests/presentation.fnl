@@ -102,8 +102,7 @@
                                                  (= (type (. palette :function))
                                                     :table))
                                             "default theme did not inherit text and use truecolor accents")
-                                    (local stream
-                                           (misa.markdown_view.new_document))
+                                    (var stream nil)
                                     (local source
                                            "# Heading
 
@@ -116,24 +115,27 @@ print('hello')
 | **bold** | 界 |
 
 last [link](https://example.test)")
+                                    (fn stream-lines [text options]
+                                      (set stream (misa.markdown_view.project text options stream))
+                                      stream.lines)
                                     (for [size 0 (length source) 3]
                                       (local text (source:sub 1 size))
                                       (each [_ columns (ipairs [12 40])]
                                         (local options
                                                {:base :assistant : columns})
                                         (local lines
-                                               (stream:render text options))
+                                               (stream-lines text options))
                                         (assert (equal lines
                                                        (misa.markdown_view.render (misa.markdown.parse text)
                                                                                   options))
                                                 "incremental layout differs from full layout")
-                                        (assert (= (stream:render text options)
+                                        (assert (= (stream-lines text options)
                                                    lines)
                                                 "unchanged redraw recomputed Markdown layout")))
                                     (local options
                                            {:base [:assistant :dim]
                                             :columns 40})
-                                    (assert (equal (stream:render source
+                                    (assert (equal (stream-lines source
                                                                   options)
                                                    (misa.markdown_view.render (misa.markdown.parse source)
                                                                               options))

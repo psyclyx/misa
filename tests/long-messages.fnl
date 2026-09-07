@@ -103,7 +103,6 @@
         "visible transcript did not resume projection")
 
 ;; Formatting continues beyond the former document-size and block-count caps.
-(local view (misa.markdown_view.new_document))
 (fn has-strong [lines marker]
   (accumulate [found false _ line (ipairs lines) &until found]
     (accumulate [matched false _ span (ipairs line.spans) &until matched]
@@ -114,11 +113,11 @@
 
 (local large (.. (string.rep "ordinary text\n\n" 18000) :**BYTE-TAIL**))
 (assert (> (length large) 262144))
-(assert (has-strong (view:render large {:columns 80}) :BYTE-TAIL)
+(assert (has-strong (. (misa.markdown_view.project large {:columns 80}) :lines) :BYTE-TAIL)
         "long source lost Markdown styling")
 
 (local many-blocks (.. (string.rep "# heading\n\n" 5000) :**BLOCK-TAIL**))
-(assert (has-strong (view:render many-blocks {:columns 80}) :BLOCK-TAIL)
+(assert (has-strong (. (misa.markdown_view.project many-blocks {:columns 80}) :lines) :BLOCK-TAIL)
         "block count hid or flattened Markdown")
 
 ;; Tool previews keep their independent limit and structural redaction.

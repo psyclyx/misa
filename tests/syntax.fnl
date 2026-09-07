@@ -100,11 +100,13 @@
              :mutate true
              :data (misa.snapshot captures)}))
 
-(local view (misa.markdown_view.new_document))
+(var view nil)
 (fn render []
   (local model (. db.messages.blocks 1))
   (local syntax (assert (misa.syntax_projection db model)))
-  (view:render (or model.text (table.concat model.chunks)) (misa.patch syntax {:columns 80})))
+  (set view (misa.markdown_view.project (or model.text (table.concat model.chunks))
+                                       (misa.patch syntax {:columns 80}) view))
+  view.lines)
 
 (fn keyword? [lines]
   (accumulate [found false _ line (ipairs lines) &until found]
@@ -119,25 +121,34 @@
 (let [source "```lua\nlocal value = 1\n```"
       document (misa.markdown.parse source)
       other-document (misa.markdown.parse source)
-      cache (misa.markdown_view.new_document)
       options {:document document :columns 80 :revision 1}
-      plain (cache:render source options)
+      plain-view (misa.markdown_view.project source options)
+      plain plain-view.lines
       colored-options {:document document :columns 80 :revision 1
                        :captures {(. document.blocks 1 :source_start)
                                   [{:start_byte 0 :end_byte 5 :capture :keyword}]}}
-      colored (cache:render source colored-options)]
+      colored-view (misa.markdown_view.project source colored-options plain-view)
+      colored colored-view.lines]
   (assert (not (keyword? plain)))
   (assert (keyword? colored) "equal revision hid changed capture input")
-  (assert (= colored (cache:render source colored-options))
+  (assert (not= (. plain-view.entries 1) (. colored-view.entries 1))
+          "capture branch reused a mutable layout entry")
+  (assert (= (. plain-view.entries 1 :captures) nil)
+          "capture branch modified prior layout dependencies")
+  (assert (= colored-view (misa.markdown_view.project source colored-options colored-view))
           "identical explicit dependencies discarded layout")
-  (assert (= colored (cache:render source {:document document :columns 80 :revision 2
-                                          :captures colored-options.captures}))
+  (assert (= colored-view (misa.markdown_view.project source {:document document :columns 80 :revision 2
+                                          :captures colored-options.captures} colored-view))
           "revision bookkeeping invalidated unchanged layout inputs")
-  (local restored (cache:render source options))
-  (assert (not (keyword? restored))
+  (local restored (misa.markdown_view.project source options colored-view))
+  (assert (not (keyword? restored.lines))
           "retained snapshot reused another snapshot's captures")
-  (local replaced (cache:render source {:document other-document :columns 80 :revision 1}))
-  (assert (not= replaced restored) "replacement document identity was ignored"))
+  (local replaced (misa.markdown_view.project source {:document other-document :columns 80 :revision 1} restored))
+  (assert (not= replaced restored) "replacement document identity was ignored")
+  (assert (= plain-view (misa.markdown_view.project source options plain-view))
+          "branching layout changed the original projection")
+  (assert (and (not (keyword? plain-view.lines)) (keyword? colored-view.lines))
+          "branching layout mutated a retained projection"))
 
 (dispatch {:type :app/start})
 (start)

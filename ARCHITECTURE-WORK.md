@@ -51,6 +51,16 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Incremental Markdown layout is now explicit immutable data:
+`markdown_view.project(text, options, previous?)`. It returns reusable block
+entries and lines without mutating any prior projection, replacing the mutable
+view/parser closure and weak-key layout cache. Message wrappers retain immutable
+entries rather than mutating a view object. Tests cover branches, captures,
+unchanged identity, streaming/full-layout parity, and large documents. The
+message-level cache still needs subscription-owned lifetime and rejection
+handling. `benchmarks/markdown-layout-2026-09-07.md` records a focused parity and
+timing probe; this is not end-to-end selective rendering evidence.
+
 Component render inputs now use the same immutable-by-contract ownership as
 state and subscriptions. The boundary no longer deep-copies model/context data,
 and syntax projections cross as ordinary tables instead of identity-preserving

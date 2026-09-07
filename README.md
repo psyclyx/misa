@@ -521,13 +521,16 @@ terminator searches retain their next match or failure so malformed openers do
 not repeatedly search the same suffix. Quote prefixes and highlighted code lines
 are scanned by source offset. Deep list/quote indentation is fitted to the
 viewport without changing the parsed depth or hiding the body.
-`misa.markdown_view.new_document():render(text, options)` adds per-block layout
-reuse keyed by parsed-block identity, capture identity, width, and semantic styles.
+`misa.markdown_view.project(text, options, previous?)` returns an immutable
+projection containing `document`, `entries`, and `lines`. Pass a prior projection
+explicitly for incremental parsing and per-block layout reuse, keyed by
+parsed-block identity, capture identity, width, and semantic styles.
 Explicit `options.document` and `options.captures` are immutable inputs; changing
 either invalidates document-level reuse. Revision counters are not layout inputs.
-Both APIs return read-only derived
-snapshots. Default message components keep these documents for the transcript's
-lifetime and copy cached bodies before applying titles, rails, and theme colors.
+Unchanged inputs return the same projection; branches never modify the previous
+projection. The former mutable Markdown-view object is removed. Default message
+components retain projections for the transcript's lifetime and copy cached
+bodies before applying titles, rails, and theme colors.
 Animation-only redraws therefore reuse parsing, highlighting, and body layout.
 `agent` emits explicit stable response/block start, delta, end, and interruption
 `transcript/*` events plus `agent/status` and `agent/usage`; visual extensions do

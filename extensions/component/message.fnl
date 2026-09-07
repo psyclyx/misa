@@ -37,26 +37,25 @@
   (local syntax model.syntax)
   (local owner (tostring (or model.response_id "")))
   (local key (and model.id (.. (length owner) ":" owner (tostring model.id))))
-  (var entry (and key (. documents key)))
-  (when (not entry)
-    (set entry {:view (misa.markdown_view.new_document)})
-    (when key (tset documents key entry)))
-  (local lines
-         (entry.view:render model.text
+  (local previous (and key (. documents key)))
+  (local projection
+         (misa.markdown_view.project model.text
                             {:base style
                              :document (and syntax syntax.document)
                              :captures (and syntax syntax.captures)
                              :columns (math.max 1
                                                 (- columns
-                                                   (misa.layout.width prefix)))}))
-  (when (or (or (or (not= lines entry.lines) (not= prefix entry.prefix))
-                (not= (rail model) entry.rail))
-            (not= columns entry.columns))
-    (set entry.wrapped
-         (misa.layout.wrap_spans lines columns
-                                 [{:style (rail model) :text prefix}]))
-    (set (entry.lines entry.prefix entry.rail entry.columns)
-         (values lines prefix (rail model) columns)))
+                                                   (misa.layout.width prefix)))}
+                                    (and previous previous.projection)))
+  (local entry
+         (if (and previous (= projection previous.projection)
+                  (= prefix previous.prefix) (= (rail model) previous.rail)
+                  (= columns previous.columns))
+             previous
+             {: projection : prefix : columns :rail (rail model)
+              :wrapped (misa.layout.wrap_spans projection.lines columns
+                                               [{:style (rail model) :text prefix}])}))
+  (when key (tset documents key entry))
   entry.wrapped)
 
 (fn body-lines [model context style columns prefix]

@@ -334,7 +334,7 @@
            (values block.source_start block.source_end)))
     result))
 
-(fn render [document options cache]
+(fn layout [document options previous]
   (set-forcibly! options (or options {}))
   (local base (or options.base :plain))
   (local columns (math.max 1
@@ -342,23 +342,43 @@
                                      (math.floor (or (tonumber options.columns)
                                                      80)))))
   (local result {})
+  (local entries [])
   (local base-key (style-key base))
-  (each [_ block (ipairs (or document.blocks {}))]
+  (each [index block (ipairs (or document.blocks {}))]
     (local captures
            (and options.captures (. options.captures block.source_start)))
-    (var entry (and cache (. cache block)))
-    (when (or (or (not entry) (not= entry.columns columns))
+    (var entry (and previous (. previous index)))
+    (when (or (not entry) (not= entry.block block) (not= entry.columns columns)
               (or (not= entry.base base-key) (not= entry.captures captures)))
       (set entry
-           {:base base-key
+           {: block :base base-key
             : columns
             : captures
-            :lines (render-block block columns base captures)})
-      (when cache (tset cache block entry)))
+            :lines (render-block block columns base captures)}))
+    (tset entries index entry)
     (append result entry.lines))
   (when (= (length result) 0)
     (tset result 1 {:spans [(span "" base)]}))
-  result)
+  (values result entries))
+
+(fn render [document options]
+  (local lines (layout document options))
+  lines)
+
+;; Reuse is explicit immutable input/output, not a hidden mutable document.
+(fn project [text options previous]
+  (local opts (or options {}))
+  (local document (or opts.document
+                      (and previous (= text previous.source) previous.document)
+                      (misa.markdown.parse text (and previous previous.document))))
+  (local base (style-key opts.base))
+  (if (and previous (= document previous.document) (= text previous.source)
+           (= opts.captures previous.captures) (= opts.columns previous.columns)
+           (= base previous.base))
+      previous
+      (let [(lines entries) (layout document opts (and previous previous.entries))]
+        {:source text : document :base base :columns opts.columns
+         :captures opts.captures : entries : lines})))
 
 (fn plain [text base]
   (var source (: (: (tostring (or text "")) :gsub "\r\n" "\n") :gsub "\r" "\n"))
@@ -374,46 +394,7 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :markdown_view
-                         :value {:new_document (fn []
-                                                 (local parser
-                                                        (misa.markdown.new_document))
-                                                 (local blocks
-                                                        (setmetatable {}
-                                                                      {:__mode :k}))
-                                                 (var (previous previous-source
-                                                                columns base
-                                                                captures lines)
-                                                      nil)
-                                                 {:render (fn [_ text options]
-                                                            (local opts
-                                                                   (or options
-                                                                       {}))
-                                                            (local document
-                                                                   (or opts.document
-                                                                       (parser:update text)))
-                                                            (local next-base
-                                                                   (style-key opts.base))
-                                                            (when (or (not= document previous)
-                                                                      (not= text previous-source)
-                                                                      (not= opts.captures captures)
-                                                                      (not= opts.columns
-                                                                            columns)
-                                                                      (not= next-base base))
-                                                              (set lines
-                                                                   (render document
-                                                                           opts
-                                                                           blocks))
-                                                              (set (previous previous-source
-                                                                             columns
-                                                                             base
-                                                                             captures)
-                                                                   (values document
-                                                                           text
-                                                                           opts.columns
-                                                                           next-base
-                                                                           opts.captures)))
-                                                            ;; Semantic lines are read-only; consumers decorate copies.
-                                                            lines)})
+                         :value {: project
                                  : plain
                                  : render}})
           {:fx setup-fx})}
