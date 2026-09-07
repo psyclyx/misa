@@ -21,7 +21,8 @@ pub const Harness = struct {
         const directory = try temporary.dir.realPathFileAlloc(io, ".", gpa);
         var environ = try std.testing.environ.createMap(gpa);
         for ([_][]const u8{ "MISA_CONFIG", "MISA_AUTH_FILE", "MISA_STATE_FILE", "MISA_EXTENSION_DIR", "XDG_CONFIG_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY" }) |key| _ = environ.swapRemove(key);
-        try environ.put("MISA_EXTENSION_DIR", options.source_root ++ "/extensions");
+        // Exercise the installed generated catalog by default. Custom fixture
+        // paths remain literal Fennel/Lua; source overrides have explicit tests.
         try environ.put("MISA_AUTH_FILE", try std.fs.path.join(gpa, &.{ directory, "auth.json" }));
         try environ.put("MISA_STATE_FILE", try std.fs.path.join(gpa, &.{ directory, "application-state.json" }));
         try environ.put("XDG_STATE_HOME", directory);

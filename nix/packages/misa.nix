@@ -19,6 +19,7 @@ stdenv.mkDerivation {
     zig_0_16
     pkg-config
     makeWrapper
+    pkgs.buildPackages.luajit
   ];
   buildInputs = [
     luajit

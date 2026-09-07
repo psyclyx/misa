@@ -122,6 +122,20 @@ pub fn build(b: *std.Build) void {
         .install_dir = .{ .custom = "share/misa" },
         .install_subdir = "extensions",
     });
+    // Catalog installs use translated Lua; explicit source overrides keep Fennel.
+    // A single host process compiles all sources, with declared cache inputs.
+    const translate = b.addSystemCommand(&.{"luajit"});
+    translate.addFileArg(b.path("tools/compile-fennel.lua"));
+    translate.addFileInput(b.path("src/lua_runtime/vendor/fennel.lua"));
+    const catalog = @import("src/standard_extensions/root.zig");
+    for (catalog.ids) |id| {
+        const source = catalog.catalogPath(id).?;
+        const generated = b.fmt("{s}.lua", .{source[0 .. source.len - 4]});
+        translate.addFileArg(b.path(b.fmt("extensions/{s}", .{source})));
+        const output = translate.addOutputFileArg(generated);
+        const install = b.addInstallFileWithDir(output, .{ .custom = "share/misa/extensions" }, generated);
+        b.getInstallStep().dependOn(&install.step);
+    }
     b.installFile("config/default.json", "share/misa/default.json");
 
     const run = b.addRunArtifact(exe);

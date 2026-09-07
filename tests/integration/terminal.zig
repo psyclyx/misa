@@ -18,6 +18,13 @@ test "installed profile resolves without source overrides" {
     try h.expect(.{ .binary = options.installed_binary }, "misa> enter a prompt:\n");
 }
 
+test "installed binary supports explicit source catalog overrides" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.environ.put("MISA_EXTENSION_DIR", options.source_root ++ "/extensions");
+    try h.expect(.{ .binary = options.installed_binary }, "misa> enter a prompt:\n");
+}
+
 test "editor insertion deletion and movement preserve grapheme boundaries" {
     const cases = [_][2][]const u8{
         .{ "ac\x1b[Db\x1b[D\x1b[Cd\n", "abdc\n" },

@@ -121,6 +121,12 @@ never discovers its own executable path. Values containing `/` or ending in
 event framework are written in Fennel. The compiler is embedded in the executable;
 loading installed or custom Fennel extensions requires no external compiler.
 Lua extensions remain supported by the same VM boundary.
+The build requires a host `luajit` executable to translate bundled extensions to
+portable Lua source. Installed catalog IDs use generated `.lua` files; explicit
+`MISA_EXTENSION_DIR` overrides continue to use `.fnl` sources so development edits
+cannot be hidden by stale generated files. The original sources are installed
+alongside generated files, whose line layout is correlated to the Fennel source
+for diagnostics. The embedded runtime framework still compiles at startup.
 
 ## Event, coeffect, effect, and view contract
 

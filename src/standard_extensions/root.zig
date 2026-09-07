@@ -161,7 +161,10 @@ pub fn resolve(
     if (isLiteralPath(value)) return allocator.dupe(u8, value);
     const relative = catalogPath(value) orelse return error.UnknownStandardExtension;
     const root = extension_dir orelse build_options.default_extension_dir;
-    return std.fs.path.join(allocator, &.{ root, relative });
+    if (extension_dir != null) return std.fs.path.join(allocator, &.{ root, relative });
+    const compiled = try std.fmt.allocPrint(allocator, "{s}.lua", .{relative[0 .. relative.len - 4]});
+    defer allocator.free(compiled);
+    return std.fs.path.join(allocator, &.{ root, compiled });
 }
 
 test "catalog accepts exact IDs only" {
@@ -233,7 +236,7 @@ test "resolver preserves literals and resolves catalog roots" {
 
     const installed = try resolve(allocator, "agent", null);
     defer allocator.free(installed);
-    try std.testing.expect(std.mem.endsWith(u8, installed, "/share/misa/extensions/agent.fnl"));
+    try std.testing.expect(std.mem.endsWith(u8, installed, "/share/misa/extensions/agent.lua"));
     try std.testing.expectError(error.UnknownStandardExtension, resolve(allocator, "unknown", null));
     try std.testing.expectError(error.ExtensionPathContainsNul, resolve(allocator, "bad\x00.fnl", null));
 }

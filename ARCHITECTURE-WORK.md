@@ -122,6 +122,14 @@ with identical startup output: probe median wall time was 565 ms from source and
 loading/build integration, custom-source diagnostics, and actual binary latency
 remain required; this experiment does not change production startup.
 
+Installed catalog extensions now use build-generated Lua with tracked source,
+compiler, and generator inputs. Explicit source-directory overrides and literal
+Fennel paths remain dynamic. The installed binary's default-profile EOF workload
+improved from 582 ms to 82 ms median in ten interleaved samples per mode, using
+the same ReleaseSafe/baseline executable and isolated accounts. See
+`benchmarks/installed-startup-2026-09-07.md`. Runtime-core compilation, full Nix
+package verification, and interactive startup acceptance remain outstanding.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

@@ -34,6 +34,16 @@ test "duplicate config arguments are rejected" {
     try expectFailure(&h, .{ .args = &.{ "--config", "config.json", "--config", "config.json" } }, &.{"--config may only be specified once"});
 }
 
+test "installed generated extensions preserve actionable diagnostics" {
+    var h = try Harness.init();
+    defer h.deinit();
+    _ = h.environ.swapRemove("MISA_EXTENSION_DIR");
+    try h.config(
+        \\{"extensions":["models"],"config":{"models":{"default":42}}}
+    );
+    try expectFailure(&h, .{ .binary = @import("integration_options").installed_binary }, &.{ "models.lua:", "config.models.default must be a nonempty string", "stack traceback:" });
+}
+
 test "configuration conversion bounds nesting" {
     var h = try Harness.init();
     defer h.deinit();
