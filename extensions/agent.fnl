@@ -340,8 +340,89 @@
       (tset blocks (+ (length blocks) 1) block))
     blocks))
 
+(fn appended [items value]
+  (local next (icollect [_ item (ipairs (or items []))] item))
+  (table.insert next value)
+  next)
+
+(fn transcript-event [id kind fields]
+  {:type :dispatch :event (misa.patch (or fields {}) {:type kind :response_id id})})
+
+(fn stream-block [stream block kind id]
+  (local sequence (+ stream.block_seq 1))
+  (local next-block (misa.patch block {:transcript_id (.. id "/" sequence)}))
+  (values (misa.patch stream {:block_seq sequence :blocks (misa.replace (appended stream.blocks next-block))})
+          next-block
+          (transcript-event id :transcript/block-start
+                            {:block_id next-block.transcript_id :call_id next-block.id
+                             :name next-block.name : kind})))
+
+(fn replaced-block [stream index block]
+  (icollect [i previous (ipairs stream.blocks)] (if (= i index) block previous)))
+
+(fn text-delta [previous delta id]
+  (assert (= (type delta.text) :string) "stream text delta must be a string")
+  (when (not= delta.text "")
+    (var stream previous)
+    (var block (. stream.blocks (length stream.blocks)))
+    (local fx [])
+    (when (or (not block) (not= block.type delta.type))
+      (local (next created effect) (stream-block stream {:type delta.type :chunks []}
+                                                 (if (= delta.type :text) :assistant :thinking) id))
+      (set stream next)
+      (set block created)
+      (table.insert fx effect))
+    (local next-block (misa.patch block {:chunks (misa.replace (appended block.chunks delta.text))}))
+    (table.insert fx (transcript-event id :transcript/block-delta
+                                      {:block_id block.transcript_id :text delta.text}))
+    {:patch {:block_seq stream.block_seq
+             :blocks (misa.replace (replaced-block stream (length stream.blocks) next-block))}
+     : fx}))
+
+(fn tool-delta [previous delta id]
+  (local key (tostring (or delta.index delta.id (+ (length previous.blocks) 1))))
+  (var stream previous)
+  (var index (. stream.tools key))
+  (var block (and index (. stream.blocks index)))
+  (local fx [])
+  (when (not block)
+    (local (next created effect) (stream-block stream {:type :tool_call :id delta.id :name delta.name
+                                                     :arguments_json_chunks []} :tool_call id))
+    (set stream next)
+    (set block created)
+    (set index (length stream.blocks))
+    (table.insert fx effect))
+  (var chunks (if (not= delta.arguments nil) nil block.arguments_json_chunks))
+  (when (not= delta.arguments_json nil) (set chunks [delta.arguments_json]))
+  (when (not= delta.arguments_json_delta nil)
+    (set chunks (appended chunks delta.arguments_json_delta)))
+  (local next-block (misa.patch block {:execution delta.execution :id delta.id :name delta.name
+                                       :arguments (when (not= delta.arguments nil) (misa.replace delta.arguments))
+                                       :arguments_json_chunks (misa.replace chunks)}))
+  (table.insert fx (transcript-event id :transcript/block-delta
+                                    {:block_id block.transcript_id :call_id delta.id :name delta.name
+                                     :arguments delta.arguments :arguments_json delta.arguments_json
+                                     :arguments_json_delta delta.arguments_json_delta}))
+  {:patch {:block_seq stream.block_seq :tools {key index}
+           :blocks (misa.replace (replaced-block stream index next-block))}
+   : fx})
+
+(fn active-stream [db event]
+  (local agent db.agent)
+  (local stream (and agent agent.stream))
+  (when (and stream (not agent.cancel_requested)
+             (= event.id agent.active_request_id) (= event.id stream.id))
+    stream))
+
 {:setup (fn [context]
           (local setup-fx [])
+          (local deltas {:text text-delta :thinking text-delta :tool_call tool-delta})
+          (table.insert setup-fx {:type :register/setup-effect :name :register/agent-delta
+                                 :handler (fn [effect]
+                                            (assert (and (= (type effect.id) :string) (not= effect.id "")
+                                                         (= (type effect.value) :function) (not (. deltas effect.id)))
+                                                    "invalid or duplicate agent delta handler")
+                                            (tset deltas effect.id effect.value))})
           (table.insert setup-fx
                         {:type :register/command
                          :value {:description "Reset conversation and token usage"
@@ -581,247 +662,64 @@
                                                                        :type :agent/status}
                                                                :type :dispatch}
                                                               provider]})))))))})
-          ;; Providers expose one normalized lifecycle. The agent alone correlates,
-          ;; assembles, and decides when a response enters conversation history.
+          ;; Correlation is shared policy; delta assembly is an open pure dispatcher.
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/stream-start
+                        {:type :register/event :name :agent/stream-start
                          :handler (fn [db event]
                                     (local agent db.agent)
-                                    (if (or (or (or (not agent)
-                                                    (not= agent.status :working))
-                                                (not= event.id
-                                                      agent.active_request_id))
-                                            agent.stream)
-                                        nil
-                                        (do
-                                          (set agent.stream
-                                               {:block_seq 0
-                                                :blocks {}
-                                                :id event.id
-                                                :tool_results {}
-                                                :tools {}})
-                                          {: db
-                                           :fx [{:event {:model agent.request_model
-                                                         :response_id event.id
-                                                         :role :assistant
-                                                         :type :transcript/response-start}
-                                                 :type :dispatch}]})))})
+                                    (when (and agent (= agent.status :working)
+                                               (= event.id agent.active_request_id) (not agent.stream))
+                                      {:patch {:agent {:stream (misa.replace {:id event.id :block_seq 0
+                                                                             :blocks [] :tools {} :tool_results {}})}}
+                                       :fx [(transcript-event event.id :transcript/response-start
+                                                              {:model agent.request_model :role :assistant})]}))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/stream-delta
+                        {:type :register/event :name :agent/stream-delta
                          :handler (fn [db event]
-                                    (local (agent delta)
-                                           (values db.agent event.delta))
-                                    (local stream (and agent agent.stream))
-                                    (if (or (or (or (or (not stream)
-                                                        agent.cancel_requested)
-                                                    (not= event.id
-                                                          agent.active_request_id))
-                                                (not= stream.id event.id))
-                                            (not= (type delta) :table))
-                                        nil
-                                        (do
-                                          (local fx {})
-                                          (fn start [block kind]
-                                            (set stream.block_seq
-                                                 (+ stream.block_seq 1))
-                                            (set block.transcript_id
-                                                 (.. event.id "/"
-                                                     stream.block_seq))
-                                            (tset stream.blocks
-                                                  (+ (length stream.blocks) 1)
-                                                  block)
-                                            (tset fx (+ (length fx) 1)
-                                                  {:event {:block_id block.transcript_id
-                                                           :call_id block.id
-                                                           : kind
-                                                           :name block.name
-                                                           :response_id event.id
-                                                           :type :transcript/block-start}
-                                                   :type :dispatch})
-                                            nil)
-
-                                          (if (or (= delta.type :text)
-                                                  (= delta.type :thinking))
-                                              (do
-                                                (assert (= (type delta.text)
-                                                           :string)
-                                                        "stream text delta must be a string")
-                                                (when (not= delta.text "")
-                                                  (var last
-                                                       (. stream.blocks
-                                                          (length stream.blocks)))
-                                                  (when (or (not last)
-                                                            (not= last.type
-                                                                  delta.type))
-                                                    (set last
-                                                         {:chunks {}
-                                                          :type delta.type})
-                                                    (start last
-                                                           (or (and (= delta.type
-                                                                       :text)
-                                                                    :assistant)
-                                                               :thinking)))
-                                                  (tset last.chunks
-                                                        (+ (length last.chunks)
-                                                           1)
-                                                        delta.text)
-                                                  (tset fx (+ (length fx) 1)
-                                                        {:event {:block_id last.transcript_id
-                                                                 :response_id event.id
-                                                                 :text delta.text
-                                                                 :type :transcript/block-delta}
-                                                         :type :dispatch})))
-                                              (= delta.type :tool_call)
-                                              (do
-                                                ;; Transaction snapshots copy data trees, so retain an index rather
-                                                ;; than a second alias to the mutable block.
-                                                (local key
-                                                       (tostring (or (or delta.index
-                                                                         delta.id)
-                                                                     (+ (length stream.blocks)
-                                                                        1))))
-                                                (local index
-                                                       (. stream.tools key))
-                                                (var block
-                                                     (and index
-                                                          (. stream.blocks
-                                                             index)))
-                                                (when (not block)
-                                                  (set block
-                                                       {:arguments_json_chunks {}
-                                                        :id delta.id
-                                                        :name delta.name
-                                                        :type :tool_call})
-                                                  (start block :tool_call)
-                                                  (tset stream.tools key
-                                                        (length stream.blocks)))
-                                                (when (not= delta.execution nil)
-                                                  (set block.execution
-                                                       delta.execution))
-                                                (when (not= delta.id nil)
-                                                  (set block.id delta.id))
-                                                (when (not= delta.name nil)
-                                                  (set block.name delta.name))
-                                                (when (not= delta.arguments nil)
-                                                  (set (block.arguments block.arguments_json_chunks)
-                                                       (values delta.arguments
-                                                               nil)))
-                                                (when (not= delta.arguments_json
-                                                            nil)
-                                                  (set block.arguments_json_chunks
-                                                       [delta.arguments_json]))
-                                                (when (not= delta.arguments_json_delta
-                                                            nil)
-                                                  (set block.arguments_json_chunks
-                                                       (or block.arguments_json_chunks
-                                                           {}))
-                                                  (tset block.arguments_json_chunks
-                                                        (+ (length block.arguments_json_chunks)
-                                                           1)
-                                                        delta.arguments_json_delta))
-                                                (tset fx (+ (length fx) 1)
-                                                      {:event {:arguments delta.arguments
-                                                               :arguments_json delta.arguments_json
-                                                               :arguments_json_delta delta.arguments_json_delta
-                                                               :block_id block.transcript_id
-                                                               :call_id delta.id
-                                                               :name delta.name
-                                                               :response_id event.id
-                                                               :type :transcript/block-delta}
-                                                       :type :dispatch}))
-                                              (error (.. "unsupported agent stream delta: "
-                                                         (tostring delta.type))))
-                                          {: db : fx})))})
-          ;; CLI providers can own their tool loop through MCP. Observe that work
-          ;; without executing the same tools a second time in the agent.
+                                    (local stream (active-stream db event))
+                                    (when (and stream (= (type event.delta) :table))
+                                      (local handler (assert (. deltas event.delta.type)
+                                                             (.. "unsupported agent stream delta: " (tostring event.delta.type))))
+                                      (local result (handler stream event.delta event.id))
+                                      (when result {:patch {:agent {:stream (or result.patch {})}} :fx result.fx})))})
+          ;; Provider-owned tools are observations, never local executions.
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/stream-tool-result
+                        {:type :register/event :name :agent/stream-tool-result
                          :handler (fn [db event]
-                                    (local agent db.agent)
-                                    (local stream (and agent agent.stream))
-                                    (if (or (or (not stream)
-                                                agent.cancel_requested)
-                                            (not= event.id
-                                                  agent.active_request_id))
-                                        nil
-                                        (do
-                                          (assert (= (type event.tool_call_id)
-                                                     :string)
-                                                  "provider tool result requires a call id")
-                                          (tset stream.tool_results
-                                                event.tool_call_id
-                                                (tool-result event.tool_call_id
-                                                             (or event.text "")
-                                                             event.is_error))
-                                          {: db
-                                           :fx [{:event {:id event.tool_call_id
-                                                         :is_error (= event.is_error
-                                                                      true)
-                                                         :text (or event.text
-                                                                   "")
-                                                         :type :transcript/tool-result}
-                                                 :type :dispatch}]})))})
+                                    (when (active-stream db event)
+                                      (assert (= (type event.tool_call_id) :string)
+                                              "provider tool result requires a call id")
+                                      {:patch {:agent {:stream {:tool_results
+                                                               {event.tool_call_id
+                                                                (misa.replace (tool-result event.tool_call_id
+                                                                                           (or event.text "") event.is_error))}}}}
+                                       :fx [{:type :dispatch :event {:type :transcript/tool-result
+                                                                    :id event.tool_call_id
+                                                                    :is_error (= event.is_error true)
+                                                                    :text (or event.text "")}}]}))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/stream-usage
+                        {:type :register/event :name :agent/stream-usage
                          :handler (fn [db event]
-                                    (local agent db.agent)
-                                    (local stream (and agent agent.stream))
-                                    (if (or (or (not stream)
-                                                agent.cancel_requested)
-                                            (not= event.id
-                                                  agent.active_request_id))
-                                        nil
-                                        (do
-                                          (set stream.usage
-                                               (or stream.usage {}))
-                                          (each [_ name (ipairs [:input_tokens
-                                                                 :output_tokens
-                                                                 :cache_read_tokens
-                                                                 :cache_write_tokens
-                                                                 :cost_usd
-                                                                 :input_includes_cache])]
-                                            (when (and (= (type event.usage)
-                                                          :table)
-                                                       (not= (. event.usage
-                                                                name)
-                                                             nil))
-                                              (tset stream.usage name
-                                                    (. event.usage name))))
-                                          (set stream.stop_reason
-                                               (or event.stop_reason
-                                                   stream.stop_reason))
-                                          {: db})))})
-          ;; Opaque provider continuation data belongs to the message, not its
-          ;; visible text. Adapters replay only entries from their own protocol.
+                                    (when (active-stream db event)
+                                      (local value (if (= (type event.usage) :table) event.usage {}))
+                                      {:patch {:agent {:stream {:stop_reason event.stop_reason
+                                                               :usage {:input_tokens value.input_tokens
+                                                                       :output_tokens value.output_tokens
+                                                                       :cache_read_tokens value.cache_read_tokens
+                                                                       :cache_write_tokens value.cache_write_tokens
+                                                                       :cost_usd value.cost_usd
+                                                                       :input_includes_cache value.input_includes_cache}}}}}))})
+          ;; Opaque continuation state stays separate from visible text.
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/stream-state
+                        {:type :register/event :name :agent/stream-state
                          :handler (fn [db event]
-                                    (local agent db.agent)
-                                    (local stream (and agent agent.stream))
-                                    (if (or (or (not stream)
-                                                agent.cancel_requested)
-                                            (not= event.id
-                                                  agent.active_request_id))
-                                        nil
-                                        (do
-                                          (assert (and (= (type event.provider)
-                                                          :string)
-                                                       (= (type event.value)
-                                                          :table))
-                                                  "invalid provider continuation state")
-                                          (set stream.provider_state
-                                               (or stream.provider_state {}))
-                                          (tset stream.provider_state
-                                                (+ (length stream.provider_state)
-                                                   1)
-                                                {:provider event.provider
-                                                 :value event.value})
-                                          {: db})))})
+                                    (local stream (active-stream db event))
+                                    (when stream
+                                      (assert (and (= (type event.provider) :string) (= (type event.value) :table))
+                                              "invalid provider continuation state")
+                                      {:patch {:agent {:stream {:provider_state
+                                                               (misa.replace (appended stream.provider_state
+                                                                                       {:provider event.provider :value event.value}))}}}}))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/stream-end

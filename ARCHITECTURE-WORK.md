@@ -117,3 +117,11 @@ depends on whether indicators are installed. `tests/status-state.fnl` checks
 generated updates, unchanged-branch identity, empty replacement, event ownership,
 and profiles with/without indicators. The existing usage dialog still needs the
 semantic dashboard and actual provider quota retrieval listed above.
+
+Agent stream start/delta/usage/provider-state/tool-result handlers now return
+persistent patches. The open `register/agent-delta` registry separates delta
+assembly from shared request correlation. `tests/agent-stream-state.fnl` checks
+generated block assembly, ownership, tool identity, argument replacement,
+nullable usage fields, opaque provider data, stale/cancelled inputs, and custom
+delta reducers. Agent request/completion/tool orchestration and transcript state
+still require migration; whole-transaction drafts have not yet been removed.

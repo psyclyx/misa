@@ -1,0 +1,66 @@
+(local fennel (require :fennel))
+(local output io.write)
+(local G (require :tests.generators))
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(local specs ((. (fennel.dofile :extensions/agent.fnl) :setup) {:config {}}))
+(local handlers {})
+(var register nil)
+(each [_ spec (ipairs specs.fx)]
+  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
+  (when (= spec.name :register/agent-delta) (set register spec.handler)))
+(fn transition [db event]
+  (local before (misa.json.encode db))
+  (local input (misa.json.encode event))
+  (local result ((. handlers event.type) db event))
+  (assert (= before (misa.json.encode db)) "stream handler mutated prior state")
+  (assert (= input (misa.json.encode event)) "stream handler mutated event")
+  (assert (not (and result result.db)))
+  (values (misa.patch db (or (and result result.patch) {})) (or (and result result.fx) [])))
+(local initial {:agent {:status :working :active_request_id :request :request_model :model :messages []}})
+(local started (transition initial {:type :agent/stream-start :id :request}))
+(assert (= (transition started {:type :agent/stream-start :id :request}) started))
+(fn delta [db value] (transition db {:type :agent/stream-delta :id :request :delta value}))
+(local failure
+       (G.for_all (G.vector (G.elements [{:type :text :text :hi} {:type :text :text ""}
+                                         {:type :thinking :text :hmm}
+                                         {:type :tool_call :index :one :id :call :name :tool :arguments_json ""}
+                                         {:type :tool_call :index :one :arguments_json_delta "{}"}
+                                         {:type :tool_call :index :one :arguments {:x 1}}]))
+                  (fn [deltas]
+                    (var db started)
+                    (var starts 0)
+                    (each [_ value (ipairs deltas)]
+                      (local (next effects) (delta db value))
+                      (assert (= next.agent.messages initial.agent.messages))
+                      (each [_ effect (ipairs effects)]
+                        (when (= effect.event.type :transcript/block-start) (set starts (+ starts 1))))
+                      (set db next))
+                    (assert (= starts (length db.agent.stream.blocks)))
+                    (assert (= starts db.agent.stream.block_seq)))
+                  {:cases 500 :size 20}))
+(assert (not failure) (and failure (fennel.view failure)))
+(local text (delta (delta started {:type :text :text :one}) {:type :text :text :two}))
+(assert (= (length text.agent.stream.blocks) 1))
+(assert (= (table.concat (. text.agent.stream.blocks 1 :chunks)) :onetwo))
+(local tool (delta (delta started {:type :tool_call :index :one :id :call :name :tool :arguments_json "{}"})
+                   {:type :tool_call :index :one :arguments {}}))
+(assert (= (. tool.agent.stream.blocks 1 :arguments_json_chunks) nil))
+(assert (= (length tool.agent.stream.blocks) 1))
+(local with-usage (transition started {:type :agent/stream-usage :id :request
+                                      :usage {:input_tokens 4 :input_includes_cache false}}))
+(local more-usage (transition with-usage {:type :agent/stream-usage :id :request :usage {:output_tokens 3}}))
+(assert (= more-usage.agent.stream.usage.input_tokens 4))
+(assert (= more-usage.agent.stream.usage.input_includes_cache false))
+(local state (transition more-usage {:type :agent/stream-state :id :request :provider :test :value {:opaque true}}))
+(assert (= (length state.agent.stream.provider_state) 1))
+(local observed (transition state {:type :agent/stream-tool-result :id :request :tool_call_id :call :text :done}))
+(assert (= (. observed.agent.stream.tool_results :call :role) :tool))
+(each [_ type (ipairs [:agent/stream-delta :agent/stream-state :agent/stream-usage :agent/stream-tool-result])]
+  (assert (= (transition observed {: type :id :stale}) observed))
+  (local cancelled (misa.patch observed {:agent {:cancel_requested true}}))
+  (assert (= (transition cancelled {: type :id :request}) cancelled)))
+(register {:id :custom :value (fn [_ value] {:patch {:custom value.value}})})
+(assert (. (delta started {:type :custom :value true}) :agent :stream :custom))
+(output "agent stream state properties passed\n")

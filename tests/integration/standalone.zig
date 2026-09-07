@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "agent stream reducers preserve snapshots and block identity" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/agent-stream-state.fnl"} }, "agent stream state properties passed\n");
+}
+
 test "status facts retain sharing and optional presentation boundaries" {
     var h = try Harness.init();
     defer h.deinit();

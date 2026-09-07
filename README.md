@@ -528,6 +528,13 @@ structured keybinding reminder, and drop priority. The common component styles t
 `label`, `value`, and `keybinding` tokens independently and
 removes low-priority items at narrow widths. Standard registrations cover
 activity, model, effort (with its cycle hotkey), session usage, context usage,
+Agent delta assembly is extensible through
+`{type="register/agent-delta", id="my_delta", value=function(stream, delta, request_id) ... end}`.
+Pure handlers return `{patch=<stream-state patch>, fx=<ordered array>}` or nil.
+The agent applies request/cancellation correlation before dispatch. Handlers
+assemble canonical text, thinking, or tool-call blocks and emit transcript
+events; they do not mutate prior stream state or append conversation history.
+
 and transcript detail (`summary`/`verbose`). Root composition stays generic.
 
 `request_options` derives request readiness and selected option values entirely
