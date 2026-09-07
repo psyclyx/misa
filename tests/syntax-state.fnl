@@ -18,19 +18,21 @@
   (assert (= before (misa.json.encode db)) "syntax transition mutated prior state")
   result)
 (fn event [db input]
-  (local tx (unchanged db #(policy.before {: db :event input})))
+  (local incoming {: db :event input})
+  (local tx (unchanged incoming #(policy.before incoming)))
   (local result (unchanged tx.db #((. handlers input.type) tx.db input)))
   (assert (not (and result result.db)))
   (values (misa.patch tx.db (or (and result result.patch) {})) (or (and result result.fx) [])))
 (fn source [db text]
-  (local tx (unchanged db #(policy.before {: db :event {:type :transcript/block-delta
+  (local incoming {: db :event {:type :transcript/block-delta
                                                       :response_id :reply :block_id :body}
-                                         :cofx {:terminal {:interactive true}} :fx []})))
+                                         :cofx {:terminal {:interactive true}} :fx []})
+  (var tx (unchanged incoming #(policy.before incoming)))
   (set tx.db (misa.patch tx.db {:messages {:blocks (misa.replace [{:id :body :kind :assistant
                                                                  :response_id :reply : text}])
                                          :by_response {:reply 1}
                                          :responses [{:block_start 1 :block_count 1}]}}))
-  (unchanged tx.db #(policy.after tx))
+  (set tx (unchanged tx #(policy.after tx)))
   (values tx.db tx.fx))
 (fn initial [] (event {} {:type :app/start}))
 (local text "```lua\nlocal x=1\n```")

@@ -95,52 +95,47 @@
                                                              (or command.completion
                                                                  command.complete))
                                                         (not event.resumed_choice))
+                                                   (misa.patch tx {:event (misa.replace
+                                                                          {:command command.name
+                                                                           :type :choices/command-open})})
                                                    (do
-                                                     (set tx.event
-                                                          {:command command.name
-                                                           :type :choices/command-open})
-                                                     tx)
-                                                   (do
-                                                     (set event.arguments args)
-                                                     (set event.canonical
-                                                          (canonical command.name
-                                                                     args))
-                                                     (set event.normalized_command
-                                                          true)
+                                                     (local invocation (canonical command.name args))
+                                                     (local normalized (misa.patch tx
+                                                          {:event {:arguments args :canonical invocation
+                                                                   :normalized_command true}}))
                                                      ;; Invocation normalization owns usage, so typing, inline choices, and
                                                      ;; overlay replay all update the same canonical preference exactly once.
-                                                     (when misa.preference_use
+                                                     (if misa.preference_use
+                                                       (do
                                                        (var preferences
                                                             (misa.preference_use tx.db
                                                                                  :commands
-                                                                                 event.canonical))
-                                                       (set tx.db (misa.patch tx.db
-                                                                             {:preferences (misa.replace preferences)}))
+                                                                                 invocation))
+                                                       (local used (misa.patch tx.db {:preferences (misa.replace preferences)}))
                                                        (when (and (not= args "")
                                                                   (or command.completion
                                                                       command.complete))
                                                          (each [_ candidate (ipairs (misa.command_completions command
                                                                                                               args
-                                                                                                              tx.db))]
+                                                                                                              used))]
                                                            (when (= candidate.value
                                                                     args)
                                                              (set preferences
-                                                                  (misa.preference_use tx.db
+                                                                  (misa.preference_use used
                                                                                        (or command.preference_scope
                                                                                            (.. "command:"
                                                                                                command.name))
                                                                                        (or candidate.id
                                                                                            (tostring candidate.value))))
                                                              (lua :break))))
-                                                       (set tx.db (misa.patch tx.db
-                                                                             {:preferences (misa.replace preferences)}))
-                                                       (tset tx.fx
-                                                             (+ (length tx.fx)
-                                                                1)
+                                                       (local effects (icollect [_ effect (ipairs tx.fx)] effect))
+                                                       (table.insert effects
                                                              {:type :state/save
                                                               :namespace :preferences
-                                                              :data preferences}))
-                                                     tx)))))))
+                                                              :data preferences})
+                                                       (misa.patch normalized {:db {:preferences (misa.replace preferences)}
+                                                                               :fx (misa.replace effects)}))
+                                                       normalized))))))))
                          :id :commands/normalize}}
                 {:type :register/event
                  :name :choices/command-open

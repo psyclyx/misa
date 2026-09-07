@@ -136,19 +136,20 @@
                                                            (. tx.db.syntax.documents
                                                               key))))
                                      (tset dirty key nil))
-                                   (set tx.syntax_count
+                                   (misa.patch tx {:syntax_count
                                         (length (or (and tx.db.messages
                                                          tx.db.messages.blocks)
-                                                    {})))
-                                   tx)
+                                                    {}))}))
                          :after (fn [tx]
-                                  (when (and enabled
+                                  (if (and enabled
                                              tx.cofx.terminal.interactive
                                              tx.db.syntax tx.db.messages)
+                                    (do
                                     (local blocks tx.db.messages.blocks)
+                                    (var state tx.db.syntax)
+                                    (local effects (icollect [_ effect (ipairs tx.fx)] effect))
                                     (for [index (+ tx.syntax_count 1) (length blocks)]
-                                      (set tx.db (misa.patch tx.db
-                                                            {:syntax (misa.replace (update-model tx.db.syntax (. blocks index) tx.fx))})))
+                                      (set state (update-model state (. blocks index) effects)))
                                     (when (and tx.event.response_id
                                                (or (= tx.event.type
                                                       :transcript/block-delta)
@@ -173,9 +174,10 @@
                                           (when (or (not tx.event.block_id)
                                                     (= model.id
                                                        tx.event.block_id))
-                                            (set tx.db (misa.patch tx.db
-                                                                  {:syntax (misa.replace (update-model tx.db.syntax model tx.fx))})))))))
-                                  tx)}}
+                                            (set state (update-model state model effects))))))
+                                    (misa.patch tx {:db {:syntax (misa.replace state)}
+                                                    :fx (misa.replace effects)}))
+                                    tx))}}
                 {:type :register/event
                  :name :syntax/completed
                  :handler (fn [db event]

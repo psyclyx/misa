@@ -58,6 +58,15 @@ after-policy result. Initializer tests assert input preservation, unchanged
 branch identity, idempotence, and no-op handling of unrelated events; cost tests
 also check envelope ownership. Command and syntax policies remain to audit.
 
+Command normalization and syntax scheduling now return new transactions and
+fresh effect collections. Direct command tests cover canonical arguments,
+choice handoff/resume, one preference update per invocation/argument, persistence
+payloads, no-op events, and input ownership. Syntax properties check the full
+before/after transaction. Syntax's external parser/result cache remains a
+separate projection-ownership audit; this change does not make that cache a
+subscription. Remaining event-routing interceptors still replace tx.event in
+place and need the same envelope contract.
+
 Choice-session services now return immutable sessions, including narrowing and
 view replacement. Input dispatch is extensible through `register/choice-input`;
 rows and layout no longer mutate their input. The picker lifecycle returns
