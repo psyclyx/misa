@@ -5,6 +5,11 @@
   (local replacements (setmetatable {} {:__mode :k}))
   (local max-depth 128)
 
+  (fn shallow [value]
+    (local result {})
+    (each [key item (pairs value)] (tset result key item))
+    result)
+
   (fn finite? [n]
     (and (= n n) (not= n math.huge) (not= n (- math.huge))))
 
@@ -21,7 +26,8 @@
     (tset active value true))
 
   ;; Materialize a replacement, validating its entire shape and retaining old
-  ;; branches where equal. Control values are never application data.
+  ;; branches where equal. Allocate only after finding a difference; identity
+  ;; never skips validation. Control values are never application data.
   (fn materialize [old value active depth]
     (assert (<= depth max-depth) "maximum state nesting depth exceeded")
     (assert (and (not= value delete) (not (. replacements value)))
@@ -34,17 +40,19 @@
           (assert (= kind :table) "state must contain only data")
           (enter! value active depth)
           (local base (if (and (= (type old) :table) (not= old json-null)) old {}))
-          (local result {})
-          (var changed (or (not= (type old) :table) (= old json-null)))
+          (var result (when (or (not= (type old) :table) (= old json-null)) {}))
           (each [key item (pairs value)]
             (key! key)
             (local next (materialize (. base key) item active (+ depth 1)))
-            (tset result key next)
-            (when (not= next (. base key)) (set changed true)))
+            (when (not= next (. base key))
+              (set result (or result (shallow base)))
+              (tset result key next)))
           (each [key _ (pairs base)]
-            (when (= (. value key) nil) (set changed true)))
+            (when (= (. value key) nil)
+              (set result (or result (shallow base)))
+              (tset result key nil)))
           (tset active value nil)
-          (if changed result old))))
+          (or result old))))
 
   (fn sequence? [value]
     (var count 0)

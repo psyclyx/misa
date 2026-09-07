@@ -51,6 +51,14 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Replacement materialization now allocates only when values differ or keys are
+removed, while retaining full recursive validation. Equal-identity invalid-data
+tests prevent sharing from becoming a validation bypass. Isolated A/B probes show
+repeatable replacement CPU/allocation improvements, but whole-transcript timings
+do not establish a speedup; the dated patch-replacement report records both.
+The transcript probe now supports a saved baseline state implementation and
+combined update/render sample totals to avoid misleading GC phase attribution.
+
 `benchmarks/transcript-render.fnl` establishes a whole-transcript baseline beyond
 the earlier individual-component probe: real model preparation, themed component
 rendering, and transcript delta/patch work are timed separately across 1, 16, and

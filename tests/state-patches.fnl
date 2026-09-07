@@ -50,4 +50,14 @@
   (set cursor.child {})
   (set cursor cursor.child))
 (rejects deep)
+;; Equal-identity replacement still validates data; sharing is not a bypass.
+(each [_ invalid (ipairs [cycle deep {:nested (fn [])} {:nested state.delete}
+                          (setmetatable {} {:__index old})])]
+  (assert (not (pcall state.patch {:value invalid} {:value (state.replace invalid)}))))
+;; Replacement deletes absent keys even when all surviving values are shared.
+(local pruned (state.patch old {:left (state.replace {:value 1})}))
+(assert (= pruned.left.value 1))
+(assert (= pruned.left.keep nil))
+(assert (= pruned.right old.right))
+(assert old.left.keep)
 (print "state patch contracts passed")
