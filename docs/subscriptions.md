@@ -21,6 +21,14 @@ values plus `inputs.n`, the dependency count: missing values remain nil even at
 the end of the vector. Do not use Lua's length operator to count those values.
 Constant computations explicitly return an empty dependency vector.
 
+Bundled cost accounting exposes `[:costs/total]` as numeric facts (`usd`,
+`responses`, `estimated`, `unknown`), with no formatted text. The dependent
+`[:costs/projection]` adds display text; `[:costs/response id]` projects a single
+response. The total depends on the response collection, while a response query
+depends only on its own record. Unrelated state changes preserve these results
+while cached. Existing cost presentation services query this graph rather than
+owning a separate cache.
+
 Queries start with a nonempty string ID. Arguments may be strings, finite
 numbers, booleans, or nested ordinary data tables. Canonical keys distinguish
 types and table contents without relying on delimiters or table addresses.

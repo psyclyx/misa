@@ -51,6 +51,14 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Cost projections now use explicit subscription dependencies: collection-level
+numeric totals, a dependent formatted projection, and per-response projections.
+Tests verify unrelated-hover reuse, untouched-response identity, discarded scope
+forks, empty/reset state, and retained results. Composed generators check response
+sequences against an independent accumulator. This establishes ownership and
+invalidation contracts, not a measured rendering speedup. The mutable document
+cache in `component/message.fnl` and unified render composition remain unfinished.
+
 The bundled runtime core now joins installed extensions in build-time Fennel
 translation. Core Lua source is embedded through declared generated-file inputs;
 the compiler remains available for custom modules. Release/baseline tests cover

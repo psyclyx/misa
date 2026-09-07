@@ -128,12 +128,11 @@
                                               "Estimates; reported usage cost takes precedence")
                                         {: lines : pricing : summary})))})
           (table.insert setup-fx
-                        {:type :register/service
-                         :name :response_cost_projection
-                         :value (fn [db id]
-                                  (local response
-                                         (and db.costs
-                                              (. db.costs.responses id)))
+                        {:type :register/sub
+                         :value {:id :costs/response
+                                 :inputs (fn [query] [[:db/path :costs :responses (. query 2)]])
+                                 :compute (fn [inputs]
+                                  (local response (. inputs 1))
                                   (if (not response) nil
                                       (do
                                         (local result response.cost)
@@ -142,20 +141,18 @@
                                          :model response.model
                                          :text (label result)
                                          :unknown (and result result.unknown)
-                                         :usd (and result result.usd)})))})
+                                         :usd (and result result.usd)})))}})
           (table.insert setup-fx
-                        {:type :register/service
-                         :name :costs_projection
-                         :value (fn [db]
-                                  (local state db.costs)
+                        {:type :register/sub
+                         :value {:id :costs/total
+                                 :inputs (fn [] [[:db/path :costs :responses]])
+                                 :compute (fn [inputs]
                                   (local total
                                          {:estimated false
                                           :unknown false
                                           :usd 0})
                                   (var count 0)
-                                  (each [_ response (pairs (or (and state
-                                                                    state.responses)
-                                                               {}))]
+                                  (each [_ response (pairs (or (. inputs 1) {}))]
                                     (when response.cost (set count (+ count 1))
                                       (set total.usd
                                            (+ total.usd response.cost.usd))
@@ -165,9 +162,23 @@
                                       (set total.unknown
                                            (or total.unknown
                                                response.cost.unknown))))
-                                  (set total.text (label total))
                                   (set total.responses count)
-                                  total)})
+                                  total)}})
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :costs/projection
+                                 :inputs (fn [] [[:costs/total]])
+                                 :compute (fn [inputs]
+                                            (local total (. inputs 1))
+                                            (misa.patch total {:text (label total)}))}})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :response_cost_projection
+                         :value (fn [db id] (misa.sub db [:costs/response id]))})
+          (table.insert setup-fx
+                        {:type :register/service
+                         :name :costs_projection
+                         :value (fn [db] (misa.sub db [:costs/projection]))})
           (when (misa.has_setup_effect :register/indicator)
             (table.insert setup-fx
                           {:type :register/indicator
