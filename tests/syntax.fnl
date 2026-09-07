@@ -212,9 +212,29 @@
 ;; Real component models preserve the explicit input and require no
 ;; synchronous native capability during projection.
 (assert (> (length (misa.transcript_projection db terminal)) 0))
+(local frozen-text (table.concat (. db.messages.blocks 1 :chunks)))
 (delta "\nlocal b")
 (assert (= (length requests) 3))
 (assert (not (keyword? (render))) "new source retained stale captures")
+(local previous-selection misa.selection_projection)
+(local live-block (. db.messages.blocks 1))
+(set misa.selection_projection (fn [_ id]
+                                 (when (= id "5:replybody")
+                                   {: id :text frozen-text :first 0 :last (length frozen-text)})))
+(local frozen-lines (misa.transcript_projection db terminal))
+(local frozen-output (table.concat (icollect [_ line (ipairs frozen-lines)]
+                                    (table.concat (icollect [_ span (ipairs line.spans)] span.text))) "\n"))
+(assert (frozen-output:find "local a" 1 true))
+(assert (not (frozen-output:find "local b" 1 true))
+        "frozen selection rendered the live syntax document")
+(assert (= live-block (. db.messages.blocks 1)))
+(assert (= (table.concat live-block.chunks) (.. frozen-text "\nlocal b"))
+        "selection changed canonical stream chunks")
+(set misa.selection_projection previous-selection)
+(local live-lines (misa.transcript_projection db terminal))
+(local live-output (table.concat (icollect [_ line (ipairs live-lines)]
+                                  (table.concat (icollect [_ span (ipairs line.spans)] span.text))) "\n"))
+(assert (live-output:find "local b" 1 true) "leaving selection did not restore live syntax")
 (dispatch {:type :transcript/reset})
 (complete 3 true)
 (assert (= (length requests) 3) "reset resurrected an old syntax request")

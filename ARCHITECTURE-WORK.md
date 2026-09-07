@@ -33,6 +33,21 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Frozen selection and live syntax source mismatch fixed (2026-09-07)
+
+A regression test reproduced future stream text appearing inside a frozen
+selection: transcript composition replaced the model's text with the selected
+snapshot but retained live chunks, and syntax lookup preferred those chunks.
+The component consequently received a live parsed document alongside frozen text.
+Selected presentation models now discard their live chunk field after choosing
+the frozen text. Canonical transcript state is unchanged; mismatching live syntax
+is omitted and Markdown renders the selected source instead. Leaving selection
+restores the live projection. The test checks frozen/live output and preservation
+of canonical stream chunks. This does not claim that historical syntax captures
+are retained by the selection snapshot.
+Focused syntax/selection tests, the complete ReleaseSafe baseline-CPU suite,
+installed build, and PTY interaction regression passed.
+
 ### Width-table lower-bound experiment rejected (2026-09-07)
 
 A table-derived early exit from Unicode interval searches passed exhaustive

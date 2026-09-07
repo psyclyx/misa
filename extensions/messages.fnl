@@ -517,7 +517,10 @@
                                                 (= selected.id
                                                    (selection-id model))))
                                     (when (and selecting model.text)
-                                      (set model.text selected.text))
+                                      (set model.text selected.text)
+                                      ;; The presentation source is frozen. Live transport
+                                      ;; chunks must not override it during syntax lookup.
+                                      (set model.chunks nil))
                                     (when (and syntax-projections misa.syntax_projection)
                                       (local syntax
                                              (misa.syntax_projection syntax-projections model))
