@@ -36,6 +36,8 @@
                                                           :id db.picker.id})
                                             :requests (or db.requests {})
                                             :selection (not= db.selection nil)
+                                            :selection_visual (and db.selection (= db.selection.visual true))
+                                            :selection_ranges (if db.selection (length (misa.selection_ranges db)) 0)
                                             :status db.agent.status
                                             :text db.editor.text
                                             :top db.messages.top})

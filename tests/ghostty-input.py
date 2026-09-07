@@ -189,6 +189,12 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         assert snapshot()['text'] == 'first\nline', 'fuzzy search did not restore multiline source'
         send(b'\x1bs')
         assert snapshot()['selection'], 'selection could not enter the existing transcript'
+        send(b'vk')
+        state = snapshot()
+        assert state['selection_visual'] and state['selection_ranges'] == 2, 'v then k did not extend a structural range'
+        send(b'v')
+        state = snapshot()
+        assert not state['selection_visual'] and state['selection_ranges'] == 1, 'v did not return to single-node navigation'
         send(b'\x1b[<64;10;10M')
         assert snapshot().get('top') is not None, 'mouse wheel did not scroll the transcript'
         send(b'\x1b')

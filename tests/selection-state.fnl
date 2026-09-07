@@ -163,6 +163,19 @@
 (local reversed (act partial-range :previous))
 (assert (= (length (misa.selection_ranges reversed)) 1))
 (assert (= (length (misa.selection_ranges (act partial-range :visual))) 1))
+;; A non-clipboard consumer gets the same frozen source ranges through the
+;; public action registry. Navigation does not prescribe what consumes them.
+(misa._setup_effects
+ {:fx [{:type :register/selection-action :id :inspect-ranges
+        :value (fn [_ db]
+                 {:fx [{:type :dispatch :event {:type :test/selection-consumer
+                                               :ranges (misa.selection_ranges db)}}]})}]})
+(local (consumed consumer-fx) (act frozen :inspect-ranges))
+(assert (= (length consumer-fx) 2))
+(assert (= (. consumer-fx 2 :event :type) :test/selection-consumer))
+(assert (= (misa.json.encode (. consumer-fx 2 :event :ranges))
+           (misa.json.encode partial-range-slices)))
+(assert (not consumed.selection.copied))
 (local multi-failure
        (G.for_all (G.vector (G.elements [:child :parent :previous :next :first :last
                                         :extend_next :extend_previous :visual :copy]))

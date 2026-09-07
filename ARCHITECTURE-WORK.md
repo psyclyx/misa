@@ -18,7 +18,7 @@ Completion requires behavioral evidence, not just passing existing tests.
   binding must be distinct from semantic labels and correctly presented.
 - [x] Hover: pointer motion highlights clickable backgrounds only while hovered,
   with unchanged resting appearance and working click routing.
-- [ ] Transcript interaction: structural navigation, Vim-style visual ranges,
+- [x] Transcript interaction: structural navigation, Vim-style visual ranges,
   Markdown list structure, and a selection model independent of copying.
 - [x] Claude: tool calls appear once across streamed and final records; regression
   fixtures cover provider-owned tools and completion boundaries.
@@ -32,6 +32,18 @@ product workflows require later data-model decisions. The interaction architectu
 must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
+
+### Structural-selection acceptance (2026-09-07)
+
+The native PTY now verifies `v` plus `k` extends a range across two transcript
+documents, and another `v` returns to single-node navigation. Focused selection
+properties cover forward/backward and partial cross-document ranges, frozen
+source during streaming, nested Markdown lists, CRLF/Unicode byte boundaries,
+and source-only highlighting that excludes rails, titles and padding. The
+open action registry is exercised with a non-clipboard consumer receiving the
+same frozen ranges; copying is an optional action, not the selection model.
+The focused suite and installed-catalog PTY pass. Annotation and conversation
+forking workflows remain explicitly outside the current selection requirement.
 
 ### Default-theme and pointer acceptance (2026-09-07)
 
