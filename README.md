@@ -853,3 +853,8 @@ NixOS, nix-darwin, and home-manager expose the same
 `programs.misa.extensions` option. Nix path values select custom extensions;
 bare strings must be catalog IDs. Generated config is world-readable in the
 Nix store, so it must not contain secrets.
+Its record handlers are pure and extensible through
+`{type="register/codex-record", id="record.type", value=function(state, record, request_id) ... end}`.
+Handlers return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`.
+Completion records mark `terminal=true`; failures mark `failed=true`. Either
+stops subsequent records from emitting output for that stream.

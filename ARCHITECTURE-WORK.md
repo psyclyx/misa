@@ -71,3 +71,10 @@ moving an unchanged code block no longer mutates an older slot's source offset.
 `tests/syntax-state.fnl` checks ownership, offset changes, reset/stale completion
 handling, and generated single-slot request coalescing. The existing syntax
 integration test still verifies rollback and external capture-cache ownership.
+
+The fake and Codex providers now return persistent stream-state patches.
+`tests/fake-provider-state.fnl` checks fixture ownership and replay;
+`tests/codex-stream-state.fnl` checks state/record ownership, generated batching
+invariance, terminal gating, reasoning summaries, and tool-call deltas. Codex
+record dispatch is open through `register/codex-record`. The other provider
+adapters and the agent/transcript owners still need migration.
