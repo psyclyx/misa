@@ -1,6 +1,18 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "generator composition replay and shrinking" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/generators-test.fnl"} }, "generator contracts passed\n");
+}
+
+test "generated persistent patch invariants" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/patch-properties.fnl"} }, "patch properties passed\n");
+}
+
 test "persistent patch data and sharing contracts" {
     var h = try Harness.init();
     defer h.deinit();
