@@ -62,9 +62,9 @@
                          :value (fn [db role model render-context]
                                   (local component (misa.component db role))
                                   (local rendered
-                                         (component.render (misa.snapshot model)
-                                                           (misa.snapshot (or render-context
-                                                                              {}))))
+                                         ;; Inputs are immutable, as with subscriptions and reducers.
+                                         ;; Preserve identity for derived data across this boundary.
+                                         (component.render model (or render-context {})))
                                   (assert (= (type rendered) :table)
                                           "component render must return a table")
                                   ;; Components emit semantic tokens (or ordered token lists) and know

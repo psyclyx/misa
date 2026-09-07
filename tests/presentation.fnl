@@ -19,6 +19,14 @@
                                                     (lua "return false")))
                                                 true))))
 
+                                    (fn render-component [state role model render-context]
+                                      (local before-model (misa.snapshot model))
+                                      (local before-context (misa.snapshot render-context))
+                                      (local result (misa.render_component state role model render-context))
+                                      (assert (equal before-model model) "default component mutated model input")
+                                      (assert (equal before-context render-context) "default component mutated context input")
+                                      result)
+
                                     (fn line-text [line]
                                       (local parts {})
                                       (each [_ item (ipairs (or line.spans {}))]
@@ -138,18 +146,18 @@ last [link](https://example.test)")
                                     (local context-cached
                                            {:columns 40 :interactive true})
                                     (local first
-                                           (misa.render_component db
+                                           (render-component db
                                                                   :transcript.assistant
                                                                   model-cached
                                                                   context-cached))
                                     (assert (equal first
-                                                   (misa.render_component db
+                                                   (render-component db
                                                                           :transcript.assistant
                                                                           model-cached
                                                                           context-cached))
                                             "theme resolution mutated cached spans")
                                     (local rendered
-                                           (misa.render_component db
+                                           (render-component db
                                                                   :transcript.assistant
                                                                   {:rail :rail.assistant
                                                                    :text "A **bold** [link](https://example.test)"}
@@ -272,7 +280,7 @@ local x = 1
 | **styled** tail | 界界 more |")
                                     (each [_ columns (ipairs [80 24 16 10 8])]
                                       (local table-view
-                                             (misa.render_component db
+                                             (render-component db
                                                                     :transcript.assistant
                                                                     {:rail :rail.assistant
                                                                      :text table-source}
@@ -324,7 +332,7 @@ local x = 1
                                             :url "https://example.test/login"})
                                     (for [height 0 12]
                                       (local popup
-                                             (misa.render_component db :dialog
+                                             (render-component db :dialog
                                                                     model
                                                                     {:available_lines height
                                                                      :columns 24}))
@@ -339,7 +347,7 @@ local x = 1
                                                          (length popup.lines)))
                                                 "popup cursor escaped viewport")))
                                     (local popup
-                                           (misa.render_component db :dialog
+                                           (render-component db :dialog
                                                                   model
                                                                   {:available_lines 12
                                                                    :columns 80}))
@@ -350,7 +358,7 @@ local x = 1
                                           (set linked true))))
                                     (assert linked "login URL is not clickable")
                                     (local selected
-                                           (misa.render_component db
+                                           (render-component db
                                                                   :editor.input
                                                                   {:cursor 4
                                                                    :mode :visual

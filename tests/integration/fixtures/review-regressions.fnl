@@ -1,10 +1,11 @@
 {:setup (fn []
           (local setup-fx [])
+          (var received nil)
           (table.insert setup-fx
                         {:type :register/component
-                         :id :test.mutating
+                         :id :test.immutable
                          :value {:render (fn [model]
-                                           (set model.text :changed)
+                                           (set received model)
                                            {:lines [{:spans [{:style :plain
                                                               :text "plain then **bold** and é界"}]}]})}})
           (table.insert setup-fx
@@ -36,6 +37,8 @@
                                     (local model {:text :original})
                                     (misa.render_component render-db :test.role model
                                                            {})
+                                    (assert (= received model)
+                                            "component boundary copied immutable input")
                                     (assert (and (= render-db.marker :original)
                                                  (= model.text :original))
                                             "component projection mutated canonical input")

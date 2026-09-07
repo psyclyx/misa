@@ -51,6 +51,15 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Component render inputs now use the same immutable-by-contract ownership as
+state and subscriptions. The boundary no longer deep-copies model/context data,
+and syntax projections cross as ordinary tables instead of identity-preserving
+callback wrappers. Tests assert boundary identity, nested syntax sharing, default
+presentation input preservation, and unchanged cached output after theme/hover
+resolution. Custom components must allocate their own changes rather than mutate
+inputs; this is an intentional contract cutover, not a compatibility mode.
+Render-owned cache removal and end-to-end rendering measurements remain pending.
+
 Markdown layout now compares actual parsed-document and capture identities,
 not syntax revision bookkeeping. A regression reproduced wrong highlighting when
 independent snapshots shared text and revision but had different captures. Tests

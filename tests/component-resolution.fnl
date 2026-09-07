@@ -47,12 +47,13 @@
                                   :hover {:background :flash}
                                   :highlight {:foreground :flash}}}}))
 
+(var received-model nil)
+(var received-context nil)
 (table.insert effects {:type :register/component
                        :id :default.cached
                        :value {:render (fn [model render-context]
-                                         (set model.nested.value :changed)
-                                         (set render-context.nested.value
-                                              :changed)
+                                         (set received-model model)
+                                         (set received-context render-context)
                                          cached)}})
 
 (var db nil)
@@ -82,6 +83,8 @@
 (assert (= swapped-component.components.roles.other :default.cached))
 (assert (= swapped-component.themes db.themes) "component swap copied theme state")
 (local first (misa.render_component db :cached model render-context))
+(assert (= received-model model) "component boundary copied model input")
+(assert (= received-context render-context) "component boundary copied context input")
 (assert (= model.nested.value :original) "component mutated caller model")
 (assert (= render-context.nested.value :original)
         "component mutated caller context")

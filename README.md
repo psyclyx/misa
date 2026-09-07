@@ -257,9 +257,10 @@ session thread.
 Component theme resolution constructs new output records and shares unchanged
 semantic data. Cached message spans stay semantic across theme changes. The
 terminal adopts prepared frame bytes and click maps after successful output;
-the session transfers the semantic view arena to the terminal owner. The working
-`db` copy and projection/input snapshots still enforce their existing rollback
-and mutation-isolation contracts.
+the session transfers the semantic view arena to the terminal owner. State,
+subscription results, and component inputs are shared immutable values by
+contract, not defensive copies. Callback mutation is a contract violation and
+cannot be rolled back; rejected transactions discard pending patches and queries.
 
 HTTP deadlines describe only signals the transport can observe: `first_byte_ms`
 includes DNS and connection establishment, `idle_ms` applies after response-body
@@ -412,6 +413,10 @@ semantic-span wrapping, and responsive-column primitives. Theme resolution is
 centralized at the component registry boundary. Custom code calls
 `misa.render_component(db, role, model, context)` and
 `misa.animation_span(db, role, options?)` for clock-driven visual motion.
+Component `render(model, context)` receives those tables directly and must not
+mutate them or any nested values. Allocate output records when decorating input
+data. Syntax projections in message models are ordinary immutable tables, not
+callbacks; their document/capture identities survive the component boundary.
 Configure individual roles with
 `config.components.roles` (for example, `"picker": "my.picker"`) and dispatch
 `components/swap` with `role` and `implementation` to swap one at runtime.

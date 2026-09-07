@@ -34,9 +34,7 @@
 (var documents {})
 
 (fn markdown-lines [model style columns prefix]
-  (local syntax (and model.syntax
-                     (if (= (type model.syntax) :function) (model.syntax)
-                         model.syntax)))
+  (local syntax model.syntax)
   (local owner (tostring (or model.response_id "")))
   (local key (and model.id (.. (length owner) ":" owner (tostring model.id))))
   (var entry (and key (. documents key)))

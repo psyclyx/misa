@@ -519,10 +519,8 @@
                                     (when misa.syntax_projection
                                       (local syntax
                                              (misa.syntax_projection db model))
-                                      ;; Immutable projection inputs stay shared across the component
-                                      ;; model snapshot; resolving this value performs no work.
                                       (when syntax
-                                        (set model.syntax (fn [] syntax))))
+                                        (set model.syntax syntax)))
                                     (set model.timestamp
                                          (timestamp model.started_wall_ms))
                                     (local owner

@@ -44,16 +44,18 @@
                             :id :test.syntax-input
                             :value {:render (fn [model]
                                               (assert (= (type model.syntax)
-                                                         :function))
-                                              (local resolved (model.syntax))
+                                                         :table))
+                                              (local resolved model.syntax)
+                                              (assert (= resolved expected-syntax)
+                                                      "component boundary copied syntax projection")
                                               (assert (= resolved.document
                                                          expected-syntax.document)
-                                                      "component snapshot copied the derived document")
+                                                      "component boundary copied the derived document")
                                               (each [key data (pairs expected-syntax.captures)]
                                                 (assert (= (. resolved.captures
                                                               key)
                                                            data)
-                                                        "component snapshot copied derived captures"))
+                                                        "component boundary copied derived captures"))
                                               {:lines []})}}]})
 
 (misa._seal context)
@@ -196,7 +198,7 @@
 (set (. db.components.roles :transcript.assistant) :test.syntax-input)
 (misa.transcript_projection db terminal)
 (set (. db.components.roles :transcript.assistant) nil)
-;; Real component model snapshots preserve the explicit input and require no
+;; Real component models preserve the explicit input and require no
 ;; synchronous native capability during projection.
 (assert (> (length (misa.transcript_projection db terminal)) 0))
 (delta "\nlocal b")
