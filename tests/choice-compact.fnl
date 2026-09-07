@@ -25,7 +25,7 @@
                                              :preview {:summary "$2 in / $8 out per 1M"
                                                        :title id}
                                              :value id}))
-                                    (local session
+                                    (var session
                                            (misa.choice_session {: items
                                                                  :preference_scope :models
                                                                  :title :Models
@@ -53,8 +53,8 @@
                                                  (= geometry.targets.option_2_1.value
                                                     :two))
                                             "compact panel hotkeys disagreed with visible rows")
-                                    (misa.choice_input session {:action :next}
-                                                       db)
+                                    (set session (. (misa.choice_input session {:action :next}
+                                                       db) :session))
                                     (set geometry
                                          (misa.choice_completion_layout session
                                                                         db 80 6))
@@ -82,7 +82,7 @@
                                                  (not geometry.targets.option_2_1))
                                             "hidden panel retained a positional target")
                                     (set session.query :two)
-                                    (misa.choice_refresh session db)
+                                    (set session (misa.choice_refresh session db))
                                     (each [_ item (ipairs (. session.panels 1
                                                              :items))]
                                       (assert (= item.section nil)
@@ -113,7 +113,7 @@
                                       (table.insert many
                                                     {:label (tostring index)
                                                      :value index}))
-                                    (local expanded
+                                    (var expanded
                                            (misa.choice_session {:items many
                                                                  :title :Many
                                                                  :views [:all]}
@@ -150,8 +150,8 @@
                                                              :lines))
                                                   22)
                                               "expanded completions exceeded the screen budget")
-                                      (misa.choice_input expanded
-                                                         {:action :next} db))
+                                      (set expanded (. (misa.choice_input expanded
+                                                         {:action :next} db) :session)))
                                     {: db
                                      :fx [{:lines [{:spans [{:text "compact choices"}]}]
                                            :type :view/commit}

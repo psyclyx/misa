@@ -4,7 +4,7 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (local ordered
+                                    (var ordered
                                            (misa.choice_session {:items [{:value :vendor/one}]
                                                                  :purpose :models
                                                                  :title :Models}
@@ -38,7 +38,7 @@
                                                                                   :uses 1}
                                                                             :two {:last 20
                                                                                   :uses 2}}}}})
-                                    (local browse
+                                    (var browse
                                            (misa.choice_session {:items [{:value :one}
                                                                          {:value :two}
                                                                          {:value :three}]
@@ -59,7 +59,7 @@
                                                     :All))
                                             "browse lost recent ordering or all section")
                                     (set browse.query :t)
-                                    (misa.choice_refresh browse history)
+                                    (set browse (misa.choice_refresh browse history))
                                     (each [_ row (ipairs (. (misa.choice_rows browse
                                                                               history)
                                                             1 :rows))]
@@ -119,7 +119,7 @@
                                                                 1 :lines))
                                                      (- visible.panel_height 1)))
                                             "oversized choice lost its visible target or escaped the panel budget")
-                                    (local selected
+                                    (var selected
                                            (misa.choice_session {:items [{:label (string.rep "long "
                                                                                              8)
                                                                           :value :one}
@@ -131,8 +131,8 @@
                                                                  :title :Selected
                                                                  :views [:all]}
                                                                 db))
-                                    (misa.choice_input selected {:action :next}
-                                                       db)
+                                    (set selected (. (misa.choice_input selected {:action :next}
+                                                       db) :session))
                                     (local measured
                                            (misa.choice_picker_layout selected
                                                                       db
@@ -200,7 +200,7 @@
                                                  (= prefixed-layout.input.cursor
                                                     (length prefixed-layout.input.text)))
                                             "narrowed picker omitted its canonical command prefix")
-                                    (local parent
+                                    (var parent
                                            (misa.choice_session {:purpose :generic
                                                                  :title :Parent
                                                                  :view_definitions [{:id :parent
@@ -210,20 +210,20 @@
                                                       (= parent.preference_scope
                                                          nil))
                                                  (not= parent.custom_views nil)))
-                                    (misa.choice_accept parent
+                                    (set parent (. (misa.choice_accept parent
                                                         {:narrow {:items [{:value :child}]
                                                                   :preference_scope :child-scope
                                                                   :purpose :generic
                                                                   :selected :child
                                                                   :title :Child}}
-                                                        db)
+                                                        db) :session))
                                     (assert (and (and (= parent.selected :child)
                                                       (= parent.preference_scope
                                                          :child-scope))
                                                  (= parent.custom_views nil))
                                             "parent-only narrowing state leaked into child")
-                                    (misa.choice_input parent {:action :cancel}
-                                                       db)
+                                    (set parent (. (misa.choice_input parent {:action :cancel}
+                                                       db) :session))
                                     (assert (and (and (and (= parent.selected
                                                               nil)
                                                            (= parent.preference_scope
@@ -240,8 +240,8 @@
                                     (assert (= (misa.choice_hint :option_1_1)
                                                :alt+z)
                                             "configured shared positional hint was not resolved")
-                                    (misa.choice_replace_view ordered :browse
-                                                              db)
+                                    (set ordered (misa.choice_replace_view ordered :browse
+                                                              db))
                                     (local fresh
                                            (misa.choice_session {:items [{:value :vendor/one}]
                                                                  :purpose :models

@@ -39,3 +39,13 @@ global ownership, delimiter-based query keys, and array lengths for nullable
 dependencies. Passing the old suite does not validate those contracts.
 Views now receive shared state, so rollback and mutation boundaries need explicit
 verification before declaring the state migration complete.
+
+## Verified migration slices
+
+Choice-session services now return immutable sessions, including narrowing and
+view replacement. Input dispatch is extensible through `register/choice-input`;
+rows and layout no longer mutate their input. The picker lifecycle returns
+patches. `tests/choice-state.fnl` covers generated transition sequences, no-op
+identity, rendering ownership, custom-view rotation, nested pickers, and false
+values. Inline callers retain the returned session, but the editor's own state
+transitions still need migration before transaction drafts can be removed.

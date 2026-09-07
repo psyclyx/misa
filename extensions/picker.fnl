@@ -23,7 +23,7 @@
                :picker state.id
                :picker_token state.token
                :type state.completion
-               :value (or (and item item.value) misa.json_null)}
+               :value (if (and item (not= item.value nil)) item.value misa.json_null)}
         fx [{: event :type :dispatch}]]
     (when (and (and item (not item.invocation)) state.session.preference_scope)
       (tset fx (+ (length fx) 1)
@@ -45,7 +45,7 @@
                                   (= (type session.title) :string))
                              (= (type session.panels) :table))
                         "invalid choice session")
-                (misa.choice_refresh session db))
+                (set session (misa.choice_refresh session db)))
       (let [defs (definitions event)]
         (var items (or event.items {}))
         (when defs
@@ -78,6 +78,9 @@
                :token (.. parent.token ":views")
                :views [:all]} db parent))
 
+(fn updated [picker fx]
+  {:patch {:picker (misa.replace picker)} :fx (or fx [{:type :terminal/read}])})
+
 {:setup (fn []
           (local setup-fx [])
           (assert (and (and misa.choice_session misa.choice_action)
@@ -98,11 +101,7 @@
                                                        (or (and event.nested
                                                                 db.picker)
                                                            nil)))
-                                    (set db.picker
-                                         (or (and event.choose_view
-                                                  (view-picker state db))
-                                             state))
-                                    {: db :fx [{:type :terminal/read}]})})
+                                    (updated (if event.choose_view (view-picker state db) state)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :picker/update
@@ -114,9 +113,10 @@
                                         nil
                                         (do
                                           (if event.items
-                                              (misa.choice_set_items state.session
-                                                                     event.items
-                                                                     db)
+                                              (set state
+                                                   (misa.patch state
+                                                               {:session (misa.replace (misa.choice_set_items state.session
+                                                                                                             event.items db))}))
                                               event.panels
                                               (do
                                                 (local replacement
@@ -133,17 +133,14 @@
                                                                     :token state.token}
                                                                    db
                                                                    state.parent))
-                                                (set db.picker replacement)
                                                 (set state replacement)))
                                           (when (not= event.selected nil)
-                                            (set state.session.selected
-                                                 (or (and (not= event.selected
-                                                                misa.json_null)
-                                                          event.selected)
-                                                     nil))
-                                            (misa.choice_refresh state.session
-                                                                 db))
-                                          {: db})))})
+                                            (local selected (when (not= event.selected misa.json_null)
+                                                              event.selected))
+                                            (local session (misa.patch state.session {:selected (misa.replace selected)}))
+                                            (set state
+                                                 (misa.patch state {:session (misa.replace (misa.choice_refresh session db))})))
+                                          (updated state []))))})
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
@@ -178,44 +175,25 @@
                                                                    :kind event.kind
                                                                    :text event.text}
                                                                   db)))
+                                    (local next-state (misa.patch state {:session (misa.replace result.session)}))
                                     (if result.replace_view
-                                        (set db.picker (view-picker state db))
-                                        (and (and result.accepted
-                                                  (= state.id :picker-picker))
-                                             state.parent)
-                                        (do
-                                          (local parent state.parent)
-                                          (misa.choice_replace_view parent.session
-                                                                    result.accepted.value
-                                                                    db)
-                                          (set db.picker parent))
-                                        (and (and result.cancelled
-                                                  (= state.id :picker-picker))
-                                             state.parent)
-                                        (set db.picker state.parent)
+                                        (updated (view-picker next-state db))
+                                        (and (= state.id :picker-picker) state.parent result.accepted)
+                                        (updated (misa.patch state.parent
+                                                             {:session (misa.replace (misa.choice_replace_view state.parent.session
+                                                                                                              result.accepted.value db))}))
+                                        (and (= state.id :picker-picker) state.parent result.cancelled)
+                                        (updated state.parent)
                                         result.accepted
-                                        (do
-                                          (set db.picker state.parent)
-                                          (let [___antifnl_rtn_1___ {: db
-                                                                     :fx (finish state
-                                                                                 result.accepted
-                                                                                 false)}]
-                                            (lua "return ___antifnl_rtn_1___")))
+                                        (updated state.parent (finish next-state result.accepted false))
                                         result.cancelled
-                                        (do
-                                          (set db.picker state.parent)
-                                          (let [___antifnl_rtn_1___ {: db
-                                                                     :fx (finish state
-                                                                                 nil
-                                                                                 true)}]
-                                            (lua "return ___antifnl_rtn_1___")))
+                                        (updated state.parent (finish next-state nil true))
                                         result.favorite
-                                        (let [___antifnl_rtn_1___ {: db
-                                                                   :fx [{:event {:scope state.session.preference_scope
-                                                                                 :type :preferences/toggle
-                                                                                 :value result.favorite}
-                                                                         :type :dispatch}
-                                                                        {:type :terminal/read}]}]
-                                          (lua "return ___antifnl_rtn_1___")))
-                                    {: db :fx [{:type :terminal/read}]})})
+                                        (updated next-state
+                                                 [{:event {:scope next-state.session.preference_scope
+                                                           :type :preferences/toggle
+                                                           :value result.favorite}
+                                                   :type :dispatch}
+                                                  {:type :terminal/read}])
+                                        (updated next-state)))})
           {:fx setup-fx})}

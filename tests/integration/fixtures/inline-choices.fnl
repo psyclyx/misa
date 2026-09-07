@@ -1,3 +1,13 @@
+(fn same-data [a b]
+  (if (= a b) true
+      (or (not= (type a) :table) (not= (type b) :table)) false
+      (do
+        (var same true)
+        (each [key value (pairs a)]
+          (when (not (same-data value (. b key))) (set same false)))
+        (each [key _ (pairs b)] (when (= (. a key) nil) (set same false)))
+        same)))
+
 {:setup (fn []
           (local setup-fx [])
           (table.insert setup-fx
@@ -54,8 +64,7 @@
                                         (do
                                           (assert (and (= db.picker.id
                                                           :picker-picker)
-                                                       (= db.picker.parent.session
-                                                          event.session))
+                                                       (same-data db.picker.parent.session event.session))
                                                   "inline replace_view did not preserve its session in picker-picker")
                                           (done "inline view picker"))
                                         nil))})

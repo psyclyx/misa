@@ -140,7 +140,7 @@
                                 (when (= (length items) 0)
                                   (set items
                                        (misa.command_choice_items command "" db)))
-                                (misa.choice_set_items editor.choice items db)
+                                (set editor.choice (misa.choice_set_items editor.choice items db))
                                 nil)))))
 
 (fn completion-layout [editor db room width]
@@ -500,6 +500,7 @@
                                                                                  :kind event.kind
                                                                                  :text event.text}
                                                                                 db)))
+                                                  (set editor.choice result.session)
                                                   (if result.accepted
                                                       (if (and result.accepted.invocation
                                                                misa.command_invocation)

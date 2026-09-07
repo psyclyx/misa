@@ -26,15 +26,9 @@
 (fn scalar [v]
   (or (or (= (type v) :string) (= (type v) :number)) (= (type v) :boolean)))
 
-(fn clone [value]
-  (if (not= (type value) :table) value
-      (let [result {}]
-        (each [key item (pairs value)] (tset result key (clone item)))
-        result)))
-
 (fn item [source]
   (assert (= (type source) :table) "choice item must be a table")
-  (local value (or (and (not= source.value nil) source.value) source.id))
+  (local value (if (not= source.value nil) source.value source.id))
   (assert (scalar value) "choice value must be scalar")
   (local id (or source.id (or (and (= (type value) :string) value)
                               (tostring value))))
@@ -60,10 +54,10 @@
    : id
    :invocation source.invocation
    : label
-   :narrow (clone source.narrow)
+   :narrow source.narrow
    : path
-   :preview (clone source.preview)
-   :search (clone source.search)
+   :preview source.preview
+   :search source.search
    :section source.section
    : value})
 
@@ -144,29 +138,28 @@
             (table.sort source (fn [a b] (view.order a b session db))))
           (set source (matches source session.query))))
     (local state (or (. session.view_state id) {:highlight 0}))
-    (tset session.view_state id state)
     (local previous (and (and (= state.query session.query) state.items)
                          (. state.items state.highlight)))
-    (set state.query session.query)
-    (set (state.items state.highlight)
-         (values source (or (and (> (length source) 0) 1) 0)))
+    (var highlight (if (> (length source) 0) 1 0))
     (when previous
       (var found false)
       (each [index value (ipairs source) &until found]
         (when (= value.id previous.id)
-          (set state.highlight index)
+          (set highlight index)
           (set found true))))
     {:filtered source
-     :highlight state.highlight
+     : highlight
      : id
      :items source
      :title (or view.title id)}))
 
 (fn refresh [session db]
-  (set session.panels {})
+  (local (panels states) (values {} {}))
   (for [slot 1 (length session.view_ids)]
-    (tset session.panels slot (project session slot db)))
-  session)
+    (local panel (project session slot db))
+    (tset panels slot panel)
+    (tset states panel.id (misa.replace {:query session.query :items panel.items :highlight panel.highlight})))
+  (misa.patch session {:panels (misa.replace panels) :view_state states}))
 
 (fn pop-utf8 [value]
   (var at (length value))
@@ -214,19 +207,18 @@
     (if spec.items spec {:items spec})))
 
 (fn apply-spec [session spec db]
-  (set session.title (or spec.title session.title))
-  (set session.purpose (or spec.purpose session.purpose))
-  (set session.items (items (or spec.items {})))
-  (set session.query (or spec.query ""))
-  (set session.input_prefix (or spec.input_prefix ""))
-  (if (= spec.selected misa.json_null) (set session.selected nil)
-      (set session.selected spec.selected))
-  (set session.preference_scope spec.preference_scope)
-  (set session.view_state {})
-  (set session.view_ids
-       (or (and spec.views (clone spec.views)) (configured session.purpose)))
-  (set session.custom_views nil)
-  (refresh session db))
+  (local purpose (or spec.purpose session.purpose))
+  (refresh (misa.patch session
+                       {:title (or spec.title session.title)
+                        : purpose
+                        :items (misa.replace (items (or spec.items {})))
+                        :query (or spec.query "")
+                        :input_prefix (or spec.input_prefix "")
+                        :selected (misa.replace (when (not= spec.selected misa.json_null) spec.selected))
+                        :preference_scope (misa.replace spec.preference_scope)
+                        :view_state (misa.replace {})
+                        :view_ids (misa.replace (or spec.views (configured purpose)))
+                        :custom_views misa.delete}) db))
 
 (local frame-keys [:title
                    :purpose
@@ -240,40 +232,105 @@
                    :view_state])
 
 (fn push-narrow [session narrow db]
-  (let [frame {}]
+  (let [frame {} stack {}]
     (each [_ key (ipairs frame-keys)] (tset frame key (. session key)))
-    (tset session.stack (+ (length session.stack) 1) frame)
+    (each [index value (ipairs session.stack)] (tset stack index value))
+    (tset stack (+ (length stack) 1) frame)
     (local spec (or (and narrow.source
                          (source-spec narrow.source narrow.context db))
                     narrow))
-    (apply-spec session spec db)
-    {:consumed true :narrowed true}))
+    {:session (apply-spec (misa.patch session {:stack (misa.replace stack)}) spec db)
+     :consumed true :narrowed true}))
 
 (fn pop-narrow [session db]
-  (let [frame (table.remove session.stack)]
+  (let [frame (. session.stack (length session.stack))]
     (if (not frame)
-        false
+        nil
         (do
-          (each [_ key (ipairs frame-keys)] (tset session key (. frame key)))
-          (refresh session db)
-          true))))
+          (local (patch stack) (values {} {}))
+          (for [index 1 (- (length session.stack) 1)]
+            (tset stack index (. session.stack index)))
+          (each [_ key (ipairs frame-keys)] (tset patch key (misa.replace (. frame key))))
+          (tset patch :stack (misa.replace stack))
+          (refresh (misa.patch session patch) db)))))
 
 (fn new [spec db]
   (assert (and (and (= (type spec) :table) (= (type spec.title) :string))
                (not= spec.title ""))
           "choice session requires a title")
-  (local session {:stack {}})
-  (apply-spec session spec db)
-  (when spec.view_definitions
-    (set (session.view_ids session.custom_views) (values {} {}))
-    (each [index definition (ipairs spec.view_definitions)]
-      (tset session.view_ids index (assert definition.id))
-      (tset session.custom_views index
-            {:id definition.id
-             :items (items (or definition.items {}))
-             :title definition.title}))
-    (refresh session db))
-  session)
+  (local session (apply-spec {:stack {}} spec db))
+  (if spec.view_definitions
+      (let [(ids custom) (values {} {})]
+        (each [index definition (ipairs spec.view_definitions)]
+          (tset ids index (assert definition.id))
+          (tset custom index {:id definition.id
+                              :items (items (or definition.items {}))
+                              :title definition.title}))
+        (refresh (misa.patch session {:view_ids (misa.replace ids)
+                                     :custom_views (misa.replace custom)}) db))
+      session))
+
+(fn accept [session value db]
+  (if value.narrow (push-narrow session value.narrow db)
+      {: session :accepted value :consumed true}))
+
+(fn changed [session patch db]
+  {:session (refresh (misa.patch session patch) db) :consumed true})
+
+(fn move [session direction db]
+  (local panel (. session.panels 1))
+  (local count (length panel.items))
+  (if (= count 0) {: session :consumed false}
+      (changed session
+               {:view_state {panel.id {:highlight (+ (% (+ (- panel.highlight 1) direction) count) 1)}}}
+               db)))
+
+(fn cycle [session direction db]
+  (local (ids custom) (values {} {}))
+  (local count (length session.view_ids))
+  (for [slot 1 count]
+    (local source (+ (% (+ (- slot 1) direction) count) 1))
+    (tset ids slot (. session.view_ids source))
+    (when session.custom_views (tset custom slot (. session.custom_views source))))
+  (changed session {:view_ids (misa.replace ids)
+                    :custom_views (misa.replace (when session.custom_views custom))} db))
+
+(local inputs
+       {:text (fn [session event db]
+                (if (= (type event.text) :string)
+                    (changed session {:query (.. session.query event.text)} db)
+                    {: session :consumed false}))
+        :backspace (fn [session _ db]
+                     (if (not= session.query "")
+                         (changed session {:query (pop-utf8 session.query)} db)
+                         (let [parent (pop-narrow session db)]
+                           {:session (or parent session) :consumed (not= parent nil)
+                            :narrowed (not= parent nil)})))
+        :previous (fn [session _ db] (move session (- 1) db))
+        :next (fn [session _ db] (move session 1 db))
+        :cycle (fn [session _ db] (cycle session 1 db))
+        :cycle_previous (fn [session _ db] (cycle session (- 1) db))
+        :replace_view (fn [session] {: session :consumed true :replace_view true})
+        :open_overlay (fn [session] {: session :consumed true :open_overlay true})
+        :favorite (fn [session]
+                    (local panel (. session.panels 1))
+                    (if (and session.preference_scope (> panel.highlight 0))
+                        {: session :consumed true :favorite (. panel.items panel.highlight :id)}
+                        {: session :consumed false}))
+        :cancel (fn [session _ db]
+                  (local parent (pop-narrow session db))
+                  {:session (or parent session) :consumed true
+                   :cancelled (= parent nil) :narrowed (not= parent nil)})
+        :accept (fn [session _ db]
+                  (local panel (. session.panels 1))
+                  (if (> panel.highlight 0) (accept session (. panel.items panel.highlight) db)
+                      {: session :consumed false}))})
+
+(fn input [previous event db]
+  (local session (refresh previous db))
+  (local name (if (or (= event.kind :text) (= event.kind :backspace)) event.kind event.action))
+  (local handler (. inputs name))
+  (if handler (handler session event db) {: session :consumed false}))
 
 (fn row [value focused selected hotkey]
   (var description value.description)
@@ -385,14 +442,23 @@
                                     (if (and (not db.picker)
                                              (not (and db.editor
                                                        db.editor.choice)))
-                                        {: db :fx [{:type :terminal/read}]}
-                                        {: db
-                                         :fx [{:event {:action event.action
+                                        {:fx [{:type :terminal/read}]}
+                                        {:fx [{:event {:action event.action
                                                        :kind :choice_action
                                                        :type (or (and db.picker
                                                                       :picker/input)
                                                                  :terminal/input)}
                                                :type :dispatch}]}))})
+          (table.insert setup-fx
+                        {:type :register/setup-effect
+                         :name :register/choice-input
+                         :handler (fn [effect]
+                                    (assert (and (= (type effect.id) :string)
+                                                 (not= effect.id "")
+                                                 (= (type effect.value) :function)
+                                                 (not (. inputs effect.id)))
+                                            "invalid or duplicate choice input")
+                                    (tset inputs effect.id effect.value))})
           (table.insert setup-fx
                         {:type :register/setup-effect
                          :name :register/choice-view
@@ -515,19 +581,14 @@
                                                                                     (- (length all)
                                                                                        1)))]
                                                     (local value
-                                                           (clone (. recent
-                                                                     index)))
-                                                    (set value.section :Recent)
+                                                           (misa.patch (. recent index) {:section :Recent}))
                                                     (tset result
                                                           (+ (length result) 1)
                                                           value)
                                                     (tset seen value.id true))
                                                   (each [_ value (ipairs all)]
                                                     (when (not (. seen value.id))
-                                                      (let [copy (clone value)]
-                                                        (set copy.section :All)
-                                                        (table.insert result
-                                                                      copy))))
+                                                      (table.insert result (misa.patch value {:section :All}))))
                                                   result)))
                                  :title :Browse}})
           (table.insert setup-fx {:type :register/service
@@ -552,18 +613,22 @@
                         {:type :register/service
                          :name :choice_set_items
                          :value (fn [session source-items db]
-                                  (set session.items (items source-items))
-                                  (refresh session db))})
+                                  (refresh (misa.patch session {:items (misa.replace (items source-items))}) db))})
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_replace_view
                          :value (fn [session id db]
                                   (assert (compatible id session)
                                           "incompatible choice view")
-                                  (tset session.view_ids 1 id)
+                                  (local (ids custom) (values {} {}))
+                                  (each [index value (ipairs session.view_ids)]
+                                    (tset ids index (if (= index 1) id value)))
                                   (when session.custom_views
-                                    (tset session.custom_views 1 false))
-                                  (refresh session db))})
+                                    (each [index value (ipairs session.custom_views)]
+                                      (tset custom index (if (= index 1) false value))))
+                                  (refresh (misa.patch session
+                                                       {:view_ids (misa.replace ids)
+                                                        :custom_views (misa.replace (when session.custom_views custom))}) db))})
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_registered_views
@@ -581,15 +646,12 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_accept
-                         :value (fn [session value db]
-                                  (if value.narrow
-                                      (push-narrow session value.narrow db)
-                                      {:accepted value :consumed true}))})
+                         :value accept})
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_rows
-                         :value (fn [session db hotkeys]
-                                  (refresh session db)
+                         :value (fn [previous db hotkeys]
+                                  (local session (refresh previous db))
                                   (local result {})
                                   (each [bank panel (ipairs session.panels)]
                                     (local rows {})
@@ -648,78 +710,5 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_input
-                         :value (fn [session event db]
-                                  (refresh session db)
-                                  (let [panel (. session.panels 1)
-                                        state (. session.view_state
-                                                 (. session.view_ids 1))
-                                        name event.action]
-                                    (fn changed []
-                                      (refresh session db)
-                                      {:consumed true})
-
-                                    (if (and (= event.kind :text)
-                                             (= (type event.text) :string))
-                                        (do
-                                          (set session.query
-                                               (.. session.query event.text))
-                                          (changed))
-                                        (= event.kind :backspace)
-                                        (if (not= session.query "")
-                                            (do
-                                              (set session.query
-                                                   (pop-utf8 session.query))
-                                              (changed))
-                                            (pop-narrow session db)
-                                            {:consumed true :narrowed true}
-                                            {:consumed false})
-                                        (and (= name :previous)
-                                             (> (length panel.items) 0))
-                                        (do
-                                          (set state.highlight
-                                               (if (<= state.highlight 1)
-                                                   (length panel.items)
-                                                   (- state.highlight 1)))
-                                          (changed))
-                                        (and (= name :next)
-                                             (> (length panel.items) 0))
-                                        (do
-                                          (set state.highlight
-                                               (if (>= state.highlight
-                                                       (length panel.items))
-                                                   1
-                                                   (+ state.highlight 1)))
-                                          (changed))
-                                        (= name :cycle)
-                                        (do
-                                          (table.insert session.view_ids
-                                                        (table.remove session.view_ids
-                                                                      1))
-                                          (changed))
-                                        (= name :cycle_previous)
-                                        (do
-                                          (table.insert session.view_ids 1
-                                                        (table.remove session.view_ids))
-                                          (changed))
-                                        (= name :replace_view)
-                                        {:consumed true :replace_view true}
-                                        (= name :open_overlay)
-                                        {:consumed true :open_overlay true}
-                                        (and (= name :favorite)
-                                             session.preference_scope
-                                             (> panel.highlight 0))
-                                        {:consumed true
-                                         :favorite (. panel.items
-                                                      panel.highlight :id)}
-                                        (= name :cancel)
-                                        (if (pop-narrow session db)
-                                            {:consumed true :narrowed true}
-                                            {:consumed true :cancelled true})
-                                        (and (= name :accept)
-                                             (> panel.highlight 0))
-                                        (misa.choice_accept session
-                                                            (. panel.items
-                                                               panel.highlight)
-                                                            db)
-                                        {:consumed false})))})
+                         :value input})
           {:fx setup-fx})}

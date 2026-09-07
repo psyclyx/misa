@@ -263,8 +263,8 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_picker_layout
-                         :value (fn [session db terminal]
-                                  (misa.choice_refresh session db)
+                         :value (fn [previous db terminal]
+                                  (local session (misa.choice_refresh previous db))
                                   (local compact (= terminal.compact true))
                                   (local screen-width
                                          (math.max 1

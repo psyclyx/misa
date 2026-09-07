@@ -550,6 +550,15 @@ Choice views are immutable implementations registered with
 `browse`. Browse shows up to three recent choices above the remaining choices;
 searching produces a single ranked list. `config.choices.recent_limit` adjusts
 that count. Model and argument pickers use Browse beside Favorites by default.
+
+Choice sessions are immutable data. `choice_refresh`, `choice_set_items`, and
+`choice_replace_view` return a new session; callers must retain that return value.
+`choice_input` and `choice_accept` return a result containing `session` alongside
+outcomes such as `accepted`, `cancelled`, and `narrowed`. Rows and layout never
+mutate the supplied session. Add input transitions with
+`{type="register/choice-input", id="my_action", value=function(session, event, db) ... end}`;
+the handler returns the same result shape and must leave its inputs unchanged.
+
 `config.choices.purposes` maps a purpose to ordered views; Right Arrow rotates
 the active view to the left. Extensions can supply their own projections and
 section labels, replace individual components, or replace the picker entirely.

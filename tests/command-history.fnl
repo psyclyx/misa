@@ -63,7 +63,7 @@
                                                   :uses)
                                                1)
                                             "typed argument usage was lost")
-                                    (local session
+                                    (var session
                                            (misa.omnipicker_session db ""))
                                     (local rows (misa.choice_rows session db))
                                     (assert (and (and (= session.preference_scope
@@ -89,13 +89,13 @@
                                                                :purpose :generic
                                                                :title :Parent}
                                                               db))
-                                    (misa.choice_accept db.history_frame
+                                    (set db.history_frame (. (misa.choice_accept db.history_frame
                                                         {:narrow {:items [{:value :child}]
                                                                   :preference_scope :child
                                                                   :purpose :generic
                                                                   :selected :child
                                                                   :title :Child}}
-                                                        db)
+                                                        db) :session))
                                     {: db
                                      :fx [{:event {:type :test/restored}
                                            :type :dispatch}]})})
@@ -103,8 +103,8 @@
                         {:type :register/event
                          :name :test/restored
                          :handler (fn [db]
-                                    (misa.choice_input db.history_frame
-                                                       {:action :cancel} db)
+                                    (set db.history_frame (. (misa.choice_input db.history_frame
+                                                       {:action :cancel} db) :session))
                                     (assert (and (and (= db.history_frame.selected
                                                          nil)
                                                       (= db.history_frame.preference_scope
