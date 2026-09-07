@@ -169,6 +169,12 @@ test "command normalization preserves transaction ownership" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/command-state.fnl"} }, "command transaction ownership passed\n");
 }
 
+test "event routing preserves transaction ownership" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/routing-state.fnl"} }, "routing transaction ownership passed\n");
+}
+
 test "dialogs preserve state and protected input ownership" {
     var h = try Harness.init();
     defer h.deinit();

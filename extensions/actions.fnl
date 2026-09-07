@@ -36,12 +36,10 @@
                                            tx.db.dialog)
                                        tx
                                        (if tx.db.picker
-                                           (do
-                                             (when (= (misa.keybinding_action :global
+                                           (if (= (misa.keybinding_action :global
                                                                               tx.event)
                                                       :action_palette)
-                                               (set tx.event
-                                                    {:type :actions/open}))
+                                               (misa.patch tx {:event (misa.replace {:type :actions/open})})
                                              tx)
                                            (do
                                              (local editor (or tx.db.editor {}))
@@ -56,10 +54,9 @@
                                                                     bound))
                                                             (or (not action.available)
                                                                 (action.available tx.db)))
-                                                   (set tx.event
-                                                        (misa.snapshot action.event))
-                                                   (lua "return tx"))))
-                                             (when (and (and (= tx.event.kind
+                                                   (local routed (misa.patch tx {:event (misa.replace action.event)}))
+                                                   (lua "return routed"))))
+                                             (if (and (and (= tx.event.kind
                                                                 :text)
                                                              (= (tx.event.text:sub 1
                                                                                    1)
@@ -69,13 +66,13 @@
                                                                "")
                                                             (= editor.mode
                                                                :normal)))
-                                               (set tx.event
+                                               (misa.patch tx {:event (misa.replace
                                                     {:query (or (and (= tx.event.kind
                                                                         :text)
                                                                      (tx.event.text:sub 2))
                                                                 "")
-                                                     :type :actions/open}))
-                                             tx))))
+                                                     :type :actions/open})})
+                                               tx)))))
                          :id :actions/input}}
                 {:type :register/event
                  :name :actions/open

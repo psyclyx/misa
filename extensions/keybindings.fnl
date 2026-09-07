@@ -145,17 +145,17 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (and (and (= tx.event.type
+                                           (if (and (and (= tx.event.type
                                                               :terminal/input)
                                                            (= tx.event.kind
                                                               :alt))
                                                       (= (type tx.event.text)
                                                          :string))
-                                             (set tx.event
+                                             (misa.patch tx {:event (misa.replace
                                                   {:key (.. :alt+
                                                             (tx.event.text:lower))
                                                    :kind :key
-                                                   :type :terminal/input}))
-                                           tx)
+                                                   :type :terminal/input})})
+                                             tx))
                                  :id :keybindings/normalize-alt}})
           {:fx setup-fx})}

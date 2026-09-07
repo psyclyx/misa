@@ -133,9 +133,9 @@
                      {:type :register/interceptor
                       :value {:id :dialogs/input
                               :before (fn [tx]
-                                        (when (and (= tx.event.type :terminal/input) tx.db.dialog)
-                                          (set tx.event {:kind tx.event.kind :text tx.event.text :type :dialog/input}))
-                                        tx)}}
+                                        (if (and (= tx.event.type :terminal/input) tx.db.dialog)
+                                          (misa.patch tx {:event (misa.replace {:kind tx.event.kind :text tx.event.text :type :dialog/input})})
+                                          tx))}}
                      {:type :register/setup-effect :name :register/dialog-input
                       :handler (fn [effect]
                                  (assert (and (= (type effect.id) :string) (not= effect.id "")

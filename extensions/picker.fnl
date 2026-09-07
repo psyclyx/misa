@@ -144,16 +144,16 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (and (= tx.event.type
+                                           (if (and (= tx.event.type
                                                          :terminal/input)
                                                       tx.db.picker)
-                                             (set tx.event
+                                             (misa.patch tx {:event (misa.replace
                                                   {:action tx.event.action
                                                    :key tx.event.key
                                                    :kind tx.event.kind
                                                    :text tx.event.text
-                                                   :type :picker/input}))
-                                           tx)
+                                                   :type :picker/input})})
+                                             tx))
                                  :id :picker/input}})
           (table.insert setup-fx
                         {:type :register/event

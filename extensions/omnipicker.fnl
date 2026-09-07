@@ -109,14 +109,13 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (and (and (= tx.event.type
+                                           (if (and (and (= tx.event.type
                                                               :terminal/input)
                                                            (not tx.db.picker))
                                                       (= (misa.keybinding_action :global
                                                                                  tx.event)
                                                          :open_omnipicker))
-                                             (set tx.event
-                                                  {:type :omnipicker/open}))
-                                           tx)
+                                             (misa.patch tx {:event (misa.replace {:type :omnipicker/open})})
+                                             tx))
                                  :id :omnipicker/global}})
           {:fx setup-fx})}

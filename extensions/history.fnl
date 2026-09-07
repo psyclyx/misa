@@ -288,10 +288,10 @@
                                                                     :find "\n" 1
                                                                     true)))
                                                    (set action :next))
-                                                 (when action
-                                                   (set tx.event
+                                                 (if action
+                                                   (misa.patch tx {:event (misa.replace
                                                         {:type (.. :history/
-                                                                   action)}))
-                                                 tx)))
+                                                                   action)})})
+                                                   tx))))
                                  :id :history/input}})
           {:fx setup-fx})}

@@ -67,6 +67,14 @@ separate projection-ownership audit; this change does not make that cache a
 subscription. Remaining event-routing interceptors still replace tx.event in
 place and need the same envelope contract.
 
+The remaining bundled event-routing interceptors (actions, dialogs, keybinding
+normalization, picker, command palette, and history) now return replacement events
+without mutating the transaction. `tests/routing-state.fnl` covers full-input
+ownership with composed generators and explicit modal precedence, history,
+palette, and custom-action routing. No direct tx-field assignments remain in
+bundled extensions; alias-based mutation and external projection caches still
+require audit before marking the full state requirement complete.
+
 Choice-session services now return immutable sessions, including narrowing and
 view replacement. Input dispatch is extensible through `register/choice-input`;
 rows and layout no longer mutate their input. The picker lifecycle returns
