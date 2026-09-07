@@ -196,7 +196,7 @@ test "component resolution preserves cached semantic spans across themes" {
         \\      assert(cached.lines[1].spans[1].style == "plain")
         \\      assert(cached.lines[1].spans[1].animation.frames[1].style == "bold")
         \\      local old = first.lines[1].spans[1].style.foreground
-        \\      misa.swap_theme(db,"second")
+        \\      db = misa.swap_theme(db,"second")
         \\      local second = misa.render_component(db,"cached",{})
         \\      assert(second.lines[1].spans[1].style.foreground == "red")
         \\      assert(first.lines[1].spans[1].style.foreground == old)

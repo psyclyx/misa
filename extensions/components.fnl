@@ -148,8 +148,7 @@
                                                (. implementations id))
                                           (.. "unknown component: "
                                               (tostring id)))
-                                  (tset db.components.roles role id)
-                                  nil)})
+                                  (misa.patch db {:components {:roles {role id}}}))})
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
@@ -164,16 +163,16 @@
                                                                    :string))
                                                            "invalid configured component role")
                                                    (tset roles role id)))
-                                               (set tx.db.components {: roles})))
+                                               (set tx.db (misa.patch tx.db
+                                                                      {:components (misa.replace {: roles})}))))
                                            tx)
                                  :id :components/initialize}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (if (= config.persist false) {: db}
-                                        {: db
-                                         :fx [{:completion :components/loaded
+                                    (if (= config.persist false) nil
+                                        {:fx [{:completion :components/loaded
                                                :namespace :ui.components
                                                :type :state/load}]}))})
           (table.insert setup-fx
@@ -182,13 +181,14 @@
                          :handler (fn [db event]
                                     (if (or (= event.found false)
                                             (= event.data misa.json_null))
-                                        {: db}
+                                        nil
                                         (do
                                           (local saved event.data)
                                           (assert (and (= (type saved) :table)
                                                        (= (type saved.roles)
                                                           :table))
                                                   "invalid persisted component selections")
+                                          (local roles {})
                                           (each [role id (pairs saved.roles)]
                                             (assert (and (and (= (type role)
                                                                  :string)
@@ -196,8 +196,8 @@
                                                          (= (type id) :string))
                                                     "invalid persisted component selection")
                                             (when (. implementations id)
-                                              (tset db.components.roles role id)))
-                                          {: db})))})
+                                              (tset roles role id)))
+                                          {:patch {:components {: roles}}})))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :components/swap
@@ -206,16 +206,16 @@
                                                  (= (type event.implementation)
                                                     :string))
                                             "invalid component swap")
-                                    (misa.swap_component db event.role
-                                                         event.implementation)
+                                    (local next (misa.swap_component db event.role
+                                                                    event.implementation))
                                     (local fx {})
                                     (when (not= config.persist false)
                                       (tset fx (+ (length fx) 1)
-                                            {:data db.components
+                                            {:data next.components
                                              :namespace :ui.components
                                              :type :state/save}))
                                     (tset fx (+ (length fx) 1)
                                           {:event {:type :ui/redraw}
                                            :type :dispatch})
-                                    {: db : fx})})
+                                    {:patch {:components (misa.replace next.components)} : fx})})
           {:fx setup-fx})}

@@ -328,24 +328,22 @@
                          :value (fn [db id]
                                   (assert (. entries id)
                                           (.. "unknown theme: " (tostring id)))
-                                  (set db.themes.active id)
-                                  nil)})
+                                  (misa.patch db {:themes {:active id}}))})
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
                                            (when (= tx.event.type :app/start)
                                              (when (not tx.db.themes)
-                                               (set tx.db.themes
-                                                    {:active configured})))
+                                               (set tx.db (misa.patch tx.db
+                                                                      {:themes {:active configured}}))))
                                            tx)
                                  :id :themes/initialize}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (if (= config.persist false) {: db}
-                                        {: db
-                                         :fx [{:completion :themes/loaded
+                                    (if (= config.persist false) nil
+                                        {:fx [{:completion :themes/loaded
                                                :namespace :ui.theme
                                                :type :state/load}]}))})
           (table.insert setup-fx
@@ -354,7 +352,7 @@
                          :handler (fn [db event]
                                     (if (or (= event.found false)
                                             (= event.data misa.json_null))
-                                        {: db}
+                                        nil
                                         (do
                                           (assert (and (= (type event.data)
                                                           :table)
@@ -362,22 +360,20 @@
                                                           :string))
                                                   "invalid persisted theme")
                                           (when (. entries event.data.active)
-                                            (set db.themes.active
-                                                 event.data.active))
-                                          {: db})))})
+                                            {:patch {:themes {:active event.data.active}}}))))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :themes/swap
                          :handler (fn [db event]
-                                    (misa.swap_theme db event.theme)
+                                    (local next (misa.swap_theme db event.theme))
                                     (local fx {})
                                     (when (not= config.persist false)
                                       (tset fx (+ (length fx) 1)
-                                            {:data db.themes
+                                            {:data next.themes
                                              :namespace :ui.theme
                                              :type :state/save}))
                                     (tset fx (+ (length fx) 1)
                                           {:event {:type :ui/redraw}
                                            :type :dispatch})
-                                    {: db : fx})})
+                                    {:patch {:themes (misa.replace next.themes)} : fx})})
           {:fx setup-fx})}
