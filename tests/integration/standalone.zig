@@ -85,6 +85,12 @@ test "choice sessions and rendering preserve previous state" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/choice-state.fnl"} }, "choice state properties passed\n");
 }
 
+test "editor transitions preserve draft and event ownership" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/editor-state.fnl"} }, "editor state properties passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

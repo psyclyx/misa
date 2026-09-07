@@ -559,6 +559,12 @@ mutate the supplied session. Add input transitions with
 `{type="register/choice-input", id="my_action", value=function(session, event, db) ... end}`;
 the handler returns the same result shape and must leave its inputs unchanged.
 
+Editor handlers also return immutable patches. Register an additional text-edit
+kind with `{type="register/editor-edit", id="my_edit", value=function(editor, event) ... end}`.
+It returns the next editor data, without mutating either input; slash-choice
+synchronization then runs over that result. Submission and modal choice outcomes
+remain separate from these text edits.
+
 `config.choices.purposes` maps a purpose to ordered views; Right Arrow rotates
 the active view to the left. Extensions can supply their own projections and
 section labels, replace individual components, or replace the picker entirely.

@@ -47,5 +47,11 @@ view replacement. Input dispatch is extensible through `register/choice-input`;
 rows and layout no longer mutate their input. The picker lifecycle returns
 patches. `tests/choice-state.fnl` covers generated transition sequences, no-op
 identity, rendering ownership, custom-view rotation, nested pickers, and false
-values. Inline callers retain the returned session, but the editor's own state
-transitions still need migration before transaction drafts can be removed.
+values. Inline callers retain the returned session.
+
+Editor handlers now return patches, with text edits dispatched through an open
+`register/editor-edit` registry. `tests/editor-state.fnl` checks generated input
+sequences, state/event ownership, Unicode cursor boundaries, attachment handoff,
+command completion, busy cancellation, and projection ownership. The separate
+Vim editing policy still mutates editor and undo state; it must be migrated
+before transaction drafts can be removed.
