@@ -131,3 +131,11 @@ stream finalization now return patches. Lifecycle tests check ownership,
 generated cancellation/reset/error sequences, sorted tool cancellation effects,
 partial text preservation, and queued startup cleanup on reset. Normal request
 submission, response completion, and tool-result draining remain mutable.
+
+The remaining agent submission/completion/tool-result paths now return patches
+too. Requests receive completed history explicitly; normalization leaves provider
+records intact, and canonical history strips transport-only metadata. Tests cover
+both tool completion orders, duplicates, cancellation draining, unknown and
+provider-owned tools, usage accumulation, and blocked submissions/continuations.
+The agent no longer returns legacy `db` results or mutates input state. Transcript
+state and framework transaction/subscription contracts still need their cutover.

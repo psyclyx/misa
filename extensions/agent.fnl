@@ -27,63 +27,47 @@
       (when (= model.id state.selected) (lua "return model")))
     nil))
 
-(fn request [db]
-  (let [agent db.agent
-        selected (assert (selected-model db)
-                         "selected model became unavailable")]
-    (var (options problem) (values {} nil))
-    (when misa.prepare_request_options
-      (set (options problem) (misa.prepare_request_options db selected)))
-    (if problem (values nil problem)
-        (do
-          (set agent.request_seq (+ agent.request_seq 1))
-          (local id (.. :agent- (tostring agent.request_seq)))
-          (set (agent.active_request_id agent.status agent.cancel_requested)
-               (values id :working false))
-          (set agent.request_model selected.id)
-          {: id
-           :messages agent.messages
-           :model selected.model
-           :request_options options
-           :system_prompt agent.system_prompt
-           :tools (misa.tools)
-           :type (.. :provider. selected.provider)}))))
+(fn appended [items value]
+  (local next (icollect [_ item (ipairs (or items []))] item))
+  (table.insert next value)
+  next)
+
+(fn request [db agent]
+  (local selected (assert (selected-model db) "selected model became unavailable"))
+  (var (options problem) (values {} nil))
+  (when misa.prepare_request_options
+    (set (options problem) (misa.prepare_request_options db selected)))
+  (if problem (values agent nil problem)
+      (let [sequence (+ agent.request_seq 1)
+            id (.. :agent- sequence)]
+        (values (misa.patch agent {:request_seq sequence :active_request_id id :status :working
+                                   :cancel_requested false :request_model selected.id})
+                {: id :messages agent.messages :model selected.model :request_options options
+                 :system_prompt agent.system_prompt :tools (misa.tools)
+                 :type (.. :provider. selected.provider)}))))
 
 (fn blocked [agent problem]
-  (set (agent.status agent.active_request_id) (values :ready nil))
-  [{:event {:level :error
-            : problem
-            :text problem.message
-            :type :transcript/harness}
-    :type :dispatch}
-   {:event {:status :ready :type :agent/status} :type :dispatch}
-   {:event {:exit agent.exit_after_response :type :agent/completed}
-    :type :dispatch}])
+  (values (misa.patch agent {:status :ready :active_request_id misa.delete})
+          [{:event {:level :error : problem :text problem.message :type :transcript/harness} :type :dispatch}
+           {:event {:status :ready :type :agent/status} :type :dispatch}
+           {:event {:exit agent.exit_after_response :type :agent/completed} :type :dispatch}]))
 
 (fn record-usage [agent usage]
-  (if (= usage nil) nil (do
-                          (assert (= (type usage) :table)
-                                  "usage must be a table")
-                          (local normalized {})
-                          (each [_ name (ipairs [:input_tokens
-                                                 :output_tokens
-                                                 :cache_read_tokens
-                                                 :cache_write_tokens])]
-                            (local value (or (. usage name) 0))
-                            (assert (and (and (= (type value) :number)
-                                              (>= value 0))
-                                         (= (% value 1) 0))
-                                    (.. name " must be a nonnegative integer"))
-                            (tset normalized name value)
-                            (tset agent.usage name
-                                  (+ (. agent.usage name) value)))
-                          (set agent.last_usage normalized)
-                          (set normalized.input_includes_cache
-                               usage.input_includes_cache)
-                          (when (and (= (type usage.cost_usd) :number)
-                                     (>= usage.cost_usd 0))
-                            (set normalized.cost_usd usage.cost_usd))
-                          nil)))
+  (if (= usage nil) agent
+      (do
+        (assert (= (type usage) :table) "usage must be a table")
+        (local normalized {})
+        (local totals {})
+        (each [_ name (ipairs [:input_tokens :output_tokens :cache_read_tokens :cache_write_tokens])]
+          (local value (or (. usage name) 0))
+          (assert (and (= (type value) :number) (>= value 0) (= (% value 1) 0))
+                  (.. name " must be a nonnegative integer"))
+          (tset normalized name value)
+          (tset totals name (+ (. agent.usage name) value)))
+        (tset normalized :input_includes_cache usage.input_includes_cache)
+        (when (and (= (type usage.cost_usd) :number) (>= usage.cost_usd 0))
+          (tset normalized :cost_usd usage.cost_usd))
+        (misa.patch agent {:usage totals :last_usage (misa.replace normalized)}))))
 
 (fn tool-result [call-id text is-error]
   {:content [{:text (tostring text) :type :text}]
@@ -92,49 +76,44 @@
    :tool_call_id call-id})
 
 (fn flush-tool-results [agent]
-  (let [batch (assert agent.tool_batch "tool result batch is missing")]
-    (each [_ call-id (ipairs batch.order)]
-      (tset agent.messages (+ (length agent.messages) 1)
-            (assert (. batch.results call-id)
-                    (.. "tool result is missing: " call-id))))
-    (set agent.tool_batch nil)
-    nil))
+  (local batch (assert agent.tool_batch "tool result batch is missing"))
+  (local messages (icollect [_ message (ipairs agent.messages)] message))
+  (each [_ call-id (ipairs batch.order)]
+    (local result (assert (. batch.results call-id) (.. "tool result is missing: " call-id)))
+    (table.insert messages result))
+  (misa.patch agent {:messages (misa.replace messages) :tool_batch misa.delete}))
 
 (fn normalize-tool-arguments [blocks]
-  (let [failures {}]
-    (each [_ block (ipairs blocks)]
-      (when (= block.type :tool_call)
-        (when (= block.arguments nil)
-          (assert (= (type block.arguments_json) :string)
-                  "tool call arguments are missing")
-          (assert (and misa.json (= (type misa.json.decode) :function))
-                  "JSON extension is required for provider tool calls")
-          (local (ok decoded)
-                 (pcall misa.json.decode
-                        (or (and (= block.arguments_json "") "{}")
-                            block.arguments_json)))
-          (if (and ok (= (type decoded) :table)) (set block.arguments decoded)
-              (do
-                (set block.arguments {})
-                (tset failures block.id
-                      (or (and ok "tool arguments must be a JSON object")
-                          (tostring decoded))))))
-        (set block.arguments_json nil)))
-    failures))
+  (local failures {})
+  (local normalized
+         (icollect [_ block (ipairs blocks)]
+           (if (not= block.type :tool_call) block
+               (let [arguments (if block.arguments block.arguments
+                                   (do
+                                     (assert (= (type block.arguments_json) :string) "tool call arguments are missing")
+                                     (assert (and misa.json (= (type misa.json.decode) :function))
+                                             "JSON extension is required for provider tool calls")
+                                     (local (ok decoded) (pcall misa.json.decode (if (= block.arguments_json "") "{}" block.arguments_json)))
+                                     (if (and ok (= (type decoded) :table)) decoded
+                                         (do
+                                           (tset failures block.id (if ok "tool arguments must be a JSON object" (tostring decoded)))
+                                           {}))))]
+                 (misa.patch block {:arguments (misa.replace arguments) :arguments_json misa.delete})))))
+  (values normalized failures))
 
-(fn complete-response [db agent id blocks usage stop-reason]
-  (let [stream agent.stream
-        argument-failures (normalize-tool-arguments blocks)]
-    (set-forcibly! blocks (content blocks :assistant))
-    (record-usage agent usage)
-    (tset agent.messages (+ (length agent.messages) 1)
-          {:content blocks
-           :provider_state (and stream stream.provider_state)
-           :role :assistant})
-    (set (agent.active_request_id agent.accepted_request_id agent.stream)
-         (values nil id nil))
+(fn complete-response [db previous id raw-blocks usage stop-reason]
+  (local (blocks argument-failures) (normalize-tool-arguments raw-blocks))
+  (content blocks :assistant)
+  (let [stream previous.stream]
+    (local canonical (icollect [_ block (ipairs blocks)]
+                       (misa.patch block {:transcript_id misa.delete :execution misa.delete})))
+    (var agent (misa.patch (record-usage previous usage)
+                           {:messages (misa.replace (appended previous.messages
+                                                              {:content canonical :provider_state (and stream stream.provider_state)
+                                                               :role :assistant}))
+                            :active_request_id misa.delete :accepted_request_id id :stream misa.delete
+                            :tool_batch misa.delete}))
     (var (effects saw-tool) (values {} false))
-    (set agent.tool_batch nil)
     (if stream (each [_ block (ipairs blocks)]
                  (tset effects (+ (length effects) 1)
                        {:event {:arguments block.arguments
@@ -143,8 +122,7 @@
                                 :name block.name
                                 :response_id id
                                 :type :transcript/block-end}
-                        :type :dispatch})
-                 (set block.transcript_id nil))
+                        :type :dispatch}))
         (do
           (tset effects (+ (length effects) 1)
                 {:event {:model agent.request_model
@@ -193,7 +171,6 @@
       (when (= block.type :tool_call)
         (if (= block.execution :provider)
             (do
-              (set block.execution nil)
               (var result
                    (and (and stream stream.tool_results)
                         (. stream.tool_results block.id)))
@@ -201,7 +178,7 @@
                               (tool-result block.id
                                            "Provider did not report a tool result"
                                            true)))
-              (tset agent.messages (+ (length agent.messages) 1) result)
+              (set agent (misa.patch agent {:messages (misa.replace (appended agent.messages result))}))
               (tset effects (+ (length effects) 1)
                     {:event {:id block.id
                              :is_error result.is_error
@@ -211,20 +188,17 @@
             (do
               (set saw-tool true)
               (when (not agent.tool_batch)
-                (set agent.tool_batch {:order {} :results {}}))
+                (set agent (misa.patch agent {:tool_batch (misa.replace {:order [] :results {}})})))
               (assert (not (. agent.tool_batch.results block.id))
                       "duplicate tool call id")
-              (tset agent.tool_batch.order
-                    (+ (length agent.tool_batch.order) 1) block.id)
+              (set agent (misa.patch agent {:tool_batch {:order (misa.replace (appended agent.tool_batch.order block.id))}}))
               (local tool (misa.tool block.name))
               (if tool
                   (do
                     (assert (not (. agent.pending_tools block.id))
                             "duplicate tool call id")
-                    (tset agent.pending_tools block.id
-                          {:name block.name :request_id id})
-                    (set agent.pending_tool_count
-                         (+ agent.pending_tool_count 1))
+                    (set agent (misa.patch agent {:pending_tools {block.id {:name block.name :request_id id}}
+                                                  :pending_tool_count (+ agent.pending_tool_count 1)}))
                     (if (. argument-failures block.id)
                         (tset effects (+ (length effects) 1)
                               {:event {:is_error true
@@ -239,8 +213,7 @@
                                :tool_call_id block.id
                                :type tool.effect})))
                   (let [message (.. "unknown tool: " block.name)]
-                    (tset agent.tool_batch.results block.id
-                          (tool-result block.id message true))
+                    (set agent (misa.patch agent {:tool_batch {:results {block.id (tool-result block.id message true)}}}))
                     (tset effects (+ (length effects) 1)
                           {:event {:id block.id
                                    :is_error true
@@ -249,23 +222,25 @@
                            :type :dispatch})))))))
     (if (> agent.pending_tool_count 0)
         (do
-          (set agent.status :tools)
+          (set agent (misa.patch agent {:status :tools}))
           (tset effects (+ (length effects) 1)
                 {:event {:status :tools :type :agent/status} :type :dispatch}))
         saw-tool
         (do
-          (flush-tool-results agent)
-          (local (provider problem) (request db))
+          (set agent (flush-tool-results agent))
+          (local (next provider problem) (request db agent))
+          (set agent next)
           (if problem
-              (each [_ effect (ipairs (blocked agent problem))]
-                (tset effects (+ (length effects) 1) effect))
+              (let [(ready blocked-fx) (blocked agent problem)]
+                (set agent ready)
+                (each [_ effect (ipairs blocked-fx)] (table.insert effects effect)))
               (do
                 (tset effects (+ (length effects) 1)
                       {:event {:status :working :type :agent/status}
                        :type :dispatch})
                 (tset effects (+ (length effects) 1) provider))))
         (do
-          (set agent.status :ready)
+          (set agent (misa.patch agent {:status :ready}))
           (tset effects (+ (length effects) 1)
                 {:event {:status :ready :type :agent/status} :type :dispatch})
           (tset effects (+ (length effects) 1)
@@ -273,7 +248,7 @@
                          : id
                          :type :agent/completed}
                  :type :dispatch})))
-    {: db :fx effects}))
+    {:patch {:agent (misa.replace agent)} :fx effects}))
 
 (fn empty-usage []
   {:cache_read_tokens 0 :cache_write_tokens 0 :input_tokens 0 :output_tokens 0})
@@ -341,11 +316,6 @@
                      source.arguments_json))))
       (tset blocks (+ (length blocks) 1) block))
     blocks))
-
-(fn appended [items value]
-  (local next (icollect [_ item (ipairs (or items []))] item))
-  (table.insert next value)
-  next)
 
 (fn transcript-event [id kind fields]
   {:type :dispatch :event (misa.patch (or fields {}) {:type kind :response_id id})})
@@ -494,100 +464,41 @@
                                                      :last_usage (misa.replace {}) :usage (misa.replace (empty-usage))}}
                                      : fx})})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/submit
+                        {:type :register/event :name :agent/submit
                          :handler (fn [db event]
                                     (assert (and (= (type event.prompt) :string)
-                                                 (or (not= event.prompt "")
-                                                     (> (length (or event.attachments
-                                                                    {}))
-                                                        0)))
+                                                 (or (not= event.prompt "") (> (length (or event.attachments [])) 0)))
                                             "agent prompt must be nonempty")
-                                    (local agent
-                                           (assert db.agent
-                                                   "agent state is not initialized"))
-                                    (if (not= agent.status :ready) {: db}
-                                        (if (and db.auth_startup
-                                                 (not db.auth_startup.ready))
-                                            (do
-                                              (set (agent.startup_prompt agent.startup_attachments)
-                                                   (values event.prompt
-                                                           event.attachments))
-                                              {: db})
-                                            (if (not (selected-model db))
-                                                (do
-                                                  (local configured
-                                                         (and db.models
-                                                              db.models.configured_default))
-                                                  (local message
-                                                         (or (and configured
-                                                                  (.. "configured model is unavailable: "
-                                                                      configured))
-                                                             "no available models; log in to a provider"))
-                                                  (local problem
-                                                         {:code :missing_model
-                                                          :kind :request_readiness
-                                                          : message
-                                                          :model configured})
-                                                  {: db
-                                                   :fx [{:event {:level :error
-                                                                 : problem
-                                                                 :text message
-                                                                 :type :transcript/harness}
-                                                         :type :dispatch}
-                                                        {:event {:exit agent.exit_after_response
-                                                                 :type :agent/completed}
-                                                         :type :dispatch}]})
-                                                (do
-                                                  (local (provider problem)
-                                                         (request db))
-                                                  (if problem
-                                                      {: db
-                                                       :fx (blocked agent
-                                                                    problem)}
-                                                      (do
-                                                        (local blocks {})
-                                                        (when (not= event.prompt
-                                                                    "")
-                                                          (tset blocks
-                                                                (+ (length blocks)
-                                                                   1)
-                                                                {:text event.prompt
-                                                                 :type :text}))
-                                                        (each [_ image (ipairs (or event.attachments
-                                                                                   {}))]
-                                                          (assert (and (and (and (and (= image.type
-                                                                                         :image)
-                                                                                      (= (type image.source)
-                                                                                         :table))
-                                                                                 (= image.source.type
-                                                                                    :base64))
-                                                                            (= (type image.source.media_type)
-                                                                               :string))
-                                                                       (= (type image.source.data)
-                                                                          :string))
-                                                                  "invalid image attachment")
-                                                          (tset blocks
-                                                                (+ (length blocks)
-                                                                   1)
-                                                                image))
-                                                        (tset agent.messages
-                                                              (+ (length agent.messages)
-                                                                 1)
-                                                              {:content blocks
-                                                               :role :user})
-                                                        {: db
-                                                         :fx [{:event {:prompt event.prompt
-                                                                       :type :agent/submitted}
-                                                               :type :dispatch}
-                                                              {:event {:attachments event.attachments
-                                                                       :text event.prompt
-                                                                       :type :transcript/user}
-                                                               :type :dispatch}
-                                                              {:event {:status :working
-                                                                       :type :agent/status}
-                                                               :type :dispatch}
-                                                              provider]})))))))})
+                                    (local agent (assert db.agent "agent state is not initialized"))
+                                    (if (not= agent.status :ready) nil
+                                        (and db.auth_startup (not db.auth_startup.ready))
+                                        {:patch {:agent {:startup_prompt event.prompt
+                                                         :startup_attachments (misa.replace event.attachments)}}}
+                                        (not (selected-model db))
+                                        (let [configured (and db.models db.models.configured_default)
+                                              message (if configured (.. "configured model is unavailable: " configured)
+                                                          "no available models; log in to a provider")
+                                              problem {:code :missing_model :kind :request_readiness : message :model configured}]
+                                          {:fx [{:type :dispatch :event {:type :transcript/harness :level :error : problem :text message}}
+                                                {:type :dispatch :event {:type :agent/completed :exit agent.exit_after_response}}]})
+                                        (do
+                                          (local blocks (if (= event.prompt "") [] [{:type :text :text event.prompt}]))
+                                          (each [_ image (ipairs (or event.attachments []))]
+                                            (assert (and (= image.type :image) (= (type image.source) :table)
+                                                         (= image.source.type :base64) (= (type image.source.media_type) :string)
+                                                         (= (type image.source.data) :string)) "invalid image attachment")
+                                            (table.insert blocks image))
+                                          (local history (misa.patch agent {:messages (misa.replace (appended agent.messages
+                                                                                                             {:content blocks :role :user}))}))
+                                          (local (next provider problem) (request db history))
+                                          (if problem
+                                              (let [(ready fx) (blocked agent problem)]
+                                                {:patch {:agent (misa.replace ready)} : fx})
+                                              {:patch {:agent (misa.replace next)}
+                                               :fx [{:type :dispatch :event {:type :agent/submitted :prompt event.prompt}}
+                                                    {:type :dispatch :event {:type :transcript/user :text event.prompt :attachments event.attachments}}
+                                                    {:type :dispatch :event {:type :agent/status :status :working}}
+                                                    provider]}))))})
           ;; Correlation is shared policy; delta assembly is an open pure dispatcher.
           (table.insert setup-fx
                         {:type :register/event :name :agent/stream-start
@@ -665,8 +576,7 @@
                                                   (local blocks
                                                          (stream-blocks stream))
                                                   (if (not blocks)
-                                                      {: db
-                                                       :fx [{:event {:id event.id
+                                                      {:fx [{:event {:id event.id
                                                                      :message "provider ended an incomplete tool call"
                                                                      :type :agent/stream-error}
                                                              :type :dispatch}]}
@@ -700,87 +610,44 @@
                                                                    event.usage
                                                                    event.stop_reason)))))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :tool/result
+                        {:type :register/event :name :tool/result
                          :handler (fn [db event]
-                                    (local agent db.agent)
-                                    ;; Cancellation/reset can race an already queued completion.
-                                    (if (or (not agent)
-                                            (not (. agent.pending_tools
-                                                    event.tool_call_id)))
-                                        nil
-                                        (do
-                                          (tset agent.pending_tools
-                                                event.tool_call_id nil)
-                                          (set agent.pending_tool_count
-                                               (- agent.pending_tool_count 1))
-                                          (if agent.cancel_requested
-                                              (do
-                                                (local update
-                                                       {:event {:cancelled true
-                                                                :id event.tool_call_id
-                                                                :is_error (= event.is_error
-                                                                             true)
-                                                                :text (or event.text
-                                                                          :Cancelled)
-                                                                :type :transcript/tool-result}
-                                                        :type :dispatch})
-                                                (if (= agent.pending_tool_count
-                                                       0)
-                                                    (do
-                                                      (local tx
-                                                             (cancelled db
-                                                                        agent
-                                                                        agent.accepted_request_id
-                                                                        true))
-                                                      (table.insert tx.fx 1
-                                                                    update)
-                                                      tx)
-                                                    {: db :fx [update]}))
-                                              (do
-                                                (local result
-                                                       (tool-result event.tool_call_id
-                                                                    (or event.text
-                                                                        "")
-                                                                    event.is_error))
-                                                (assert (and agent.tool_batch
-                                                             (not (. agent.tool_batch.results
-                                                                     event.tool_call_id)))
-                                                        "duplicate tool result")
-                                                (tset agent.tool_batch.results
-                                                      event.tool_call_id result)
-                                                (local effects
-                                                       [{:event {:id event.tool_call_id
-                                                                 :is_error (= event.is_error
-                                                                              true)
-                                                                 :text (or event.text
-                                                                           "")
-                                                                 :type :transcript/tool-result}
-                                                         :type :dispatch}])
-                                                (when (= agent.pending_tool_count
-                                                         0)
-                                                  (flush-tool-results agent)
-                                                  (local (provider problem)
-                                                         (request db))
-                                                  (if problem
-                                                      (each [_ effect (ipairs (blocked agent
-                                                                                       problem))]
-                                                        (tset effects
-                                                              (+ (length effects)
-                                                                 1)
-                                                              effect))
-                                                      (do
-                                                        (tset effects
-                                                              (+ (length effects)
-                                                                 1)
-                                                              {:event {:status :working
-                                                                       :type :agent/status}
-                                                               :type :dispatch})
-                                                        (tset effects
-                                                              (+ (length effects)
-                                                                 1)
-                                                              provider))))
-                                                {: db :fx effects})))))})
+                                    (local previous db.agent)
+                                    (when (and previous (. previous.pending_tools event.tool_call_id))
+                                      (var agent (misa.patch previous
+                                                            {:pending_tools {event.tool_call_id misa.delete}
+                                                             :pending_tool_count (- previous.pending_tool_count 1)}))
+                                      (local update {:type :dispatch
+                                                     :event {:type :transcript/tool-result :id event.tool_call_id
+                                                             :cancelled (when agent.cancel_requested true)
+                                                             :is_error (= event.is_error true)
+                                                             :text (or event.text (if agent.cancel_requested :Cancelled ""))}})
+                                      (if agent.cancel_requested
+                                          (if (= agent.pending_tool_count 0)
+                                              (let [result (cancelled db agent agent.accepted_request_id true)]
+                                                (table.insert result.fx 1 update)
+                                                result)
+                                              {:patch {:agent (misa.replace agent)} :fx [update]})
+                                          (do
+                                            (assert (and agent.tool_batch (not (. agent.tool_batch.results event.tool_call_id)))
+                                                    "duplicate tool result")
+                                            (set agent (misa.patch agent
+                                                                  {:tool_batch {:results
+                                                                                {event.tool_call_id
+                                                                                 (tool-result event.tool_call_id (or event.text "") event.is_error)}}}))
+                                            (local fx [update])
+                                            (when (= agent.pending_tool_count 0)
+                                              (set agent (flush-tool-results agent))
+                                              (local (next provider problem) (request db agent))
+                                              (set agent next)
+                                              (if problem
+                                                  (let [(ready blocked-fx) (blocked agent problem)]
+                                                    (set agent ready)
+                                                    (each [_ effect (ipairs blocked-fx)] (table.insert fx effect)))
+                                                  (do
+                                                    (table.insert fx {:type :dispatch :event {:type :agent/status :status :working}})
+                                                    (table.insert fx provider))))
+                                            {:patch {:agent (misa.replace agent)} : fx}))))})
 
           (fn stream-error [db event]
             (local agent db.agent)
