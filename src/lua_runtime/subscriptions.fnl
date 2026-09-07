@@ -46,8 +46,12 @@
     (local compute (= (type definition.compute) :function))
     (assert (not= read compute) "subscription needs exactly one of read or compute")
     (assert (if read (= definition.compute nil) (= definition.read nil)) "invalid subscription callback")
-    (assert (if read (= definition.inputs nil) (= (type definition.inputs) :function))
+    (assert (if read (= definition.inputs nil)
+                (or (= (type definition.inputs) :table) (= (type definition.inputs) :function)))
             "computed subscriptions need explicit inputs; reads cannot declare inputs")
+    (when (= (type definition.inputs) :table)
+      (vector-size definition.inputs)
+      (each [_ query (ipairs definition.inputs)] (query-key query)))
     (tset definitions definition.id {:read definition.read :compute definition.compute :inputs definition.inputs}))
 
   (fn scope [capacity inherited]
@@ -80,7 +84,8 @@
               (var entry nil)
               (if definition.read
                   (set entry {:state db :value (if (and previous (= previous.state db)) previous.value (definition.read db q))})
-                  (let [queries (definition.inputs q)
+                  (let [queries (if (= (type definition.inputs) :function)
+                                    (definition.inputs q) definition.inputs)
                         n (vector-size queries)
                         inputs {:n n}]
                     (for [i 1 n] (tset inputs i (evaluate (. queries i))))

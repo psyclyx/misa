@@ -118,8 +118,8 @@
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :models/selected
-                                 :inputs (fn [] [[:db/path :models :entries]
-                                                 [:db/path :models :selected]])
+                                 :inputs [[:db/path :models :entries]
+                                          [:db/path :models :selected]]
                                  :compute (fn [inputs]
                                             (local model (find (or (. inputs 1) []) (. inputs 2)))
                                             (when model
@@ -131,8 +131,8 @@
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :models/projection
-                                 :inputs (fn [] [[:db/path :models :configured_default]
-                                                 [:models/selected]])
+                                 :inputs [[:db/path :models :configured_default]
+                                          [:models/selected]]
                                  :compute (fn [inputs]
                                             {:configured_default (. inputs 1)
                                              :selected (. inputs 2)})}})

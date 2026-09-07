@@ -3,7 +3,7 @@
 (local registry ((fennel.dofile :src/lua_runtime/subscriptions.fnl)))
 (registry.register {:id :path :read (fn [db q] (. db (. q 2)))})
 (var computes 0)
-(registry.register {:id :pair :inputs (fn [] [[:path :a] [:path :b]])
+(registry.register {:id :pair :inputs [[:path :a] [:path :b]]
                     :compute (fn [inputs]
                                (set computes (+ computes 1))
                                (assert (= inputs.n 2))
@@ -22,7 +22,7 @@
 (assert (= (scope.query {:a 1} [:pair]) original) "fork changed committed memoization")
 (speculative.close)
 (assert (not (pcall speculative.query {} [:pair])))
-(registry.register {:id :cycle-a :inputs (fn [] [[:cycle-b]]) :compute (fn [] nil)})
+(registry.register {:id :cycle-a :inputs [[:cycle-b]] :compute (fn [] nil)})
 (registry.register {:id :cycle-b :inputs (fn [] [[:cycle-a]]) :compute (fn [] nil)})
 (assert (not (pcall scope.query {} [:cycle-a])))
 (assert (= (scope.query {:a 1} [:pair]) original) "failed evaluation changed cache")
@@ -45,6 +45,24 @@
 (assert (not (pcall registry.key {1 :path 3 :hole})))
 (assert (not (pcall registry.key [:path math.huge])))
 (assert (not (pcall registry.register {:id :bad :read (fn []) :compute (fn [])})))
+;; Static dependencies are validated at registration, including each query.
+(each [_ inputs (ipairs [false :invalid {2 [:path :a]} [[]] [[:path math.huge]]])]
+  (assert (not (pcall registry.register {:id :bad-static : inputs :compute (fn [])}))))
+(assert (not (pcall registry.register {:id :bad-read :inputs [] :read (fn [])})))
+(var constants 0)
+(registry.register {:id :constant :inputs []
+                    :compute (fn [inputs]
+                               (assert (= inputs.n 0))
+                               (set constants (+ constants 1))
+                               {:answer 42})})
+(local constant (scope.query {} [:constant]))
+(assert (= constant (scope.query {:changed true} [:constant])))
+(assert (= constants 1))
+;; Dynamic dependency declarations still receive the requested arguments.
+(registry.register {:id :argument :inputs (fn [q] [[:path (. q 2)]])
+                    :compute (fn [inputs q] {:key (. q 2) :value (. inputs 1)})})
+(assert (= (. (scope.query {:a false} [:argument :a]) :value) false))
+(assert (= (. (scope.query {:b 7} [:argument :b]) :value) 7))
 (local failure
        (G.for_all (G.vector (G.elements [false 0 1 :x "\31" "世界"]))
                   (fn [items]

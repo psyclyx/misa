@@ -6,7 +6,7 @@ state read or a computation with explicit query dependencies:
 ```fennel
 {:type :register/sub
  :value {:id :usage/total
-         :inputs (fn [_] [[:db/path :status :usage]])
+         :inputs [[:db/path :status :usage]]
          :compute (fn [inputs query]
                     (local usage (or (. inputs 1) {}))
                     (+ (or usage.input_tokens 0) (or usage.output_tokens 0)))}}
@@ -15,11 +15,14 @@ state read or a computation with explicit query dependencies:
 ```
 
 A read uses `:read (fn [db query] ...)`, with neither `inputs` nor `compute`.
-A computation supplies both `inputs` and `compute`, with no `read`. `inputs`
-returns a dense vector of query vectors. The computation receives positional
+A computation supplies both `inputs` and `compute`, with no `read`. Declare fixed
+dependencies as a dense vector of query vectors in `inputs`; these are validated
+at registration. When dependencies depend on query arguments, use a function:
+`:inputs (fn [query] [[:db/path :costs :responses (. query 2)]])`.
+Its returned vector is validated during evaluation. The computation receives positional
 values plus `inputs.n`, the dependency count: missing values remain nil even at
 the end of the vector. Do not use Lua's length operator to count those values.
-Constant computations explicitly return an empty dependency vector.
+Constant computations declare `:inputs []`.
 
 Bundled cost accounting exposes `[:costs/total]` as numeric facts (`usd`,
 `responses`, `estimated`, `unknown`), with no formatted text. The dependent
@@ -35,7 +38,7 @@ types and table contents without relying on delimiters or table addresses.
 Functions, metatables, cycles, and holes in query/dependency vectors are rejected.
 
 Dependencies compare by value for scalars and identity for tables. Application
-state, query arguments, and subscription results must be treated as immutable.
+state, dependency declarations, query arguments, and subscription results must be treated as immutable.
 Callbacks declare dependencies through `inputs`, not recursive scope queries.
 Dependency cycles and excessively deep chains report errors.
 

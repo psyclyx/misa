@@ -170,8 +170,9 @@ Registration effects use these payloads:
 - `{type="register/fx", name=type, handler=fn}`: translates a Fennel policy effect to one native effect
   or an ordered array of native effects.
 - `{type="register/view", handler=fn}`: registers exactly one semantic projection.
-- `{type="register/sub", value={id=..., inputs=fn, compute=fn}}` (or `value={id=..., read=fn}`): registers a pure
-  query projection. Call it as `misa.sub(db, [id, ...args])`; `inputs` returns query vectors
+- `{type="register/sub", value={id=..., inputs=queries, compute=fn}}` (or `value={id=..., read=fn}`): registers a pure
+  query projection. Call it as `misa.sub(db, [id, ...args])`; `inputs` is a vector of query vectors
+  (or a function of the requested query when dependencies depend on its arguments),
   and `compute` receives their values. Results are memoized by input identity across view passes
   and within each pass. See [subscription contracts](docs/subscriptions.md) for nullable
   inputs, bounded consumer scopes, and speculative commit/rollback.

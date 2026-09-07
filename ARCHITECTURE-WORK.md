@@ -51,6 +51,14 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Fixed subscription dependencies are now ordinary query-vector data, validated
+at registration. Query-dependent inputs retain the function form; bundled model
+and aggregate cost projections no longer allocate their fixed declarations in
+callbacks. Tests cover static nullable inputs and transactional rollback, mixed
+static/dynamic cycles, invalid declarations, empty constant dependencies, and
+argument-dependent queries. This simplifies subscription expression without
+claiming to resolve the message component's global projection-cache ownership.
+
 The Ghostty-protocol PTY test now sends SGR mouse motion over the default model
 button and away again. It checks the native hover action, emitted hover RGB
 background, absence of that background at rest, and removal on exit. Inspection

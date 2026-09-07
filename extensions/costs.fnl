@@ -145,7 +145,7 @@
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :costs/total
-                                 :inputs (fn [] [[:db/path :costs :responses]])
+                                 :inputs [[:db/path :costs :responses]]
                                  :compute (fn [inputs]
                                   (local total
                                          {:estimated false
@@ -167,7 +167,7 @@
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :costs/projection
-                                 :inputs (fn [] [[:costs/total]])
+                                 :inputs [[:costs/total]]
                                  :compute (fn [inputs]
                                             (local total (. inputs 1))
                                             (misa.patch total {:text (label total)}))}})

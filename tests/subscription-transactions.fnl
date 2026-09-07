@@ -5,7 +5,7 @@
 (var (observed computations) (values nil 0))
 (misa._setup_effects
  {:fx [{:type :register/sub
-        :value {:id :test :inputs (fn [] [[:db/path :value] [:db/path :missing]])
+        :value {:id :test :inputs [[:db/path :value] [:db/path :missing]]
                 :compute (fn [inputs]
                            (assert (= inputs.n 2))
                            (set computations (+ computations 1))
