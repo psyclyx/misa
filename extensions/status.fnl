@@ -71,7 +71,9 @@
                                (or usage "Unavailable"))}])
     (each [_ window (ipairs (or (and (= (type usage) :table) usage.windows) []))]
       (each [_ field (ipairs [{:key :used :label "used"} {:key :limit :label "limit"}
-                              {:key :remaining :label "remaining"} {:key :reset_at :label "resets at"}])]
+                              {:key :remaining :label "remaining"} {:key :reset_at :label "resets at"}
+                              {:key :reset_at_unix :label "resets at (Unix seconds)"}
+                              {:key :reset_after_seconds :label "reset delay (seconds at fetch)"}])]
         (when (not= (. window field.key) nil)
           (table.insert fields {:label (.. (or window.label "Quota") " " field.label)
                                 :value (. window field.key)}))))

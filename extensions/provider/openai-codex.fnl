@@ -1,5 +1,44 @@
 ;; ChatGPT subscription provider using the Codex Responses SSE protocol.
 
+(fn quota-number [value]
+  (local number (tonumber value))
+  (when (and number (= number number) (>= number 0) (< number math.huge)) number))
+
+(fn quota-label [value] (when (= (type value) :string) value))
+
+(fn window-label [seconds fallback]
+  (if (and seconds (> seconds 0))
+      (let [unit (or (accumulate [found nil _ item (ipairs [[86400 :d] [3600 :h] [60 :m]]) &until found]
+                       (when (= (% seconds (. item 1)) 0) item)) [1 :s])]
+        (.. (/ seconds (. unit 1)) (. unit 2)))
+      fallback))
+
+(fn usage-windows [payload]
+  (local windows [])
+  (fn add [bucket label]
+    (when (= (type bucket) :table)
+      (each [_ slot (ipairs [{:key :primary_window :label :primary}
+                             {:key :secondary_window :label :secondary}])]
+        (local window (. bucket slot.key))
+        (when (= (type window) :table)
+          (local used (quota-number window.used_percent))
+          (when used
+            (local seconds (quota-number window.limit_window_seconds))
+            (table.insert windows {:label (.. label " · " (window-label seconds slot.label))
+                                   :unit :percent :limit 100 : used :remaining (math.max 0 (- 100 used))
+                                   :window_seconds seconds
+                                   :reset_at_unix (quota-number window.reset_at)
+                                   :reset_after_seconds (quota-number window.reset_after_seconds)}))))))
+  (when (= (type payload) :table)
+    (add payload.rate_limit "Codex")
+    (add payload.code_review_rate_limit "Code review")
+    (each [index item (ipairs (if (= (type payload.additional_rate_limits) :table)
+                                payload.additional_rate_limits []))]
+      (when (= (type item) :table)
+        (add item.rate_limit (or (quota-label item.limit_name) (quota-label item.metered_feature)
+                                 (.. "Additional quota " index))))))
+  windows)
+
 (fn input [messages]
   (let [result {}]
     (each [_ message (ipairs messages)]
@@ -171,6 +210,39 @@
                                providers.openai_codex)
                           nil))
           (set config (or (and (= (type config) :table) config) {}))
+          (table.insert setup-fx
+                        {:type :register/event :name :usage/refresh
+                         :handler (fn [db event]
+                                    (when (or (not event.provider) (= event.provider :openai-codex))
+                                      (local provider (and db.providers db.providers.openai-codex))
+                                      (if (and provider provider.usage_request)
+                                          {:patch {:providers {:openai-codex {:usage_again true}}}}
+                                          (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
+                                                id (.. "codex-usage-" sequence)]
+                                            {:patch {:providers {:openai-codex {:usage_sequence sequence :usage_request id}}}
+                                             :fx [{:type :http/request :method :GET : id
+                                                   :url (or config.usage_url "https://chatgpt.com/backend-api/wham/usage")
+                                                   :credential {:id :openai-codex :header :authorization :prefix "Bearer "
+                                                                :metadata_field :account_id :metadata_header :chatgpt-account-id}
+                                                   :response_format :json :completion :provider/codex-usage
+                                                   :timeouts config.timeouts}]}))))})
+          (table.insert setup-fx
+                        {:type :register/event :name :provider/codex-usage
+                         :handler (fn [db event]
+                                    (local provider (and db.providers db.providers.openai-codex))
+                                    (when (and provider provider.usage_request (= provider.usage_request event.id))
+                                      (local windows (if event.ok (usage-windows event.data) []))
+                                      (local plan (when (and event.ok (= (type event.data) :table))
+                                                    (quota-label event.data.plan_type)))
+                                      (local updated {:type :dispatch :event {:type :usage/updated}})
+                                      {:patch {:providers {:openai-codex {:usage_request misa.delete
+                                                                          :usage_again misa.delete
+                                                                          :subscription_type (misa.replace plan)
+                                                                          :usage (misa.replace {: windows
+                                                                                               :unavailable (= (length windows) 0)})}}}
+                                       :fx (if provider.usage_again
+                                               [updated {:type :dispatch :event {:type :usage/refresh :provider :openai-codex}}]
+                                               [updated])}))})
           (local serializer-id :openai.responses.codex)
           (table.insert setup-fx
                         {:type :register/request-options-serializer

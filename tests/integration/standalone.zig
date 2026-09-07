@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "Codex quota requests preserve account binding and normalize usage windows" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/codex-usage.fnl"} }, "Codex usage contracts passed\n");
+}
+
 test "component collections retain output and roll back speculative projections" {
     var h = try Harness.init();
     defer h.deinit();

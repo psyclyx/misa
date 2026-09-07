@@ -33,6 +33,28 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Codex quota retrieval verified (2026-09-07)
+
+The provider now handles targeted/broadcast usage refresh through the native
+Codex credential and account metadata binding. A read-only live request to the
+user-supplied `/backend-api/wham/usage` endpoint returned HTTP 200; a second probe
+through the actual provider adapter produced three normalized windows and a plan
+type. Probes redacted response strings and did not expose credentials. Tests use
+synthetic values, checking percentage/duration/reset facts, nullable windows,
+malformed values, coalescing, stale completions, failure clearing, and exclusion
+of account identifiers. Native tests constrain the new credential trust to the
+exact endpoint. The documented App Server interface is not treated as a schema
+specification for this HTTP endpoint.
+
+Verification: focused Codex usage/stream and status tests, the complete
+ReleaseSafe baseline-CPU test suite, installed build, and Ghostty-input PTY
+regression all passed. Dashboard tests verify numeric reset fields and the
+selected-provider widget against the adapter's normalized output.
+
+This supersedes earlier Codex-retrieval pending notes below. Claude retrieval,
+credit/billing facts beyond quota windows, and final dashboard acceptance remain
+open; reset delays are snapshots, not live countdowns.
+
 The initial implementation cloned every transaction and reconciled the
 entire database. Its subscription cache used mutable table identity, unbounded
 global ownership, delimiter-based query keys, and array lengths for nullable

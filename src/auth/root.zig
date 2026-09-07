@@ -286,6 +286,9 @@ fn lockDirectoryFile(io: std.Io, directory: std.Io.Dir) !std.Io.File {
 /// only come from the user's process environment, never from an extension:
 /// MISA_CREDENTIAL_ORIGINS='{"openai":["https://gateway.example"]}'.
 pub fn validateCredentialOrigin(id: []const u8, url: []const u8, store: ?*Store, environ: *const std.process.Environ.Map) !void {
+    // Coding-plan usage lives outside the Codex responses prefix. Trust only
+    // this endpoint, not the rest of ChatGPT's backend API.
+    if (std.mem.eql(u8, id, "openai-codex") and std.mem.eql(u8, url, "https://chatgpt.com/backend-api/wham/usage")) return;
     if (std.mem.eql(u8, id, "kimi-coding")) {
         const credential_store = store orelse return error.CredentialStoreUnavailable;
         const api_base = credential_store.getField(id, "api_base") orelse return error.CredentialProfileMissing;
@@ -642,6 +645,23 @@ test "standard credential origins require native trust or explicit user grant" {
     try environ.put("MISA_CREDENTIAL_ORIGINS", "{\"openai\":[\"https://gateway.example\"]}");
     try validateCredentialOrigin("openai", "https://gateway.example/v1", null, &environ);
     try std.testing.expectError(error.CredentialOriginDenied, validateCredentialOrigin("openai", "https://gateway.example.evil/v1", null, &environ));
+}
+
+test "Codex usage trust does not grant the surrounding backend API" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try validateCredentialOrigin("openai-codex", "https://chatgpt.com/backend-api/wham/usage", null, &environ);
+    for ([_][]const u8{
+        "http://chatgpt.com/backend-api/wham/usage",
+        "https://chatgpt.com.evil/backend-api/wham/usage",
+        "https://chatgpt.com/backend-api/wham/usage/other",
+        "https://chatgpt.com/backend-api/wham/usage-other",
+        "https://chatgpt.com/backend-api/wham/other",
+        "https://chatgpt.com/backend-api/other",
+    }) |url| {
+        try std.testing.expectError(error.CredentialOriginDenied, validateCredentialOrigin("openai-codex", url, null, &environ));
+    }
+    try std.testing.expectError(error.CredentialOriginDenied, validateCredentialOrigin("openai", "https://chatgpt.com/backend-api/wham/usage", null, &environ));
 }
 
 test "credential paths follow explicit and XDG precedence" {

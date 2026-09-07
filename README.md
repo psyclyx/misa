@@ -767,7 +767,17 @@ Configure it through `config.status.indicators` like other status items.
 Quota refresh targets the selected provider when it changes, after authentication
 finishes, and after response completion/interruption; streaming tokens do not
 trigger quota requests. `/usage` still refreshes all loaded quota providers.
-Claude/Codex OAuth coding-plan retrieval remains unfinished.
+Codex OAuth fetches `https://chatgpt.com/backend-api/wham/usage` using Misa's
+stored Codex credential and native account-ID header binding. Main, code-review,
+and additional quota windows normalize to percentage facts; their actual window
+durations determine labels rather than assuming a fixed primary/secondary order.
+The dashboard includes plan type and available reset timestamps/delays (the delay
+is explicitly at fetch time, not a live countdown). Concurrent refreshes coalesce,
+stale completions are ignored, and failures clear stale quota values.
+Native credential trust permits this exact usage URL, not the surrounding ChatGPT
+backend. An explicit `config.providers.openai_codex.usage_url` override still needs
+native credential-origin authorization. Account identifiers are not retained in
+quota state. Claude coding-plan retrieval remains unfinished.
 Provider-reported USD takes precedence over estimates; missing prices remain
 explicitly unknown. Dynamic provider metadata supplies prices where available.
 `config.costs.models["provider/model-id"]` overrides `input`, `output`,
