@@ -32,11 +32,11 @@
                                                       (not (. failures 2)))
                                                  (not (. failures 3)))
                                             "semantic registries did not seal at app/start")
-                                    (set db.marker :original)
+                                    (local render-db (misa.patch db {:marker :original}))
                                     (local model {:text :original})
-                                    (misa.render_component db :test.role model
+                                    (misa.render_component render-db :test.role model
                                                            {})
-                                    (assert (and (= db.marker :original)
+                                    (assert (and (= render-db.marker :original)
                                                  (= model.text :original))
                                             "component projection mutated canonical input")
                                     (local clipped
@@ -86,8 +86,7 @@
                                                          :a))
                                                  (= omitted.cursor.byte 1))
                                             "clipped grapheme fragment or split cursor survived")
-                                    {: db
-                                     :fx [{:event {:status :working
+                                    {:fx [{:event {:status :working
                                                    :type :agent/status}
                                            :type :dispatch}
                                           {:event {:kind :text

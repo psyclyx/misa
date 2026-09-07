@@ -33,12 +33,21 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
-The initial implementation still clones every transaction and reconciles the
-entire database. Its subscription cache uses mutable table identity, unbounded
+The initial implementation cloned every transaction and reconciled the
+entire database. Its subscription cache used mutable table identity, unbounded
 global ownership, delimiter-based query keys, and array lengths for nullable
 dependencies. Passing the old suite does not validate those contracts.
 Views now receive shared state, so rollback and mutation boundaries need explicit
 verification before declaring the state migration complete.
+
+The framework now enforces patch-only handler results and no longer clones or
+reconciles the database. Remaining mutation-oriented integration fixtures were
+converted, including Lua syntax completions and editor/queue setup. Direct
+dispatch tests assert identity at coeffect, handler, and view boundaries; no-op
+root identity; retained-state preservation; and rollback on invalid or legacy
+results. Ordinary input tables are immutable by contract, not write-protected.
+Interceptor transaction-envelope mutation and projection ownership still need
+the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 

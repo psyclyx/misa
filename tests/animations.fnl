@@ -19,7 +19,9 @@
                                                      {:redraws 0
                                                       :starts 0
                                                       :stops 0}))
-                                          (set tx.db.test_animation state)
+                                          (var starts state.starts)
+                                          (var stops state.stops)
+                                          (var redraws state.redraws)
                                           (local keep {})
                                           (each [_ effect (ipairs tx.fx)]
                                             (if (= effect.type :timer/start)
@@ -28,23 +30,20 @@
                                                                   :animation/service)
                                                                (= effect.interval_ms
                                                                   160)))
-                                                  (set state.starts
-                                                       (+ state.starts 1)))
+                                                  (set starts (+ starts 1)))
                                                 (= effect.type :timer/stop)
-                                                (set state.stops
-                                                     (+ state.stops 1))
+                                                (set stops (+ stops 1))
                                                 (do
                                                   (when (and (= effect.type
                                                                 :dispatch)
                                                              (= effect.event.type
                                                                 :ui/redraw))
-                                                    (set state.redraws
-                                                         (+ state.redraws 1)))
+                                                    (set redraws (+ redraws 1)))
                                                   (tset keep
                                                         (+ (length keep) 1)
                                                         effect))))
-                                          (set tx.fx keep)
-                                          tx)
+                                          (misa.patch tx {:db {:test_animation {: starts : stops : redraws}}
+                                                          :fx (misa.replace keep)}))
                                  :id :test/animation-effects}})
           (table.insert setup-fx
                         {:type :register/component

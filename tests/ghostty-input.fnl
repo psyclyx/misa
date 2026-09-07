@@ -9,21 +9,19 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (and (and (= tx.event.type
+                                           (if (and (and (= tx.event.type
                                                               :terminal/input)
                                                            (= tx.event.kind
                                                               :alt))
                                                       (= tx.event.text :z))
-                                             (set tx.event
-                                                  {:type :smoke/inspect}))
-                                           tx)
+                                             (misa.patch tx {:event (misa.replace {:type :smoke/inspect})})
+                                             tx))
                                  :id :smoke/inspect}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :smoke/inspect
                          :handler (fn [db]
-                                    (set db.inspections
-                                         (+ (or db.inspections 0) 1))
+                                    (local inspections (+ (or db.inspections 0) 1))
                                     (local value
                                            {:attachments (length (or db.editor.attachments
                                                                      {}))
@@ -39,12 +37,12 @@
                                             :status db.agent.status
                                             :text db.editor.text
                                             :top db.messages.top})
-                                    {: db
+                                    {:patch {: inspections}
                                      :fx [{:completion :smoke/written
                                            :content (misa.json.encode value)
-                                           :id (.. :snapshot- db.inspections)
+                                           :id (.. :snapshot- inspections)
                                            :path (.. context.config.smoke.directory
-                                                     :/snapshot- db.inspections)
+                                                     :/snapshot- inspections)
                                            :type :file/write}
                                           {:type :terminal/read}]})})
           (table.insert setup-fx
@@ -59,16 +57,16 @@
                         {:type :register/event
                          :name :smoke/request
                          :handler (fn [db event]
-                                    (set db.requests (or db.requests {}))
-                                    (tset db.requests
-                                          (+ (length db.requests) 1)
+                                    (local requests (icollect [_ request (ipairs (or db.requests []))] request))
+                                    (tset requests
+                                          (+ (length requests) 1)
                                           (. event.messages
                                              (length event.messages)))
-                                    {: db
+                                    {:patch {:requests (misa.replace requests)}
                                      :fx [{:argv [context.config.smoke.python
                                                   :-c
                                                   (.. "import time; time.sleep("
-                                                      (or (and (= (length db.requests)
+                                                      (or (and (= (length requests)
                                                                   1)
                                                                :2)
                                                           :0.1)

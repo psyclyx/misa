@@ -55,6 +55,9 @@ bounded cache index while sharing immutable entries; its cost is proportional
 to the cache size, not application-state size. Explicit consumer scopes are
 consumer-owned: the framework does not automatically roll them back.
 
-The transaction draft/reconciliation path still exists during migration.
-Removing it and sharing layout work through subscriptions remain unfinished;
-this API does not itself establish selective rendering performance.
+Dispatch passes persistent state directly to handlers and projections; it does
+not clone the database or reconcile a mutable draft. Updates enter through
+patches. Ordinary tables are not write-protected: callback purity is a contract,
+not a sandbox, and in-place mutation cannot be rolled back. Sharing layout work
+through subscriptions remains unfinished; this API does not itself establish
+selective rendering performance.

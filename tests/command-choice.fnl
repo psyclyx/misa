@@ -43,8 +43,7 @@
                                                    (= (. session.items 1
                                                          :invocation)
                                                       "/model vendor/one")))
-                                      (set db.saw_argument_choices true))
-                                    {: db})})
+                                      {:patch {:saw_argument_choices true}}))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/model
@@ -52,8 +51,7 @@
                                     (assert (and db.saw_argument_choices
                                                  (= event.arguments :vendor/one))
                                             "choice acceptance did not execute its canonical invocation")
-                                    {: db
-                                     :fx [{:lines [{:spans [{:text "command choices"}]}]
+                                    {:fx [{:lines [{:spans [{:text "command choices"}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})})
           nil

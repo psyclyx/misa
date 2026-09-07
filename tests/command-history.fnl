@@ -20,7 +20,7 @@
                         {:type :register/event
                          :name :test/alpha
                          :handler (fn [db]
-                                    {: db :fx [{:type :terminal/read}]})})
+                                    {:fx [{:type :terminal/read}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/zulu
@@ -30,8 +30,7 @@
                                            (. db.preferences.scopes.commands
                                               "/zulu one" :uses))
                                     (if (= used 1)
-                                        {: db
-                                         :fx [{:event {:scope :commands
+                                        {:fx [{:event {:scope :commands
                                                        :type :preferences/toggle
                                                        :value "/zulu one"}
                                                :type :dispatch}
@@ -45,8 +44,7 @@
                                                         :one-id :uses)
                                                      2)
                                                   "argument usage did not share the invocation owner")
-                                          {: db
-                                           :fx [{:lines [{:spans [{:style {:foreground :default}
+                                          {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                                    :text "command history"}]}]
                                                  :type :view/commit}
                                                 {:type :app/quit}]})))})
@@ -84,35 +82,35 @@
                                     (assert (and (= (. counts :/alpha) 1)
                                                  (= (. counts "/zulu one") 1))
                                             "command source duplicated a canonical invocation")
-                                    (set db.history_frame
+                                    (local parent
                                          (misa.choice_session {:items [{:value :parent}]
                                                                :purpose :generic
                                                                :title :Parent}
                                                               db))
-                                    (set db.history_frame (. (misa.choice_accept db.history_frame
+                                    (local frame (. (misa.choice_accept parent
                                                         {:narrow {:items [{:value :child}]
                                                                   :preference_scope :child
                                                                   :purpose :generic
                                                                   :selected :child
                                                                   :title :Child}}
                                                         db) :session))
-                                    {: db
+                                    {:patch {:history_frame (misa.replace frame)}
                                      :fx [{:event {:type :test/restored}
                                            :type :dispatch}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/restored
                          :handler (fn [db]
-                                    (set db.history_frame (. (misa.choice_input db.history_frame
+                                    (local frame (. (misa.choice_input db.history_frame
                                                        {:action :cancel} db) :session))
-                                    (assert (and (and (= db.history_frame.selected
+                                    (assert (and (and (= frame.selected
                                                          nil)
-                                                      (= db.history_frame.preference_scope
+                                                      (= frame.preference_scope
                                                          nil))
-                                                 (= db.history_frame.custom_views
+                                                 (= frame.custom_views
                                                     nil))
                                             "snapshot cloning changed absent narrow-frame values into tables")
-                                    {: db
+                                    {:patch {:history_frame (misa.replace frame)}
                                      :fx [{:event {:completion :omnipicker/selected
                                                    :id :omnipicker
                                                    :session (misa.omnipicker_session db

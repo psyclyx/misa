@@ -110,8 +110,7 @@ test "syntax highlighting completes asynchronously without exposing a synchronou
         \\  local source = "local answer = 42 -- comment\n"
         \\  return {fx={
         \\    {type="register/event",name="app/start",handler=function(db)
-        \\      db.received = {}
-        \\      return {db=db,fx={
+        \\      return {patch={received=misa.replace({})},fx={
         \\        {type="syntax/highlight",id="known",language="lua",source=source,completion="fixture/highlighted"},
         \\        {type="syntax/highlight",id="unknown",language="fixture-unknown-language",source=source,completion="fixture/highlighted"},
         \\        {type="syntax/highlight",id="empty",language="lua",source="",completion="fixture/highlighted"}}}
@@ -131,11 +130,11 @@ test "syntax highlighting completes asynchronously without exposing a synchronou
         \\        assert(type(capture.capture) == "string" and capture.capture ~= "")
         \\        previous = capture.end_byte
         \\      end
-        \\      db.received[event.id] = true
-        \\      if db.received.known and db.received.unknown and db.received.empty then
-        \\        return {db=db,fx={{type="view/commit",lines={{spans={{text="async syntax"}}}}},{type="app/quit"}}}
+        \\      local received = misa.patch(db.received, {[event.id]=true})
+        \\      if received.known and received.unknown and received.empty then
+        \\        return {patch={received=received},fx={{type="view/commit",lines={{spans={{text="async syntax"}}}}},{type="app/quit"}}}
         \\      end
-        \\      return {db=db}
+        \\      return {patch={received=received}}
         \\    end}}}
         \\end}
     );

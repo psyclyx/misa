@@ -645,7 +645,7 @@ test "setup effects expand in order and remain outside event dispatch" {
         \\      return {type = "register/fixture-expand", value = 0}
         \\    end},
         \\    {type = "register/event", name = "fixture", handler = function(db)
-        \\      return {db = db, fx = {{type = "fixture/translate"}}}
+        \\      return {fx = {{type = "fixture/translate"}}}
         \\    end}
         \\  }}
         \\end}, {marker = true})

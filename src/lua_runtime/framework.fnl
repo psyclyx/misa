@@ -463,9 +463,8 @@
 (fn finite [value]
   (and (and (= value value) (not= value math.huge)) (not= value (- math.huge))))
 
-;; One working copy gives a transaction exclusive state without repeatedly
-
-;; cloning immutable configuration and coeffects.
+;; Copy data when handing coeffects to a projection. Application state is
+;; persistent: dispatch passes it directly and applies explicit patches.
 
 (fn clone [value active depth]
   (set-forcibly! depth (or depth 0))
@@ -493,35 +492,6 @@
               (tset result key (clone item active (+ depth 1))))
             (tset active value nil)
             result))))
-
-;; Reducers currently receive a private mutable draft because that keeps the
-;; extension API pleasant during the migration.  Reconcile turns that draft
-;; back into a persistent value: unchanged branches are returned from the
-;; previous state, while changed branches are rebuilt recursively.
-(fn reconcile [previous next depth]
-  (set-forcibly! depth (or depth 0))
-  (assert (<= depth MAX_DEPTH) "maximum state nesting depth exceeded")
-  (if (= previous next) previous
-      (if (or (or (= next misa.json_null) (= (type next) :nil))
-              (= (type next) :boolean) (= (type next) :string)
-              (= (type next) :number))
-          next
-          (if (not= (type next) :table)
-              next
-              (if (not= (type previous) :table)
-                  (clone next nil depth)
-                  (do
-                    (var changed false)
-                    (local result {})
-                    (each [key value (pairs next)]
-                      (local old-value (. previous key))
-                      (local new-value (reconcile old-value value (+ depth 1)))
-                      (when (not= new-value old-value) (set changed true))
-                      (tset result key new-value))
-                    (each [key _ (pairs previous)]
-                      (when (= (. next key) nil) (set changed true)))
-                    (if changed result previous)))))))
-
 
 ;; Public to projection infrastructure only. Projection models may contain
 
@@ -712,10 +682,9 @@
                                 : clock
                                 :config base-context.config
                                 : terminal})
-                   (local working (clone db))
                    (each [_ name (ipairs cofx-order)]
-                     (tset cofx name ((. cofx-fns name) cofx event working)))
-                   (var tx {: cofx :db working : event :fx {}})
+                     (tset cofx name ((. cofx-fns name) cofx event db)))
+                   (var tx {: cofx : db : event :fx {}})
 
                    (fn validate [value]
                      (assert (and (and (and (= (type value) :table)
@@ -735,21 +704,16 @@
                      (assert (or (= result nil) (= (type result) :table))
                              "event handler result must be a table")
                      (when result
+                       (assert (= result.db nil)
+                               "handler must return patch, not db")
                        (when (not= result.patch nil)
-                         (assert (= result.db nil)
-                                 "handler cannot return both db and patch")
                          (set tx.db (misa.patch tx.db result.patch)))
-                       (when (not= result.db nil)
-                         (assert (= (type result.db) :table)
-                                 "handler db must be a table")
-                         (set tx.db result.db))
                        (when (not= result.fx nil) (append tx.fx result.fx))))
                    (for [i (length interceptors) 1 (- 1)]
                      (local after (. interceptors i :after))
                      (when after
                        (set tx (or (after tx) tx))
                        (validate tx)))
-                   (set tx.db (reconcile db tx.db))
                    (local effects {})
                    (each [_ effect (ipairs tx.fx)]
                      (local kind (. (runtime-effect effect) :type))
@@ -782,7 +746,7 @@
                                (append effects translated)))
                          (tset effects (+ (length effects) 1) effect)))
                    (each [_ effect (ipairs effects)] (runtime-effect effect))
-                   ;; The reconciled database is persistent by convention:
+                   ;; The database is persistent by convention:
                    ;; views receive it directly so subscription inputs retain
                    ;; identity across transactions.  Views are projections
                    ;; and must not mutate it.

@@ -1,3 +1,8 @@
+(fn append [items item]
+  (local result (icollect [_ value (ipairs (or items []))] value))
+  (table.insert result item)
+  result)
+
 {:setup (fn []
           (local setup-fx [])
           (table.insert setup-fx
@@ -11,32 +16,24 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:after (fn [tx]
-                                          (tset tx.db.order
-                                                (+ (length tx.db.order) 1)
-                                                :after)
-                                          tx)
+                                          (misa.patch tx {:db {:order (misa.replace
+                                                                       (append tx.db.order :after))}}))
                                  :before (fn [tx]
-                                           (set tx.db.order (or tx.db.order {}))
-                                           (tset tx.db.order
-                                                 (+ (length tx.db.order) 1)
-                                                 :before)
-                                           tx)
+                                           (misa.patch tx {:db {:order (misa.replace
+                                                                        (append tx.db.order :before))}}))
                                  :id :trace}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db event cofx]
                                     (assert (= cofx.config.nested.value 7))
-                                    (tset db.order (+ (length db.order) 1)
-                                          (.. "first:" cofx.ordered))
-                                    {: db :fx [{:type :test/next}]})})
+                                    {:patch {:order (misa.replace (append db.order (.. "first:" cofx.ordered)))}
+                                     :fx [{:type :test/next}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (tset db.order (+ (length db.order) 1)
-                                          :second)
-                                    {: db})})
+                                    {:patch {:order (misa.replace (append db.order :second))}})})
           (table.insert setup-fx
                         {:type :register/fx
                          :name :test/next

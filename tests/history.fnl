@@ -13,28 +13,23 @@
                          :name :editor/restore
                          :handler (fn [db event]
                                     (assert (= event.replace true))
-                                    (set db.editor.text event.text)
-                                    (set db.editor.cursor
-                                         (or event.cursor (length event.text)))
-                                    (set db.editor.attachments
-                                         event.attachments)
-                                    {: db})})
+                                    {:patch {:editor {:text event.text
+                                                      :cursor (or event.cursor (length event.text))
+                                                      :attachments (misa.replace event.attachments)}}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/editor
                          :handler (fn [db event]
-                                    (set db.editor
+                                    {:patch {:editor (misa.replace
                                          {:attachments (or event.attachments {})
                                           :cursor (or event.cursor
                                                       (length event.text))
-                                          :text event.text})
-                                    {: db})})
+                                          :text event.text})}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :terminal/input
                          :handler (fn [db]
-                                    (set db.unhandled (+ (or db.unhandled 0) 1))
-                                    {: db})})
+                                    {:patch {:unhandled (+ (or db.unhandled 0) 1)}})})
           (step {:prompt :one :type :agent/submitted})
           (step {:prompt :one :type :agent/submitted}
                 (fn [db]
@@ -118,8 +113,7 @@ second line"))
                                      (length db.history.entries))
                                   :one))
                           "history loading lost recent submissions or exceeded its entry bound")
-                  (set db.history_test_count (length db.history.entries))
-                  nil))
+                  {:history_test_count (length db.history.entries)}))
           (step {:prompt (string.rep :x (+ (or config.max_bytes 65536) 1))
                  :type :agent/submitted}
                 (fn [db]
@@ -130,8 +124,7 @@ second line"))
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (set db.editor {:cursor 0 :text ""})
-                                    {: db
+                                    {:patch {:editor (misa.replace {:cursor 0 :text ""})}
                                      :fx [{:event {:index 1
                                                    :type :test/history-step}
                                            :type :dispatch}]})})
@@ -141,12 +134,10 @@ second line"))
                          :handler (fn [db event]
                                     (local item (. steps event.index))
                                     (if (not item)
-                                        {: db
-                                         :fx [{:lines [{:spans [{:text :history}]}]
+                                        {:fx [{:lines [{:spans [{:text :history}]}]
                                                :type :view/commit}
                                               {:type :app/quit}]}
-                                        {: db
-                                         :fx [{:event item.event
+                                        {:fx [{:event item.event
                                                :type :dispatch}
                                               {:event {:index event.index
                                                        :type :test/history-wait}
@@ -155,25 +146,22 @@ second line"))
                         {:type :register/event
                          :name :test/history-wait
                          :handler (fn [db event]
-                                    {: db
-                                     :fx [{:event {:index event.index
+                                    {:fx [{:event {:index event.index
                                                    :type :test/history-wait-again}
                                            :type :dispatch}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/history-wait-again
                          :handler (fn [db event]
-                                    {: db
-                                     :fx [{:event {:index event.index
+                                    {:fx [{:event {:index event.index
                                                    :type :test/history-check}
                                            :type :dispatch}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :test/history-check
                          :handler (fn [db event]
-                                    (when (. steps event.index :check)
-                                      ((. steps event.index :check) db))
-                                    {: db
+                                    (local check (. steps event.index :check))
+                                    {:patch (and check (check db))
                                      :fx [{:event {:index (+ event.index 1)
                                                    :type :test/history-step}
                                            :type :dispatch}]})})

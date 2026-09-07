@@ -133,7 +133,7 @@ For example, a Fennel extension can declare an event handler and a shared servic
 {:setup (fn [context]
   {:fx [{:type :register/event :name :app/start
          :handler (fn [db event cofx]
-                    {:db db :fx [{:type :dispatch
+                    {:fx [{:type :dispatch
                                  :event {:type :example/ready}}]})}
         {:type :register/service :name :example
          :value {:enabled (. context.config :example)}}]})}
@@ -141,9 +141,12 @@ For example, a Fennel extension can declare an event handler and a shared servic
 
 Registration effects use these payloads:
 
-- `{type="register/event", name=type, handler=fn}`: handlers run in registration order and thread
-  canonical application `db`. A handler receives `(db, event, cofx)` and returns nil or
-  `{db=<table>, fx=<ordered array>}`.
+- `{type="register/event", name=type, handler=fn}`: handlers run in registration order and
+  update canonical application state. A handler receives `(db, event, cofx)` and returns nil or
+  `{patch=<map>, fx=<ordered array>}`. Patches recursively merge maps, replace vectors and
+  scalar values, preserve identity for untouched branches, and support `(misa.replace value)`
+  and `misa.delete`. Returning `{db=<table>}` is rejected, including from Lua extensions.
+  Treat input state as immutable; allocate new data or use `misa.patch` for updates.
 - `{type="register/interceptor", value={id=..., before=fn?, after=fn?}}`: before callbacks run
   in registration order and after callbacks in reverse. They receive and may
   return `{db,event,cofx,fx}`.
@@ -160,6 +163,11 @@ Registration effects use these payloads:
 - `{type="register/fx", name=type, handler=fn}`: translates a Fennel policy effect to one native effect
   or an ordered array of native effects.
 - `{type="register/view", handler=fn}`: registers exactly one semantic projection.
+- `{type="register/sub", value={id=..., inputs=fn, compute=fn}}` (or `value={id=..., read=fn}`): registers a pure
+  query projection. Call it as `misa.sub(db, [id, ...args])`; `inputs` returns query vectors
+  and `compute` receives their values. Results are memoized by input identity across view passes
+  and within each pass. See [subscription contracts](docs/subscriptions.md) for nullable
+  inputs, bounded consumer scopes, and speculative commit/rollback.
 - `{type="register/view-layer", id=id, handler=fn}`: contributes an optional semantic overlay layer;
   the highest `priority` wins (default 0), allowing temporary palettes above
   input docks for selection and attachments, and modal dialogs;
@@ -171,6 +179,8 @@ Registration effects use these payloads:
 - `{type="register/auth-provider", value=provider}`: declares an authentication ID, model
   provider, native `strategy`, and (for OAuth) trusted endpoint `profile` for
   completion and availability tracking. Native validation rejects drift.
+  `misa.auth_provider(id)` and `misa.auth_provider_for_model(id)` look up declarations
+  in the live registry, including providers registered later during setup.
 - `{type="register/command", value={name,description,event,completion?,complete?}}`: adds a
   generic slash command. `completion` names a shared static candidate group;
   `complete(prefix,db)` supplies dynamic candidates when needed.
@@ -178,8 +188,6 @@ Registration effects use these payloads:
   a candidate to a shared completion group. The UI handles filtering, sorting,
   display, and insertion, so providers only declare their authentication ID.
 - `{type="register/tool", value=tool}`: adds a semantic tool schema and its effect type.
-  `misa.auth_provider(id)` and `misa.auth_provider_for_model(id)` look up declarations
-  in the live registry, including providers registered later during setup.
   `misa.models()`, `misa.model(id)`, `misa.auth_providers()`, `misa.commands()`, `misa.command(name)`,
   `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
 - `{type="register/service", name="namespace.member", value=value}` exports a
@@ -211,11 +219,15 @@ loading run on native workers with a reusable parser cache. Missing, unknown,
 incompatible, or timed-out grammars produce plain-text fallback. Source is
 limited to 1 MiB. There is no synchronous highlighting API on `misa`.
 Recursive dispatch is
-unavailable. Each transaction takes one bounded working copy of `db`, then
-commits it only after its effects and semantic view pass native validation.
-Native frame construction and terminal writes follow asynchronously; output
-failures end the session. Projections receive private snapshots, so projection mutation can
-never change transactional state. Extensions must
+unavailable. State commits retain unchanged branches by identity, so subscriptions can cheaply
+reuse projections that do not depend on the changed paths. Handlers, coeffect derivations,
+interceptors, and projections receive persistent state directly: dispatch does not clone or
+reconcile the database. Interceptors update state with `misa.patch`, not nested mutation.
+These are ordinary tables, not write-protected proxies; mutating shared input violates the
+contract and cannot be rolled back. Valid patches and subscription memoization commit only
+after native validation succeeds. Views receive the pending state before that validation.
+Native frame construction and terminal writes follow asynchronously; output failures end
+the session. Extensions must
 not write or render: `io`, `os`, and `print` are unavailable. Ordinary Lua
 source composition (`require`, `load`, `loadfile`, and `dofile`) remains
 available, while native `package.loadlib`, FFI, and JIT access are disabled.
@@ -520,14 +532,6 @@ request IDs and promotes a completed assistant response into provider history;
 an interrupted response remains marked in the visible transcript but is not
 replayed to the provider.
 
-`indicators` is a focused registry for semantic status values. Features return
-`{type="register/indicator", value={id,label?,icon?,hotkey?,value=function(db)...end}}`
-in their setup effects.
-`config.status.indicators` selects order, label/icon representation, an optional
-structured keybinding reminder, and drop priority. The common component styles the standard
-`label`, `value`, and `keybinding` tokens independently and
-removes low-priority items at narrow widths. Standard registrations cover
-activity, model, effort (with its cycle hotkey), session usage, context usage,
 Agent delta assembly is extensible through
 `{type="register/agent-delta", id="my_delta", value=function(stream, delta, request_id) ... end}`.
 Pure handlers return `{patch=<stream-state patch>, fx=<ordered array>}` or nil.
@@ -547,13 +551,14 @@ return `{role=<component role>, model=<additional render fields>}` or nil to omi
 the block. Selection is nil for other blocks. These projections choose rendering
 without changing transcript facts or the component's returned line collection.
 
-Agent delta assembly is extensible through
-`{type="register/agent-delta", id="my_delta", value=function(stream, delta, request_id) ... end}`.
-Pure handlers return `{patch=<stream-state patch>, fx=<ordered array>}` or nil.
-The agent applies request/cancellation correlation before dispatch. Handlers
-assemble canonical text, thinking, or tool-call blocks and emit transcript
-events; they do not mutate prior stream state or append conversation history.
-
+`indicators` is a focused registry for semantic status values. Features return
+`{type="register/indicator", value={id,label?,icon?,hotkey?,value=function(db)...end}}`
+in their setup effects.
+`config.status.indicators` selects order, label/icon representation, an optional
+structured keybinding reminder, and drop priority. The common component styles the standard
+`label`, `value`, and `keybinding` tokens independently and
+removes low-priority items at narrow widths. Standard registrations cover
+activity, model, effort (with its cycle hotkey), session usage, context usage,
 and transcript detail (`summary`/`verbose`). Root composition stays generic.
 
 `request_options` derives request readiness and selected option values entirely
@@ -622,6 +627,10 @@ kept only for that choice session and never changes purpose defaults.
 
 `dialogs` owns correlated modal/progress/alert lifecycle, actions, cancellation,
 and optional text input. Tab or Left/Right selects among multiple actions.
+Dialog handlers return patches. Additional ordinary input kinds use
+`{type="register/dialog-input", id="my_input", value=function(dialog, event) ... end}`;
+the pure handler returns `{patch=<application patch>, fx=<array>}`. Protected
+dialogs bypass ordinary input handlers entirely.
 A protected dialog starts `input/protected` for a waiting native operation and
 correlation. Its bounded 64 KiB buffer stays native; Lua receives only length,
 submission/cancellation, and capacity-error metadata. Buffered input is held
@@ -630,10 +639,6 @@ so a pasted key cannot fall through into a conversation.
 `dialog_view` projects that state through the replaceable
 `dialog` component role. Dialog data and hints are generic—providers do not own
 UI paths or rendering. Default dialogs are compact overlays that retain the
-Dialog handlers return patches. Additional ordinary input kinds use
-`{type="register/dialog-input", id="my_input", value=function(dialog, event) ... end}`;
-the pure handler returns `{patch=<application patch>, fx=<array>}`. Protected
-dialogs bypass ordinary input handlers entirely.
 transcript, with clickable URLs and wrapped input. `picker` is only the overlay lifecycle adapter and
 `picker_view` renders the centralized projection. `commands` normalizes every
 typed, picked, or replayed command into one canonical invocation and records
@@ -797,14 +802,6 @@ zero-based, half-open byte offsets. `selection_document` derives semantic
 ranges from Markdown and lazily supplies finer ranges; selection policy and
 rendering can both be replaced independently.
 
-## Nix
-
-The package and development shell include every grammar from the pinned
-nixpkgs using
-`pkgs.tree-sitter.withPlugins (_: pkgs.tree-sitter-grammars.allGrammars)`.
-The bundle contains parsers but no highlight queries; Misa classifies syntax
-node types generically. Fence aliases include common labels such as `js`, `ts`,
-`py`, `rb`, `rs`, `sh`, `c++`, `c#`, `yml`, and `md`.
 Within a document, `v` anchors a visual range and sibling motions extend it;
 `v` again returns to the focused node. Changing structural depth or documents
 resets the range. Selection actions are extensible through
@@ -813,6 +810,19 @@ Pure handlers return `{state=<new selection state>, fx=<array>, close=<boolean>}
 Omitted state is unchanged; `close=true` dismisses selection. Copying is one
 action, not a requirement of navigation or range projection.
 
+## Nix
+
+NixOS, nix-darwin, and home-manager expose the same
+`programs.misa.extensions` option. Nix path values select custom extensions;
+bare strings must be catalog IDs. Generated config is world-readable in the
+Nix store, so it must not contain secrets.
+
+The package and development shell include every grammar from the pinned
+nixpkgs using
+`pkgs.tree-sitter.withPlugins (_: pkgs.tree-sitter-grammars.allGrammars)`.
+The bundle contains parsers but no highlight queries; Misa classifies syntax
+node types generically. Fence aliases include common labels such as `js`, `ts`,
+`py`, `rb`, `rs`, `sh`, `c++`, `c#`, `yml`, and `md`.
 
 Outside Nix, install tree-sitter (including its pkg-config metadata) and point
 `MISA_TREE_SITTER_DIR` at a directory of `<language>.so` parsers. A default can
@@ -886,17 +896,17 @@ OpenAI-compatible delta projections can be extended with
 `{type="register/openai-delta", id="my_delta", value=function(delta, record) ... end}`.
 Pure projections return arrays of normalized agent deltas and run in registration
 order, after the built-in text, reasoning, and tool-call projections.
-Its record handlers are pure and extensible through
-`{type="register/codex-record", id="record.type", value=function(state, record, request_id) ... end}`.
-Handlers return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`.
-Completion records mark `terminal=true`; failures mark `failed=true`. Either
-stops subsequent records from emitting output for that stream.
 Anthropic-compatible streams expose `register/anthropic-record`,
 `register/anthropic-block-start`, and `register/anthropic-block-delta` with `id`
 and `value` fields. Pure handlers receive `(state, record, request_id, provider)`
 and return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`. This keeps
 signed provider state separate from visible thinking deltas. Terminal handlers
 set `terminal=true` or `failed=true` and request `finish=true`.
+Codex record handlers are pure and extensible through
+`{type="register/codex-record", id="record.type", value=function(state, record, request_id) ... end}`.
+Handlers return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`.
+Completion records mark `terminal=true`; failures mark `failed=true`. Either
+stops subsequent records from emitting output for that stream.
 
 Claude CLI records expose `register/claude-record` and
 `register/claude-stream-event`, with `id` and `value` fields. Pure handlers receive

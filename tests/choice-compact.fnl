@@ -3,15 +3,15 @@
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
-                         :handler (fn [db]
-                                    (set db.preferences
-                                         {:scopes {:models {:one {:last 3
+                         :handler (fn [state]
+                                    (local db (misa.patch state
+                                         {:preferences (misa.replace {:scopes {:models {:one {:last 3
                                                                   :uses 3}
                                                             :three {:last 1
                                                                     :uses 1}
                                                             :two {:favorite true
                                                                   :last 2
-                                                                  :uses 2}}}})
+                                                                  :uses 2}}}})}))
                                     (local items {})
                                     (each [_ id (ipairs [:one
                                                          :two
@@ -152,8 +152,7 @@
                                               "expanded completions exceeded the screen budget")
                                       (set expanded (. (misa.choice_input expanded
                                                          {:action :next} db) :session)))
-                                    {: db
-                                     :fx [{:lines [{:spans [{:text "compact choices"}]}]
+                                    {:fx [{:lines [{:spans [{:text "compact choices"}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})})
           nil

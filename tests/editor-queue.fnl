@@ -34,12 +34,11 @@
 (misa._setup_effects {:fx [{:type :register/event
                             :name :app/start
                             :handler (fn [state]
-                                       (set state.models
+                                       {:patch {:models
                                             {:entries [{:id :capture/model
                                                         :model :model
                                                         :provider :capture}]
-                                             :selected :capture/model})
-                                       {:db state})}]})
+                                             :selected :capture/model}}})}]})
 
 (misa._setup_effects {:fx [{:type :register/event
                             :name :test/read
@@ -48,16 +47,12 @@
 (misa._setup_effects {:fx [{:type :register/event
                             :name :test/attachment
                             :handler (fn [state event]
-                                       (set state.editor.attachments
-                                            event.attachments)
-                                       {:db state})}]})
+                                       {:patch {:editor {:attachments (misa.replace event.attachments)}}})}]})
 
 (misa._setup_effects {:fx [{:type :register/event
                             :name :test/exit-after-response
                             :handler (fn [state]
-                                       (set state.agent.exit_after_response
-                                            true)
-                                       {:db state})}]})
+                                       {:patch {:agent {:exit_after_response true}}})}]})
 
 (misa._seal context)
 

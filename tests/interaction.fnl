@@ -28,8 +28,7 @@
                         {:type :register/event
                          :name :test/custom
                          :handler (fn [db]
-                                    (set db.custom_action true)
-                                    {: db :fx [{:type :terminal/read}]})})
+                                    {:patch {:custom_action true} :fx [{:type :terminal/read}]})})
           (local steps {})
 
           (fn step [event check]
@@ -277,12 +276,10 @@ A paragraph.
                          :handler (fn [db event]
                                     (local current (. steps event.index))
                                     (if (not current)
-                                        {: db
-                                         :fx [{:lines [{:spans [{:text :interaction}]}]
+                                        {:fx [{:lines [{:spans [{:text :interaction}]}]
                                                :type :view/commit}
                                               {:type :app/quit}]}
-                                        {: db
-                                         :fx [{:event current.event
+                                        {:fx [{:event current.event
                                                :type :dispatch}
                                               {:event {:index event.index
                                                        :type :interaction/check}
@@ -293,8 +290,7 @@ A paragraph.
                          :handler (fn [db event]
                                     ;; Follow-up effects (clipboard/copy, picker/open) are queued after this
                                     ;; transaction; an extra event places the check behind those effects.
-                                    {: db
-                                     :fx [{:event {:index event.index
+                                    {:fx [{:event {:index event.index
                                                    :type :interaction/assert}
                                            :type :dispatch}]})})
           (table.insert setup-fx
@@ -308,8 +304,7 @@ A paragraph.
                                               (.. "interaction step "
                                                   event.index ": "
                                                   (tostring err))))
-                                    {: db
-                                     :fx [{:event {:index (+ event.index 1)
+                                    {:fx [{:event {:index (+ event.index 1)
                                                    :type :interaction/step}
                                            :type :dispatch}]})})
           nil
