@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "persistent patch data and sharing contracts" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/state-patches.fnl"} }, "state patch contracts passed\n");
+}
+
 test "async syntax memo preserves rollback and coalesces streaming requests" {
     var h = try Harness.init();
     defer h.deinit();
