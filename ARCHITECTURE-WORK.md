@@ -51,6 +51,14 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Kimi coding-plan retrieval now handles the open `usage/refresh` event with a
+credential-referenced regional `/usages` HTTP request. Completion normalizes quota
+windows, rejects superseded responses, and dispatches `usage/updated`; the shared
+dashboard refreshes its semantic sections only while open. Tests cover request
+descriptors, region selection, missing/malformed data, numeric quotas, stale
+results, and closed-dialog behavior. No live account was queried. Claude/Codex
+retrieval, selected-provider widgets, and authenticated acceptance remain pending.
+
 Structural visual ranges now retain a document-position anchor across depth and
 document navigation. `selection_ranges` exposes ordered frozen source slices;
 copy joins those slices while per-document projection drives transcript freezing

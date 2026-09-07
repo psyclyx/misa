@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "Kimi usage requests preserve credential boundaries and reject stale results" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/kimi-usage.fnl"} }, "Kimi usage contracts passed\n");
+}
+
 test "subscription memoization commits and rolls back with state" {
     var h = try Harness.init();
     defer h.deinit();

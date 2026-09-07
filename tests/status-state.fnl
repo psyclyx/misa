@@ -43,6 +43,16 @@
 (assert (= (. effects 1 :event :type) :dialog/open))
 (assert (= (. effects 1 :event :message) nil) "dashboard inserted pre-rendered text")
 (assert (= (. effects 1 :event :sections 2 :fields 1 :value) 0))
+(assert (= (. effects 2 :event :type) :usage/refresh))
+(local quota-db (misa.patch initial {:dialog {:id :usage}
+                                   :providers {:kimi {:usage {:windows [{:label "Weekly" :used 25
+                                                                        :limit 100 :remaining 75}]}}}}))
+(local (_ refreshed) (transition quota-db {:type :usage/updated}))
+(assert (= (. refreshed 1 :event :type) :dialog/update))
+(assert (= (. refreshed 1 :event :sections 3 :fields 3 :value) 25)
+        "quota number was formatted before presentation")
+(local (_ closed-refresh) (transition initial {:type :usage/updated}))
+(assert (= (length closed-refresh) 0) "usage completion reopened a closed dashboard")
 (local provider-db (misa.patch initial {:providers {:z {:subscription_type :Max :usage {:used 1}}
                                                    :a {:usage {:unavailable true}}}
                                        :status {:provider_usage {:z {:used 0}}}}))

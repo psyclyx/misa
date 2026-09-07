@@ -733,6 +733,17 @@ composition. Interactive sessions return to the editor after each response;
 explicit argv remains a single headless turn.
 
 `costs` exposes model rates, response totals, and a session status indicator.
+`/usage` opens the shared dashboard and dispatches `usage/refresh`; provider
+extensions can handle that event independently. Kimi fetches `/usages` from its
+configured regional coding API using the stored `kimi-coding` credential. Its
+weekly and additional quota windows remain numeric data, including known used,
+remaining, limit, and reset values. Results update an open usage dashboard;
+closing it does not cancel the request or reopen the dialog on completion.
+`config.providers.kimi.usage_url` can override the quota endpoint explicitly.
+Failures or responses without usable windows display unavailable, not zero usage.
+This integration follows [Kimi Code's usage implementation](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/ui/shell/usage.py).
+Claude and Codex OAuth coding-plan retrieval and selected-provider quota widgets
+remain unfinished.
 Provider-reported USD takes precedence over estimates; missing prices remain
 explicitly unknown. Dynamic provider metadata supplies prices where available.
 `config.costs.models["provider/model-id"]` overrides `input`, `output`,

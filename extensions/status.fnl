@@ -44,13 +44,20 @@
   (each [_ provider (ipairs ids)]
     (local details (. providers provider))
     (local usage details.usage)
+    (local fields [{:label "Plan" :value details.plan}
+                   {:label "Plan usage"
+                    :value (if (= (type usage) :table)
+                               (or usage.summary usage.used
+                                   (if (> (length (or usage.windows [])) 0) "Available" "Unavailable"))
+                               (or usage "Unavailable"))}])
+    (each [_ window (ipairs (or (and (= (type usage) :table) usage.windows) []))]
+      (each [_ field (ipairs [{:key :used :label "used"} {:key :limit :label "limit"}
+                              {:key :remaining :label "remaining"} {:key :reset_at :label "resets at"}])]
+        (when (not= (. window field.key) nil)
+          (table.insert fields {:label (.. (or window.label "Quota") " " field.label)
+                                :value (. window field.key)}))))
     (table.insert sections
-                  {:id provider :title provider
-                   :fields [{:label "Plan" :value details.plan}
-                            {:label "Plan usage"
-                             :value (if (= (type usage) :table)
-                                        (or usage.summary usage.used "Unavailable")
-                                        (or usage "Unavailable"))}]}))
+                  {:id provider :title provider : fields}))
   sections)
 
 
@@ -98,7 +105,13 @@
                                      :event {:type :dialog/open :id :usage :title "Usage"
                                              :sections (usage-sections db)
                                              :actions [{:id :close :label "Close" :primary true}]
-                                             :cancellable true :completion :usage/close :correlation :usage}}]})}
+                                             :cancellable true :completion :usage/close :correlation :usage}}
+                                    {:type :dispatch :event {:type :usage/refresh}}]})}
+                  {:type :register/event :name :usage/updated
+                   :handler (fn [db]
+                              (when (and db.dialog (= db.dialog.id :usage))
+                                {:fx [{:type :dispatch :event {:type :dialog/update :id :usage
+                                                              :correlation :usage :sections (usage-sections db)}}]}))}
                   {:type :register/event :name :usage/close :handler (fn [] nil)}])
           (when (misa.has_setup_effect :register/indicator)
             (each [_ value (ipairs indicators)]
