@@ -73,6 +73,12 @@ test "long messages preserve text and Markdown styling" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/long-messages.fnl"} }, "long message regressions passed\n");
 }
 
+test "image acquisition preserves state across asynchronous transitions" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/image-state.fnl"} }, "image state properties passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

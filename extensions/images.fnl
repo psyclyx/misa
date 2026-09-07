@@ -7,8 +7,10 @@
           (local config (or (. (or context.config {}) :images) {}))
 
           (fn state [db]
-            (set db.images (or db.images {:next_id 0 :pending {}}))
-            db.images)
+            (or db.images {:next_id 0 :pending {}}))
+
+          (fn updated [current patch fx]
+            {:patch {:images (misa.replace (misa.patch current patch))} : fx})
 
           (table.insert setup-fx
                         {:type :register/interceptor
@@ -56,25 +58,23 @@
 
           (fn request [db event paste]
             (local current (state db))
-            (set current.next_id (+ current.next_id 1))
-            (local id (.. "image:" current.next_id))
-            (tset current.pending id true)
+            (local next-id (+ current.next_id 1))
+            (local id (.. "image:" next-id))
             (local effect
                    {:completion :images/loaded
                     : id
-                    :type (or (and paste :image/paste) :image/load)})
-            (if paste (set effect.argv config.clipboard_command)
-                (set effect.path (or event.path event.arguments)))
+                    :type (if paste :image/paste :image/load)
+                    :argv (when paste config.clipboard_command)
+                    :path (when (not paste) (or event.path event.arguments))})
             (if (and (not paste)
                      (or (not= (type effect.path) :string) (= effect.path "")))
-                (do
-                  (tset current.pending id nil)
-                  {: db
-                   :fx [{:event {:level :error
+                (updated current {:next_id next-id}
+                         [{:event {:level :error
                                  :text "Use /image <path.png or path.jpg>"
                                  :type :transcript/harness}
-                         :type :dispatch}]})
-                {: db :fx [effect {:type :terminal/read}]}))
+                         :type :dispatch}])
+                (updated current {:next_id next-id :pending {id true}}
+                         [effect {:type :terminal/read}])))
 
           (table.insert setup-fx
                         {:type :register/event
@@ -91,17 +91,17 @@
                                     (local current (state db))
                                     (if (not (. current.pending event.id)) nil
                                         (do
-                                          (tset current.pending event.id nil)
+                                          (local patch {:pending {event.id misa.delete}})
                                           (if (not event.ok)
-                                              {: db
-                                               :fx [{:event {:level :error
+                                              (updated current patch
+                                                       [{:event {:level :error
                                                              :text (.. "Image: "
                                                                        (tostring (or (or event.message
                                                                                          event.stderr)
                                                                                      "could not load")))
                                                              :type :transcript/harness}
                                                      :type :dispatch}
-                                                    {:type :terminal/read}]}
+                                                    {:type :terminal/read}])
                                               (do
                                                 (local data event.data)
                                                 (local attachment
@@ -114,11 +114,11 @@
                                                                  :type :base64}
                                                         :type :image
                                                         :width data.width})
-                                                {: db
-                                                 :fx [{:event {: attachment
+                                                (updated current patch
+                                                         [{:event {: attachment
                                                                :type :editor/attach}
                                                        :type :dispatch}
-                                                      {:type :terminal/read}]})))))})
+                                                      {:type :terminal/read}]))))))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/reset
@@ -127,6 +127,5 @@
                                     (each [id (pairs (. (state db) :pending))]
                                       (tset fx (+ (length fx) 1)
                                             {: id :type :operation/cancel}))
-                                    (set db.images.pending {})
-                                    {: db : fx})})
+                                    (updated (state db) {:pending (misa.replace {})} fx))})
           {:fx setup-fx})}
