@@ -176,71 +176,50 @@
                                    :label :cost
                                    :value (fn [db]
                                             (. (misa.costs_projection db) :text))}}))
+          (fn reset [_ _event]
+            {:costs (misa.replace {:responses {}})})
+          (fn response-patch [id response]
+            {:costs {:responses {id (misa.replace response)}}})
+          (fn complete [db event]
+            (local response (or (. db.costs.responses event.response_id)
+                                (when event.model
+                                  {:model event.model
+                                   :pricing (model-rates db event.model)})))
+            (when response
+              (local usage (misa.patch (or event.usage {})
+                                      {:cost_usd event.cost_usd}))
+              (response-patch event.response_id
+                              (misa.patch response
+                                          {:cost (misa.replace
+                                                   (estimate response.pricing usage))}))))
+          (local transitions
+                 {:app/start reset
+                  :transcript/reset reset
+                  :transcript/response-start
+                  (fn [db event]
+                    (when (and db.costs event.model)
+                      (response-patch event.response_id
+                                      {:model event.model
+                                       :pricing (model-rates db event.model)})))
+                  :transcript/response-end
+                  (fn [db event] (when db.costs (complete db event)))
+                  :transcript/response-interrupted
+                  (fn [db event]
+                    (local response (and db.costs (. db.costs.responses event.response_id)))
+                    (when response
+                      (response-patch event.response_id
+                                      (misa.patch response
+                                                  {:cost (misa.replace
+                                                           (if event.usage
+                                                               (estimate response.pricing event.usage)
+                                                               {:estimated true :unknown true :usd 0}))}))))})
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (local event tx.event)
-                                           (if (or (= event.type :app/start)
-                                                   (= event.type
-                                                      :transcript/reset))
-                                               (do
-                                                 (set tx.db.costs
-                                                      {:responses {}})
-                                                 tx)
-                                               (do
-                                                 (local state tx.db.costs)
-                                                 (if (not state) tx
-                                                     (do
-                                                       (if (and (= event.type
-                                                                   :transcript/response-start)
-                                                                event.model)
-                                                           (tset state.responses
-                                                                 event.response_id
-                                                                 {:model event.model
-                                                                  :pricing (model-rates tx.db
-                                                                                        event.model)})
-                                                           (= event.type
-                                                              :transcript/response-end)
-                                                           (do
-                                                             (var response
-                                                                  (. state.responses
-                                                                     event.response_id))
-                                                             (when (and (not response)
-                                                                        event.model)
-                                                               (set response
-                                                                    {:model event.model
-                                                                     :pricing (model-rates tx.db
-                                                                                           event.model)})
-                                                               (tset state.responses
-                                                                     event.response_id
-                                                                     response))
-                                                             (when response
-                                                               (local usage {})
-                                                               (each [key value (pairs (or event.usage
-                                                                                           {}))]
-                                                                 (tset usage
-                                                                       key value))
-                                                               (when (not= event.cost_usd
-                                                                           nil)
-                                                                 (set usage.cost_usd
-                                                                      event.cost_usd))
-                                                               (set response.cost
-                                                                    (estimate response.pricing
-                                                                              usage))))
-                                                           (= event.type
-                                                              :transcript/response-interrupted)
-                                                           (do
-                                                             (local response
-                                                                    (. state.responses
-                                                                       event.response_id))
-                                                             (when response
-                                                               (set response.cost
-                                                                    (or (and event.usage
-                                                                             (estimate response.pricing
-                                                                                       event.usage))
-                                                                        {:estimated true
-                                                                         :unknown true
-                                                                         :usd 0})))))
-                                                       tx)))))
+                                           (local transition (. transitions tx.event.type))
+                                           (local patch (and transition (transition tx.db tx.event)))
+                                           (when patch
+                                             (set tx.db (misa.patch tx.db patch)))
+                                           tx)
                                  :id :costs/account}})
           {:fx setup-fx})}

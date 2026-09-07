@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "response cost updates retain earlier snapshots" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/cost-state.fnl"} }, "cost state contracts passed\n");
+}
+
 test "animation state and timer transition properties" {
     var h = try Harness.init();
     defer h.deinit();
