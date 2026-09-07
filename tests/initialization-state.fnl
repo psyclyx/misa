@@ -12,7 +12,7 @@
                (not= spec.value.id :models/input))
       (table.insert initializers spec.value)))
   (misa._setup_effects specs))
-(assert (= (length initializers) 5))
+(assert (= (length initializers) 2))
 (local initial {:db {:unrelated {:value true}} :event {:type :app/start}
                 :cofx context :fx []})
 (var tx initial)
@@ -29,9 +29,11 @@
   (assert (= (policy.before idle) idle))
   (set tx result))
 (assert (= initial.db.themes nil))
-(assert (= tx.db.themes.active :default))
-(assert tx.db.components.roles)
-(assert (= tx.db.animations.active :default))
+;; Presentation owners initialize in app/start handlers, covered separately by
+;; presentation-startup.fnl. Only auth and models still require this cutover.
+(assert (= tx.db.themes nil))
+(assert (= tx.db.components nil))
+(assert (= tx.db.animations nil))
 (assert tx.db.auth_startup.ready)
 (assert tx.db.models.entries)
 (output "initialization transaction ownership passed\n")

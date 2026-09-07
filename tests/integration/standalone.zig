@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "presentation startup is owned by event handlers" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/presentation-startup.fnl"} }, "presentation startup contracts passed\n");
+}
+
 test "Claude usage control requests preserve isolation and reject stale results" {
     var h = try Harness.init();
     defer h.deinit();

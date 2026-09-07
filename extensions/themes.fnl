@@ -330,20 +330,14 @@
                                           (.. "unknown theme: " (tostring id)))
                                   (misa.patch db {:themes {:active id}}))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (= tx.event.type :app/start) (not tx.db.themes))
-                                               (misa.patch tx {:db {:themes {:active configured}}})
-                                               tx))
-                                 :id :themes/initialize}})
-          (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (if (= config.persist false) nil
-                                        {:fx [{:completion :themes/loaded
+                                    {:patch (when (not db.themes) {:themes {:active configured}})
+                                     :fx (when (not= config.persist false)
+                                          [{:completion :themes/loaded
                                                :namespace :ui.theme
-                                               :type :state/load}]}))})
+                                               :type :state/load}])})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :themes/loaded

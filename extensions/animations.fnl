@@ -171,39 +171,28 @@
                 (misa.patch db {:animations {:running {role misa.delete}}}))))
 
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (= tx.event.type :app/start) (not tx.db.animations))
-                                             (do
-                                               (local roles {})
-                                               (each [role id (pairs configured-roles)]
-                                                 (assert (and (and (and (= (type role)
-                                                                           :string)
-                                                                        (not= role
-                                                                              ""))
-                                                                   (= (type id)
-                                                                      :string))
-                                                              (. entries id))
-                                                         "invalid configured animation role")
-                                                 (tset roles role id))
-                                               (misa.patch tx
-                                                    {:db {:animations (misa.replace {:active configured
-                                                     : roles
-                                                     :running {}
-                                                     :ticks {}})}}))
-                                             tx))
-                                 :id :animations/initialize}})
-          (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (assert (. entries db.animations.active)
+                                    (local initial
+                                           (when (not db.animations)
+                                             {:active configured :running {} :ticks {}
+                                              :roles (collect [role id (pairs configured-roles)]
+                                                       (do (assert (and (= (type role) :string)
+                                                                    (not= role "")
+                                                                    (= (type id) :string)
+                                                                    (. entries id))
+                                                               "invalid configured animation role")
+                                                           (values role id)))}))
+                                    (local active (. (or db.animations initial) :active))
+                                    (assert (. entries active)
                                             (.. "unknown configured animation: "
-                                                (tostring db.animations.active)))
-                                    (if (= config.persist false) nil
-                                        {:fx [{:completion :animations/loaded
+                                                (tostring active)))
+                                    {:patch (when initial {:animations (misa.replace initial)})
+                                     :fx (when (not= config.persist false)
+                                          [{:completion :animations/loaded
                                                :namespace :ui.animation
-                                               :type :state/load}]}))})
+                                               :type :state/load}])})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :animations/loaded

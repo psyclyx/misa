@@ -33,6 +33,26 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Domain initialization belongs to event handlers (2026-09-07)
+
+Themes, component role selections, and animations now initialize in their owning
+`app/start` handlers, together with persistence-load effects. They no longer
+install global interceptors to recognize a single domain event. Existing state
+is preserved and disabling persistence does not disable initialization.
+`tests/presentation-startup.fnl` checks these contracts through direct handlers,
+including immutable inputs and configured role maps.
+
+The remaining auth and model initializers need coordinated consumer changes:
+agent startup reads authentication readiness and request-options startup reads
+model state. Merely moving those writes into handlers would make correctness
+depend on extension registration order. These are still unfinished, as are
+queue/image lifecycle guards. Input routing is a separate ordered concern.
+
+The presentation audit also identified queue/attachment controls bypassing
+component resolution, numeric status facts formatted before components receive
+them, indicator callbacks without declared query dependencies, and the legacy
+`status.metrics` rendering path. These remain part of the presentation cutover.
+
 ### On-demand Claude quota retrieval (2026-09-07)
 
 The installed Claude Code 2.1.261 accepts the first-party SDK's experimental

@@ -213,30 +213,22 @@
                                               (tostring id)))
                                   (misa.patch db {:components {:roles {role id}}}))})
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (= tx.event.type :app/start) (not tx.db.components))
-                                             (do
-                                               (local roles {})
-                                               (each [role id (pairs configured)]
-                                                 (when (not= role :persist)
-                                                   (assert (and (= (type role)
-                                                                   :string)
-                                                                (= (type id)
-                                                                   :string))
-                                                           "invalid configured component role")
-                                                   (tset roles role id)))
-                                               (misa.patch tx {:db {:components (misa.replace {: roles})}}))
-                                             tx))
-                                 :id :components/initialize}})
-          (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (if (= config.persist false) nil
-                                        {:fx [{:completion :components/loaded
+                                    (local initial
+                                           (when (not db.components)
+                                             {:roles (collect [role id (pairs configured)]
+                                                       (when (not= role :persist)
+                                                         (assert (and (= (type role) :string)
+                                                                      (= (type id) :string))
+                                                                 "invalid configured component role")
+                                                         (values role id)))}))
+                                    {:patch (when initial {:components (misa.replace initial)})
+                                     :fx (when (not= config.persist false)
+                                          [{:completion :components/loaded
                                                :namespace :ui.components
-                                               :type :state/load}]}))})
+                                               :type :state/load}])})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :components/loaded
