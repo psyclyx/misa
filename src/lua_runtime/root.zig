@@ -6,9 +6,9 @@ const c = @cImport({
     @cInclude("lualib.h");
 });
 
-const framework = @embedFile("framework.fnl");
-const state_updates = @embedFile("state.fnl");
-const subscriptions = @embedFile("subscriptions.fnl");
+const framework = @embedFile("misa_core_framework");
+const state_updates = @embedFile("misa_core_state");
+const subscriptions = @embedFile("misa_core_subscriptions");
 const fennel = @embedFile("vendor/fennel.lua");
 pub const max_nesting_depth: usize = 128;
 
@@ -77,8 +77,8 @@ pub const Runtime = struct {
         return self;
     }
 
-    /// Bootstrap the bundled compiler, register its require searcher, and
-    /// evaluate the framework with source maps retained for Fennel tracebacks.
+    /// Load build-translated core Lua with correlated Fennel source lines.
+    /// Retain the compiler and its require searcher for custom Fennel modules.
     fn initializeFennel(self: *Runtime) !void {
         const state = self.state;
         if (c.luaL_loadbuffer(state, fennel.ptr, fennel.len, "@fennel.lua") != 0) {
@@ -116,12 +116,9 @@ pub const Runtime = struct {
         c.lua_getfield(state, 1, "dofile");
         self.fennel_dofile_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
         self.pushTraceback();
-        c.lua_getfield(state, 1, "eval");
-        _ = c.lua_pushlstring(state, state_updates.ptr, state_updates.len);
-        c.lua_createtable(state, 0, 1);
-        _ = c.lua_pushstring(state, "state.fnl");
-        c.lua_setfield(state, -2, "filename");
-        if (c.lua_pcall(state, 2, 1, 2) != 0) {
+        if (c.luaL_loadbuffer(state, state_updates.ptr, state_updates.len, "@state.fnl") != 0 or
+            c.lua_pcall(state, 0, 1, 2) != 0)
+        {
             self.failLua("initializing state updates");
             return error.LuaInitializationFailed;
         }
@@ -130,12 +127,9 @@ pub const Runtime = struct {
         c.lua_pushvalue(state, 3);
         c.lua_setfield(state, -2, "misa.runtime.state");
         self.pop(3);
-        c.lua_getfield(state, 1, "eval");
-        _ = c.lua_pushlstring(state, subscriptions.ptr, subscriptions.len);
-        c.lua_createtable(state, 0, 1);
-        _ = c.lua_pushstring(state, "subscriptions.fnl");
-        c.lua_setfield(state, -2, "filename");
-        if (c.lua_pcall(state, 2, 1, 2) != 0) {
+        if (c.luaL_loadbuffer(state, subscriptions.ptr, subscriptions.len, "@subscriptions.fnl") != 0 or
+            c.lua_pcall(state, 0, 1, 2) != 0)
+        {
             self.failLua("initializing subscriptions");
             return error.LuaInitializationFailed;
         }
@@ -144,12 +138,9 @@ pub const Runtime = struct {
         c.lua_pushvalue(state, 3);
         c.lua_setfield(state, -2, "misa.runtime.subscriptions");
         self.pop(3);
-        c.lua_getfield(state, 1, "eval");
-        _ = c.lua_pushlstring(state, framework.ptr, framework.len);
-        c.lua_createtable(state, 0, 1);
-        _ = c.lua_pushstring(state, "framework.fnl");
-        c.lua_setfield(state, -2, "filename");
-        if (c.lua_pcall(state, 2, 0, 2) != 0) {
+        if (c.luaL_loadbuffer(state, framework.ptr, framework.len, "@framework.fnl") != 0 or
+            c.lua_pcall(state, 0, 0, 2) != 0)
+        {
             self.failLua("initializing misa API");
             return error.LuaInitializationFailed;
         }
@@ -592,6 +583,19 @@ test "native decoding rejection discards speculative subscription results" {
     var recovered = try runtime.dispatch("{\"type\":\"set\",\"value\":1}", clock);
     defer recovered.deinit();
     try runtime.commitTransaction();
+}
+
+test "translated core retains source locations and leaves bootstrap stack empty" {
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
+    defer runtime.deinit();
+    try std.testing.expectEqual(@as(c_int, 0), c.lua_gettop(runtime.state));
+    const source = "misa.patch(nil, {})";
+    runtime.pushTraceback();
+    try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@core-diagnostics.lua"));
+    try std.testing.expect(c.lua_pcall(runtime.state, 0, 0, 1) != 0);
+    runtime.failLua("core diagnostic probe");
+    try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "state.fnl:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "patch state must be a table") != null);
 }
 
 test "bundled Fennel loads extensions after framework restrictions" {

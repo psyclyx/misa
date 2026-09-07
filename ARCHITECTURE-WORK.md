@@ -51,6 +51,15 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The bundled runtime core now joins installed extensions in build-time Fennel
+translation. Core Lua source is embedded through declared generated-file inputs;
+the compiler remains available for custom modules. Release/baseline tests cover
+bootstrap stack cleanup, core source locations, and custom Fennel failures.
+Interleaved native startup-through-EOF measurement fell from 81.000 ms median to
+33.557 ms (ten runs per binary, identical output); see
+`benchmarks/core-startup-2026-09-07.md`. Interactive readiness and rendering/streaming
+costs still need their own evidence.
+
 Editing before/after policies, startup initializers (themes, components,
 animations, auth, models), and cost accounting now return new transaction
 envelopes. Editing properties check the whole input transaction and retain the

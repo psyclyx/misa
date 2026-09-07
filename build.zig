@@ -127,6 +127,11 @@ pub fn build(b: *std.Build) void {
     const translate = b.addSystemCommand(&.{"luajit"});
     translate.addFileArg(b.path("tools/compile-fennel.lua"));
     translate.addFileInput(b.path("src/lua_runtime/vendor/fennel.lua"));
+    for ([_][]const u8{ "state", "subscriptions", "framework" }) |name| {
+        translate.addFileArg(b.path(b.fmt("src/lua_runtime/{s}.fnl", .{name})));
+        const output = translate.addOutputFileArg(b.fmt("runtime/{s}.lua", .{name}));
+        lua_runtime.addAnonymousImport(b.fmt("misa_core_{s}", .{name}), .{ .root_source_file = output });
+    }
     const catalog = @import("src/standard_extensions/root.zig");
     for (catalog.ids) |id| {
         const source = catalog.catalogPath(id).?;
