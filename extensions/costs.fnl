@@ -18,16 +18,6 @@
             (tset result name (. value name))))
         (or (and (next result) result) nil))))
 
-(fn dollars [value]
-  (if (= value 0)
-      :$0
-      (if (< value 0.0001)
-          :<$0.0001
-          (.. "$" (string.format (or (and (< value 1) "%.4f") "%.2f") value)))))
-
-(fn rate [value]
-  (or (and (not= value nil) (.. "$" (string.format "%.6g" value))) "?"))
-
 (fn estimate [pricing usage]
   (if (valid usage.cost_usd) {:estimated false
                               :unknown false
@@ -53,14 +43,6 @@
                       (set result.usd
                            (+ result.usd (/ (* count (. pricing name)) 1000000))))))
             result))))
-
-(fn label [value]
-  (if (not value)
-      "cost pending"
-      (if (and value.unknown (= value.usd 0))
-          "cost ?"
-          (.. (or (and value.estimated "~") "") (dollars value.usd)
-              (or (and value.unknown " + ?") "")))))
 
 {:setup (fn [context]
           (local setup-fx [])
@@ -89,44 +71,11 @@
                          :value estimate})
           (table.insert setup-fx
                         {:type :register/service
-                         :name :cost_format
-                         :value label})
-          (table.insert setup-fx
-                        {:type :register/service
                          :name :model_cost_info
                          :value (fn [db id]
                                   (local pricing (model-rates db id))
-                                  (if (not pricing)
-                                      {:lines ["Cost: unavailable; configure costs.models for this model"]
-                                       :summary "cost unknown"}
-                                      (do
-                                        (local summary
-                                               (.. (rate pricing.input)
-                                                   " in / "
-                                                   (rate pricing.output)
-                                                   " out per 1M"))
-                                        (local lines
-                                               [(.. "USD per 1M tokens: "
-                                                    (rate pricing.input)
-                                                    " input · "
-                                                    (rate pricing.output)
-                                                    " output")])
-                                        (when (or (not= pricing.cache_read nil)
-                                                  (not= pricing.cache_write nil))
-                                          (tset lines (+ (length lines) 1)
-                                                (.. "Cache: "
-                                                    (rate pricing.cache_read)
-                                                    " read · "
-                                                    (rate pricing.cache_write)
-                                                    " write per 1M")))
-                                        (when (and pricing.request
-                                                   (> pricing.request 0))
-                                          (tset lines (+ (length lines) 1)
-                                                (.. "Per request: "
-                                                    (dollars pricing.request))))
-                                        (tset lines (+ (length lines) 1)
-                                              "Estimates; reported usage cost takes precedence")
-                                        {: lines : pricing : summary})))})
+                                  {:currency :USD :token_unit 1000000 : pricing
+                                   :estimated true :unavailable (= pricing nil)})})
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :costs/responses
@@ -138,12 +87,13 @@
                                     (if (and old (= response old.input)) (tset entries id old)
                                       (do
                                         (local result response.cost)
-                                        (tset entries id {:input response :value {:estimated (and result
-                                                         result.estimated)
-                                         :model response.model
-                                         :text (label result)
-                                         :unknown (and result result.unknown)
-                                         :usd (and result result.usd)}}))))
+                                        (tset entries id {:input response
+                                                         :value {:type :money :currency :USD
+                                                                 :pending (= result nil)
+                                                                 :model response.model
+                                                                 :estimated (= (and result result.estimated) true)
+                                                                 :unknown (= (and result result.unknown) true)
+                                                                 :amount (and result result.usd)}}))))
                                   entries)}})
           (table.insert setup-fx
                         {:type :register/sub

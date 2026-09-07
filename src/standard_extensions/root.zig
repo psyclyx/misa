@@ -25,6 +25,8 @@ pub const entries = [_]Entry{
     .{ .id = "auth", .path = "auth.fnl" },
     .{ .id = "choices", .path = "choices.fnl" },
     .{ .id = "choice_layout", .path = "choice_layout.fnl" },
+    .{ .id = "choice_preview", .path = "choice_preview.fnl" },
+    .{ .id = "values", .path = "values.fnl" },
     .{ .id = "commands", .path = "commands.fnl" },
     .{ .id = "omnipicker", .path = "omnipicker.fnl" },
     .{ .id = "dialogs", .path = "dialogs.fnl" },

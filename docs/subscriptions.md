@@ -34,7 +34,8 @@ Bundled cost accounting exposes `[:costs/total]` as numeric facts (`usd`,
 `responses`, `estimated`, `unknown`), with no formatted text. The dependent
 `[:costs/indicator]` supplies a typed money fact without formatting;
 `[:costs/response id]` projects a single
-response. `[:costs/responses]` incrementally projects the response collection,
+response as a typed money fact (`amount`, `currency`, `pending`, `estimated`,
+`unknown`), not display text. `[:costs/responses]` incrementally projects the response collection,
 preserving each result whose record is unchanged. Point queries depend on that
 collection; bundled transcript lookups share the collection directly, avoiding
 one scope entry per historical response. Unrelated state changes preserve results

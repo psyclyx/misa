@@ -18,7 +18,9 @@
   animationDefault = "animation.default";
   auth = "auth";
   choices = "choices";
+  choicePreview = "choice_preview";
   choiceLayout = "choice_layout";
+  values = "values";
   commands = "commands";
   omnipicker = "omnipicker";
   dialogs = "dialogs";

@@ -11,7 +11,7 @@
   (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
   (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices
                          :themes :theme/default :components :component/editor
-                         :component/picker :choice_layout :agent])]
+                         :component/picker :values :choice_preview :choice_layout :agent])]
     (app._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
   ;; An unrelated extension contributes before editor; another contributes after it.
   (app._setup_effects

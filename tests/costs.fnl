@@ -77,15 +77,12 @@
                                                        1 :id)
                                                     :priced/model))
                                             "friendly name stopped matching search")
-                                    (assert (: (. (misa.model_cost_info db
-                                                                        :priced/model)
-                                                  :summary)
-                                               :find :$2 1 true)
+                                    (assert (= (. (misa.model_cost_info db :priced/model) :pricing :input) 2)
                                             "model info lost configured rates")
                                     (assert (= (. (misa.model_cost_info db
                                                                         :unknown/model)
-                                                  :summary)
-                                               "cost unknown"))
+                                                  :unavailable)
+                                               true))
                                     (local fx {})
 
                                     (fn dispatch [event]
@@ -122,14 +119,17 @@
                          :handler (fn [db]
                                     (local first
                                            (misa.response_cost_projection db :a))
-                                    (assert (< (math.abs (- first.usd 0.0028))
+                                    (assert (= first.type :money))
+                                    (assert (= first.currency :USD))
+                                    (assert (= first.text nil))
+                                    (assert (< (math.abs (- first.amount 0.0028))
                                                1e-09)
                                             "response rates changed after model catalogue refresh")
                                     (assert (and first.estimated
                                                  (not first.unknown)))
                                     (local second
                                            (misa.response_cost_projection db :b))
-                                    (assert (and (and (= second.usd 0.012)
+                                    (assert (and (and (= second.amount 0.012)
                                                       (not second.estimated))
                                                  (not second.unknown))
                                             "reported cost did not override missing rates")

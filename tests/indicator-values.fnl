@@ -5,7 +5,7 @@
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}
                                   :animations {:persist false}
                                   :status {:indicators [:zero :false :hidden :custom :activity]}}})
-(each [_ name (ipairs [:json :layout :themes :theme/default :components :component/status
+(each [_ name (ipairs [:json :layout :themes :theme/default :components :values :component/status
                        :animations :animation/default :indicators])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 (local calls {})

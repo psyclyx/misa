@@ -11,11 +11,17 @@
         (table.insert result modifier)
         result)))
 
-(fn title [model label style]
+(fn metadata [parts fact context prefix]
+  (table.insert parts (span (or prefix "  ") :dim))
+  (each [_ value (ipairs (misa.render_value fact context))]
+    (local rendered (misa.snapshot value))
+    (set rendered.style (or rendered.style :dim))
+    (table.insert parts rendered)))
+
+(fn title [model label style context]
   (let [parts [(span label (composed (or style :plain) :bold))]]
-    (when model.timestamp
-      (tset parts (+ (length parts) 1)
-            (span (.. "  " (tostring model.timestamp)) :dim)))
+    (when (not= model.started_wall_ms nil)
+      (metadata parts {:type :timestamp :value model.started_wall_ms} context))
     (when model.streaming
       (tset parts (+ (length parts) 1) (span "  streaming" :pending)))
     (when model.interrupted
@@ -25,7 +31,9 @@
             (span (.. "  " (string.format "%.1f" model.tokens_per_second)
                       " tok/s") :dim)))
     (when model.cost
-      (tset parts (+ (length parts) 1) (span (.. "  " model.cost) :dim)))
+      (metadata parts model.cost context
+                (when (or model.cost.pending (and model.cost.unknown (= model.cost.amount 0)))
+                  "  cost ")))
     {:spans parts}))
 
 (fn rail [model]
@@ -69,7 +77,7 @@
     (each [key value (pairs line)] (tset wrapped key value))
     (table.insert rendered wrapped))
   (when label
-    (local titles (misa.layout.wrap_spans [(title model label style)] columns))
+    (local titles (misa.layout.wrap_spans [(title model label style context)] columns))
     (for [index (length titles) 1 (- 1)]
       (table.insert rendered 1 (. titles index))))
   ;; Title lines are newly allocated too, so assigning their surface is local.
@@ -82,14 +90,15 @@
       (interactive-message model context style label previous)
       (misa.markdown_view.plain model.text style)))
 
-(fn titled [model label text style]
-  {:lines [(title model label style)
+(fn titled [model label text style context]
+  {:lines [(title model label style context)
            {:spans [(span "┃ " (rail model)) (span text style)]}]
    :surface (.. :surface. (: (rail model) :gsub "^rail%." ""))})
 
 {:setup (fn []
           (local setup-fx [])
           (assert misa.layout "component.message requires layout")
+          (assert misa.render_value "component.message requires values")
           (assert (and misa.markdown_view misa.markdown)
                   "component.message requires markdown and component.markdown")
           (fn reg [role render]
@@ -109,9 +118,9 @@
                                          (message model context role.style role.label previous)))
                    (values {:lines (or lines [])} cache))))
           (reg :transcript.thinking_collapsed
-               (fn [model]
+               (fn [model context]
                  (titled model :Thinking (tostring (or model.summary :summary))
-                         :thinking)))
+                         :thinking context)))
           (reg :transcript.harness
                (fn [model context previous]
                  (local (lines cache) (message model context (if (= model.level :error) :error :plain)

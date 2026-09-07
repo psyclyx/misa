@@ -12,8 +12,9 @@
   (each [_ part (ipairs (or (and line line.spans) {}))]
     (when (> remaining 0)
       (local (text _ used) (misa.layout.take (or part.text "") remaining))
-      (tset spans (+ (length spans) 1)
-            {:action part.action :link part.link :style part.style : text})
+      (local fitted (misa.snapshot part))
+      (set fitted.text text)
+      (table.insert spans fitted)
       (set remaining (- remaining used))))
   (when (> remaining 0)
     (tset spans (+ (length spans) 1) (span (string.rep " " remaining) :plain)))
@@ -39,12 +40,9 @@
                                                             (span model.input.text
                                                                   :choice.query)]}))
                                            (for [index 1 model.preview.height]
-                                             (tset result (+ (length result) 1)
-                                                   {:spans [(span pad :plain)
-                                                            (span (or (. model.preview.lines
-                                                                         index)
-                                                                      "")
-                                                                  :choice.preview)]}))
+                                             (local spans [(span pad :plain)])
+                                             (append spans (or (. model.preview.lines index :spans) []))
+                                             (table.insert result {: spans}))
                                            (local rendered {})
                                            (each [bank column (ipairs model.columns)]
                                              (local lines

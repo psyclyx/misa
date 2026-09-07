@@ -14,6 +14,7 @@ adapters precede the API providers that use them:
 ```json
 {
   "extensions": [
+    "values",
     "json",
     "protocol.anthropic",
     "provider.anthropic",
@@ -40,6 +41,7 @@ adapters precede the API providers that use them:
     "animation.default",
     "components",
     "layout",
+    "choice_preview",
     "choice_layout",
     "markdown",
     "selection_document",
@@ -644,11 +646,16 @@ formatted suffixes, or animation frames. Built-in types also include `text`,
 `boolean`, `number`, `activity` (with `state`), `unavailable` (with `reason`), and
 `money` (with `amount`, `currency`, `estimated`, and `unknown`).
 
-`component.status` installs an open, pure value-rendering dispatcher. Extensions
+`values` installs an open, pure value-rendering dispatcher, independently of
+status or transcript components. Load it before those consumers. Extensions
 add `{type="register/value-renderer",id="my-type",render=function(fact,context)
 ... end}` returning semantic spans. `misa.render_value(fact,context?)` invokes it;
 unknown types and duplicate registrations fail explicitly. The default component
-owns compact token counts, percentages, currency text, styles, and width dropping.
+uses shared compact-number, percentage, and currency formatters, while owning
+styles and width dropping. Response cost metadata is a money fact too, including
+`pending=true` with no amount before completion. Timestamps reach components as
+raw `started_wall_ms`; the `timestamp` value renderer formats milliseconds as
+UTC time-of-day. The old formatted response `text` and `cost_format` service are removed.
 Animation selection is separate presentation data from
 `misa.animation_presentation(db,role)` / `[:animations/presentation role]`; the
 activity renderer turns it into clock-driven spans without changing activity facts.
@@ -716,6 +723,20 @@ Inline and overlay sessions resolve the same `keybindings.choices` actions and
 positional banks. `choice_layout` is the single projection for responsive
 preferred/min/max overlay bounds, preview and panel allocation, shared hints,
 and positional targets. The picker component only renders that projection.
+Load `choice_preview` before `choice_layout`. It renders typed preview data to
+semantic lines before geometry is calculated; compact and overlay input handling
+use the same resulting line heights and targets. Extensions register
+`{type="register/choice-preview",id="my-preview",render=function(model,context)
+... end}`, returning semantic lines. `context` supplies `columns` and `compact`.
+Use `config.choices.preview_renderers` to map a preview type to a renderer ID;
+unknown IDs and duplicate registrations fail explicitly.
+
+Model previews carry `type="model"`, raw `context_window`, and `cost` facts from
+`misa.model_cost_info`: `currency`, `token_unit`, `pricing`, `estimated`, and
+`unavailable`. Rate numbers are not converted to strings by model/cost owners.
+The default preview renderer owns summary wording, currency precision, and layout.
+The picker receives both `preview.model` and rendered `preview.lines` records;
+custom previews retain their action, link, and animation span metadata.
 Overlays remain bounded, nonexclusive regions of the managed root: query input
 comes first, then semantic preview, panels, and the shared key reference below
 the panels. All key hints use structured tokens and render Alt as `⌥`. `open_overlay` (default `alt+space`) promotes the current inline

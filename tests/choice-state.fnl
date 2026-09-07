@@ -4,7 +4,7 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local context {:config {} :argv []})
-(each [_ name (ipairs [:json :layout :choices :choice_layout])]
+(each [_ name (ipairs [:json :layout :choices :values :choice_preview :choice_layout])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 (local db {})
 (local initial (misa.choice_session {:title :Test :views [:all :favorites]

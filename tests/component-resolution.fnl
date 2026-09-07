@@ -15,7 +15,7 @@
                        :layout
                        :markdown
                        :component/markdown
-                       :component/message])]
+                       :values :component/message :component/tool])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 
 (local cached
@@ -129,10 +129,11 @@
 (local (raw-first first-cache) (render message message-context))
 (local first-body (. raw-first.lines 2))
 (assert (= (length raw-first.lines) 2))
-(set message.timestamp :later)
+(set message.started_wall_ms 3723000)
 (local (raw-second second-cache) (render message message-context first-cache))
 (assert (= (length raw-second.lines) 2)
         "message title accumulated in body cache")
+(assert (= (. raw-second.lines 1 :spans 3 :text) "01:02:03"))
 (assert (not= (. raw-second.lines 2) first-body)
         "message wrapper reused mutable line")
 (assert (= (. raw-second.lines 2 :spans) first-body.spans)
@@ -147,6 +148,30 @@
 (assert (= (length raw-third.lines) 2))
 (assert (= (. raw-third.lines 2 :spans) first-body.spans)
         "resolved render invalidated cached body")
+;; Transcript metadata works without status and receives semantic money/time.
+(fn title-text [view]
+  (table.concat (icollect [_ span (ipairs (. view.lines 1 :spans))] span.text)))
+(each [_ example (ipairs [[{:type :money :currency :USD :pending true} "cost pending"]
+                       [{:type :money :currency :USD :amount 0 :unknown true} "cost ?"]
+                       [{:type :money :currency :USD :amount 1 :estimated true :unknown true} "~$1.00 + ?"]
+                       [{:type :money :currency :USD :amount 0.0123} "$0.0123"]])]
+  (local fact (. example 1))
+  (local source (misa.patch message {:cost (misa.replace fact)}))
+  (local before (misa.json.encode source))
+  (assert (: (title-text (render source {:columns 100 :interactive true})) :find (. example 2) 1 true))
+  (assert (= before (misa.json.encode source))))
+(assert (= (. (misa.render_value {:type :timestamp :value 0}) 1 :text) "00:00:00"))
+(local original-value-render misa.render_value)
+(local shared-metadata [{:text :custom-time}])
+(set misa.render_value (fn [fact context]
+                        (if (= fact.type :timestamp)
+                            (do (assert (= fact.value 3723000)) shared-metadata)
+                            (original-value-render fact context))))
+(assert (: (title-text (render message message-context)) :find :custom-time 1 true))
+(local tool-render (. (misa.component db :transcript.tool_call) :render))
+(assert (: (title-text (tool-render {:name :test :started_wall_ms 3723000} message-context)) :find :custom-time 1 true))
+(assert (= (. shared-metadata 1 :style) nil) "metadata renderer mutated shared spans")
+(set misa.render_value original-value-render)
 ;; Hover changes only the resolved background and clears when the pointer leaves.
 ;; Reused semantic component output must remain untouched.
 (fn hover [action link]

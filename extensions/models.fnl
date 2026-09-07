@@ -69,7 +69,7 @@
                                                                         {}))]
                                                (local api (or model.api {}))
                                                (local metadata
-                                                      {:model model.model
+                                                      {:type :model :model model.model
                                                        :provider model.provider
                                                        :title model.id})
                                                (when model.context_window
@@ -83,15 +83,7 @@
                                                            (misa.model_cost_info db
                                                                                  model.id)))
                                                (when cost
-                                                 (set metadata.summary
-                                                      cost.summary)
-                                                 (set metadata.lines (icollect [_ line (ipairs cost.lines)] line))
-                                                 (when model.context_window
-                                                   (table.insert metadata.lines
-                                                                 1
-                                                                 (.. "Context: "
-                                                                     model.context_window
-                                                                     " tokens"))))
+                                                 (set metadata.cost cost))
                                                (tset result
                                                      (+ (length result) 1)
                                                      {:display {:label (.. model.provider

@@ -16,7 +16,7 @@
                        :markdown
                        :syntax
                        :component/markdown
-                       :component/message
+                       :values :component/message
                        :messages])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 

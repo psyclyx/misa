@@ -17,14 +17,17 @@
 
 (fn status-style [status] (or (. status-styles status) :tool.pending))
 
-(fn title [model label]
+(fn title [model label context]
   (let [status (or model.status (or (and model.is_error :error) :success))
         parts [(span label (composed (status-style status) :bold))]]
     (when (and model.description (not= model.description ""))
       (tset parts (+ (length parts) 1) (span (.. "  " model.description) :dim)))
-    (when model.timestamp
-      (tset parts (+ (length parts) 1)
-            (span (.. "  " (tostring model.timestamp)) :dim)))
+    (when (not= model.started_wall_ms nil)
+      (table.insert parts (span "  " :dim))
+      (each [_ value (ipairs (misa.render_value {:type :timestamp :value model.started_wall_ms} context))]
+        (local rendered (misa.snapshot value))
+        (set rendered.style (or rendered.style :dim))
+        (table.insert parts rendered)))
     (tset parts (+ (length parts) 1)
           (span (.. "  " status) (status-style status)))
     {:spans parts}))
@@ -51,6 +54,7 @@
 {:setup (fn []
           (local setup-fx [])
           (assert misa.layout "component.tool requires layout")
+          (assert misa.render_value "component.tool requires values")
 
           (fn render [model context]
             (local fallback (and (= model.kind :tool_result) (not model.name)))
@@ -61,7 +65,7 @@
             (local rail
                    (or model.rail
                        (or (and model.is_error :rail.error) :rail.tool)))
-            (local lines [(title model label)])
+            (local lines [(title model label context)])
             (when (not fallback)
               (append lines
                       (bodies (tostring (or model.detail :summary)) :tool rail

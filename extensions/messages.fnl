@@ -280,11 +280,6 @@
                       }}
    :fx (if (> owner.block_count 0) (updated-fx fx owner.id) fx)})
 
-(fn timestamp [ms]
-  (let [seconds (% (math.floor (/ (or (tonumber ms) 0) 1000)) 86400)]
-    (string.format "%02d:%02d:%02d" (math.floor (/ seconds 3600))
-                   (% (math.floor (/ seconds 60)) 60) (% seconds 60))))
-
 (fn selection-id [block]
   (let [owner (tostring (or block.response_id ""))]
     (.. (length owner) ":" owner (tostring block.id))))
@@ -496,7 +491,11 @@
                                               (misa.selection_document (selection-id block)
                                                                        (.. block.kind
                                                                            " · "
-                                                                           (timestamp block.started_wall_ms)
+                                                                           (table.concat
+                                                                             (icollect [_ value (ipairs
+                                                                               (misa.render_value {:type :timestamp
+                                                                                                   :value (or block.started_wall_ms 0)}))]
+                                                                               value.text))
                                                                            " — "
                                                                            (misa.layout.clip (or (text:match "[^\r
 ]+")
@@ -548,8 +547,6 @@
                                              (misa.syntax_projection syntax-projections model))
                                       (when syntax
                                         (set model.syntax syntax)))
-                                    (set model.timestamp
-                                         (timestamp model.started_wall_ms))
                                     (local owner
                                            (response db model.response_id))
                                     (when (and owner
@@ -564,7 +561,7 @@
                                       (local cost
                                              (misa.response_cost_projection db
                                                                             model.response_id))
-                                      (set model.cost (and cost cost.text)))
+                                      (set model.cost cost))
                                     (local projector (. projectors model.kind))
                                     (local presentation (and projector (projector model state (and selecting selected))))
                                     (local role (and presentation presentation.role))
@@ -711,7 +708,7 @@
                                       (when last-text
                                         (set owner (misa.patch owner {:metadata_block_id last-text.id})))
                                       (when (> (length text) 0)
-                                        (local committed {:text (table.concat text "") :timestamp (timestamp owner.started_wall_ms)
+                                        (local committed {:text (table.concat text "") :started_wall_ms owner.started_wall_ms
                                                           :tokens_per_second owner.tokens_per_second})
                                         (each [_ effect (ipairs (noninteractive-commit db :transcript.assistant committed cofx markdown))]
                                           (table.insert fx effect))))
@@ -816,7 +813,7 @@
                                                                                      :transcript.assistant
                                                                                      {:text (table.concat output
                                                                                                           "")
-                                                                                      :timestamp (timestamp owner.started_wall_ms)}
+                                                                                      :started_wall_ms owner.started_wall_ms}
                                                                                      cofx
                                                                                      markdown))]
                                         (tset fx (+ (length fx) 1) effect)))

@@ -37,7 +37,7 @@
                                                                         db 80 6))
                                     (assert (and (and geometry.input.hidden
                                                       (= geometry.panel_count 2))
-                                                 (= (. geometry.preview.lines 1)
+                                                 (= (. geometry.preview.lines 1 :spans 1 :text)
                                                     "$2 in / $8 out per 1M"))
                                             "compact choices lost panels or selected info")
                                     (var (recent all) (values false false))

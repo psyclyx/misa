@@ -1,1 +1,1 @@
-{"extensions":["themes","theme.default","components","layout","markdown","component.markdown","component.tool","component.message","messages","models","agent","@ROOT@/tests/integration/fixtures/cancel-tools.fnl"],"config":{"models":{"default":"cancel/model"}}}
+{"extensions":["values","themes","theme.default","components","layout","markdown","component.markdown","component.tool","component.message","messages","models","agent","@ROOT@/tests/integration/fixtures/cancel-tools.fnl"],"config":{"models":{"default":"cancel/model"}}}

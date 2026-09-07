@@ -5,7 +5,7 @@
 (local misa _G.misa)
 (local context {:argv [] :config {}})
 (local policies {})
-(each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices :choice_layout
+(each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices :values :choice_preview :choice_layout
                        :dialogs :picker :omnipicker :history])]
   (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
   (each [_ spec (ipairs specs.fx)]

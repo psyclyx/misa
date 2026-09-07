@@ -1,5 +1,6 @@
 {
   "extensions": [
+    "values",
     "json",
     "protocol.anthropic",
     "provider.anthropic",
@@ -26,6 +27,7 @@
     "animation.default",
     "components",
     "layout",
+    "choice_preview",
     "choice_layout",
     "markdown",
     "syntax",

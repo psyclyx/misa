@@ -9,7 +9,7 @@ Completion requires behavioral evidence, not just passing existing tests.
   sharing and rollback, and cover nested replacement/deletion and collections.
 - [x] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
   cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
-- [ ] Presentation: semantic render data, open dispatch registries, unified
+- [x] Presentation: semantic render data, open dispatch registries, unified
   renderable composition, and subscriptions replacing ad-hoc projections.
 - [ ] Rendering performance: verify selective recomputation and streaming costs
   with representative transcripts, preserving interaction metadata through layout.
@@ -43,10 +43,23 @@ independence of other providers, and preserved old snapshots. It executes no
 network/process effects and is not evidence of live Kimi account retrieval.
 The focused dashboard contract and full ReleaseSafe baseline suite passed.
 
-The final presentation audit identified two remaining semantic cutovers:
-response-cost metadata reaches transcript components as formatted text, and
-model pricing/context previews reach picker layout preformatted. Both need raw
-facts at their component boundaries; the Presentation checkbox remains open.
+The final presentation audit's two semantic cutovers are now implemented:
+response-cost metadata reaches transcript components as typed money facts,
+timestamps remain raw milliseconds, and model pricing/context previews carry raw
+facts into an open preview renderer. The shared `values` extension owns formatting
+without a status dependency. Response metadata appears only on its designated
+block; pending, estimated, partial unknown, and reported costs remain distinct.
+
+`choice_preview` owns preview rendering and configurable type-to-renderer dispatch.
+`choice_layout` measures its semantic lines once; picker rendering and input share
+the resulting geometry. The geometry retains the raw preview model as well.
+`tests/choice-preview.fnl` verifies compact/full pricing, zero rates, overrides,
+narrow geometry, and action/link/animation metadata preservation. Models and costs
+no longer create pricing summary strings. Explicit profiles and both extension
+catalogs include the shared dependencies; no compatibility shim remains.
+
+Verification passed: focused preview/cost/component/transcript regressions, full
+ReleaseSafe baseline suite, installed build, and installed PTY interaction checks.
 Traversal of transcript blocks and explicit collection reuse checks are not
 themselves additional architecture defects.
 

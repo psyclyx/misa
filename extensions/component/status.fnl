@@ -1,17 +1,5 @@
-;; Typed facts are formatted here; domain queries never construct display strings.
+;; Indicator row composition; general value formatting is owned by values.
 (fn span [text style action] {: text : style : action})
-(fn finite [value]
-  (assert (and (= (type value) :number) (= value value) (< (math.abs value) math.huge))
-          "display number must be finite")
-  value)
-(fn compact [value]
-  (finite value)
-  (local unit (accumulate [found nil _ item (ipairs [[1000000000 :G] [1000000 :M] [1000 :k]]) &until found]
-                (when (>= (math.abs value) (. item 1)) item)))
-  (if unit
-      (let [scaled (/ value (. unit 1))]
-        (.. (: (string.format (if (>= (math.abs scaled) 10) "%.0f" "%.1f") scaled) :gsub "%.0$" "") (. unit 2)))
-      (tostring value)))
 (fn text-value [text] [(span text)])
 (fn activity [fact context]
   (assert (= (type fact.state) :string) "activity requires a state")
@@ -33,31 +21,6 @@
                                :frames (icollect [_ frame (ipairs frames)] {:text frame})}))
     (table.insert result animated))
   result)
-(local builtins
-       {:text (fn [fact] (assert (= (type fact.value) :string) "text fact requires a string") (text-value fact.value))
-        :boolean (fn [fact] (assert (= (type fact.value) :boolean) "boolean fact requires a boolean") (text-value (tostring fact.value)))
-        :number (fn [fact] (text-value (tostring (finite fact.value))))
-        :tokens (fn [fact] (text-value (compact fact.value)))
-        :ratio (fn [fact]
-                 (local format (if (= fact.unit :tokens) compact (fn [v] (tostring (finite v)))))
-                 (text-value (.. (if (= fact.used nil) "?" (format fact.used)) "/"
-                                 (if (= fact.limit nil) "?" (format fact.limit)))))
-        :percent (fn [fact]
-                   (local value (finite fact.value))
-                   (assert (and (>= value 0) (<= value 100)) "percentage must be within 0..100")
-                   (text-value (.. (string.format "%.0f%%" value) (if (= fact.basis :remaining) " left" ""))))
-        :unavailable (fn [] (text-value "unavailable"))
-        :activity activity
-        :money (fn [fact]
-                 (local amount (finite fact.amount))
-                 (assert (>= amount 0) "money amount must be nonnegative")
-                 (assert (= (type fact.currency) :string) "money requires a currency")
-                 (local currency (if (= fact.currency :USD) "$" (.. fact.currency " ")))
-                 (local value (if (= amount 0) (.. currency "0")
-                                  (< amount 0.0001) (.. "<" currency "0.0001")
-                                  (.. currency (string.format (if (< amount 1) "%.4f" "%.2f") amount))))
-                 (text-value (if (and fact.unknown (= amount 0)) "?"
-                                 (.. (if fact.estimated "~" "") value (if fact.unknown " + ?" "")))))})
 (fn item-spans [item context]
   (local result [])
   (when (not= (or item.representation :label) :value)
@@ -78,22 +41,8 @@
       (table.insert result next)))
   result)
 {:setup (fn []
-          (local renderers {})
-          (local setup-fx
-                 [{:type :register/setup-effect :name :register/value-renderer
-                   :handler (fn [effect]
-                              (assert (and (= (type effect.id) :string) (not= effect.id "")
-                                           (= (type effect.render) :function)) "value renderer requires id and render")
-                              (assert (= (. renderers effect.id) nil) "duplicate value renderer")
-                              (tset renderers effect.id effect.render) nil)}
-                  {:type :register/service :name :render_value
-                   :value (fn [fact context]
-                            (assert (and (= (type fact) :table) (= (type fact.type) :string))
-                                    "value renderer requires a typed fact")
-                            ((assert (. renderers fact.type) (.. "unknown value type: " fact.type))
-                             fact (or context {})))}])
-          (each [id render (pairs builtins)]
-            (table.insert setup-fx {:type :register/value-renderer : id : render}))
+          (assert misa.render_value "component.status requires values")
+          (local setup-fx [{:type :register/value-renderer :id :activity :render activity}])
 
           (fn render-indicators [model context]
             (local source (or model.indicators {}))

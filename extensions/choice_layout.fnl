@@ -4,28 +4,10 @@
 
 (fn clamp [value low high] (math.max low (math.min high value)))
 
-(fn preview-lines [preview]
-  (if (= preview nil) [] (= (type preview) :string) [preview]
-      (let [result []]
-        (when (= (type preview) :table)
-          (when preview.title
-            (table.insert result (tostring preview.title)))
-          (if (= (type preview.lines) :table)
-              (each [_ line (ipairs preview.lines)]
-                (table.insert result (tostring line)))
-              (let [body []]
-                (each [key value (pairs preview)]
-                  (when (and (not= key :title) (not= key :lines))
-                    (table.insert body
-                                  (.. (tostring key) ": " (tostring value)))))
-                (table.sort body)
-                (each [_ line (ipairs body)] (table.insert result line)))))
-        result)))
-
 {:setup (fn [context]
           (local setup-fx [])
-          (assert (and misa.layout misa.choice_rows)
-                  "choice_layout requires layout and choices")
+          (assert (and misa.layout misa.choice_rows misa.choice_preview)
+                  "choice_layout requires layout, choices, and choice_preview")
           (var configured (or (and (and (= (type context.config) :table)
                                         (= (type context.config.choices) :table))
                                    context.config.choices.overlay)
@@ -328,12 +310,7 @@
                                   (local info
                                          (and highlighted highlighted.preview))
                                   (local preview
-                                         (or (and (and (and compact
-                                                            (= (type info)
-                                                               :table))
-                                                       info.summary)
-                                                  [(tostring info.summary)])
-                                             (preview-lines info)))
+                                         (misa.choice_preview info {:columns width : compact}))
                                   (local preview-height
                                          (math.min (length preview)
                                                    (or (and compact
@@ -434,6 +411,7 @@
                                    :panel_height panel-budget
                                    :panel_y (+ input-height preview-height)
                                    :preview {:height preview-height
+                                             :model info
                                              :lines preview
                                              : width
                                              : x
