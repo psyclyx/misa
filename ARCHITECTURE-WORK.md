@@ -51,6 +51,16 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Quota refresh now follows selected-provider changes, authentication readiness,
+and response completion/interruption, with provider-addressed events. Kimi ignores
+requests for other providers; manual dashboard refresh still broadcasts. Immutable
+policy tests cover provider transitions and ensure streamed token events cause no
+requests. Codex investigation found the documented App Server
+[`account/rateLimits/read`](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)
+route, but did not establish a direct HTTP contract for
+Misa's native OAuth transport. No CLI-account substitution or guessed endpoint
+was added; that integration remains pending.
+
 The default status layout includes a provider-neutral `plan` indicator consuming
 normalized windows for the selected model's explicit provider field. It reports
 the tightest known remaining percentage, distinguishes exhausted/unknown data,

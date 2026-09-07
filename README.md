@@ -747,8 +747,10 @@ across the selected provider's windows; it shows unavailable when fetched data
 cannot establish a percentage. Clicking it opens `/usage` and refreshes the data.
 It stays hidden when no quota data exists for the selected provider.
 Configure it through `config.status.indicators` like other status items.
-Automatic quota refresh and Claude/Codex OAuth coding-plan retrieval remain
-unfinished.
+Quota refresh targets the selected provider when it changes, after authentication
+finishes, and after response completion/interruption; streaming tokens do not
+trigger quota requests. `/usage` still refreshes all loaded quota providers.
+Claude/Codex OAuth coding-plan retrieval remains unfinished.
 Provider-reported USD takes precedence over estimates; missing prices remain
 explicitly unknown. Dynamic provider metadata supplies prices where available.
 `config.costs.models["provider/model-id"]` overrides `input`, `output`,

@@ -24,7 +24,10 @@
 (assert (= request.credential.prefix "Bearer "))
 (assert (= request.response_format :json))
 (assert (= request.headers nil) "request exposed a bearer value")
-(local mainland ((. (handlers-for :mainland) :usage/refresh) {}))
+(local untouched {})
+(assert (= (apply untouched {:type :usage/refresh :provider :other}) untouched)
+        "unrelated provider refresh changed Kimi state")
+(local mainland ((. (handlers-for :mainland) :usage/refresh) {} {}))
 (assert (= (. mainland.fx 1 :url) "https://api.kimi.com/coding/v1/usages"))
 (local newer (apply pending {:type :usage/refresh}))
 (assert (= newer (apply newer {:type :provider/kimi-usage :id request.id :ok true

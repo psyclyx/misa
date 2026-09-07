@@ -104,9 +104,27 @@
                                 context) :lines)
       []))
 
+(local refresh-events {:auth/ready true :transcript/response-end true
+                       :transcript/response-interrupted true})
+
+(fn refresh-after [tx]
+  (local model (and misa.selected_model_projection (misa.selected_model_projection tx.db)))
+  (local provider (and model model.provider))
+  (local previous (and tx.db.status tx.db.status.quota_provider))
+  (local changed (not= provider previous))
+  (local refresh (and provider (or changed (. refresh-events tx.event.type))))
+  (if (or changed refresh)
+      (let [fx (icollect [_ effect (ipairs tx.fx)] effect)]
+        (when refresh
+          (table.insert fx {:type :dispatch :event {:type :usage/refresh : provider}}))
+        (misa.patch tx {:db {:status {:quota_provider (misa.replace provider)}}
+                        :fx (misa.replace fx)}))
+      tx))
+
 {:setup (fn []
           (local fx
-                 [{:type :register/event :name :app/start
+                 [{:type :register/interceptor :value {:id :usage/refresh-selected :after refresh-after}}
+                  {:type :register/event :name :app/start
                    :handler (fn []
                               {:patch {:status (misa.replace {:last_usage {} :mode :ready :provider_usage {}
                                                               :usage {:input_tokens 0 :output_tokens 0}})}})}

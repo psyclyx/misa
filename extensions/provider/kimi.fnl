@@ -51,7 +51,8 @@
                          "providers.kimi.region must be global or mainland"))
           (table.insert setup-fx
                         {:type :register/event :name :usage/refresh
-                         :handler (fn [db]
+                         :handler (fn [db event]
+                                    (when (or (not event.provider) (= event.provider :kimi))
                                     (local sequence (+ (or (and db.providers db.providers.kimi
                                                                db.providers.kimi.usage_sequence) 0) 1))
                                     (local id (.. "kimi-usage-" sequence))
@@ -60,7 +61,7 @@
                                            :url (or config.usage_url (.. profile.api_base :/usages))
                                            :credential {:id :kimi-coding :header :authorization :prefix "Bearer "}
                                            :response_format :json :completion :provider/kimi-usage
-                                           :timeouts config.timeouts}]})})
+                                           :timeouts config.timeouts}]}))})
           (table.insert setup-fx
                         {:type :register/event :name :provider/kimi-usage
                          :handler (fn [db event]
