@@ -46,6 +46,13 @@ scope, limitations and reproducible commands. Next: attribute native-path costs
 and expand to tool-heavy/multi-response workloads; do not infer completion from
 the faster Fennel-only measurements.
 
+Steady-state profiling now excludes startup and supports 200-frame runs. A native
+capture placed about 95% of sampled user CPU cycles in LuaJIT/generated code;
+a separate Lua sampler identifies recursive patch materialization, Unicode
+clipping, and repeated subscription queries as concrete next targets. The longer
+uninstrumented run still has 24.380 ms maximum latency. No production optimization
+has been claimed from these diagnostic changes.
+
 ### Claude stream quota observations (2026-09-07)
 
 The existing open record dispatcher now handles `rate_limit_event`, normalizing
