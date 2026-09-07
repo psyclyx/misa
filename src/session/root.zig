@@ -306,8 +306,8 @@ pub const Session = struct {
                 self.read_requested = true;
                 return;
             },
-            .hover => |action| {
-                const json = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "ui/hover", .action = action }, .{});
+            .hover => |target| {
+                const json = try std.json.Stringify.valueAlloc(self.allocator, .{ .type = "ui/hover", .action = if (target.link) "" else target.value, .link = if (target.link) target.value else "" }, .{});
                 defer self.allocator.free(json);
                 try self.enqueue(json);
                 self.read_requested = true;

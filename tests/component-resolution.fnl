@@ -29,7 +29,8 @@
                           :animation {:id :fixture
                                       :interval_ms 40
                                       :frames [{:text :abc :style :highlight}
-                                               {:text :xyz}]}}]}]})
+                                               {:text :xyz}]}}
+                         {:text :link :style :plain :link "https://link.test"}]}]})
 
 (local semantic (misa.json.encode cached))
 (local effects [])
@@ -95,7 +96,7 @@
 (assert (= first-span.style.background :blue))
 (assert (= (. first-span.animation.frames 1 :style :foreground) :green))
 (assert (= (. first-span.animation.frames 1 :style :background) :blue))
-(assert (= (. first.lines 1 :spans 2 :text) "     "))
+(assert (= (. first.lines 1 :spans 3 :text) " "))
 (assert (= first-span.link "https://example.test"))
 (assert (= first-span.action :fixture))
 ;; Unchanged metadata and text-only frames remain shared immutable values.
@@ -108,7 +109,7 @@
 (assert (= (. second.lines 1 :spans 1 :style :foreground) :cyan))
 (assert (= (. second.lines 1 :spans 1 :animation :frames 1 :style :foreground)
            :magenta))
-(assert (= (. second.lines 1 :spans 2 :text) "       "))
+(assert (= (. second.lines 1 :spans 3 :text) "   "))
 (assert (= first-span.style.foreground :red)
         "later resolution changed previous frame")
 (assert (= (misa.json.encode cached) semantic)
@@ -145,8 +146,8 @@
         "resolved render invalidated cached body")
 ;; Hover changes only the resolved background and clears when the pointer leaves.
 ;; Reused semantic component output must remain untouched.
-(fn hover [action]
-  (misa._dispatch {:type :ui/hover : action}
+(fn hover [action link]
+  (misa._dispatch {:type :ui/hover : action : link}
                   {:columns 80 :lines 24 :interactive true}
                   {:wall_ms 0 :monotonic_ms 0})
   (misa._commit)
@@ -167,4 +168,14 @@
         "leaving a button retained hover styling")
 (assert (= (misa.json.encode cached) semantic)
         "hover mutated reusable component data")
+(local link-hovered (hover "" "https://link.test"))
+(assert (not= (. resting.lines 1 :spans 2 :style :background)
+              (. link-hovered.lines 1 :spans 2 :style :background))
+        "OSC-only link did not receive hover feedback")
+(assert (= (. resting.lines 1 :spans 1 :style :background)
+           (. link-hovered.lines 1 :spans 1 :style :background)))
+(local link-departed (hover ""))
+(assert (= (misa.json.encode (. resting.lines 1 :spans 2 :style))
+           (misa.json.encode (. link-departed.lines 1 :spans 2 :style))))
+(assert (= (misa.json.encode cached) semantic))
 (output "component resolution regressions passed\n")

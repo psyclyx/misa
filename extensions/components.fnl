@@ -93,8 +93,8 @@
                                                                                   (or span.style
                                                                                       :plain)))]
                                           (tset style key value))
-                                        (when (and span.action
-                                                   (= span.action db.hover_action))
+                                        (when (or (and span.action (= span.action db.hover_action))
+                                                  (and (not span.action) span.link (= span.link db.hover_link)))
                                           (each [key value (pairs (misa.theme_style db
                                                                                     :hover))]
                                             (tset style key value)))

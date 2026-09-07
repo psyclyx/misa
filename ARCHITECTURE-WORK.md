@@ -99,6 +99,14 @@ without consuming following paragraphs. Tests exercise bounds, Unicode/CRLF,
 and visual sibling ranges copied through the real selection actions. Cross-
 document ranges and broader transcript interaction remain unfinished.
 
+Hover auditing found OSC-only links absent from the native hit map. Hit targets
+now distinguish links from actions; pointer motion reports either, while clicks
+still dispatch only registered actions. Component resolution applies hover
+backgrounds to link-only spans and restores their resting style on departure.
+Tests cover cloned maps, grapheme cells/clipping, action precedence, driver input
+translation, and semantic-style preservation. Live-terminal acceptance remains
+part of the final interaction audit.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

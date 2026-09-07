@@ -15,10 +15,11 @@ pub const View = struct {
 pub const Input = union(enum) {
     key: terminal_module.Event,
     action: []u8,
-    hover: []u8,
+    hover: struct { value: []u8, link: bool },
     pub fn deinit(self: Input, allocator: std.mem.Allocator) void {
         switch (self) {
-            .action, .hover => |value| allocator.free(value),
+            .action => |value| allocator.free(value),
+            .hover => |target| allocator.free(target.value),
             .key => |event| {
                 switch (event) {
                     .text, .alt => |bytes| std.crypto.secureZero(u8, bytes),
@@ -334,7 +335,11 @@ fn drainDecoded(self: *Driver) !void {
                 value = .{ .action = try self.allocator.dupe(u8, action) };
             }
         } else if (event == .mouse_move) {
-            value = .{ .hover = try self.allocator.dupe(u8, self.decoded_actions.at(event.mouse_move.row, event.mouse_move.column) orelse "") };
+            const hit = self.decoded_actions.hoverAt(event.mouse_move.row, event.mouse_move.column);
+            value = .{ .hover = .{
+                .value = try self.allocator.dupe(u8, if (hit) |target| target.value else ""),
+                .link = if (hit) |target| target.kind == .link else false,
+            } };
         }
         self.decoded_head += 1;
         if (event == .eof) self.eof = true;
@@ -375,6 +380,23 @@ test "input ring remains bounded and actor services discard and flush while full
     defer driver.decoded.deinit(allocator);
     defer driver.decoded_actions.deinit(allocator);
     defer driver.clearInput();
+    {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+            \\{"lines":[{"spans":[{"text":"link","link":"https://example.test"}]}]}
+        , .{});
+        defer parsed.deinit();
+        driver.decoded_actions = try @import("hit_map.zig").build(allocator, parsed.value, 80);
+        try driver.decoded.append(allocator, .{ .mouse_move = .{ .row = 1, .column = 2 } });
+        try driver.decoded.append(allocator, .{ .mouse = .{ .row = 1, .column = 2 } });
+        try driver.drainDecoded();
+        const hover = (try driver.popInput()).?;
+        defer hover.deinit(allocator);
+        try std.testing.expect(hover.hover.link);
+        try std.testing.expectEqualStrings("https://example.test", hover.hover.value);
+        const click = (try driver.popInput()).?;
+        defer click.deinit(allocator);
+        try std.testing.expect(click.key == .mouse);
+    }
     for (0..80) |_| try driver.decoded.append(allocator, .enter);
     try driver.drainDecoded();
     try std.testing.expectEqual(capacity, driver.len);

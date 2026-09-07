@@ -9,7 +9,9 @@
                             {:patch {:hover_action
                                      (if (and (= (type event.action) :string)
                                               (not= event.action ""))
-                                         event.action misa.delete)}})}
+                                         event.action misa.delete)
+                                     :hover_link (if (and (= (type event.link) :string) (not= event.link ""))
+                                                     event.link misa.delete)}})}
                 {:type :register/event
                  :name :ui/action
                  :handler (fn [db event]
