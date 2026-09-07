@@ -175,3 +175,12 @@ decoration no longer assigns into a component's returned line collection. Tests
 cover projection/context ownership, cached component output, collapsed/expanded
 thinking, selected tool results, and extension-defined presentation. This remains
 separate from the pending unified render composition and subscription cutover.
+
+The viewport closure has been removed. `transcript_viewport` derives immutable
+window data; `ui_regions` exposes the root's ordered regions, including transcript
+measurements. Scroll events derive current geometry and store only explicit
+anchors/selection coordinates. Tests check speculative-render isolation,
+snapshot rollback, selection reveal/manual scroll, streaming anchors, bounds,
+and one transcript projection per viewport or scroll query. This is an ownership
+cutover, not a measured speed improvement: scroll queries now derive layout, and
+sharing that work with rendering remains part of subscription/performance work.

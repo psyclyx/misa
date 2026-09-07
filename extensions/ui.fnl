@@ -126,7 +126,7 @@
                                      (+ offset region.cursor.row)))})))
   (bound-frame lines terminal.columns cursor))
 
-(fn project [db terminal]
+(fn regions [db terminal]
   (let [frame (chrome db terminal)
         header {:count frame.counts.header :lines frame.header}
         status {:count frame.counts.status :lines frame.status}
@@ -149,26 +149,22 @@
                                          (or disabled layer.input_disabled))))))
 
     (fn transcript [room]
-      {:count room
-       :lines (if misa.transcript_window
-                  (misa.transcript_window db
-                                          {:columns terminal.columns
-                                           :images terminal.images
-                                           :interactive true}
-                                          room)
-                  [])})
+      (local context {:columns terminal.columns :images terminal.images :interactive true})
+      (local viewport (and misa.transcript_viewport (misa.transcript_viewport db context room)))
+      {:id :transcript :count room : viewport
+       :lines (if viewport viewport.lines misa.transcript_window (misa.transcript_window db context room) [])})
 
     (if exclusive
-        (compose [header
+        [header
                   {:count (math.max 0 (- frame.height frame.counts.header))
                    :cursor exclusive.cursor
-                   :lines exclusive.lines}] terminal)
+                   :lines exclusive.lines}]
         overlay
         (let [count (math.min (length overlay.lines) frame.available)]
-          (compose [header
+          [header
                     (transcript (- frame.available count))
                     {: count :cursor overlay.cursor :lines overlay.lines}
-                    status] terminal))
+                    status])
         (let [editor (if misa.editor_projection
                          (misa.editor_projection db {: terminal})
                          {:busy true :byte 0 :completions [] :input [] :row 1})
@@ -181,7 +177,7 @@
                                            1)))
               completion-count (math.min (length editor.completions)
                                          budgets.completions)]
-          (compose [header
+          [header
                     (transcript (- budgets.remaining completion-count))
                     {:count budgets.dock :lines dock}
                     {:cursor (when (not disabled)
@@ -189,10 +185,10 @@
                                 :row (+ (- editor.row first) 1)})
                      :lines (slice editor.input first budgets.editor)}
                     {:count completion-count :lines editor.completions}
-                    status] terminal)))))
+                    status]))))
 
 {:setup (fn []
-          (local setup-fx [])
+          (local setup-fx [{:type :register/service :name :ui_regions :value regions}])
           (table.insert setup-fx
                         {:type :register/service
                          :name :ui_bound_frame
@@ -229,5 +225,5 @@
                         {:type :register/view
                          :handler (fn [db cofx]
                                     (if (<= cofx.terminal.lines 0) {:lines []}
-                                        (project db cofx.terminal)))})
+                                        (compose (regions db cofx.terminal) cofx.terminal)))})
           {:fx setup-fx})}

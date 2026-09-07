@@ -269,6 +269,30 @@
   (let [owner (tostring (or block.response_id ""))]
     (.. (length owner) ":" owner (tostring block.id))))
 
+(fn selection-key [selected]
+  (when selected {:id selected.id :first selected.first :last selected.last}))
+
+(fn same-selection [a b]
+  (and a b (= a.id b.id) (= a.first b.first) (= a.last b.last)))
+
+(fn transcript-viewport [db context available-lines]
+  (local room (math.max 0 (math.floor (or available-lines 0))))
+  (if (= room 0) {:first 1 :room 0 :total 0 :lines []}
+      (let [lines (misa.transcript_projection db context)
+            selected (and misa.selection_projection (misa.selection_projection db))
+            key (selection-key selected)
+            bottom (math.max 1 (+ (- (length lines) room) 1))]
+        (var first (math.max 1 (math.min (or db.messages.top bottom) bottom)))
+        (when (and selected (not (same-selection db.messages.scroll_selection key)))
+          (each [index line (ipairs lines)]
+            (when line.selected
+              (set first (math.max 1 (math.min first index)))
+              (when (>= index (+ first room)) (set first (+ (- index room) 1)))
+              (lua :break))))
+        {: first : room :total (length lines) :selection key
+         :lines (icollect [index (ipairs lines) &until (>= index (+ first room))]
+                  (when (>= index first) (. lines index)))})))
+
 (local presentations
        {:user (fn [] {:role :transcript.user :model {:rail :rail.user}})
         :assistant (fn [] {:role :transcript.assistant :model {:rail :rail.assistant}})
@@ -373,25 +397,24 @@
                          :handler (fn [db]
                                     {:patch {:messages {:verbose (not db.messages.verbose) :scroll 0}}
                                      :fx [{:event {:type :ui/redraw} :type :dispatch}]})})
-          (var viewport {:first 1 :room 0 :total 0})
           (table.insert setup-fx
                         {:type :register/event
                          :name :messages/scroll
-                         :handler (fn [db event]
-                                    (local bottom
-                                           (math.max 1
-                                                     (+ (- viewport.total
-                                                           viewport.room)
-                                                        1)))
-                                    (local first
-                                           (math.max 1
-                                                     (math.min bottom
-                                                               (- viewport.first
-                                                                  event.delta))))
-                                    (set viewport.first first)
-                                    {:patch {:messages {:top (if (< first bottom) first misa.delete)
-                                                         :scroll (math.max 0 (- bottom first))}}
-                                     :fx [{:type :terminal/read}]})})
+                         :handler (fn [db event cofx]
+                                    (local terminal (or (and cofx cofx.terminal) {:lines 0 :columns 80}))
+                                    (local viewport
+                                           (if misa.ui_regions
+                                               (accumulate [found nil _ region (ipairs (misa.ui_regions db terminal))]
+                                                 (or found (when (= region.id :transcript) region.viewport)))
+                                               (transcript-viewport db {:columns terminal.columns :images terminal.images :interactive true}
+                                                                    terminal.lines)))
+                                    (if (or (not viewport) (= viewport.room 0)) {:fx [{:type :terminal/read}]}
+                                        (let [bottom (math.max 1 (+ (- viewport.total viewport.room) 1))
+                                              first (math.max 1 (math.min bottom (- viewport.first event.delta)))]
+                                          {:patch {:messages {:top (if (< first bottom) first misa.delete)
+                                                               :scroll_selection (misa.replace viewport.selection)
+                                                               :scroll (math.max 0 (- bottom first))}}
+                                           :fx [{:type :terminal/read}]})))})
           (local scroll-inputs {:wheel_up (fn [] 3) :wheel_down (fn [] -3)
                                 :transcript_up (fn [tx] (math.max 1 (math.floor (/ tx.cofx.terminal.lines 2))))
                                 :transcript_down (fn [tx] (- (math.max 1 (math.floor (/ tx.cofx.terminal.lines 2)))))})
@@ -541,74 +564,17 @@
                                           (tset result (+ (length result) 1)
                                                 line)))))
                                   result)})
+          (table.insert setup-fx {:type :register/service :name :transcript_viewport :value transcript-viewport})
           (table.insert setup-fx
-                        {:type :register/service
-                         :name :transcript_window
-                         :value (fn [db render-context available-lines]
-                                  (local room
-                                         (math.max 0
-                                                   (math.floor (or available-lines
-                                                                   0))))
-                                  (if (= room 0) {}
-                                      (do
-                                        (local lines
-                                               (misa.transcript_projection db
-                                                                           render-context))
-                                        (local selected
-                                               (and misa.selection_projection
-                                                    (misa.selection_projection db)))
-                                        (local selected-key
-                                               (and selected
-                                                    (.. selected.id ":"
-                                                        selected.first ":"
-                                                        selected.last)))
-                                        (var first
-                                             (math.min (or (or db.messages.top
-                                                               (and (and selected-key
-                                                                         (= viewport.selection
-                                                                            selected-key))
-                                                                    viewport.first))
-                                                           (math.max 1
-                                                                     (+ (- (length lines)
-                                                                           room)
-                                                                        1)))
-                                                       (math.max 1
-                                                                 (+ (- (length lines)
-                                                                       room)
-                                                                    1))))
-                                        (local result {})
-                                        (when (and selected-key
-                                                   (not= viewport.selection
-                                                         selected-key))
-                                          (each [index line (ipairs lines)]
-                                            (when line.selected
-                                              (set first
-                                                   (math.max 1
-                                                             (math.min first
-                                                                       index)))
-                                              (when (>= index (+ first room))
-                                                (set first (+ (- index room) 1)))
-                                              (lua :break))))
-                                        (set viewport
-                                             {: first
-                                              : room
-                                              :selection selected-key
-                                              :total (length lines)})
-                                        (for [index first (math.min (length lines)
-                                                                    (- (+ first
-                                                                          room)
-                                                                       1))]
-                                          (tset result (+ (length result) 1)
-                                                (. lines index)))
-                                        result)))})
+                        {:type :register/service :name :transcript_window
+                         :value (fn [db context room] (. (transcript-viewport db context room) :lines))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/reset
                          :handler (fn [db]
-                                    (set viewport {:first 1 :room 0 :total 0})
                                     {:patch {:messages {:responses (misa.replace []) :blocks (misa.replace [])
                                                          :by_response (misa.replace {})
-                                                         :scroll 0 :top misa.delete}}})})
+                                                         :scroll 0 :top misa.delete :scroll_selection misa.delete}}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/response-start
