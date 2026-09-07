@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "patch dispatch order and rollback" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/state-dispatch.fnl"} }, "patch dispatch contracts passed\n");
+}
+
 test "generator composition replay and shrinking" {
     var h = try Harness.init();
     defer h.deinit();

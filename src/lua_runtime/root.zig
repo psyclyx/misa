@@ -7,6 +7,7 @@ const c = @cImport({
 });
 
 const framework = @embedFile("framework.fnl");
+const state_updates = @embedFile("state.fnl");
 const fennel = @embedFile("vendor/fennel.lua");
 pub const max_nesting_depth: usize = 128;
 
@@ -114,6 +115,20 @@ pub const Runtime = struct {
         c.lua_getfield(state, 1, "dofile");
         self.fennel_dofile_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
         self.pushTraceback();
+        c.lua_getfield(state, 1, "eval");
+        _ = c.lua_pushlstring(state, state_updates.ptr, state_updates.len);
+        c.lua_createtable(state, 0, 1);
+        _ = c.lua_pushstring(state, "state.fnl");
+        c.lua_setfield(state, -2, "filename");
+        if (c.lua_pcall(state, 2, 1, 2) != 0) {
+            self.failLua("initializing state updates");
+            return error.LuaInitializationFailed;
+        }
+        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "package");
+        c.lua_getfield(state, -1, "loaded");
+        c.lua_pushvalue(state, 3);
+        c.lua_setfield(state, -2, "misa.runtime.state");
+        self.pop(3);
         c.lua_getfield(state, 1, "eval");
         _ = c.lua_pushlstring(state, framework.ptr, framework.len);
         c.lua_createtable(state, 0, 1);

@@ -30,6 +30,11 @@
 
 (global misa {:json_null {}})
 
+(local state-updates ((require :misa.runtime.state) misa.json_null))
+(set misa.delete state-updates.delete)
+(set misa.replace state-updates.replace)
+(set misa.patch state-updates.patch)
+
 (local registrations {})
 
 (local setup-handlers {})
@@ -664,6 +669,10 @@
                      (assert (or (= result nil) (= (type result) :table))
                              "event handler result must be a table")
                      (when result
+                       (when (not= result.patch nil)
+                         (assert (= result.db nil)
+                                 "handler cannot return both db and patch")
+                         (set tx.db (misa.patch tx.db result.patch)))
                        (when (not= result.db nil)
                          (assert (= (type result.db) :table)
                                  "handler db must be a table")
