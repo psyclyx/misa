@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "provider adapters feed the common usage dashboard and selected indicator" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/usage-dashboard.fnl"} }, "usage dashboard contracts passed\n");
+}
+
 test "indicator facts declare dependencies and share open typed presentation" {
     var h = try Harness.init();
     defer h.deinit();

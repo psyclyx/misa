@@ -33,6 +33,23 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Shared usage flow and final presentation audit (2026-09-07)
+
+`tests/usage-dashboard.fnl` feeds the real Claude, Codex OAuth, and Kimi usage
+handlers into the shared dashboard and selected-provider fact query. It checks
+all-provider refresh declarations, switching, exhausted/remaining values, Claude
+extra-usage currency scaling, open-dialog refresh after a failed Codex request,
+independence of other providers, and preserved old snapshots. It executes no
+network/process effects and is not evidence of live Kimi account retrieval.
+The focused dashboard contract and full ReleaseSafe baseline suite passed.
+
+The final presentation audit identified two remaining semantic cutovers:
+response-cost metadata reaches transcript components as formatted text, and
+model pricing/context previews reach picker layout preformatted. Both need raw
+facts at their component boundaries; the Presentation checkbox remains open.
+Traversal of transcript blocks and explicit collection reuse checks are not
+themselves additional architecture defects.
+
 ### Domain initialization belongs to event handlers (2026-09-07)
 
 Themes, component role selections, and animations now initialize in their owning
