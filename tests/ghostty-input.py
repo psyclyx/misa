@@ -74,6 +74,24 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         raise AssertionError(state)
     try:
         until(lambda: b'smoke/model' in output)
+        until(lambda: b'\x1b[?2026l' in output)
+        assert b'\x1b[?1003h' in output, 'all-motion mouse reporting was not enabled'
+        # The empty default UI puts its model button on row 4, column 20.
+        # Wait for presentation as well as state: an inspection can complete
+        # before the corresponding frame has reached the PTY.
+        def move_and_render(column, row):
+            start = len(output)
+            send(f'\x1b[<35;{column};{row}M'.encode())
+            state = snapshot()
+            until(lambda: b'\x1b[?2026l' in output[start:])
+            return state, bytes(output[start:])
+        assert b'48;2;59;82;96' not in output, 'button had a hover background at rest'
+        state, frame = move_and_render(20, 4)
+        assert state.get('hover_action') == 'models.open', 'mouse motion did not reach the model button'
+        assert b'48;2;59;82;96' in frame, 'hover state did not produce a background'
+        state, frame = move_and_render(100, 1)
+        assert not state.get('hover_action'), 'leaving an action retained hover state'
+        assert b'48;2;59;82;96' not in frame, 'leaving an action retained its background'
         send(b'\x16')
         until(lambda: b'\x1b_Ga=t' in output)
         assert snapshot()['attachments'] == 1
@@ -122,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         assert re.search(rb'\x1b\[[0-9;]*38;2;', output) and re.search(rb'\x1b\[[0-9;]*48;2;', output), 'truecolor styles were absent'
         assert b'\x1b]8;;https://example.test' in output, 'Markdown links were not clickable'
         assert b'\x1b[?2026h' in output and b'\x1b[<u' in output
-        print('Ghostty PTY passed: images, Shift-Enter, queue editing/steering, history, selection, scrolling, RGB and links')
+        print('Ghostty PTY passed: hover background/leave, images, Shift-Enter, queue editing/steering, history, selection, scrolling, RGB and links')
     finally:
         if process.poll() is None: process.kill(); process.wait()
         os.close(master)

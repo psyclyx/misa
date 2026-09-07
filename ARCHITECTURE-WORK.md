@@ -51,6 +51,13 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The Ghostty-protocol PTY test now sends SGR mouse motion over the default model
+button and away again. It checks the native hover action, emitted hover RGB
+background, absence of that background at rest, and removal on exit. Inspection
+completion is not a presentation barrier, so the test also awaits the emitted
+frame. This verifies decoder-to-state-to-render integration, not a live Ghostty
+GUI or end-to-end OSC-only link hover; those acceptance checks remain open.
+
 Automatic Kimi refreshes now coalesce while a request is in flight, retaining one
 follow-up refresh rather than launching overlapping operations. Success and
 failure both release the in-flight slot and honor the queued refresh. Tests

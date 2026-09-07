@@ -26,6 +26,8 @@
                                            {:attachments (length (or db.editor.attachments
                                                                      {}))
                                             :history db.history.entries
+                                            :hover_action db.hover_action
+                                            :hover_link db.hover_link
                                             :messages (length db.agent.messages)
                                             :pending (and db.queue
                                                           db.queue.pending)
