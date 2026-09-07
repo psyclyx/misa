@@ -21,7 +21,7 @@
                         {:type :register/event
                          :name :transcript/assistant
                          :handler (fn [db]
-                                    (local transcript db.messages.transcript)
+                                    (local transcript db.messages.blocks)
                                     (assert (and (and (and (and (= (length transcript)
                                                                    4)
                                                                 (= (. transcript

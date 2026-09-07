@@ -6,14 +6,15 @@
 (misa._setup (fennel.dofile :extensions/json.fnl) {})
 (local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) {:config {:messages {:max_string 12}}}))
 (local handlers {})
-(var register nil)
+(var (register input-policy) nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
+  (when (= spec.type :register/interceptor) (set input-policy spec.value.before))
   (when (= spec.name :register/transcript-delta) (set register spec.handler)))
 (fn initial [kind]
   (local blocks [{:id :block :kind kind :streaming true :chunks [] :byte_count 0
                  :argument_chunks [] :argument_bytes 0}])
-  {:messages {:blocks blocks :transcript blocks :by_response {:reply 1}
+  {:messages {:blocks blocks :by_response {:reply 1}
               :responses [{:id :reply :role :assistant :block_start 1 :block_count 1 :status :streaming
                            :started_monotonic_ms 100 :started_wall_ms 0}]}})
 (fn transition [db fields]
@@ -28,7 +29,7 @@
   (local next (misa.patch db (or (and result result.patch) {})))
   (when (= event.type :transcript/block-delta)
     (assert (= next.messages.responses db.messages.responses)))
-  (assert (= (misa.json.encode next.messages.blocks) (misa.json.encode next.messages.transcript)))
+  (assert (= next.messages.transcript nil) "transcript blocks were duplicated")
   next)
 (local failure
        (G.for_all (G.vector (G.elements [{:text :hello} {:text ""} {:text "世界"}
@@ -86,4 +87,31 @@
                     (assert (= (. finished.messages.blocks 1 :text) (table.concat (. sample 1)))))
                   {:cases 500 :size 20}))
 (assert (not finish-failure) (and finish-failure (fennel.view finish-failure)))
+(local boot (transition {} {:type :app/start}))
+(assert (= boot.messages.verbose false))
+(local controls-failure
+       (G.for_all (G.vector (G.elements [:messages/toggle-verbose :transcript/reset :messages/scroll]))
+                  (fn [events]
+                    (var db boot)
+                    (var verbose false)
+                    (each [_ type (ipairs events)]
+                      (when (= type :messages/toggle-verbose) (set verbose (not verbose)))
+                      (set db (transition db {: type :delta 3}))
+                      (assert (= db.messages.verbose verbose))))
+                  {:cases 500 :size 20}))
+(assert (not controls-failure) (and controls-failure (fennel.view controls-failure)))
+(local reset (transition (misa.patch streamed {:messages {:next_id 17 :top 5}}) {:type :transcript/reset}))
+(assert (= reset.messages.next_id 17))
+(assert (= reset.messages.top nil))
+(assert (= (length reset.messages.blocks) 0))
+(set misa.keybinding_action (fn [_ event] event.action))
+(each [_ example (ipairs [{:kind :wheel_up :delta 3} {:kind :wheel_down :delta -3}
+                          {:action :transcript_up :delta 12} {:action :transcript_down :delta -12}])]
+  (local tx {:db boot :event {:type :terminal/input :kind example.kind :action example.action}
+             :cofx {:terminal {:lines 24}}})
+  (local before (misa.json.encode tx))
+  (local next (input-policy tx))
+  (assert (= before (misa.json.encode tx)) "transcript input policy mutated its transaction")
+  (assert (= next.event.type :messages/scroll))
+  (assert (= next.event.delta example.delta)))
 (output "transcript delta state properties passed\n")

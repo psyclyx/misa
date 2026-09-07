@@ -152,3 +152,12 @@ blocks and response metadata. Tests cover generated fragment finalization,
 timing/token rates, metadata attachment, argument compaction, and clearing stale
 tool descriptions. Creation/standalone transcript handlers and viewport state
 remain to migrate.
+
+Transcript initialization/reset/detail/scroll handlers now return application
+patches, and global input routing preserves its incoming transaction. Generated
+control sequences and direct wheel/page-key checks cover ownership, retained ID
+sequences, and clearing scroll anchors. Viewport projection state still lives in
+a mutable closure and must be replaced before claiming rollback-safe rendering.
+The redundant `messages.transcript` mirror has been removed; `messages.blocks`
+is the sole block collection. Integration fixtures now inspect that canonical
+collection instead of requiring two copies to remain synchronized.

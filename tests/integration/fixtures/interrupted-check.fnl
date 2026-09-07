@@ -6,7 +6,7 @@
                          :handler (fn [db]
                                     (assert (= (length db.agent.messages) 1)
                                             "interrupted assistant response entered provider history")
-                                    (local transcript db.messages.transcript)
+                                    (local transcript db.messages.blocks)
                                     (assert (and (= (. transcript
                                                        (- (length transcript) 1)
                                                        :interrupted)

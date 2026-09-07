@@ -1,6 +1,6 @@
 ;; Canonical transcript models and projection. Interactive output is composed
 
-;; only from db.messages.transcript by the root managed view.
+;; only from db.messages.blocks by the root managed view.
 
 (fn lower [value] (: (tostring value) :lower))
 
@@ -163,7 +163,6 @@
     (set block.role response-model.role)
     (set block.started_wall_ms response-model.started_wall_ms)
     (tset state.blocks (+ (length state.blocks) 1) block)
-    (set state.transcript state.blocks)
     (set response-model.block_count (+ response-model.block_count 1))
     (set state.scroll 0)
     block))
@@ -227,7 +226,7 @@
 (fn replace-transcript-block [db block patch]
   (local blocks (icollect [_ previous (ipairs db.messages.blocks)]
                  (if (= previous block) (misa.patch previous patch) previous)))
-  {:patch {:messages {:blocks (misa.replace blocks) :transcript (misa.replace blocks)}}})
+  {:patch {:messages {:blocks (misa.replace blocks)}}})
 
 (fn finish-block [block event policy]
   (local value (or event {}))
@@ -258,7 +257,7 @@
   (local responses (icollect [_ previous (ipairs db.messages.responses)]
                      (if (= previous.id owner.id) owner previous)))
   {:patch {:messages {:responses (misa.replace responses) :blocks (misa.replace blocks)
-                       :transcript (misa.replace blocks)}}
+                      }}
    : fx})
 
 (fn timestamp [ms]
@@ -332,26 +331,14 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (set db.messages
-                                         {:blocks {}
-                                          :by_response {}
-                                          :next_id 0
-                                          :responses {}
-                                          :scroll 0
-                                          :transcript {}
-                                          :verbose (= config.verbose true)})
-                                    (set db.messages.transcript
-                                         db.messages.blocks)
-                                    {: db})})
+                                    {:patch {:messages (misa.replace
+                                                         {:blocks [] :by_response {} :next_id 0 :responses []
+                                                          :scroll 0 :verbose (= config.verbose true)})}})})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :messages/toggle-verbose
+                        {:type :register/event :name :messages/toggle-verbose
                          :handler (fn [db]
-                                    (set (db.messages.verbose db.messages.scroll)
-                                         (values (not db.messages.verbose) 0))
-                                    {: db
-                                     :fx [{:event {:type :ui/redraw}
-                                           :type :dispatch}]})})
+                                    {:patch {:messages {:verbose (not db.messages.verbose) :scroll 0}}
+                                     :fx [{:event {:type :ui/redraw} :type :dispatch}]})})
           (var viewport {:first 1 :room 0 :total 0})
           (table.insert setup-fx
                         {:type :register/event
@@ -367,48 +354,25 @@
                                                      (math.min bottom
                                                                (- viewport.first
                                                                   event.delta))))
-                                    (set db.messages.top
-                                         (or (and (< first bottom) first) nil))
-                                    (set db.messages.scroll
-                                         (math.max 0 (- bottom first)))
                                     (set viewport.first first)
-                                    {: db :fx [{:type :terminal/read}]})})
+                                    {:patch {:messages {:top (if (< first bottom) first misa.delete)
+                                                         :scroll (math.max 0 (- bottom first))}}
+                                     :fx [{:type :terminal/read}]})})
+          (local scroll-inputs {:wheel_up (fn [] 3) :wheel_down (fn [] -3)
+                                :transcript_up (fn [tx] (math.max 1 (math.floor (/ tx.cofx.terminal.lines 2))))
+                                :transcript_down (fn [tx] (- (math.max 1 (math.floor (/ tx.cofx.terminal.lines 2)))))})
           (table.insert setup-fx
                         {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (when (and (and (= tx.event.type
-                                                              :terminal/input)
-                                                           (not tx.db.picker))
-                                                      misa.keybinding_action)
-                                             (local action
-                                                    (misa.keybinding_action :global
-                                                                            tx.event))
-                                             (if (or (= tx.event.kind :wheel_up)
-                                                     (= tx.event.kind
-                                                        :wheel_down))
-                                                 (set tx.event
-                                                      {:delta (or (and (= tx.event.kind
-                                                                          :wheel_up)
-                                                                       3)
-                                                                  (- 3))
-                                                       :type :messages/scroll})
-                                                 (= action :toggle_verbose)
-                                                 (set tx.event
-                                                      {:type :messages/toggle-verbose})
-                                                 (= action :transcript_up)
-                                                 (set tx.event
-                                                      {:delta (math.max 1
-                                                                        (math.floor (/ tx.cofx.terminal.lines
-                                                                                       2)))
-                                                       :type :messages/scroll})
-                                                 (= action :transcript_down)
-                                                 (set tx.event
-                                                      {:delta (- (math.max 1
-                                                                           (math.floor (/ tx.cofx.terminal.lines
-                                                                                          2))))
-                                                       :type :messages/scroll})))
-                                           tx)
-                                 :id :messages/global-keys}})
+                         :value {:id :messages/global-keys
+                                 :before (fn [tx]
+                                           (if (or (not= tx.event.type :terminal/input) tx.db.picker
+                                                   (not misa.keybinding_action)) tx
+                                               (let [action (misa.keybinding_action :global tx.event)
+                                                     scroll (or (. scroll-inputs tx.event.kind) (. scroll-inputs action))
+                                                     event (if scroll {:type :messages/scroll :delta (scroll tx)}
+                                                               (= action :toggle_verbose) {:type :messages/toggle-verbose}
+                                                               tx.event)]
+                                                 (misa.patch tx {:event (misa.replace event)}))))}})
           (table.insert setup-fx
                         {:type :register/action
                          :value {:binding {:action :toggle_verbose
@@ -682,15 +646,10 @@
                         {:type :register/event
                          :name :transcript/reset
                          :handler (fn [db]
-                                    (set (db.messages.responses db.messages.blocks
-                                                                db.messages.by_response)
-                                         (values {} {} {}))
-                                    (set db.messages.transcript
-                                         db.messages.blocks)
-                                    (set db.messages.scroll 0)
-                                    (set db.messages.top nil)
                                     (set viewport {:first 1 :room 0 :total 0})
-                                    {: db})})
+                                    {:patch {:messages {:responses (misa.replace []) :blocks (misa.replace [])
+                                                         :by_response (misa.replace {})
+                                                         :scroll 0 :top misa.delete}}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/response-start
@@ -776,7 +735,7 @@
                                     (local block (assert (find-block db owner event.block_id) "unknown transcript block"))
                                     (let [finished (finish-block block event policy)
                                           blocks (icollect [_ previous (ipairs db.messages.blocks)] (if (= previous block) finished previous))]
-                                      {:patch {:messages {:blocks (misa.replace blocks) :transcript (misa.replace blocks)}}}))})
+                                      {:patch {:messages {:blocks (misa.replace blocks)}}}))})
           (table.insert setup-fx
                         {:type :register/event :name :transcript/response-end
                          :handler (fn [db event cofx]

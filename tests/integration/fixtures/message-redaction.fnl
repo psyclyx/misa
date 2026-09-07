@@ -15,8 +15,8 @@
                          :name :transcript/tool-call
                          :handler (fn [db]
                                     (local args
-                                           (. db.messages.transcript
-                                              (length db.messages.transcript)
+                                           (. db.messages.blocks
+                                              (length db.messages.blocks)
                                               :arguments))
                                     (assert (and (= args.token "[redacted]")
                                                  (= args.value
