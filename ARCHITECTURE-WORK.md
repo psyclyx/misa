@@ -3,9 +3,9 @@
 This tracks the accepted scope while the implementation is in progress.
 Completion requires behavioral evidence, not just passing existing tests.
 
-- [ ] State: migrate bundled reducers, services, and interceptors to immutable
+- [x] State: migrate bundled reducers, services, and interceptors to immutable
   updates; remove the transaction draft and whole-database reconciliation.
-- [ ] Patches: settle empty-table semantics, validate data and controls, preserve
+- [x] Patches: settle empty-table semantics, validate data and controls, preserve
   sharing and rollback, and cover nested replacement/deletion and collections.
 - [x] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
   cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
@@ -32,6 +32,35 @@ product workflows require later data-model decisions. The interaction architectu
 must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
+
+### State and patch ownership audit (2026-09-07)
+
+The remaining framework ownership gap was the transaction envelope returned by
+`before` interceptors: handler application overwrote its `db` and appended to its
+`fx`. Dispatch now owns a shallow envelope and effect-array copy before applying
+handlers, preserving callback-retained snapshots and extension-owned envelope
+fields. Application state and effect records remain shared; this does not
+restore database drafts or reconciliation. The regression failed before the fix
+and checks envelope preservation, effect order, extra fields, subsequent dispatch
+and failed transactions.
+
+A mutation-focused audit of all 63 bundled extensions found no remaining writes
+to retained input state in their call paths. Candidate parser, component,
+choice-row and provider-serializer writes target fresh construction; syntax
+interceptors copy effect arrays before appending. This is an ordinary-table
+ownership contract, not protection against third-party callback mutation.
+
+Patch tests cover empty merges, explicit clearing/deletion/null, dense sequence
+replacement, sparse/mixed patch rejection, invalid keys/data/controls, cycles,
+metatables, exact nesting limits and repeated noncyclic references. Generated
+properties compare an independent evaluator and verify retained snapshots,
+sharing, idempotence, disjoint-update commutativity and unchanged patch input.
+Dispatch tests cover patch-only results and failed transactions; native runtime
+tests cover rejected view decoding and speculative subscription rollback.
+These close the state/patch checklist items, not the separate presentation and
+interaction audits. Earlier pending draft/envelope notes below are historical.
+No performance claim is made for this correctness fix; the benchmark campaign
+was stopped in favor of focused regressions and the normal suite.
 
 ### Mixed transcript and back-to-back input baseline (2026-09-07)
 

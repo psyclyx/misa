@@ -699,6 +699,12 @@
                      (when before
                        (set tx (or (before tx) tx))
                        (validate tx)))
+                   ;; Interceptors may retain their input or returned envelope.
+                   ;; Own the two containers dispatch mutates, sharing all state
+                   ;; and effect records rather than cloning application data.
+                   (local owned (collect [key value (pairs tx)] key value))
+                   (set owned.fx (icollect [_ effect (ipairs tx.fx)] effect))
+                   (set tx owned)
                    (each [_ handler (ipairs (or (. events tx.event.type) {}))]
                      (local result (handler tx.db tx.event tx.cofx))
                      (assert (or (= result nil) (= (type result) :table))

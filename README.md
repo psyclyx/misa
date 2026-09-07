@@ -158,9 +158,19 @@ Registration effects use these payloads:
   scalar values, preserve identity for untouched branches, and support `(misa.replace value)`
   and `misa.delete`. Returning `{db=<table>}` is rejected, including from Lua extensions.
   Treat input state as immutable; allocate new data or use `misa.patch` for updates.
+  An empty table patch is a no-op, including at absent or scalar paths; use
+  `misa.replace({})` to clear a collection. Nonempty dense numeric arrays replace
+  the collection; sparse or mixed numeric/string patch tables are rejected.
+  Replacement data is validated recursively, even when its identity matches
+  existing state. Data cannot contain patch controls, cycles, metatables,
+  callbacks or non-finite numbers. Unchanged branches retain identity, including
+  equal replacement data. `misa.delete` and `misa.replace(nil)` remove a key;
+  `misa.json_null` stores an explicit JSON null.
 - `{type="register/interceptor", value={id=..., before=fn?, after=fn?}}`: before callbacks run
   in registration order and after callbacks in reverse. They receive and may
-  return `{db,event,cofx,fx}`.
+  return `{db,event,cofx,fx}`. Treat the envelope and its contents as immutable;
+  use `misa.patch` or construct a new envelope. Dispatch preserves envelopes and
+  effect arrays retained by callbacks, including extension-owned envelope fields.
 - `{type="register/cofx", name=name, handler=fn}`: derives a policy value. Derivations run in
   registration order; a later derivation may read values installed by earlier
   ones. Setup context also includes `host={executable,config_path}` so subprocess

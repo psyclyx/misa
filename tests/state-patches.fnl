@@ -33,6 +33,12 @@
   (assert (= old.left.value 1) "failed update changed original state"))
 (rejects {:left {:value (fn [] nil)}})
 (rejects {:left {:value (/ 0 0)}})
+(each [_ invalid (ipairs [math.huge (- math.huge) (coroutine.create (fn []))])]
+  (rejects {:left {:value invalid}})
+  (rejects {:left (state.replace {:value invalid})}))
+(each [_ key (ipairs [0 -1 1.5 false {} math.huge])]
+  (rejects {:left {key :invalid}})
+  (rejects {:left (state.replace {key :invalid})}))
 (rejects {:left (state.replace {:nested state.delete})})
 (rejects {:left {1 :one 3 :three}})
 (rejects {:left {1 :one :named :two}})
@@ -44,12 +50,25 @@
 (rejects [1 2])
 (rejects state.delete)
 (rejects (state.replace {}))
+(rejects json-null)
 (local deep {})
 (var cursor deep)
 (for [_ 1 130]
   (set cursor.child {})
   (set cursor cursor.child))
 (rejects deep)
+;; The root is depth zero; accept the limit and reject the next table.
+(local boundary {})
+(var leaf boundary)
+(for [_ 1 128]
+  (set leaf.child {})
+  (set leaf leaf.child))
+(assert (state.patch {} {:value (state.replace (. boundary :child))}))
+(rejects {:value (state.replace boundary)})
+;; Repeated references are a DAG, not a cycle. Both paths remain shared on no-op.
+(local shared {:value 7})
+(local dag {:left shared :right shared})
+(assert (= (state.patch dag {:left (state.replace shared) :right (state.replace shared)}) dag))
 ;; Equal-identity replacement still validates data; sharing is not a bypass.
 (each [_ invalid (ipairs [cycle deep {:nested (fn [])} {:nested state.delete}
                           (setmetatable {} {:__index old})])]
