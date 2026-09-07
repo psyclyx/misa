@@ -9,11 +9,14 @@ Completion requires behavioral evidence, not just passing existing tests.
   sharing and rollback, and cover nested replacement/deletion and collections.
 - [x] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
   cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
+- [ ] Dispatch cutover: remove the global interceptor chain; command policy uses
+  explicit handlers and input routing uses an extensible, scoped dispatcher with
+  verified modal precedence rather than extension registration order.
 - [x] Presentation: semantic render data, open dispatch registries, unified
   renderable composition, and subscriptions replacing ad-hoc projections.
-- [ ] Rendering performance: verify selective recomputation and streaming costs
+- [x] Rendering performance: verify selective recomputation and streaming costs
   with representative transcripts, preserving interaction metadata through layout.
-- [ ] Startup: profile and improve default startup; record reproducible measurements.
+- [x] Startup: profile and improve default startup; record reproducible measurements.
 - [x] Default theme: remove unwanted angled decoration; model value and picker
   binding must be distinct from semantic labels and correctly presented.
 - [x] Hover: pointer motion highlights clickable backgrounds only while hovered,
@@ -22,7 +25,7 @@ Completion requires behavioral evidence, not just passing existing tests.
   Markdown list structure, and a selection model independent of copying.
 - [x] Claude: tool calls appear once across streamed and final records; regression
   fixtures cover provider-owned tools and completion boundaries.
-- [ ] Usage: actual Claude, Codex OAuth, and Kimi coding-plan usage retrieval,
+- [x] Usage: actual Claude, Codex OAuth, and Kimi coding-plan usage retrieval,
   a common dashboard, selected-provider indicators, and graceful unavailable states.
 - [ ] Verification and handoff: focused commits, complete relevant tests, accurate
   documentation and measured performance claims.
@@ -32,6 +35,24 @@ product workflows require later data-model decisions. The interaction architectu
 must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
+
+### Live Kimi and final performance evidence (2026-09-07)
+
+At `0c14a02`, a read-only native auth status check found the existing Kimi login.
+The real provider usage request then completed with `unavailable=false` and two
+normalized quota windows. Only login availability and window count were printed;
+no credential contents or inference request were involved. The temporary probe
+disabled model discovery and bounded request timeouts. This closes live Kimi
+retrieval verification alongside the earlier native Codex and Claude checks and
+the three-provider shared-dashboard regression.
+
+The bounded final startup/rendering check is recorded in
+`benchmarks/architecture-handoff-2026-09-07.md`: same-binary source versus installed
+startup medians 588.329 / 44.032 ms; 300-block mixed redraw/stream medians 2.426 /
+8.115 ms. Streaming maximum was 19.983 ms in ten measured samples. These are not
+interactive startup, emulator paint, or universal 16 ms guarantees. Existing
+correctness/recomputation tests remain the semantic oracle. No further benchmark
+campaign or renderer complexity was added for this handoff.
 
 ### Shared usage flow and final presentation audit (2026-09-07)
 
