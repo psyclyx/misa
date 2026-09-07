@@ -7,8 +7,13 @@
             (not db.selection)) (not db.editor.choice)))
 
 (fn state [db]
-  (set db.history (or db.history {:entries {} :index 0 :sequence 0}))
-  db.history)
+  (or db.history {:entries {} :index 0 :sequence 0}))
+
+(fn updated [history patch fx]
+  {:patch {:history (misa.replace (misa.patch history patch))} : fx})
+
+(fn reset-navigation []
+  {:index 0 :draft misa.delete :current misa.delete})
 
 (fn restore [text attachments cursor]
   {:event {:attachments (or attachments {})
@@ -83,8 +88,7 @@
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
-                                    (state db)
-                                    {: db
+                                    {:patch {:history (misa.replace (state db))}
                                      :fx (or (and (= config.persist false) {})
                                              [{:completion :history/loaded
                                                :namespace :history
@@ -113,70 +117,56 @@
                                           ;; Input may have been accepted while the native load was outstanding.
                                           (each [_ text (ipairs history.entries)]
                                             (add entries text))
-                                          (set history.entries
-                                               (bounded entries))
-                                          {: db})))})
+                                          (updated history {:entries (misa.replace (bounded entries))}))))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/submitted
                          :handler (fn [db event]
                                     (local history (state db))
-                                    (set (history.index history.draft
-                                                        history.current)
-                                         (values 0 nil nil))
-                                    (if (or (or (not= (type event.prompt)
-                                                      :string)
-                                                (> (length event.prompt)
-                                                   max-bytes))
-                                            (not (add history.entries
-                                                      event.prompt)))
-                                        {: db}
-                                        (do
-                                          (set history.entries
-                                               (bounded history.entries))
-                                          {: db :fx (save history)})))})
+                                    (local entries {})
+                                    (each [index text (ipairs history.entries)]
+                                      (tset entries index text))
+                                    (local changed
+                                           (and (= (type event.prompt) :string)
+                                                (<= (length event.prompt) max-bytes)
+                                                (add entries event.prompt)))
+                                    (local next-history (misa.patch history (reset-navigation)))
+                                    (if changed
+                                        (let [next-history (misa.patch next-history
+                                                                      {:entries (misa.replace (bounded entries))})]
+                                          (updated next-history {} (save next-history)))
+                                        (updated next-history {})))})
 
           (fn navigate [db direction]
-            (if (not (available db)) {: db :fx [{:type :terminal/read}]}
+            (if (not (available db)) {:fx [{:type :terminal/read}]}
                 (do
                   (local (history editor) (values (state db) db.editor))
                   (if (= (length history.entries) 0)
-                      {: db :fx [{:type :terminal/read}]}
+                      {:fx [{:type :terminal/read}]}
                       (do
-                        (when (or (= history.index 0)
-                                  (not= editor.text history.current))
-                          (set history.index 0)
-                          (set history.draft
-                               {:attachments (misa.snapshot (or editor.attachments
-                                                                {}))
-                                :cursor editor.cursor
-                                :text (or editor.text "")}))
+                        (local reset (or (= history.index 0)
+                                         (not= editor.text history.current)))
+                        (local start (if reset 0 history.index))
+                        (local draft (if reset
+                                         {:attachments (or editor.attachments {})
+                                          :cursor editor.cursor
+                                          :text (or editor.text "")}
+                                         history.draft))
                         (local index
                                (math.max 0
                                          (math.min (length history.entries)
-                                                   (+ history.index direction))))
-                        (if (= index history.index)
-                            {: db :fx [{:type :terminal/read}]}
-                            (do
-                              (set history.index index)
-                              (if (= index 0)
-                                  (do
-                                    (local draft history.draft)
-                                    (set history.current nil)
-                                    {: db
-                                     :fx [(restore draft.text draft.attachments
-                                                   draft.cursor)
-                                          {:type :terminal/read}]})
-                                  (do
-                                    (local text
-                                           (. history.entries
-                                              (+ (- (length history.entries)
-                                                    index)
-                                                 1)))
-                                    (set history.current text)
-                                    {: db
-                                     :fx [(restore text)
-                                          {:type :terminal/read}]})))))))))
+                                                   (+ start direction))))
+                        (local text (when (> index 0)
+                                      (. history.entries (+ (- (length history.entries) index) 1))))
+                        (local fx [{:type :terminal/read}])
+                        (when (not= index start)
+                          (table.insert fx 1 (if (= index 0)
+                                                 (restore draft.text draft.attachments draft.cursor)
+                                                 (restore text))))
+                        (updated history {: index :draft (misa.replace draft)
+                                          :current (misa.replace (if (= index start)
+                                                                    history.current text))}
+                                 fx))))))
 
           (table.insert setup-fx
                         {:type :register/event
@@ -191,7 +181,7 @@
                          :name :history/search
                          :handler (fn [db]
                                     (if (not (available db))
-                                        {: db :fx [{:type :terminal/read}]}
+                                        {:fx [{:type :terminal/read}]}
                                         (do
                                           (local history (state db))
                                           (local (items seen) (values {} {}))
@@ -228,9 +218,8 @@
                                                      : label
                                                      :search text
                                                      :value text})))
-                                          (set history.sequence
-                                               (+ history.sequence 1))
-                                          {: db
+                                          (local sequence (+ history.sequence 1))
+                                          {:patch {:history (misa.replace (misa.patch history {: sequence}))}
                                            :fx [{:event {:completion :history/selected
                                                          :id :input-history
                                                          :session (misa.choice_session {: items
@@ -239,7 +228,7 @@
                                                                                         :views [:all]}
                                                                                        db)
                                                          :title "Input history"
-                                                         :token (tostring history.sequence)
+                                                         :token (tostring sequence)
                                                          :type :picker/open}
                                                  :type :dispatch}]})))})
           (table.insert setup-fx
@@ -252,17 +241,14 @@
                                                   (tostring history.sequence)))
                                         nil
                                         (if event.cancelled
-                                            {: db :fx [{:type :terminal/read}]}
+                                            {:fx [{:type :terminal/read}]}
                                             (do
                                               (assert (= (type event.value)
                                                          :string)
                                                       "history selection must be text")
-                                              (set (history.index history.draft
-                                                                  history.current)
-                                                   (values 0 nil nil))
-                                              {: db
-                                               :fx [(restore event.value)
-                                                    {:type :terminal/read}]}))))})
+                                              (updated history (reset-navigation)
+                                                       [(restore event.value)
+                                                        {:type :terminal/read}])))))})
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
