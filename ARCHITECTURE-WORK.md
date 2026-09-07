@@ -102,3 +102,11 @@ per-message text fallback, metadata-only blocks, terminal gating, and extensions
 The runtime regression fixture repeats final tool records and verifies exactly
 two transcript tool starts for two distinct calls, provider-owned tool results,
 and successful request completion.
+
+Selection navigation now returns immutable state through an open
+`register/selection-action` registry. Anchors use structural depth rather than
+mutable frame identity; changing documents resets document-local ranges.
+`tests/selection-state.fnl` covers generated empty/nonempty navigation, visual
+extension, parent transitions, copy effects, custom actions, and non-mutating
+rich-line decoration. Cross-document ranges and the broader transcript/render
+cutover still need work; this does not complete the interaction requirement.

@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "selection transitions and decoration preserve prior values" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/selection-state.fnl"} }, "selection state properties passed\n");
+}
+
 test "response cost updates retain earlier snapshots" {
     var h = try Harness.init();
     defer h.deinit();

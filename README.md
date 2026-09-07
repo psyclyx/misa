@@ -779,6 +779,14 @@ nixpkgs using
 The bundle contains parsers but no highlight queries; Misa classifies syntax
 node types generically. Fence aliases include common labels such as `js`, `ts`,
 `py`, `rb`, `rs`, `sh`, `c++`, `c#`, `yml`, and `md`.
+Within a document, `v` anchors a visual range and sibling motions extend it;
+`v` again returns to the focused node. Changing structural depth or documents
+resets the range. Selection actions are extensible through
+`{type="register/selection-action", id="my_action", value=function(state, db, event) ... end}`.
+Pure handlers return `{state=<new selection state>, fx=<array>, close=<boolean>}`.
+Omitted state is unchanged; `close=true` dismisses selection. Copying is one
+action, not a requirement of navigation or range projection.
+
 
 Outside Nix, install tree-sitter (including its pkg-config metadata) and point
 `MISA_TREE_SITTER_DIR` at a directory of `<language>.so` parsers. A default can

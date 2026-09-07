@@ -12,6 +12,8 @@
                                           [{:spans [{:style :label
                                                      :text (misa.layout.clip (.. (or (and model.copied
                                                                                           "Copied · ")
+                                                                                     (and model.visual
+                                                                                          "Visual · ")
                                                                                      "Select · ")
                                                                                  path)
                                                                              (or context.columns
