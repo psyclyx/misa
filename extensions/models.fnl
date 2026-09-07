@@ -125,6 +125,7 @@
                                             (when model
                                               {:context_window model.context_window
                                                :id model.id
+                                               :provider model.provider
                                                :label (.. model.provider "/" model.model)
                                                :pricing model.pricing}))}})
           (table.insert setup-fx

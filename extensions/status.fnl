@@ -15,6 +15,25 @@
 (fn total [usage]
   (+ (or (and usage usage.input_tokens) 0) (or (and usage usage.output_tokens) 0)))
 
+(fn plan-value [db]
+  (local model (and misa.selected_model_projection (misa.selected_model_projection db)))
+  (local provider (and model model.provider))
+  (local usage (and provider
+                    (or (and db.status db.status.provider_usage (. db.status.provider_usage provider))
+                        (and db.providers (. db.providers provider) (. db.providers provider :usage)))))
+  (when usage
+    (var remaining nil)
+    (each [_ window (ipairs (or (and (= (type usage) :table) usage.windows) []))]
+      (local limit window.limit)
+      (local amount (or window.remaining
+                        (and (= (type window.used) :number) (= (type limit) :number)
+                             (- limit window.used))))
+      (when (and (= (type limit) :number) (> limit 0) (< limit math.huge)
+                 (= (type amount) :number) (= amount amount) (< (math.abs amount) math.huge))
+        (local percent (math.max 0 (math.min 100 (* 100 (/ amount limit)))))
+        (set remaining (if remaining (math.min remaining percent) percent))))
+    (if remaining (.. (string.format "%.0f" remaining) "% left") "unavailable")))
+
 (fn usage-patch [event mode]
   {:mode mode
    :usage (when event.usage (misa.replace event.usage))
@@ -62,7 +81,8 @@
 
 
 (local indicators
-       [{:id :activity :icon "●" :label :activity
+       [{:id :plan :label :plan :action :usage.open :value plan-value}
+        {:id :activity :icon "●" :label :activity
          :value (fn [db]
                   (local mode (or (and db.status db.status.mode) :ready))
                   (if (and (not= mode :ready) misa.animation_span)
@@ -96,6 +116,9 @@
                   {:type :register/event :name :agent/usage
                    :handler (fn [_ event] {:patch {:status (usage-patch event)}})}
                   {:type :register/service :name :status_projection :value projection}
+                  {:type :register/action
+                   :value {:id :usage.open :label "Show usage" :event {:type :usage/open}
+                           :available (fn [db] (not db.dialog))}}
                   {:type :register/command
                    :value {:choice_purpose :command :description "Show token and coding-plan usage"
                            :event :usage/open :name :/usage}}

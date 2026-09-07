@@ -51,6 +51,14 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The default status layout includes a provider-neutral `plan` indicator consuming
+normalized windows for the selected model's explicit provider field. It reports
+the tightest known remaining percentage, distinguishes exhausted/unknown data,
+and opens the usage dashboard through the action registry. It consumes the last
+fetched data; automatic refresh and other provider fetchers remain pending. The
+actual default config now also requests model value plus hotkey, matching the
+fallback layout; tests check that profile rather than only the fallback.
+
 Kimi coding-plan retrieval now handles the open `usage/refresh` event with a
 credential-referenced regional `/usages` HTTP request. Completion normalizes quota
 windows, rejects superseded responses, and dispatches `usage/updated`; the shared

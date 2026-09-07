@@ -1,5 +1,8 @@
 (local fennel (require :fennel))
 (local output io.write)
+(local default-file (assert (io.open :config/default.json :rb)))
+(local default-source (default-file:read :*a))
+(default-file:close)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (each [_ name (ipairs [:json :layout])]
@@ -13,9 +16,16 @@
   (when (and (= spec.type :register/interceptor) (= spec.value.id :models/input))
     (set input spec.value.before)))
 (misa._setup_effects specs)
+(local default-config (misa.json.decode default-source))
+(var default-model nil)
+(each [_ item (ipairs default-config.config.status.indicators)]
+  (when (= item.id :model) (set default-model item)))
+(assert (and default-model (= default-model.representation :value) default-model.hotkey)
+        "installed default profile does not show model value and binding")
 (local state {:models {:selected :test :configured_default :test
                        :entries [{:id :test :provider :provider :model :model :context_window 100}]}})
 (local selected (misa.selected_model_projection state))
+(assert (= selected.provider :provider))
 (local projection (misa.models_projection state))
 (local unrelated (misa.patch state {:agent {:status :streaming} :models {:available {:other false}}}))
 (assert (= selected (misa.selected_model_projection unrelated)))

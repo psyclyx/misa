@@ -198,7 +198,8 @@
         },
         {
           "id": "model",
-          "representation": "label",
+          "representation": "value",
+          "hotkey": true,
           "priority": 90
         },
         {
@@ -216,6 +217,11 @@
           "id": "context",
           "representation": "label",
           "priority": 80
+        },
+        {
+          "id": "plan",
+          "representation": "label",
+          "priority": 60
         },
         {
           "id": "transcript-detail",

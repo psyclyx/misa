@@ -20,6 +20,7 @@
                        :representation :label}
                       {:id :session :priority 40 :representation :icon}
                       {:id :context :priority 80 :representation :label}
+                      {:id :plan :priority 60 :representation :label}
                       {:hotkey true
                        :id :transcript-detail
                        :priority 20

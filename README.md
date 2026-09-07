@@ -742,8 +742,13 @@ closing it does not cancel the request or reopen the dialog on completion.
 `config.providers.kimi.usage_url` can override the quota endpoint explicitly.
 Failures or responses without usable windows display unavailable, not zero usage.
 This integration follows [Kimi Code's usage implementation](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/ui/shell/usage.py).
-Claude and Codex OAuth coding-plan retrieval and selected-provider quota widgets
-remain unfinished.
+The default `plan` status indicator shows the lowest known remaining percentage
+across the selected provider's windows; it shows unavailable when fetched data
+cannot establish a percentage. Clicking it opens `/usage` and refreshes the data.
+It stays hidden when no quota data exists for the selected provider.
+Configure it through `config.status.indicators` like other status items.
+Automatic quota refresh and Claude/Codex OAuth coding-plan retrieval remain
+unfinished.
 Provider-reported USD takes precedence over estimates; missing prices remain
 explicitly unknown. Dynamic provider metadata supplies prices where available.
 `config.costs.models["provider/model-id"]` overrides `input`, `output`,
