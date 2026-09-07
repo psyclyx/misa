@@ -29,6 +29,30 @@ args = parser.parse_args()
 binary = str(args.binary.resolve())
 fixture = (root / 'tests/ghostty-input.fnl').read_text()
 
+FRAME_BEGIN, FRAME_END = b'\x1b[?2026h', b'\x1b[?2026l'
+
+
+def completed_frame(buffer, start):
+    begin = buffer.find(FRAME_BEGIN, start)
+    if begin < 0:
+        return None
+    end = buffer.find(FRAME_END, begin + len(FRAME_BEGIN))
+    if end < 0:
+        return None
+    return bytes(buffer[begin:end + len(FRAME_END)])
+
+
+# A read can begin in an older frame. Its terminator is not evidence that a new
+# frame arrived. Exercise every partial prefix and every start inside that frame.
+sample_frame = FRAME_BEGIN + b'content' + FRAME_END
+prior_frame = FRAME_BEGIN + b'older' + FRAME_END
+for boundary in range(len(sample_frame)):
+    assert completed_frame(sample_frame[:boundary], 0) is None
+for boundary in range(1, len(prior_frame)):
+    assert completed_frame(prior_frame + b'gap' + sample_frame, boundary) == sample_frame
+assert completed_frame(b'old tail' + FRAME_END, 0) is None
+assert completed_frame(b'old tail' + FRAME_END + sample_frame, 0) == sample_frame
+
 
 with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     work = Path(directory)
@@ -94,8 +118,8 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
             start = len(output)
             send(f'\x1b[<35;{column};{row}M'.encode())
             state = snapshot()
-            until(lambda: b'\x1b[?2026l' in output[start:])
-            return state, bytes(output[start:])
+            until(lambda: completed_frame(output, start) is not None)
+            return state, completed_frame(output, start)
         assert b'48;2;59;82;96' not in output, 'button had a hover background at rest'
         state, frame = move_and_render(20, 4)
         assert state.get('hover_action') == 'models.open', 'mouse motion did not reach the model button'
@@ -134,9 +158,9 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
             send(f'\x1b[<35;4;{row}M'.encode())
             state = snapshot()
             if state.get('hover_link') == 'https://hover.test':
-                until(lambda: b'\x1b[?2026l' in output[start:])
+                until(lambda: completed_frame(output, start) is not None)
                 target = (4, row)
-                frame = bytes(output[start:])
+                frame = completed_frame(output, start)
                 break
         assert target, 'Markdown OSC link was absent from native hover hit testing'
         assert not state.get('hover_action'), 'OSC link was routed as an action'
