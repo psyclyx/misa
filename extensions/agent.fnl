@@ -386,6 +386,15 @@
              (= event.id agent.active_request_id) (= event.id stream.id))
     stream))
 
+(fn continue-startup [db]
+  (local agent db.agent)
+  (when (and agent agent.startup_prompt
+             (or (not db.auth_startup) db.auth_startup.ready))
+    {:patch {:agent {:startup_prompt misa.delete :startup_attachments misa.delete}}
+     :fx [{:type :dispatch :event {:type :agent/submit
+                                  :prompt agent.startup_prompt
+                                  :attachments agent.startup_attachments}}]}))
+
 {:setup (fn [context]
           (local setup-fx [])
           (local deltas {:text text-delta :thinking text-delta :tool_call tool-delta})
@@ -411,25 +420,21 @@
                         {:type :register/event :name :app/start
                          :handler (fn [db _ cofx]
                                     (local has-prompt (> (length cofx.argv) 0))
-                                    (local waiting (and db.auth_startup (not db.auth_startup.ready)))
                                     (local prompt (when has-prompt (table.concat cofx.argv " ")))
                                     {:patch {:agent (misa.replace
                                                       {:exit_after_response has-prompt :messages []
                                                        :pending_tool_count 0 :pending_tools {} :request_seq 0
                                                        :status :ready :system_prompt config.system_prompt
-                                                       :startup_prompt (when waiting prompt)
+                                                       :startup_prompt prompt
                                                        :usage (empty-usage)})}
-                                     :fx (if (and has-prompt (not waiting))
-                                             [{:type :dispatch :event {:type :agent/submit : prompt}}] [])})})
+                                     ;; Observe auth only after every app/start owner has run.
+                                     :fx (if has-prompt
+                                             [{:type :dispatch :event {:type :agent/startup}}] [])})})
+          (table.insert setup-fx
+                        {:type :register/event :name :agent/startup :handler continue-startup})
           (table.insert setup-fx
                         {:type :register/event :name :auth/startup-ready
-                         :handler (fn [db]
-                                    (local agent db.agent)
-                                    (when (and agent agent.startup_prompt)
-                                      {:patch {:agent {:startup_prompt misa.delete :startup_attachments misa.delete}}
-                                       :fx [{:type :dispatch :event {:type :agent/submit
-                                                                    :prompt agent.startup_prompt
-                                                                    :attachments agent.startup_attachments}}]}))})
+                         :handler continue-startup})
           (table.insert setup-fx
                         {:type :register/event :name :agent/cancel-active
                          :handler (fn [db]

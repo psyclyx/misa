@@ -24,27 +24,13 @@
              :fx effects})
 
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (and (= tx.event.type
-                                                         :app/start)
-                                                      (not tx.db.auth_startup))
-                                             (do
-                                               (local pending {})
-                                               (each [_ provider (ipairs providers)]
-                                                 (tset pending provider.model_provider true))
-                                               (misa.patch tx
-                                                    {:db {:auth_startup (misa.replace {:pending_discovery {}
-                                                                                     :pending_status pending
-                                                                                     :ready (= (length providers) 0)})}}))
-                                             tx))
-                                 :id :auth/startup-state}})
-          (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
                          :handler (fn [db]
                                     (local effects {})
+                                    (local pending {})
                                     (each [_ provider (ipairs providers)]
+                                      (tset pending provider.model_provider true)
                                       (local effect
                                              (auth-effect :status provider
                                                           provider.model_provider :auth/provider-status))
@@ -54,7 +40,11 @@
                                       (tset effects (+ (length effects) 1)
                                             {:event {:type :auth/startup-ready}
                                              :type :dispatch}))
-                                    {:fx effects})})
+                                    {:patch (when (not db.auth_startup)
+                                              {:auth_startup (misa.replace {:pending_discovery {}
+                                                                           :pending_status pending
+                                                                           :ready (= (length providers) 0)})})
+                                     :fx effects})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :auth/provider-status

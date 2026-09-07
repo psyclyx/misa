@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "model startup and option reconciliation are registration-order independent" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/model-startup.fnl"} }, "model startup ordering contracts passed\n");
+}
+
 test "presentation startup is owned by event handlers" {
     var h = try Harness.init();
     defer h.deinit();

@@ -42,11 +42,22 @@ is preserved and disabling persistence does not disable initialization.
 `tests/presentation-startup.fnl` checks these contracts through direct handlers,
 including immutable inputs and configured role maps.
 
-The remaining auth and model initializers need coordinated consumer changes:
-agent startup reads authentication readiness and request-options startup reads
-model state. Merely moving those writes into handlers would make correctness
-depend on extension registration order. These are still unfinished, as are
-queue/image lifecycle guards. Input routing is a separate ordered concern.
+Auth and model initialization now also use owning `app/start` handlers. Agent
+startup queues `agent/startup` to observe settled auth state, and request options
+queue `request-options/reconcile` after startup and model changes. Neither
+consumer relies on which extension registered first. Auth readiness notifications
+also check actual readiness; duplicate continuations cannot submit twice.
+`tests/auth-state.fnl` exercises both registration orders, both discovery/status
+completion orders, no providers, no auth extension, and no prompt.
+`tests/model-startup.fnl` registers request options before models and checks
+configured false values, switching, unavailable models, and restored availability.
+`tests/initialization-state.fnl` now tests five direct owner handlers and rejects
+initialization middleware. Queue/image lifecycle guards remain unfinished.
+Input routing is a separate ordered concern.
+
+Verification: the focused startup/auth/model tests, full ReleaseSafe baseline
+suite, installed build, and installed Ghostty PTY protocol/input suite passed.
+The PTY check covers application output and input routing, not GUI painting.
 
 The presentation audit also identified queue/attachment controls bypassing
 component resolution, numeric status facts formatted before components receive

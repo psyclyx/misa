@@ -1,15 +1,15 @@
 (local fennel (require :fennel))
 (local output io.write)
+(local runtime-debug debug)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (misa._setup (fennel.dofile :extensions/json.fnl) {})
 ;; Providers register after the auth extension in supported configurations.
 (local specs ((. (fennel.dofile :extensions/auth.fnl) :setup)))
 (local handlers {})
-(var initialize nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (when (= spec.type :register/interceptor) (set initialize spec.value.before)))
+  (assert (not= spec.type :register/interceptor) "auth startup still uses middleware"))
 (misa._setup_effects specs)
 (misa._setup_effects {:fx [{:type :register/auth-provider
                           :value {:id :first :model_provider :model-first :strategy :api_key :discover_models true}}
@@ -17,7 +17,6 @@
                           :value {:id :second :model_provider :model-second :strategy :api_key}}]})
 (assert (= (misa.auth_provider :first) (misa.auth_provider_for_model :model-first)))
 (local empty {})
-(local initialized (initialize {:db empty :event {:type :app/start}}))
 (assert (= empty.auth_startup nil))
 (local cofx {:terminal {:interactive true}})
 (fn transition [db event]
@@ -27,7 +26,11 @@
   (assert (= input (misa.json.encode event)) "auth handler mutated event")
   (assert (not (and result result.db)))
   (values (misa.patch db (or (and result result.patch) {})) (and result result.fx)))
-(local (started start-fx) (transition initialized.db {:type :app/start}))
+(local (started start-fx) (transition empty {:type :app/start}))
+(assert (= empty.auth_startup nil))
+(assert started.auth_startup.pending_status.model-first)
+(assert started.auth_startup.pending_status.model-second)
+(assert (= (transition started {:type :app/start}) started) "startup replaced existing auth progress")
 (assert (= (length start-fx) 2))
 (assert (= (. start-fx 1 :completion) :auth/provider-status))
 (local (_ status-fx) (transition started {:type :auth/status :arguments :first}))
@@ -55,4 +58,77 @@
 (local (_ cancel-fx) (transition dialog {:type :auth/dialog-action :cancelled true :id :operation}))
 (assert (= (. cancel-fx 1 :type) :operation/cancel))
 (assert (= (. cancel-fx 1 :id) :operation))
+
+;; Real queued dispatch must observe all app/start owners regardless of order.
+;; Native auth effects are captured only; no provider or auth process is run.
+(fn startup-case [order with-providers early-discovery argv]
+  ;; The trusted runtime removes this global after capturing its traceback.
+  (set _G.debug runtime-debug)
+  (fennel.dofile :src/lua_runtime/framework.fnl)
+  (local app _G.misa)
+  (local context {:argv argv :config {}})
+  (app._setup (fennel.dofile :extensions/json.fnl) context)
+  (each [_ name (ipairs order)]
+    (app._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (when with-providers
+    (app._setup_effects {:fx [{:type :register/auth-provider
+                              :value {:id :fixture :model_provider :fixture :strategy :api_key
+                                      :discover_models true}}
+                             {:type :register/auth-provider
+                              :value {:id :second :model_provider :second :strategy :api_key}}]}))
+  (var observed nil)
+  (local requests [])
+  (app._setup_effects
+   {:fx [{:type :register/event :name :app/start
+          :handler (fn [] {:patch {:models {:selected :fixture/model
+                                           :entries [{:id :fixture/model :model :model :provider :fixture}]}}})}
+         {:type :register/event :name :test/read :handler (fn [db] (set observed db))}
+         {:type :register/fx :name :provider.fixture
+          :handler (fn [effect] (table.insert requests effect) [])}]})
+  (app._seal context)
+  (fn dispatch [event]
+    (local pending [event])
+    (var at 1)
+    (while (. pending at)
+      (local fx (app._dispatch (. pending at) {:interactive true :columns 80 :lines 24}
+                               {:wall_ms 0 :monotonic_ms 0}))
+      (app._commit)
+      (each [_ effect (ipairs fx)]
+        (when (= effect.type :dispatch) (table.insert pending effect.event)))
+      (set at (+ at 1))
+      (assert (< at 100) "startup dispatch did not settle"))
+    (app._dispatch {:type :test/read} {:interactive true :columns 80 :lines 24}
+                   {:wall_ms 0 :monotonic_ms 0})
+    (app._commit))
+  (dispatch {:type :app/start})
+  (local has-auth (accumulate [found false _ name (ipairs order)] (or found (= name :auth))))
+  (when (and has-auth with-providers)
+    (assert (= (length requests) 0) "startup prompt escaped the auth gate")
+    (dispatch {:type :auth/startup-ready})
+    (assert (= (length requests) 0) "premature ready event bypassed auth state")
+    (dispatch {:type :auth/provider-status :id :fixture :ok true :logged_in true})
+    (assert observed.auth_startup.pending_discovery.fixture)
+    (if early-discovery
+        (dispatch {:type :models/discovery-complete :provider :fixture})
+        (dispatch {:type :auth/provider-status :id :second :ok false}))
+    (assert (= (length requests) 0) "startup released before both gates completed")
+    (if early-discovery
+        (dispatch {:type :auth/provider-status :id :second :ok false})
+        (dispatch {:type :models/discovery-complete :provider :fixture}))
+    (assert observed.auth_startup.ready))
+  (local expected (if (> (length argv) 0) 1 0))
+  (assert (= (length requests) expected))
+  (when (> expected 0)
+    (assert (= (. requests 1 :messages 1 :content 1 :text) "hello world")))
+  (assert (= observed.agent.startup_prompt nil))
+  (dispatch {:type :agent/startup})
+  (dispatch {:type :auth/startup-ready})
+  (assert (= (length requests) expected) "duplicate continuation submitted twice"))
+(each [_ order (ipairs [[:agent :auth] [:auth :agent]])]
+  (each [_ early (ipairs [false true])]
+    (startup-case order true early [:hello :world]))
+  (startup-case order false false [:hello :world])
+  (startup-case order true false []))
+(startup-case [:agent] false false [:hello :world])
+(startup-case [:agent] false false [])
 (output "auth state contracts passed\n")

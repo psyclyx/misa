@@ -225,6 +225,14 @@ only: registrations cannot be emitted by event handlers or runtime effect
 translators. Registrations seal after all extensions have completed setup.
 Perform startup IO through effects from an `app/start` handler. Plugin setup must
 return service declarations rather than assigning fields directly on `misa`.
+Initialize domain state in its owning `app/start` handler, not a global
+interceptor. A consumer that needs other startup owners' state should emit an
+explicit continuation event: dispatched effects run after the transaction
+commits. Bundled `agent/startup` checks settled authentication readiness;
+`request-options/reconcile` reads settled model state after startup and model
+changes. This avoids depending on extension registration order. Interceptors
+remain available for handler plumbing and ordered input routing, not as the
+default home for domain event policies.
 Protocol factories such as `misa.protocols.openai(spec)` return `{fx={...}}` for
 composition into a provider extension's setup result. The asynchronous
 `syntax/highlight` effect accepts `id`, `language`, `source`, and `completion`,

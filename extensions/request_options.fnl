@@ -143,11 +143,10 @@
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
-                         :handler (fn [db]
+                         :handler (fn []
                                     {:patch {:request_options
-                                             (misa.replace
-                                               (reconcile {:models db.models
-                                                           :request_options {: configured :values {}}}))}})})
+                                             (misa.replace {: configured :values {}})}
+                                     :fx [{:type :dispatch :event {:type :request-options/reconcile}}]})})
           (each [_ event-type (ipairs [:model/open
                                        :model/select
                                        :models/provider-availability
@@ -156,10 +155,18 @@
             (table.insert setup-fx
                           {:type :register/event
                            :name event-type
-                           :handler (fn [db]
-                                      (when db.request_options
-                                        {:patch {:request_options
-                                                 (misa.replace (reconcile db))}}))}))
+                           :handler (fn []
+                                      {:fx [{:type :dispatch
+                                             :event {:type :request-options/reconcile}}]})}))
+          ;; Reconcile after all owners of the triggering event have committed.
+          ;; Extension registration order must not select the previous model.
+          (table.insert setup-fx
+                        {:type :register/event
+                         :name :request-options/reconcile
+                         :handler (fn [db]
+                                    (when db.request_options
+                                      {:patch {:request_options
+                                               (misa.replace (reconcile db))}}))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :request-options/select

@@ -1,0 +1,55 @@
+(local fennel (require :fennel))
+(local output io.write)
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(local context {:argv [] :config {:request_options {:enabled false}}})
+(local one {:id :one :provider :test :model :one
+            :api {:request_options {:enabled {:choices [false true] :default true}}}})
+(local two {:id :two :provider :test :model :two
+            :api {:request_options {:region {:choices [:west :east] :default :east}}}})
+(set misa.models (fn [] [one two]))
+;; Register the consumer first: startup and subsequent selections must use the
+;; committed model, not depend on the ordering of extension registrations.
+(each [_ name (ipairs [:json :request_options :models])]
+  (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
+  (each [_ spec (ipairs specs.fx)]
+    (when (= spec.type :register/interceptor)
+      (assert (= spec.value.id :models/input) "model initialization installed middleware")))
+  (misa._setup_effects specs))
+(var observed nil)
+(misa._setup_effects {:fx [{:type :register/event :name :test/read
+                           :handler (fn [db] (set observed db) nil)}]})
+(misa._seal context)
+(fn dispatch [event]
+  (local pending [event])
+  (var at 1)
+  (while (. pending at)
+    (local effects (misa._dispatch (. pending at) {:columns 80 :lines 24 :interactive false}
+                                  {:wall_ms 0 :monotonic_ms 0}))
+    (misa._commit)
+    (each [_ effect (ipairs effects)]
+      (when (= effect.type :dispatch) (table.insert pending effect.event)))
+    (set at (+ at 1))
+    (assert (< at 100) "startup dispatch did not settle")))
+(fn read-state [] (dispatch {:type :test/read}) observed)
+(dispatch {:type :app/start})
+(local initial (read-state))
+(assert (= initial.models.selected :one))
+(assert (= initial.request_options.model_id :one))
+(assert (= initial.request_options.values.enabled false))
+(dispatch {:type :model/select :id :two})
+(local selected (read-state))
+(assert (= selected.request_options.model_id :two))
+(assert (= selected.request_options.values.region :east))
+(assert (= selected.request_options.values.enabled nil))
+(assert (= initial.request_options.model_id :one) "selection mutated previous state")
+(dispatch {:type :models/provider-availability :provider :test :available false})
+(local unavailable (read-state))
+(assert (= unavailable.models.selected nil))
+(assert (= unavailable.request_options.model_id nil))
+(assert (= (next unavailable.request_options.values) nil))
+(dispatch {:type :models/provider-availability :provider :test :available true})
+(local restored (read-state))
+(assert (= restored.request_options.model_id :one))
+(assert (= restored.request_options.values.enabled false))
+(output "model startup ordering contracts passed\n")

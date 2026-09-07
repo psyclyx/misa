@@ -154,29 +154,18 @@
             (assert (and (= (type default) :string) (not= default ""))
                     "config.models.default must be a nonempty string"))
           (table.insert setup-fx
-                        {:type :register/interceptor
-                         :value {:before (fn [tx]
-                                           (if (or (not= tx.event.type
-                                                         :app/start)
-                                                   tx.db.models)
-                                               tx
-                                               (do
-                                                 (local catalogue {})
-                                                 (each [_ model (ipairs (misa.models))]
-                                                   (tset catalogue
-                                                         (+ (length catalogue)
-                                                            1)
-                                                         (copy-model model)))
-                                                 (local state
-                                                        {:available (or tx.db.provider_availability
-                                                                        {})
-                                                         : catalogue
-                                                         :configured_default default
-                                                         :entries {}
-                                                         :selected default})
-                                                 (misa.patch tx
-                                                             {:db (. (updated (rebuild state default)) :patch)}))))
-                                 :id :models/initialize}})
+                        {:type :register/event
+                         :name :app/start
+                         :handler (fn [db]
+                                    (when (not db.models)
+                                      (updated
+                                        (rebuild
+                                          {:available (or db.provider_availability {})
+                                           :catalogue (icollect [_ model (ipairs (misa.models))]
+                                                        (copy-model model))
+                                           :configured_default default
+                                           :entries {} :selected default}
+                                          default))))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :model/picker-open
