@@ -1,11 +1,32 @@
 -- A generator is (random, size) -> {value, shrinks}. Shrinks are lazy sample
 -- trees: mapping a generator maps its shrink tree, preserving valid shapes.
 local G = {}
+local function integer(n)
+  return type(n) == "number" and n == math.floor(n) and math.abs(n) < math.huge
+end
 local function sample(value, shrinks)
   return {value = value, shrinks = shrinks or function() return {} end}
 end
 function G.constant(value)
   return function() return sample(value) end
+end
+function G.integer(low, high)
+  assert(integer(low) and integer(high) and math.abs(low) < 2147483647
+         and math.abs(high) < 2147483647 and low <= high and high - low < 2147483647,
+         "invalid integer bounds")
+  local target = math.max(low, math.min(0, high))
+  local function at(value)
+    return sample(value, function()
+      if value == target then return {} end
+      local smaller = {at(target)}
+      local distance = math.floor(math.abs(value - target) / 2)
+      if distance > 0 then
+        smaller[#smaller + 1] = at(target + (value > target and distance or -distance))
+      end
+      return smaller
+    end)
+  end
+  return function(random) return at(low + random(high - low + 1) - 1) end
 end
 function G.elements(values)
   assert(#values > 0)
@@ -18,6 +39,7 @@ function G.elements(values)
   end
   return function(random) return at(random(#values)) end
 end
+G.boolean = G.elements({false, true})
 local function mapped(f, node)
   return sample(f(node.value), function()
     local result = {}
@@ -63,6 +85,7 @@ function G.tuple(generators)
 end
 function G.vector(generator, minimum)
   minimum = minimum or 0
+  assert(integer(minimum) and minimum >= 0, "invalid vector minimum")
   return function(random, size)
     local nodes = {}
     for i = 1, minimum + random(size + 1) - 1 do nodes[i] = generator(random, size) end
@@ -80,7 +103,11 @@ end
 function G.for_all(generator, property, options)
   options = options or {}
   local seed = options.seed or 1729
-  assert(seed >= 1 and seed < 2147483647 and seed == math.floor(seed), "invalid property seed")
+  assert(integer(seed) and seed >= 1 and seed < 2147483647, "invalid property seed")
+  local cases, size, budget = options.cases or 100, options.size or 8, options.shrinks or 1000
+  assert(integer(cases) and cases > 0, "invalid property case count")
+  assert(integer(size) and size >= 0, "invalid property size")
+  assert(integer(budget) and budget >= 0, "invalid property shrink budget")
   local current = seed
   local function random(n)
     current = current * 16807 % 2147483647
@@ -91,11 +118,11 @@ function G.for_all(generator, property, options)
     if not ok then return tostring(result) end
     if result == false then return "property returned false" end
   end
-  for case = 1, options.cases or 100 do
-    local node = generator(random, (case - 1) % ((options.size or 8) + 1))
+  for case = 1, cases do
+    local node = generator(random, (case - 1) % (size + 1))
     local err = failure(node)
     if err then
-      local attempts, budget = 0, options.shrinks or 1000
+      local attempts = 0
       while attempts < budget do
         local smaller
         for _, candidate in ipairs(node.shrinks()) do

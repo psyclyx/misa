@@ -220,3 +220,11 @@ patch-only dispatch. Settled-frame, threaded-input, animation-clock, syntax-work
 dispatch-limit, timer, and reset fixtures now declare patches; effect-only
 transcript/picker/dialog fixtures no longer return state. The remaining fixture
 migrations and actual removal of clone/reconcile are still required.
+
+The shared test generators now include bounded integers and booleans, with
+validated runner budgets to prevent accidentally vacuous test runs. Patch
+properties compose generated operation sequences and check all retained snapshots
+after subsequent updates, alongside the independent reference evaluator and
+structural-sharing assertions. Generator contracts cover deterministic replay,
+shrinking, bounds, and rejected invalid options; `tests/GENERATORS.md` documents
+the deliberately small API and its shrinking limits.

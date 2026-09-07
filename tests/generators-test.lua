@@ -26,4 +26,21 @@ local throws = assert(G.for_all(integer, function(v)
   assert(v == 0, "deliberate failure")
 end))
 assert(throws.value == 1 and throws.error:find("deliberate failure"))
+for _, bounds in ipairs({{-100, 100}, {-100, -10}, {10, 100}, {4, 4}}) do
+  local target = math.max(bounds[1], math.min(0, bounds[2]))
+  local failed = assert(G.for_all(G.integer(bounds[1], bounds[2]), function(v)
+    assert(v >= bounds[1] and v <= bounds[2] and v == math.floor(v))
+    return false
+  end))
+  assert(failed.value == target, "integer did not shrink within its bounds toward zero")
+end
+assert(not G.for_all(G.boolean, function(v) assert(type(v) == "boolean") end))
+for _, options in ipairs({{cases = 0}, {cases = -1}, {size = -1}, {size = 0.5},
+                          {shrinks = -1}, {seed = math.huge}}) do
+  assert(not pcall(G.for_all, integer, function() end, options),
+         "invalid options silently disabled property coverage")
+end
+assert(not pcall(G.integer, 2, 1))
+assert(not pcall(G.integer, 0, math.huge))
+assert(not pcall(G.vector, integer, -1))
 print("generator contracts passed")

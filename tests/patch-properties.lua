@@ -65,7 +65,7 @@ local function fields(generator)
     return result
   end, G.vector(G.tuple({G.elements({"a", "b", "c"}), generator})))
 end
-local scalar = G.elements({false, true, 0, -1, 1, "", "text", null})
+local scalar = G.one_of({G.boolean, G.integer(-100, 100), G.elements({"", "text", null})})
 local data = G.recursive(scalar, function(child)
   return G.one_of({fields(child), G.vector(child)})
 end)
@@ -86,4 +86,24 @@ local failure = G.for_all(inputs, function(pair) check(pair[1], pair[2]) end, {
   seed = tonumber(os.getenv("MISA_PROPERTY_SEED")) or 1729, cases = 3000, size = 6,
 })
 assert(not failure, failure and fennel.view(failure))
+-- Retained snapshots must survive subsequent updates. Shrinking removes whole
+-- operations as well as simplifying their payloads, without a custom runner.
+local sequence_failure = G.for_all(
+  G.tuple({fields(data), G.vector(tagged("merge", "fields", fields(patch)))}),
+  function(input)
+    local actual, expected = input[1], copy(input[1])
+    local retained = {}
+    for _, operation in ipairs(input[2]) do
+      retained[#retained + 1] = {actual, copy(actual)}
+      check(actual, operation)
+      actual = state.patch(actual, compile(operation))
+      expected = reference(expected, operation)
+      assert(equal(actual, expected), "sequence reference mismatch")
+      for _, snapshot in ipairs(retained) do
+        assert(equal(snapshot[1], snapshot[2]), "retained snapshot mutated")
+      end
+    end
+  end,
+  {seed = tonumber(os.getenv("MISA_PROPERTY_SEED")) or 1729, cases = 500, size = 6})
+assert(not sequence_failure, sequence_failure and fennel.view(sequence_failure))
 print("patch properties passed")
