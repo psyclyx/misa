@@ -41,7 +41,41 @@
 (assert (= (transition initial {:type :agent/usage}) initial))
 (local (_ effects) (transition initial {:type :usage/open}))
 (assert (= (. effects 1 :event :type) :dialog/open))
-(assert (: (. effects 1 :event :message) :find "Input tokens: 0" 1 true))
+(assert (= (. effects 1 :event :message) nil) "dashboard inserted pre-rendered text")
+(assert (= (. effects 1 :event :sections 2 :fields 1 :value) 0))
+(local provider-db (misa.patch initial {:providers {:z {:subscription_type :Max :usage {:used 1}}
+                                                   :a {:usage {:unavailable true}}}
+                                       :status {:provider_usage {:z {:used 0}}}}))
+(local (_ provider-fx) (transition provider-db {:type :usage/open}))
+(local sections (. provider-fx 1 :event :sections))
+(assert (= (length sections) 4) "duplicate provider sections")
+(assert (= (. sections 3 :title) :a) "provider order is not stable")
+(assert (= (. sections 3 :fields 2 :value) "Unavailable"))
+(assert (= (. sections 4 :fields 1 :value) :Max))
+(assert (= (. sections 4 :fields 2 :value) 0))
+(local dialogs ((. (fennel.dofile :extensions/dialogs.fnl) :setup)))
+(local dialog-handlers {})
+(each [_ spec (ipairs dialogs.fx)]
+  (when (= spec.type :register/event) (tset dialog-handlers spec.name spec.handler)))
+(local opened ((. dialog-handlers :dialog/open) provider-db (. provider-fx 1 :event)))
+(local dialog-db (misa.patch provider-db opened.patch))
+(assert (= (misa.json.encode dialog-db.dialog.sections) (misa.json.encode sections)))
+(local changed ((. dialog-handlers :dialog/update) dialog-db
+                {:id :usage :correlation :usage :sections [{:title :Changed :fields [{:label :Count :value 0}]}]}))
+(local next-db (misa.patch dialog-db changed.patch))
+(assert (= (. next-db.dialog.sections 1 :title) :Changed))
+(assert (= (length dialog-db.dialog.sections) 4))
+(misa._setup (fennel.dofile :extensions/layout.fnl) {})
+(local component ((. (fennel.dofile :extensions/component/dialog.fnl) :setup)))
+(local render (. component.fx 1 :value :render))
+(local before-render (misa.json.encode dialog-db.dialog))
+(local rendered (render dialog-db.dialog {:columns 80 :available_lines 24}))
+(assert (= before-render (misa.json.encode dialog-db.dialog)))
+(local text (table.concat (icollect [_ line (ipairs rendered.lines)]
+                           (table.concat (icollect [_ span (ipairs line.spans)] span.text))) "\n"))
+(assert (text:find "Input tokens: 0" 1 true))
+(assert (text:find "Plan usage: Unavailable" 1 true))
+(assert (text:find "Plan: Max" 1 true))
 ;; Registration does not depend on indicator availability, and projection resolves
 ;; optional services when called, not from a setup-time snapshot.
 (each [_ available (ipairs [false true])]

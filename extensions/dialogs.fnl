@@ -55,7 +55,7 @@
                 :hints (or event.hints {}) :id event.id
                 :input (if event.protected "" (or event.initial ""))
                 :input_enabled (= event.input true) :input_length 0
-                : kind :message (or event.message "") :progress event.progress
+                : kind :message (or event.message "") :progress event.progress :sections event.sections
                 :protected (= event.protected true) :title (or event.title "") :url event.url})
   (updated state {}
            (if event.protected
@@ -68,7 +68,7 @@
   (local state db.dialog)
   (when (correlated state event)
     (local patch {})
-    (each [_ name (ipairs [:kind :title :message :url :code :progress :cancellable :hints])]
+    (each [_ name (ipairs [:kind :title :message :url :code :progress :cancellable :hints :sections])]
       (when (not= (. event name) nil) (tset patch name (misa.replace (. event name)))))
     (when (not= event.actions nil)
       (local actions (copy-actions event.actions))

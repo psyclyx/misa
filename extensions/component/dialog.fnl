@@ -57,6 +57,12 @@
                                                                     value)
                                                                nil)))
                                                (add spans)))
+                                           (each [_ section (ipairs (or model.sections []))]
+                                             (when section.title (add [(span section.title :dialog.title)]))
+                                             (each [_ field (ipairs (or section.fields []))]
+                                               (when (not= field.value nil)
+                                                 (add [(span (.. field.label ": ") :dialog.label)
+                                                       (span (tostring field.value) :dialog.message)]))))
                                            (var (input-lines cursor) nil)
                                            (when model.input_enabled
                                              (local text

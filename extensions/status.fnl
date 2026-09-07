@@ -21,35 +21,37 @@
    :last_usage (when event.last_usage (misa.replace event.last_usage))
    :provider_usage (when event.provider_usage (misa.replace event.provider_usage))})
 
-(fn usage-message [db]
+(fn usage-sections [db]
   (local status (or db.status {}))
   (local usage (or status.usage {}))
   (local last (or status.last_usage {}))
   (local model (and misa.selected_model_projection
                      (misa.selected_model_projection db)))
-  (local lines [(.. "Model: " (tostring (or (and model model.label) "none"))
-                    (or (and model model.context_window
-                             (.. "\nContext window: "
-                                 (metric model.context_window))) "")
-                    "\n\nSession usage"
-                    "\nInput tokens: " (metric (or usage.input_tokens 0))
-                    "\nOutput tokens: " (metric (or usage.output_tokens 0))
-                    "\nLast request: " (metric (+ (or last.input_tokens 0)
-                                                        (or last.output_tokens 0))))])
+  (local sections [{:id :model :fields [{:label "Model" :value (or (and model model.label) :none)}
+                                       {:label "Context window" :value (and model model.context_window)}]}
+                   {:id :session :title "Session usage"
+                    :fields [{:label "Input tokens" :value (or usage.input_tokens 0)}
+                             {:label "Output tokens" :value (or usage.output_tokens 0)}
+                             {:label "Last request" :value (total last)}]}])
+  (local providers {})
   (each [provider details (pairs (or db.providers {}))]
-    (when (and (= (type details) :table) details.subscription_type)
-      (table.insert lines (.. "\n" (tostring provider) " plan: "
-                              (tostring details.subscription_type))))
-    ;; Provider adapters may publish plan/quota facts without coupling the
-    ;; dashboard to a provider-specific response shape.
-    (when (and (= (type details) :table) details.usage)
-      (local plan details.usage)
-      (table.insert lines (.. "\n" (tostring provider) " plan usage: "
-                              (tostring (or plan.summary plan.used plan))))))
+    (when (and (= (type details) :table) (or details.subscription_type details.usage))
+      (tset providers provider {:plan details.subscription_type :usage details.usage})))
   (each [provider plan (pairs (or status.provider_usage {}))]
-    (table.insert lines (.. "\n" (tostring provider) " plan usage: "
-                            (tostring (or plan.summary plan.used plan)))))
-  (table.concat lines ""))
+    (tset providers provider {:plan (and (. providers provider) (. providers provider :plan)) :usage plan}))
+  (local ids (icollect [provider (pairs providers)] provider))
+  (table.sort ids)
+  (each [_ provider (ipairs ids)]
+    (local details (. providers provider))
+    (local usage details.usage)
+    (table.insert sections
+                  {:id provider :title provider
+                   :fields [{:label "Plan" :value details.plan}
+                            {:label "Plan usage"
+                             :value (if (= (type usage) :table)
+                                        (or usage.summary usage.used "Unavailable")
+                                        (or usage "Unavailable"))}]}))
+  sections)
 
 
 (local indicators
@@ -94,7 +96,7 @@
                    :handler (fn [db]
                               {:fx [{:type :dispatch
                                      :event {:type :dialog/open :id :usage :title "Usage"
-                                             :message (usage-message db)
+                                             :sections (usage-sections db)
                                              :actions [{:id :close :label "Close" :primary true}]
                                              :cancellable true :completion :usage/close :correlation :usage}}]})}
                   {:type :register/event :name :usage/close :handler (fn [] nil)}])

@@ -86,6 +86,13 @@ detail lines before adding context metadata, preventing repeated completions
 from modifying shared provider cost data. This establishes dependency/ownership
 contracts; end-to-end rendering performance remains unmeasured.
 
+Usage dashboard presentation now supplies generic dialog sections/fields with
+typed values. Dialog lifecycle carries and replaces those sections; the dialog
+component renders them. Provider rows are sorted, deduplicated, and explicitly
+unavailable when quota facts are absent. Tests cover raw values, precedence,
+section updates, retained state, and visible output. Actual provider coding-plan
+retrieval remains unfinished; semantic presentation is not quota integration.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

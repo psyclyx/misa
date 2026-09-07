@@ -630,6 +630,11 @@ kept only for that choice session and never changes purpose defaults.
 
 `dialogs` owns correlated modal/progress/alert lifecycle, actions, cancellation,
 and optional text input. Tab or Left/Right selects among multiple actions.
+Dialogs may carry `sections=[{id?,title?,fields=[{label,value}]}]` alongside ordinary
+message text. Nil-valued fields are omitted; numbers and booleans remain typed
+until presentation. `dialog/update` replaces supplied sections as a collection.
+The usage dashboard uses this data contract, including deterministic provider
+ordering, rather than inserting a pre-rendered report string.
 Dialog handlers return patches. Additional ordinary input kinds use
 `{type="register/dialog-input", id="my_input", value=function(dialog, event) ... end}`;
 the pure handler returns `{patch=<application patch>, fx=<array>}`. Protected
