@@ -110,10 +110,12 @@
                                                      ;; Invocation normalization owns usage, so typing, inline choices, and
                                                      ;; overlay replay all update the same canonical preference exactly once.
                                                      (when misa.preference_use
-                                                       (var save
+                                                       (var preferences
                                                             (misa.preference_use tx.db
                                                                                  :commands
                                                                                  event.canonical))
+                                                       (set tx.db (misa.patch tx.db
+                                                                             {:preferences (misa.replace preferences)}))
                                                        (when (and (not= args "")
                                                                   (or command.completion
                                                                       command.complete))
@@ -122,7 +124,7 @@
                                                                                                               tx.db))]
                                                            (when (= candidate.value
                                                                     args)
-                                                             (set save
+                                                             (set preferences
                                                                   (misa.preference_use tx.db
                                                                                        (or command.preference_scope
                                                                                            (.. "command:"
@@ -130,10 +132,14 @@
                                                                                        (or candidate.id
                                                                                            (tostring candidate.value))))
                                                              (lua :break))))
+                                                       (set tx.db (misa.patch tx.db
+                                                                             {:preferences (misa.replace preferences)}))
                                                        (tset tx.fx
                                                              (+ (length tx.fx)
                                                                 1)
-                                                             save))
+                                                             {:type :state/save
+                                                              :namespace :preferences
+                                                              :data preferences}))
                                                      tx)))))))
                          :id :commands/normalize}}
                 {:type :register/event

@@ -1,14 +1,5 @@
-;; Generic choice preferences backed by the native namespaced state effects.
-
+;; Choice preferences are immutable data; persistence is an explicit effect.
 (fn new-state [] {:clock 0 :scopes {}})
-
-(fn state [db]
-  (set db.preferences (or db.preferences (new-state)))
-  db.preferences)
-
-(fn scope-state [preferences scope]
-  (tset preferences.scopes scope (or (. preferences.scopes scope) {}))
-  (. preferences.scopes scope))
 
 (fn validate [preferences]
   (if (or (or (or (or (not= (type preferences) :table)
@@ -41,115 +32,75 @@
               (lua "return false"))))
         true)))
 
-(fn merge-configured-favorites [preferences configured]
-  (if (= configured nil) nil (do
-                               (assert (= (type configured) :table)
-                                       "config.preferences.favorites must be an object")
-                               (each [scope favorites (pairs configured)]
-                                 (assert (and (and (= (type scope) :string)
-                                                   (not= scope ""))
-                                              (= (type favorites) :table))
-                                         "invalid configured favorites")
-                                 (local ___values___
-                                        (scope-state preferences scope))
-                                 (each [_ value (ipairs favorites)]
-                                   (assert (and (= (type value) :string)
-                                                (not= value ""))
-                                           "configured favorites must be nonempty strings")
-                                   (local entry
-                                          (or (. ___values___ value) {:uses 0}))
-                                   (set entry.favorite true)
-                                   (tset ___values___ value entry)))
-                               nil)))
+
+(fn entry [preferences scope value]
+  (or (. (or (. preferences.scopes scope) {}) value)
+      {:favorite false :uses 0}))
+
+(fn configured-favorites [preferences configured]
+  (var result preferences)
+  (when configured
+    (assert (= (type configured) :table)
+            "config.preferences.favorites must be an object")
+    (each [scope favorites (pairs configured)]
+      (assert (and (= (type scope) :string) (not= scope "")
+                   (= (type favorites) :table)) "invalid configured favorites")
+      (each [_ value (ipairs favorites)]
+        (assert (and (= (type value) :string) (not= value ""))
+                "configured favorites must be nonempty strings")
+        (set result (misa.patch result
+                               {:scopes {scope {value
+                                               {:favorite true
+                                                :uses (. (entry result scope value) :uses)}}}})))))
+  result)
+
+(fn use [db scope value]
+  (assert (and (= (type scope) :string) (= (type value) :string))
+          "preference use requires scope and value")
+  (local preferences (or db.preferences (new-state)))
+  (local previous (entry preferences scope value))
+  (local clock (+ preferences.clock 1))
+  (misa.patch preferences
+              {: clock
+               :scopes {scope {value {:favorite previous.favorite
+                                      :uses (+ previous.uses 1)
+                                      :last clock}}}}))
+
+(fn saved [preferences]
+  {:patch {:preferences (misa.replace preferences)}
+   :fx [{:type :state/save :namespace :preferences :data preferences}]})
 
 {:setup (fn [context]
-          (local setup-fx [])
-          (local preferences-config
-                 (or (and (= (type context.config) :table)
-                          context.config.preferences) nil))
-          (when (not= preferences-config nil)
-            (assert (= (type preferences-config) :table)
-                    "config.preferences must be an object"))
-          (local configured-favorites
-                 (or (and preferences-config preferences-config.favorites) nil))
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
-                                    {: db
-                                     :fx [{:completion :preferences/loaded
-                                           :namespace :preferences
-                                           :type :state/load}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :preferences/loaded
-                         :handler (fn [db event]
-                                    (assert (= event.namespace :preferences)
-                                            "invalid preference namespace")
-                                    (local preferences
-                                           (or (and (= event.found false)
-                                                    (new-state))
-                                               event.data))
-                                    (assert (validate preferences)
-                                            "invalid preference data")
-                                    (merge-configured-favorites preferences
-                                                                configured-favorites)
-                                    (set db.preferences preferences)
-                                    {: db})})
-          (table.insert setup-fx
-                        {:type :register/service
-                         :name :preference_use
-                         :value (fn [db scope value]
-                                  (assert (and (= (type scope) :string)
-                                               (= (type value) :string))
-                                          "preference use requires scope and value")
-                                  (local preferences (state db))
-                                  (set preferences.clock
-                                       (+ preferences.clock 1))
-                                  (local ___values___
-                                         (scope-state preferences scope))
-                                  (local entry
-                                         (or (. ___values___ value)
-                                             {:favorite false :uses 0}))
-                                  (set (entry.uses entry.last)
-                                       (values (+ entry.uses 1)
-                                               preferences.clock))
-                                  (tset ___values___ value entry)
-                                  {:data preferences
-                                   :namespace :preferences
-                                   :type :state/save})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :choice/used
-                         :handler (fn [db event]
-                                    (if (or (not= (type event.scope) :string)
-                                            (not= (type event.value) :string))
-                                        nil
-                                        {: db
-                                         :fx [(misa.preference_use db
-                                                                   event.scope
-                                                                   event.value)]}))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :preferences/toggle
-                         :handler (fn [db event]
-                                    (if (or (not= (type event.scope) :string)
-                                            (not= (type event.value) :string))
-                                        nil
-                                        (do
-                                          (local preferences (state db))
-                                          (local ___values___
-                                                 (scope-state preferences
-                                                              event.scope))
-                                          (local entry
-                                                 (or (. ___values___
-                                                        event.value)
-                                                     {:uses 0}))
-                                          (set entry.favorite
-                                               (not (= entry.favorite true)))
-                                          (tset ___values___ event.value entry)
-                                          {: db
-                                           :fx [{:data preferences
-                                                 :namespace :preferences
-                                                 :type :state/save}]})))})
-          {:fx setup-fx})}
+          (local config (or (. (or context.config {}) :preferences) {}))
+          (assert (= (type config) :table) "config.preferences must be an object")
+          {:fx [{:type :register/service :name :preference_use :value use}
+                {:type :register/event :name :app/start
+                 :handler (fn [_]
+                            {:fx [{:type :state/load :namespace :preferences
+                                   :completion :preferences/loaded}]})}
+                {:type :register/event :name :preferences/loaded
+                 :handler (fn [_ event]
+                            (assert (= event.namespace :preferences)
+                                    "invalid preference namespace")
+                            (local preferences (if (= event.found false)
+                                                   (new-state) event.data))
+                            (assert (validate preferences) "invalid preference data")
+                            {:patch {:preferences
+                                     (misa.replace
+                                       (configured-favorites preferences config.favorites))}})}
+                {:type :register/event :name :choice/used
+                 :handler (fn [db event]
+                            (when (and (= (type event.scope) :string)
+                                       (= (type event.value) :string))
+                              (saved (use db event.scope event.value))))}
+                {:type :register/event :name :preferences/toggle
+                 :handler (fn [db event]
+                            (when (and (= (type event.scope) :string)
+                                       (= (type event.value) :string))
+                              (local preferences (or db.preferences (new-state)))
+                              (local previous (entry preferences event.scope event.value))
+                              (saved (misa.patch preferences
+                                                 {:scopes {event.scope
+                                                           {event.value
+                                                            {:uses previous.uses
+                                                             :favorite (not previous.favorite)}}}}))))}]})}
