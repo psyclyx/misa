@@ -115,6 +115,12 @@ test "authentication preserves startup and dialog state" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/auth-state.fnl"} }, "auth state contracts passed\n");
 }
 
+test "fake provider preserves state and response fixtures" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/fake-provider-state.fnl"} }, "fake provider state contracts passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

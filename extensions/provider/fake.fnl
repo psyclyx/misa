@@ -26,13 +26,10 @@
                      [(or (and (= (type fake.model) :table) fake.model)
                           {:id :fake/default :label :Fake :model :default})]))
           (each [_ model (ipairs configured-models)]
-            (var api model.api)
-            (when (and (= (type api) :table)
-                       (= (type api.request_options) :table))
-              (local copy {})
-              (each [key value (pairs api)] (tset copy key value))
-              (set copy.request_options_serializer serializer-id)
-              (set api copy))
+            (local api (if (and (= (type model.api) :table)
+                                (= (type model.api.request_options) :table))
+                           (misa.patch model.api {:request_options_serializer serializer-id})
+                           model.api))
             (table.insert setup-fx
                           {:type :register/model
                            :value {: api
@@ -82,17 +79,14 @@
                                     (assert (and (= (type event.id) :string)
                                                  (not= event.id ""))
                                             "fake id must be a nonempty string")
-                                    (set db.providers (or db.providers {}))
                                     (local state
-                                           (or db.providers.fake
+                                           (or (and db.providers db.providers.fake)
                                                {:next_response 1}))
                                     (local response
                                            (. responses state.next_response))
-                                    (set state.next_response
-                                         (+ state.next_response 1))
-                                    (set db.providers.fake state)
+                                    (local patch {:providers {:fake {:next_response (+ state.next_response 1)}}})
                                     (if (= response nil)
-                                        {: db
+                                        {: patch
                                          :fx [{:event {:id event.id
                                                        :message "fake responses exhausted"
                                                        :type :agent/stream-error}
@@ -121,13 +115,9 @@
                                                          (= (type chunk.type)
                                                             :string))
                                                     "fake stream chunks must be normalized deltas")
-                                            (var delta chunk)
-                                            (when (and (= chunk.type :tool_call)
-                                                       (= chunk.index nil))
-                                              (set delta {})
-                                              (each [key value (pairs chunk)]
-                                                (tset delta key value))
-                                              (set delta.index index))
+                                            (local delta (if (and (= chunk.type :tool_call)
+                                                                  (= chunk.index nil))
+                                                             (misa.patch chunk {: index}) chunk))
                                             (tset fx (+ (length fx) 1)
                                                   {:event {: delta
                                                            :id event.id
@@ -142,5 +132,5 @@
                                                              :type :agent/stream-end
                                                              : usage})
                                                  :type :dispatch})
-                                          {: db : fx})))})
+                                          {: patch : fx})))})
           {:fx setup-fx})}
