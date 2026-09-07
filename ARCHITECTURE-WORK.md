@@ -33,6 +33,23 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Syntax collection read once per transcript projection (2026-09-07)
+
+The profiled repeated-query cost came from calling the syntax collection
+subscription for every block. Collection access and pure model lookup are now
+separate: `syntax_projections(db)` supplies an immutable snapshot and
+`syntax_projection(snapshot, model)` checks the source without entering the
+subscription engine. Transcript composition fetches once. No extra cache or
+state-validation exemption is introduced.
+
+Ten alternating native A/B pairs preserve complete frame hashes. At 300 blocks,
+median-of-run-medians moves from 5.162 to 4.507 ms for redraw and 9.995 to 7.571 ms
+for streaming. A second ten-pair small-workload check finds no consistent
+one-block regression. Details and limitations are recorded in
+`benchmarks/syntax-snapshot-2026-09-07.md`. Focused tests, the complete ReleaseSafe
+baseline-CPU suite, installed build, and PTY regression passed. Full vector
+replacement validation and Unicode clipping remain performance targets.
+
 ### Native transcript latency baseline (2026-09-07)
 
 `benchmarks/native-transcript.py` now exercises keyboard-to-completed-frame latency

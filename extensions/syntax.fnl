@@ -84,11 +84,14 @@
                                     (local entry (. (. inputs 1) (. query 2)))
                                     (and entry entry.value))}}
                 {:type :register/service
+                 :name :syntax_projections
+                 :value (fn [db] (misa.sub db [:syntax/projections]))}
+                {:type :register/service
                  :name :syntax_projection
-                 :value (fn [db model]
+                 :value (fn [projections model]
                           (local key (key-for model))
                           (local source (source-for model))
-                          (local entry (. (misa.sub db [:syntax/projections]) key))
+                          (local entry (. projections key))
                           (local projection (and entry entry.value))
                           (when (and projection (= projection.source source)) projection))}
                 {:type :register/event

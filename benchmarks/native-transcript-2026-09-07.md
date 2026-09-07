@@ -59,6 +59,12 @@ attaches `perf record` to the native process after six warm-up frames, then stop
 it before app shutdown. Profiled rows are explicitly marked; their timings are
 diagnostics, not optimization evidence. Example (with perf in the dev shell):
 
+For source-level A/B tests, `--extension-dir` selects a saved extension tree
+while using the same native executable. Each row includes a SHA-256 of all
+post-startup frame bytes (including warm-ups and final validation); compare it
+across variants with identical workload/sample options. Hashing occurs outside
+the timed interval, though like other oracle work it can affect process scheduling.
+
 ```sh
 python3 benchmarks/native-transcript.py zig-out/bin/misa --blocks 300 --mode stream --samples 200 --rest-ms 25 --perf-output /tmp/misa-frames.data
 perf report --stdio --no-children --call-graph none --sort dso -i /tmp/misa-frames.data

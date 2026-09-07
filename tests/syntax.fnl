@@ -103,7 +103,7 @@
 (var view nil)
 (fn render []
   (local model (. db.messages.blocks 1))
-  (local syntax (assert (misa.syntax_projection db model)))
+  (local syntax (assert (misa.syntax_projection (misa.syntax_projections db) model)))
   (set view (misa.markdown_view.project (or model.text (table.concat model.chunks))
                                        (misa.patch syntax {:columns 80}) view))
   view.lines)
@@ -205,7 +205,7 @@
 (dispatch {:type :ui/redraw})
 (assert (= (length requests) 2) "projection or redraw scheduled syntax work")
 (assert (= colored (render)) "unrelated transaction discarded cached rendering")
-(set expected-syntax (misa.syntax_projection db (. db.messages.blocks 1)))
+(set expected-syntax (misa.syntax_projection (misa.syntax_projections db) (. db.messages.blocks 1)))
 (set (. db.components.roles :transcript.assistant) :test.syntax-input)
 (misa.transcript_projection db terminal)
 (set (. db.components.roles :transcript.assistant) nil)
@@ -240,4 +240,21 @@
 (assert (= commits written)
         "highlight completion duplicated noninteractive output")
 
+;; Collection consumers resolve the subscription once, not once per block.
+(local snapshot-service misa.syntax_projections)
+(var snapshots 0)
+(set misa.syntax_projections (fn [state]
+                              (set snapshots (+ snapshots 1))
+                              (snapshot-service state)))
+(local many (misa.patch db {:messages {:blocks (misa.replace
+                                               (fcollect [index 1 300]
+                                                 {:id (tostring index) :kind :assistant :text "plain"}))}}))
+(misa.transcript_projection many terminal)
+(assert (= snapshots 1) "transcript repeated syntax subscription lookups per block")
+(local snapshot (snapshot-service db))
+(local saved-sub misa.sub)
+(set misa.sub (fn [] (error "pure syntax lookup entered subscription engine")))
+(misa.syntax_projection snapshot (. db.messages.blocks 1))
+(set misa.sub saved-sub)
+(set misa.syntax_projections snapshot-service)
 (output "async syntax regressions passed\n")

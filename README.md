@@ -224,8 +224,11 @@ is derived data: the `syntax` extension tracks pending requests and accepted
 revisions, immutable parsed documents, and accepted capture arrays in transactional
 state. The `syntax/projections` subscription incrementally projects document
 entries, retaining unchanged results. Point queries use `syntax/projection`;
-transcript enrichment shares the collection directly to avoid per-document scope
-eviction. Retained states do not depend on an external
+collection consumers call `misa.syntax_projections(db)` once and pass that
+immutable snapshot to `misa.syntax_projection(snapshot, model)`. The latter is a
+pure lookup with source matching, not a subscription evaluation. Transcript
+enrichment therefore avoids both per-document scope eviction and repeated
+evaluation of the same collection query. Retained states do not depend on an external
 cache. Projection results are immutable, including when adding layout options.
 Source parsing and grammar
 loading run on native workers with a reusable parser cache. Missing, unknown,

@@ -496,6 +496,8 @@
                                   (each [key value (pairs (or render-context {}))]
                                     (tset context-copy key value))
                                   (set context-copy.markdown markdown)
+                                  (local syntax-projections (and misa.syntax_projections
+                                                                 (misa.syntax_projections db)))
                                   (local (items state)
                                          (values []
                                                  (assert db.messages
@@ -516,9 +518,9 @@
                                                    (selection-id model))))
                                     (when (and selecting model.text)
                                       (set model.text selected.text))
-                                    (when misa.syntax_projection
+                                    (when (and syntax-projections misa.syntax_projection)
                                       (local syntax
-                                             (misa.syntax_projection db model))
+                                             (misa.syntax_projection syntax-projections model))
                                       (when syntax
                                         (set model.syntax syntax)))
                                     (set model.timestamp

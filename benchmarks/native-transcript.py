@@ -9,6 +9,7 @@ stream contents and unrelated block identities on every input.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import pty
@@ -30,6 +31,7 @@ parser.add_argument('--rest-ms', type=float, default=0,
 parser.add_argument('--blocks', type=int, choices=(1, 16, 300), help='run only this transcript size')
 parser.add_argument('--mode', choices=('redraw', 'stream'), help='run only this workload')
 parser.add_argument('--samples', type=int, default=10)
+parser.add_argument('--extension-dir', type=Path, help='saved extension tree for source-level A/B comparisons')
 parser.add_argument('--perf-output', type=Path,
                     help='attach perf after warm-up; requires --blocks and --mode; timings are diagnostic only')
 args = parser.parse_args()
@@ -41,7 +43,7 @@ if not 0 <= args.rest_ms <= 1000:
     parser.error('--rest-ms must be between 0 and 1000')
 root = Path(__file__).resolve().parent.parent
 begin, end = b'\x1b[?2026h', b'\x1b[?2026l'
-print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms', flush=True)
+print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256', flush=True)
 for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
     for mode in ((args.mode,) if args.mode else ('redraw', 'stream')):
         with tempfile.TemporaryDirectory(prefix='misa-native-transcript-') as directory:
@@ -60,7 +62,8 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
             env = dict(os.environ, TERM='xterm-256color', MISA_AUTH_FILE=str(work / 'auth'),
-                       MISA_STATE_FILE=str(work / 'state'), MISA_EXTENSION_DIR=str(root / 'extensions'))
+                       MISA_STATE_FILE=str(work / 'state'),
+                       MISA_EXTENSION_DIR=str((args.extension_dir or root / 'extensions').resolve()))
             for name in ('TMUX', 'STY'):
                 env.pop(name, None)
             launched = time.perf_counter()
@@ -97,6 +100,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                 first = (time.perf_counter() - launched) * 1000
                 samples = []
                 redraw_oracle = None
+                frame_hash = hashlib.sha256()
                 # The final untimed frame validates the last measured stream delta.
                 for step in range(1, args.samples + 8):
                     if step == 7 and args.perf_output:
@@ -114,6 +118,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                     os.write(master, b'\x1bs' if mode == 'stream' else b'\x1br')
                     rendered = frame(f'FRAME:{step:04d}'.encode())
                     elapsed = (time.perf_counter() - started) * 1000
+                    frame_hash.update(rendered)
                     if mode == 'redraw':
                         canonical = re.sub(rb'FRAME:[0-9]{4}', b'FRAME:XXXX', rendered)
                         if redraw_oracle is None:
@@ -138,7 +143,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                 process.wait(timeout=3)
                 assert process.returncode == 0
                 print(f'{count},{mode},{args.rest_ms:g},{bool(args.perf_output)},{len(samples)},{statistics.median(samples):.3f},'
-                      f'{min(samples):.3f},{max(samples):.3f},{first:.3f}', flush=True)
+                      f'{min(samples):.3f},{max(samples):.3f},{first:.3f},{frame_hash.hexdigest()}', flush=True)
             finally:
                 if profiler and profiler.poll() is None:
                     profiler.send_signal(signal.SIGINT)

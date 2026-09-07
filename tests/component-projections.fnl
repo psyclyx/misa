@@ -38,10 +38,11 @@
 (local enriched-db (misa.patch db {:syntax {:documents (misa.replace documents)}
                                   :costs {:responses (misa.replace responses)}}))
 (fn enrich []
+  (local syntax (misa.syntax_projections enriched-db))
   (icollect [_ item (ipairs items)]
     {:id item.id :role item.role
      :model {:text item.model.text
-             :syntax (misa.syntax_projection enriched-db {:id item.id :text item.model.text})
+             :syntax (misa.syntax_projection syntax {:id item.id :text item.model.text})
              :cost (misa.response_cost_projection enriched-db item.id)}}))
 (local enriched (misa.project_components enriched-db :enriched (enrich) context))
 (local before-enriched renders)
