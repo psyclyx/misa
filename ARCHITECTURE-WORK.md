@@ -130,6 +130,15 @@ the same ReleaseSafe/baseline executable and isolated accounts. See
 `benchmarks/installed-startup-2026-09-07.md`. Runtime-core compilation, full Nix
 package verification, and interactive startup acceptance remain outstanding.
 
+The full Nix package build/check phase now passes with generated extensions.
+Packaging verification also exposed local build outputs entering `lib.cleanSource`:
+the unfiltered archive contained 3.5 GB of Zig cache plus zig-out/direnv content.
+An explicit source filter excludes those directories without deleting local
+files. The inspected filtered archive is 1.9 MB, evaluation assertions cover
+exclusions and required compiler/extension inputs, and rebuilding that filtered
+source passed the full package checks. Runtime-core compilation and interactive
+startup acceptance remain outstanding.
+
 The remaining bundled event-routing interceptors (actions, dialogs, keybinding
 normalization, picker, command palette, and history) now return replacement events
 without mutating the transaction. `tests/routing-state.fnl` covers full-input

@@ -13,7 +13,10 @@ in
 stdenv.mkDerivation {
   pname = "misa";
   version = "0.1.0";
-  src = lib.cleanSource ../..;
+  src = lib.cleanSourceWith {
+    src = lib.cleanSource ../..;
+    filter = path: _type: !(builtins.elem (baseNameOf path) [ ".zig-cache" "zig-out" ".direnv" ]);
+  };
 
   nativeBuildInputs = [
     zig_0_16

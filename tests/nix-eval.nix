@@ -38,6 +38,11 @@ let
     ];
   };
 in
+assert !(project.default.src.filter "${toString ../.}/.zig-cache" "directory");
+assert !(project.default.src.filter "${toString ../.}/zig-out" "directory");
+assert !(project.default.src.filter "${toString ../.}/.direnv" "directory");
+assert project.default.src.filter "${toString ../.}/tools/compile-fennel.lua" "regular";
+assert project.default.src.filter "${toString ../.}/extensions/agent.fnl" "regular";
 assert
   standard == {
     actions = "actions";
