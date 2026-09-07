@@ -35,6 +35,16 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ### Interceptor responsibilities (2026-09-07)
 
+Selected-provider quota refresh now consumes explicit model-selection/catalogue,
+authentication and response-completion events instead of watching every
+transaction. A queued `usage/check-selected` handler reads the completed model
+state, so extension registration order cannot make it see the old selection.
+Only provider changes and forced auth/completion checks schedule `usage/refresh`;
+switching models within one provider does not. Provider disappearance clears the
+remembered provider without inventing a request. Provider transports and their
+in-flight coalescing are unchanged. Status tests exercise real dispatch with
+status registered before the model owner, plus no refresh on streaming/redraw.
+
 Immutable ownership does not by itself justify putting a domain transition in
 an interceptor. Cost accounting's five-entry event switch has been removed from
 the global `before` chain: its existing transition table now registers ordinary
@@ -52,6 +62,14 @@ that coupling. The transcript owner should expose explicit lifecycle facts for
 derived processing; syntax requests/completions stay effects/events, and syntax
 projections stay pure subscriptions. Input normalization/routing interceptors
 are a separate concern and are not being removed indiscriminately.
+
+The other domain coupling identified by the interceptor audit is editing undo
+bookkeeping (`extensions/editing.fnl`): it snapshots the editor before input and
+infers the operation from the resulting text afterward. Undo policy needs the
+old editor, new editor and operation reason in the same transaction; moving it
+to delayed notifications would break that boundary. Startup initialization and
+modal/input guards have separate ordering responsibilities and are not included
+in this domain-hook removal.
 
 ### State and patch ownership audit (2026-09-07)
 

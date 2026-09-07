@@ -107,30 +107,29 @@
                                 context) :lines)
       []))
 
-(local refresh-events {:auth/ready true :transcript/response-end true
-                       :transcript/response-interrupted true})
+(local refresh-events {:model/open false :model/select false
+                       :models/provider-availability false :models/update false
+                       :models/replace-provider false :auth/ready true
+                       :transcript/response-end true :transcript/response-interrupted true})
 
-(fn refresh-after [tx]
-  (local model (and misa.selected_model_projection (misa.selected_model_projection tx.db)))
+(fn refresh-selected [db event]
+  (local model (and misa.selected_model_projection (misa.selected_model_projection db)))
   (local provider (and model model.provider))
-  (local previous (and tx.db.status tx.db.status.quota_provider))
+  (local previous (and db.status db.status.quota_provider))
   (local changed (not= provider previous))
-  (local refresh (and provider (or changed (. refresh-events tx.event.type))))
-  (if (or changed refresh)
-      (let [fx (icollect [_ effect (ipairs tx.fx)] effect)]
-        (when refresh
-          (table.insert fx {:type :dispatch :event {:type :usage/refresh : provider}}))
-        (misa.patch tx {:db {:status {:quota_provider (misa.replace provider)}}
-                        :fx (misa.replace fx)}))
-      tx))
+  (local refresh (and provider (or changed event.force)))
+  (when (or changed refresh)
+    {:patch {:status {:quota_provider (misa.replace provider)}}
+     :fx (if refresh [{:type :dispatch :event {:type :usage/refresh : provider}}] [])}))
 
 {:setup (fn []
           (local fx
-                 [{:type :register/interceptor :value {:id :usage/refresh-selected :after refresh-after}}
+                 [{:type :register/event :name :usage/check-selected :handler refresh-selected}
                   {:type :register/event :name :app/start
                    :handler (fn []
                               {:patch {:status (misa.replace {:last_usage {} :mode :ready :provider_usage {}
-                                                              :usage {:input_tokens 0 :output_tokens 0}})}})}
+                                                              :usage {:input_tokens 0 :output_tokens 0}})}
+                               :fx [{:type :dispatch :event {:type :usage/check-selected}}]})}
                   {:type :register/event :name :agent/status
                    :handler (fn [_ event]
                               {:patch {:status (usage-patch event event.status)}})}
@@ -157,6 +156,13 @@
                                 {:fx [{:type :dispatch :event {:type :dialog/update :id :usage
                                                               :correlation :usage :sections (usage-sections db)}}]}))}
                   {:type :register/event :name :usage/close :handler (fn [] nil)}])
+          ;; The queued check observes the completed model transaction, even
+          ;; when this extension registers before the model owner.
+          (each [name force (pairs refresh-events)]
+            (table.insert fx {:type :register/event : name
+                              :handler (fn []
+                                         {:fx [{:type :dispatch
+                                                :event {:type :usage/check-selected : force}}]})}))
           (when (misa.has_setup_effect :register/indicator)
             (each [_ value (ipairs indicators)]
               (table.insert fx {:type :register/indicator : value})))

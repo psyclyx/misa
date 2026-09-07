@@ -124,24 +124,74 @@
 (assert (= (plan unknown) "unavailable") "missing limit became an invented percentage")
 (set misa.selected_model_projection (fn [] {:provider :other :id :other/model}))
 (assert (= (plan quota-db) nil) "quota widget leaked across selected providers")
-(var refresh-after nil)
 (each [_ spec (ipairs configured.fx)]
-  (when (= spec.type :register/interceptor) (set refresh-after spec.value.after)))
-(assert refresh-after)
+  (assert (not= spec.type :register/interceptor) "usage refresh must use explicit events"))
 (set misa.selected_model_projection (fn [db] db.selected))
-(local tx {:db {:selected {:provider :kimi}} :event {:type :ui/redraw} :fx []})
-(local before (misa.json.encode tx))
-(local refreshed-tx (refresh-after tx))
-(assert (= before (misa.json.encode tx)) "refresh policy mutated transaction")
-(assert (= (. refreshed-tx.fx 1 :event :provider) :kimi))
-(assert (= (. refreshed-tx.fx 1 :event :type) :usage/refresh))
-(local stable {:db refreshed-tx.db :event {:type :agent/stream-delta} :fx []})
-(assert (= stable (refresh-after stable)) "stream token triggered quota refresh")
-(local completed (refresh-after (misa.patch stable {:event {:type :transcript/response-end}})))
-(assert (= (. completed.fx 1 :event :provider) :kimi))
-(local switched (refresh-after (misa.patch stable {:db {:selected {:provider :other}}})))
-(assert (= (. switched.fx 1 :event :provider) :other))
-(local removed (refresh-after (misa.patch stable {:db {:selected misa.delete}})))
-(assert (= removed.db.status.quota_provider nil))
-(assert (= (length removed.fx) 0))
+(local (selected refresh-fx) (transition {:selected {:provider :kimi}} {:type :usage/check-selected}))
+(assert (= (. refresh-fx 1 :event :provider) :kimi))
+(assert (= (. refresh-fx 1 :event :type) :usage/refresh))
+(local (stable stable-fx) (transition selected {:type :usage/check-selected}))
+(assert (= stable selected))
+(assert (= (length stable-fx) 0))
+(assert (= (. handlers :agent/stream-delta) nil) "stream tokens entered quota scheduling")
+(assert (= (. handlers :ui/redraw) nil) "redraw entered quota scheduling")
+(each [_ name (ipairs [:model/open :model/select :models/provider-availability
+                       :models/update :models/replace-provider :auth/ready
+                       :transcript/response-end :transcript/response-interrupted])]
+  (local (unchanged scheduled) (transition stable {:type name}))
+  (assert (= unchanged stable))
+  (assert (= (. scheduled 1 :event :type) :usage/check-selected))
+  (local (_ completed) (transition stable (. scheduled 1 :event)))
+  (local force (or (= name :auth/ready) (= name :transcript/response-end)
+                  (= name :transcript/response-interrupted)))
+  (assert (= (length completed) (if force 1 0))))
+(local (_ switched) (transition (misa.patch stable {:selected {:provider :other}})
+                                {:type :usage/check-selected}))
+(assert (= (. switched 1 :event :provider) :other))
+(local (removed removed-fx) (transition (misa.patch stable {:selected misa.delete})
+                                       {:type :usage/check-selected}))
+(assert (= removed.status.quota_provider nil))
+(assert (= (length removed-fx) 0))
+;; Exercise real dispatch with status registered BEFORE the model owner. Effects
+;; run only after commit, so the check must use the newly selected provider.
+(misa._setup_effects {:fx (icollect [_ spec (ipairs specs.fx)]
+                           (when (= spec.type :register/event) spec))})
+(local requests [])
+(var observed nil)
+(misa._setup_effects
+ {:fx [{:type :register/event :name :app/start
+        :handler (fn [] {:patch {:selected {:provider :kimi :id :first}}})}
+       {:type :register/event :name :model/select
+        :handler (fn [_ event] {:patch {:selected (misa.replace event.model)}})}
+       {:type :register/event :name :usage/refresh
+        :handler (fn [_ event] (table.insert requests event.provider) nil)}
+       {:type :register/event :name :test/read
+        :handler (fn [db] (set observed db) nil)}]})
+(misa._seal {:config {} :argv []})
+(fn dispatch [event]
+  (local effects (misa._dispatch event {:columns 80 :lines 24 :interactive false}
+                                {:wall_ms 0 :monotonic_ms 0}))
+  (misa._commit)
+  (each [_ effect (ipairs effects)]
+    (when (= effect.type :dispatch) (dispatch effect.event))))
+(dispatch {:type :app/start})
+(assert (= (length requests) 1))
+(assert (= (. requests 1) :kimi) "startup check ran before model initialization")
+(dispatch {:type :model/select :model {:provider :kimi :id :second}})
+(assert (= (length requests) 1) "same-provider selection triggered a refresh")
+(dispatch {:type :model/select :model {:provider :other :id :third}})
+(assert (= (length requests) 2))
+(assert (= (. requests 2) :other) "selection check used the previous provider")
+(dispatch {:type :model/select})
+(dispatch {:type :test/read})
+(assert (= observed.status.quota_provider nil))
+(assert (= (length requests) 2) "provider disappearance scheduled a request")
+(dispatch {:type :model/select :model {:provider :kimi :id :first}})
+(dispatch {:type :auth/ready})
+(dispatch {:type :transcript/response-end})
+(dispatch {:type :transcript/response-interrupted})
+(assert (= (length requests) 6))
+(dispatch {:type :agent/stream-delta})
+(dispatch {:type :ui/redraw})
+(assert (= (length requests) 6))
 (output "status state properties passed\n")
