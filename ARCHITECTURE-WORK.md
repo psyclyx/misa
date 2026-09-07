@@ -51,6 +51,15 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+`benchmarks/transcript-render.fnl` establishes a whole-transcript baseline beyond
+the earlier individual-component probe: real model preparation, themed component
+rendering, and transcript delta/patch work are timed separately across 1, 16, and
+300 blocks. Complete frame records remain identical across repeated runs, and
+streaming preserves old state and unrelated block identity. The recorded baseline
+exposes nontrivial update costs at 300 blocks; replacement materialization and GC
+need attribution before changing cache ownership. Native presentation and mixed
+transcripts remain unmeasured; see the accompanying dated report for scope.
+
 Fixed subscription dependencies are now ordinary query-vector data, validated
 at registration. Query-dependent inputs retain the function form; bundled model
 and aggregate cost projections no longer allocate their fixed declarations in
