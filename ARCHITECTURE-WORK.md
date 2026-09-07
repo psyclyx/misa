@@ -78,3 +78,9 @@ The fake and Codex providers now return persistent stream-state patches.
 invariance, terminal gating, reasoning summaries, and tool-call deltas. Codex
 record dispatch is open through `register/codex-record`. The other provider
 adapters and the agent/transcript owners still need migration.
+
+The OpenAI-compatible protocol now uses persistent terminal-state updates and
+an ordered `register/openai-delta` projection registry. Its generated tests
+check batching invariance and record ownership; focused tests cover tool-call
+fragments, stream isolation, terminal gating, transport errors, and explicitly
+disabled discovery credentials.

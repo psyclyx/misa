@@ -848,11 +848,10 @@ API provider lists include their protocol explicitly, for example
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
 `protocol.anthropic`. ChatGPT subscription access is the separate
 `provider.openai-codex` extension and its Codex Responses protocol.
-
-NixOS, nix-darwin, and home-manager expose the same
-`programs.misa.extensions` option. Nix path values select custom extensions;
-bare strings must be catalog IDs. Generated config is world-readable in the
-Nix store, so it must not contain secrets.
+OpenAI-compatible delta projections can be extended with
+`{type="register/openai-delta", id="my_delta", value=function(delta, record) ... end}`.
+Pure projections return arrays of normalized agent deltas and run in registration
+order, after the built-in text, reasoning, and tool-call projections.
 Its record handlers are pure and extensible through
 `{type="register/codex-record", id="record.type", value=function(state, record, request_id) ... end}`.
 Handlers return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`.

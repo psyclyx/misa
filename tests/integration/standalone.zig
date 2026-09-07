@@ -127,6 +127,12 @@ test "Codex stream state is immutable and independent of record batching" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/codex-stream-state.fnl"} }, "Codex stream state properties passed\n");
 }
 
+test "OpenAI-compatible streams preserve state and batching semantics" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/openai-stream-state.fnl"} }, "OpenAI stream state properties passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();
