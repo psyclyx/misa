@@ -40,11 +40,13 @@
                                    :label :model
                                    :hotkey {:action :open_model_picker
                                             :context :global}
-                                   :value (fn [db]
-                                            (local model
-                                                   (and misa.selected_model_projection
-                                                        (misa.selected_model_projection db)))
-                                            (or (and model model.label) :none))}}))
+                                   :query [:models/indicator]}}))
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :models/indicator :inputs [[:models/selected]]
+                                 :compute (fn [inputs]
+                                            (local model (. inputs 1))
+                                            {:type :text :value (or (and model model.label) :none)})}})
           (table.insert setup-fx
                         {:type :register/keybinding
                          :value {:action :open_model_picker

@@ -97,8 +97,25 @@ profiles without the indicator registry use `status.indicators` too; component
 swap coverage now exercises that role. Focused status/model tests check the
 fallback model and reject installation of a parallel compatibility renderer.
 The full ReleaseSafe baseline suite passed, including the component-swap fixture.
-Numeric status facts formatted before components receive them and indicator
-callbacks without declared query dependencies remain part of the cutover.
+All bundled indicators now declare named queries with explicit subscription
+inputs. `indicators/model` preserves typed facts, with only nil meaning omission;
+zero and false remain visible. Models, effort, transcript detail, usage, activity,
+and cost no longer supply value callbacks. The formatted total-cost projection is
+removed in favor of a typed money fact. Provider-unavailable quota snapshots take
+precedence over any numeric windows and invalid amounts remain unavailable.
+
+The default component formats typed facts through an open `register/value-renderer`
+dispatcher. Token compaction, ratios, percentages, currency, and activity frames
+are presentation work. Animation selection uses its own named presentation query;
+theme, hover, and animation changes do not invalidate domain fact dependencies.
+The stale default configuration mapping for `status.metrics` is also removed.
+
+`tests/indicator-values.fnl` checks late query registration, nil versus zero/false,
+selective recomputation and shared fact identity, extensible formatting, invalid
+facts/declarations, preserved shared spans, and separate animation presentation.
+Owner tests cover quota unavailable precedence, typed money/options, and minimal
+profiles. Full ReleaseSafe baseline suite, installed build, focused contracts,
+and installed PTY interaction checks passed.
 
 ### On-demand Claude quota retrieval (2026-09-07)
 

@@ -1,38 +1,31 @@
 ;; Agent facts and their status projections. Provider quota retrieval is owned
 ;; by providers; this feature consumes normalized usage, never transport records.
 
-(fn metric [value]
-  (if (not= (type value) :number) (tostring (or value "?"))
-      (let [unit (accumulate [found nil _ item (ipairs [[1000000000 :G] [1000000 :M] [1000 :k]])
-                              &until found]
-                   (when (>= (math.abs value) (. item 1)) item))]
-        (if unit
-            (let [scaled (/ value (. unit 1))]
-              (.. (: (string.format (if (>= (math.abs scaled) 10) "%.0f" "%.1f") scaled)
-                     :gsub "%.0$" "") (. unit 2)))
-            (tostring value)))))
-
 (fn total [usage]
   (+ (or (and usage usage.input_tokens) 0) (or (and usage usage.output_tokens) 0)))
 
-(fn plan-value [db]
-  (local model (and misa.selected_model_projection (misa.selected_model_projection db)))
-  (local provider (and model model.provider))
-  (local usage (and provider
-                    (or (and db.status db.status.provider_usage (. db.status.provider_usage provider))
-                        (and db.providers (. db.providers provider) (. db.providers provider :usage)))))
+(fn selected [entries id]
+  (each [_ model (ipairs (or entries []))]
+    (when (= model.id id) (lua "return model")))
+  nil)
+
+(fn finite [value]
+  (and (= (type value) :number) (= value value) (< (math.abs value) math.huge)))
+
+(fn plan-value [usage]
   (when usage
     (var remaining nil)
-    (each [_ window (ipairs (or (and (= (type usage) :table) usage.windows) []))]
-      (local limit window.limit)
-      (local amount (or window.remaining
-                        (and (= (type window.used) :number) (= (type limit) :number)
-                             (- limit window.used))))
-      (when (and (= (type limit) :number) (> limit 0) (< limit math.huge)
-                 (= (type amount) :number) (= amount amount) (< (math.abs amount) math.huge))
-        (local percent (math.max 0 (math.min 100 (* 100 (/ amount limit)))))
-        (set remaining (if remaining (math.min remaining percent) percent))))
-    (if remaining (.. (string.format "%.0f" remaining) "% left") "unavailable")))
+    (when (and (= (type usage) :table) (not usage.unavailable))
+      (each [_ window (ipairs (or usage.windows []))]
+        (local limit window.limit)
+        (local amount (or window.remaining
+                          (and (finite window.used) (finite limit) (- limit window.used))))
+        (when (and (finite limit) (> limit 0) (finite amount) (<= 0 amount limit))
+          (local percent (* 100 (/ amount limit)))
+          (set remaining (if remaining (math.min remaining percent) percent)))))
+    (if remaining {:type :percent :value remaining :basis :remaining}
+        {:type :unavailable :reason (if (and (= (type usage) :table) usage.unavailable)
+                                       :provider_unavailable :missing_limit)})))
 
 (fn usage-patch [event mode]
   {:mode mode
@@ -87,28 +80,24 @@
 
 
 (local indicators
-       [{:id :plan :label :plan :action :usage.open :value plan-value}
+       [{:id :plan :label :plan :action :usage.open :query [:status/plan]}
         {:id :activity :icon "●" :label :activity
-         :value (fn [db]
-                  (local mode (or (and db.status db.status.mode) :ready))
-                  (if (and (not= mode :ready) misa.animation_span)
-                      {:spans [{:text mode} (misa.animation_span db :status)]}
-                      mode))}
+         :query [:status/activity]}
         {:id :session :icon :tok :label :tokens
-         :value (fn [db] (metric (total (and db.status db.status.usage))))}
+         :query [:status/session]}
         {:id :context :icon "◫" :label :ctx
-         :value (fn [db]
-                  (local used (metric (total (and db.status db.status.last_usage))))
-                  (local model (and misa.selected_model_projection (misa.selected_model_projection db)))
-                  (if model (.. used "/" (metric model.context_window)) used))}])
+         :query [:status/context]}])
 
 (fn projection [db context]
   (if misa.indicators_projection (misa.indicators_projection db context)
       misa.render_component
-      (. (misa.render_component db :status.indicators
-                                {:indicators [{:id :activity :label "●"
-                                               :value (or (and db.status db.status.mode) :ready)}]}
-                                context) :lines)
+      (let [presentation (collect [key value (pairs (or context {}))] key value)]
+        (when misa.animation_presentation
+          (tset presentation :activity_animation (misa.animation_presentation db :status)))
+        (. (misa.render_component db :status.indicators
+                                  {:indicators [{:id :activity :label "●"
+                                                 :fact (misa.sub db [:status/activity])}]}
+                                  presentation) :lines))
       []))
 
 (local refresh-events {:model/open false :model/select false
@@ -128,7 +117,35 @@
 
 {:setup (fn []
           (local fx
-                 [{:type :register/event :name :usage/check-selected :handler refresh-selected}
+                 [{:type :register/sub
+                   :value {:id :status/activity :inputs [[:db/path :status :mode]]
+                           :compute (fn [inputs] {:type :activity :state (or (. inputs 1) :ready)})}}
+                  {:type :register/sub
+                   :value {:id :status/session :inputs [[:db/path :status :usage]]
+                           :compute (fn [inputs] {:type :tokens :value (total (. inputs 1))})}}
+                  {:type :register/sub
+                   :value {:id :status/context
+                           :inputs [[:db/path :status :last_usage] [:db/path :models :entries]
+                                    [:db/path :models :selected]]
+                           :compute (fn [inputs]
+                                      (local used (total (. inputs 1)))
+                                      (local model (selected (. inputs 2) (. inputs 3)))
+                                      (if model {:type :ratio : used :limit model.context_window :unit :tokens}
+                                          {:type :tokens :value used}))}}
+                  {:type :register/sub
+                   :value {:id :status/plan
+                           :inputs [[:db/path :models :entries] [:db/path :models :selected]
+                                    [:db/path :status :provider_usage] [:db/path :providers]]
+                           :compute (fn [inputs]
+                                      (local model (selected (. inputs 1) (. inputs 2)))
+                                      (local provider (and model model.provider))
+                                      (local overrides (. inputs 3))
+                                      (local providers (. inputs 4))
+                                      (plan-value (and provider
+                                                       (or (and overrides (. overrides provider))
+                                                           (and providers (. providers provider)
+                                                                (. providers provider :usage))))))}}
+                  {:type :register/event :name :usage/check-selected :handler refresh-selected}
                   {:type :register/event :name :app/start
                    :handler (fn []
                               {:patch {:status (misa.replace {:last_usage {} :mode :ready :provider_usage {}

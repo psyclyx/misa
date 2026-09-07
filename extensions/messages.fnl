@@ -401,11 +401,12 @@
                                    :icon "≡"
                                    :id :transcript-detail
                                    :label :detail
-                                   :value (fn [db]
-                                            (or (and (. (or db.messages {})
-                                                        :verbose)
-                                                     :verbose)
-                                                :summary))}}))
+                                   :query [:messages/detail-indicator]}}))
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :messages/detail-indicator :inputs [[:db/path :messages :verbose]]
+                                 :compute (fn [inputs]
+                                            {:type :text :value (if (. inputs 1) :verbose :summary)})}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start

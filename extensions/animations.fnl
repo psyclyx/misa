@@ -58,6 +58,24 @@
             (or (and role (. state.roles role)) state.active))
 
           (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :animations/presentation
+                                 :inputs (fn [query]
+                                           [[:db/path :animations :active]
+                                            [:db/path :animations :roles (. query 2)]])
+                                 :compute (fn [inputs query]
+                                            (local id (or (. inputs 2) (. inputs 1)))
+                                            (when id
+                                              (local animation (assert (. entries id) "unknown animation"))
+                                              {: enabled :frames animation.frames :still animation.still
+                                               :interval_ms interval-ms :phase 0
+                                               :id (.. :animation/ (. query 2))}))}})
+          (table.insert setup-fx
+                        {:type :register/service :name :animation_presentation
+                         :value (fn [db role]
+                                  (misa.sub db [:animations/presentation (or role :default)]))})
+
+          (table.insert setup-fx
                         {:type :register/service
                          :name :animation
                          :value (fn [db role]

@@ -32,13 +32,21 @@ outputs, but newly computed output belongs only to the evaluating scope.
 
 Bundled cost accounting exposes `[:costs/total]` as numeric facts (`usd`,
 `responses`, `estimated`, `unknown`), with no formatted text. The dependent
-`[:costs/projection]` adds display text; `[:costs/response id]` projects a single
+`[:costs/indicator]` supplies a typed money fact without formatting;
+`[:costs/response id]` projects a single
 response. `[:costs/responses]` incrementally projects the response collection,
 preserving each result whose record is unchanged. Point queries depend on that
 collection; bundled transcript lookups share the collection directly, avoiding
 one scope entry per historical response. Unrelated state changes preserve results
 while cached. Existing cost presentation services query this graph rather than
 owning a separate cache.
+
+Indicators declare named queries through `register/indicator.query`. The
+`[:indicators/model]` subscription composes those dependencies into ordered
+records containing immutable `fact` data and configured presentation metadata.
+Only nil omits a fact; typed false and zero remain visible. Width, theme, hover,
+and `[:animations/presentation role]` do not participate in domain fact queries.
+The removed `costs/projection` and indicator value-callback APIs have no shim.
 
 Queries start with a nonempty string ID. Arguments may be strings, finite
 numbers, booleans, or nested ordinary data tables. Canonical keys distinguish

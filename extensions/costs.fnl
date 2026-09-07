@@ -175,29 +175,25 @@
                                   total)}})
           (table.insert setup-fx
                         {:type :register/sub
-                         :value {:id :costs/projection
+                         :value {:id :costs/indicator
                                  :inputs [[:costs/total]]
                                  :compute (fn [inputs]
                                             (local total (. inputs 1))
-                                            (misa.patch total {:text (label total)}))}})
+                                            {:type :money :amount total.usd :currency :USD
+                                             :estimated total.estimated :unknown total.unknown})}})
           (table.insert setup-fx
                         {:type :register/service
                          :name :response_cost_projection
                          :value (fn [db id]
                                   (local entry (. (misa.sub db [:costs/responses]) id))
                                   (and entry entry.value))})
-          (table.insert setup-fx
-                        {:type :register/service
-                         :name :costs_projection
-                         :value (fn [db] (misa.sub db [:costs/projection]))})
           (when (misa.has_setup_effect :register/indicator)
             (table.insert setup-fx
                           {:type :register/indicator
                            :value {:icon "$"
                                    :id :cost
                                    :label :cost
-                                   :value (fn [db]
-                                            (. (misa.costs_projection db) :text))}}))
+                                   :query [:costs/indicator]}}))
           (fn reset [_ _event]
             {:costs (misa.replace {:responses {}})})
           (fn response-patch [id response]

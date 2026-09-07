@@ -8,9 +8,16 @@
 (local handlers {})
 (local specs ((. (fennel.dofile :extensions/models.fnl) :setup) context))
 (each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
+  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]})))
 (local one {:id :one :provider :a :model :one :context_window 100})
 (local two {:id :two :provider :b :model :two :context_window 200})
+(local model-db {:models {:entries [one two] :selected :one}})
+(local fact (misa.sub model-db [:models/indicator]))
+(assert (= fact.type :text))
+(assert (= fact.value :a/one))
+(assert (= fact (misa.sub (misa.patch model-db {:status {:mode :working}}) [:models/indicator])))
+(assert (= (. (misa.sub {} [:models/indicator]) :value) :none))
 (local operations
        [{:type :models/provider-availability :provider :a :available false}
         {:type :models/provider-availability :provider :a :available true}

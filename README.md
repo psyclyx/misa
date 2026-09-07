@@ -624,8 +624,10 @@ the block. Selection is nil for other blocks. These projections choose rendering
 without changing transcript facts or the component's returned line collection.
 
 `indicators` is a focused registry for semantic status values. Features return
-`{type="register/indicator", value={id,label?,icon?,hotkey?,value=function(db)...end}}`
-in their setup effects.
+`{type="register/indicator", value={id,label?,icon?,hotkey?,query={"query-id",...}}}`
+in their setup effects. Queries use the existing subscription graph and explicit
+dependencies. They return nil to omit an item, or a typed fact; false and zero
+are values, not omission signals. The callback-based `value` API is removed.
 `config.status.indicators` selects order, label/icon representation, an optional
 structured keybinding reminder, and drop priority. The common component styles the standard
 `label`, `value`, and `keybinding` tokens independently and
@@ -635,6 +637,21 @@ and transcript detail (`summary`/`verbose`). Root composition stays generic.
 The component role is `status.indicators`, including the activity-only fallback
 when the registry is omitted. The former `status.metrics` role and `metrics`
 model are removed; custom status components should consume `model.indicators`.
+Each item carries a `fact`, such as `{type="tokens",value=1234}`,
+`{type="ratio",used=1234,limit=200000,unit="tokens"}`, or
+`{type="percent",value=75,basis="remaining"}`. Facts contain no styles, spans,
+formatted suffixes, or animation frames. Built-in types also include `text`,
+`boolean`, `number`, `activity` (with `state`), `unavailable` (with `reason`), and
+`money` (with `amount`, `currency`, `estimated`, and `unknown`).
+
+`component.status` installs an open, pure value-rendering dispatcher. Extensions
+add `{type="register/value-renderer",id="my-type",render=function(fact,context)
+... end}` returning semantic spans. `misa.render_value(fact,context?)` invokes it;
+unknown types and duplicate registrations fail explicitly. The default component
+owns compact token counts, percentages, currency text, styles, and width dropping.
+Animation selection is separate presentation data from
+`misa.animation_presentation(db,role)` / `[:animations/presentation role]`; the
+activity renderer turns it into clock-driven spans without changing activity facts.
 
 `request_options` derives request readiness and selected option values entirely
 from the active model's `api.request_options` metadata. Required options without

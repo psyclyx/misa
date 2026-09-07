@@ -8,24 +8,33 @@
 (local specs (feature.setup))
 (local handlers {})
 (each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
+  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]})))
 ;; Minimal profiles without the indicator registry use the same component model.
 (local original-render misa.render_component)
 (local original-projection misa.indicators_projection)
+(local original-animation misa.animation_presentation)
+(local animation-data {:enabled true :frames ["."]})
+(set misa.animation_presentation (fn [_ role] (assert (= role :status)) animation-data))
 (set misa.indicators_projection nil)
 (local fallback-lines [{:spans [{:text :fallback}]}])
 (set misa.render_component
      (fn [_ role model context]
        (assert (= role :status.indicators) "status fallback uses a parallel renderer")
        (assert (= (. model.indicators 1 :id) :activity))
-       (assert (= (. model.indicators 1 :value) :working))
+       (assert (= (. model.indicators 1 :fact :type) :activity))
+       (assert (= (. model.indicators 1 :fact :state) :working))
        (assert (= context.columns 20))
+       (assert (= context.activity_animation animation-data))
        {:lines fallback-lines}))
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.name :status_projection)
-    (assert (= (spec.value {:status {:mode :working}} {:columns 20}) fallback-lines))))
+    (local context {:columns 20})
+    (assert (= (spec.value {:status {:mode :working}} context) fallback-lines))
+    (assert (= context.activity_animation nil))))
 (set misa.render_component original-render)
 (set misa.indicators_projection original-projection)
+(set misa.animation_presentation original-animation)
 (fn transition [db event]
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))
@@ -35,6 +44,25 @@
   (assert (not (and result result.db)))
   (values (misa.patch db (or (and result result.patch) {})) (or (and result result.fx) [])))
 (local initial (transition {} {:type :app/start}))
+(local activity (misa.sub initial [:status/activity]))
+(assert (= activity.type :activity))
+(assert (= activity.state :ready))
+(assert (= activity.spans nil))
+(assert (= activity.animation nil))
+(assert (= (. (misa.sub initial [:status/session]) :value) 0))
+(assert (= (. (misa.sub initial [:status/context]) :type) :tokens)
+        "optional models required an absent subscription")
+(local context-db (misa.patch initial {:status {:last_usage {:input_tokens 1200 :output_tokens 34}}
+                                       :models {:selected :test :entries [{:id :test :context_window 200000}]}}))
+(local context-fact (misa.sub context-db [:status/context]))
+(assert (= context-fact.type :ratio))
+(assert (= context-fact.used 1234))
+(assert (= context-fact.limit 200000))
+(assert (= context-fact.unit :tokens))
+(assert (= context-fact (misa.sub (misa.patch context-db {:hover_action :button}) [:status/context])))
+(assert (= activity (misa.sub context-db [:status/activity])))
+(assert (= (. (misa.sub (misa.patch context-db {:models {:entries (misa.replace [{:id :test}])}})
+                        [:status/context]) :limit) nil) "unknown capacity was invented")
 (local failure
        (G.for_all (G.vector (G.elements [{:type :agent/status :status :thinking}
                                          {:type :agent/status :status :ready :usage {}}
@@ -62,6 +90,7 @@
 (assert (= (. effects 1 :event :sections 2 :fields 1 :value) 0))
 (assert (= (. effects 2 :event :type) :usage/refresh))
 (local quota-db (misa.patch initial {:dialog {:id :usage}
+                                   :models {:selected :kimi/model :entries [{:id :kimi/model :provider :kimi}]}
                                    :providers {:kimi {:usage {:windows [{:label "Weekly" :used 25
                                                                         :limit 100 :remaining 75}]}}}}))
 (local (_ refreshed) (transition quota-db {:type :usage/updated}))
@@ -133,26 +162,42 @@
   (set misa.indicators_projection (fn [] [:late]))
   (assert (= (. (projection initial {}) 1) :late)))
 (local configured (feature.setup))
-(var plan nil)
+(var plan-query nil)
 (each [_ spec (ipairs configured.fx)]
   (when (and (= spec.type :register/indicator) (= spec.value.id :plan))
     (assert (= spec.value.action :usage.open))
-    (set plan spec.value.value)))
-(assert plan)
+    (assert (= spec.value.value nil))
+    (set plan-query spec.value.query)))
+(assert plan-query)
+(fn plan [db] (misa.sub db plan-query))
 (set misa.selected_model_projection (fn [] {:provider :kimi :id :kimi/model}))
 (assert (= (plan initial) nil) "missing quota invented a status value")
-(assert (= (plan quota-db) "75% left"))
+(assert (= (. (plan quota-db) :type) :percent))
+(assert (= (. (plan quota-db) :basis) :remaining))
+(assert (= (. (plan quota-db) :value) 75))
 (local constrained (misa.patch quota-db
                                {:providers {:kimi {:usage {:windows (misa.replace
                                                                      [{:limit 100 :remaining 75}
                                                                       {:limit 10 :used 9}])}}}}))
-(assert (= (plan constrained) "10% left") "widget ignored the tighter quota window")
+(assert (= (. (plan constrained) :value) 10) "widget ignored the tighter quota window")
 (local exhausted (misa.patch quota-db {:providers {:kimi {:usage {:windows (misa.replace [{:limit 10 :remaining 0}])}}}}))
-(assert (= (plan exhausted) "0% left") "zero remaining quota was treated as absent")
+(assert (= (. (plan exhausted) :value) 0) "zero remaining quota was treated as absent")
 (local unknown (misa.patch quota-db {:providers {:kimi {:usage {:windows (misa.replace [{:used 5}])}}}}))
-(assert (= (plan unknown) "unavailable") "missing limit became an invented percentage")
+(assert (= (. (plan unknown) :type) :unavailable) "missing limit became an invented percentage")
+(local unavailable (misa.patch quota-db {:providers {:kimi {:usage {:unavailable true}}}}))
+(assert (= (. (plan unavailable) :type) :unavailable) "retained windows overrode unavailable")
+(assert (= (. (plan unavailable) :reason) :provider_unavailable))
+(each [_ window (ipairs [{:used 5 :limit 0} {:used -1 :limit 100} {:used 101 :limit 100}
+                         {:remaining math.huge :limit 100} {:remaining 0 :limit math.huge}])]
+  (assert (= (. (plan {:models quota-db.models :providers {:kimi {:usage {:windows [window]}}}})
+                :type) :unavailable) "invalid quota became a percentage"))
+(local quota-fact (plan quota-db))
+(assert (= quota-fact (plan (misa.patch quota-db {:hover_action :button}))))
+(assert (= quota-fact.value 75))
 (set misa.selected_model_projection (fn [] {:provider :other :id :other/model}))
-(assert (= (plan quota-db) nil) "quota widget leaked across selected providers")
+(assert (= (plan (misa.patch quota-db {:models {:selected :other/model
+                                               :entries (misa.replace [{:id :other/model :provider :other}])}})) nil)
+        "quota widget leaked across selected providers")
 (each [_ spec (ipairs configured.fx)]
   (assert (not= spec.type :register/interceptor) "usage refresh must use explicit events"))
 (set misa.selected_model_projection (fn [db] db.selected))

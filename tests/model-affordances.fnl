@@ -61,23 +61,28 @@
 (local model (. semantic.indicators 1))
 (assert (= model.label :model))
 (assert (= model.representation :value))
-(assert (= model.value :provider/model))
+(assert (= model.fact.type :text))
+(assert (= model.fact.value :provider/model))
 (assert (= model.hotkey :Alt-M))
 (local component ((. (fennel.dofile :extensions/component/status.fnl) :setup)))
-(assert (= (length component.fx) 1) "status installed a parallel compatibility renderer")
-(assert (= (. component.fx 1 :id) :default.status.indicators))
-(local render (. component.fx 1 :value :render))
+(var render nil)
+(each [_ effect (ipairs component.fx)]
+  (when (= effect.type :register/component)
+    (assert (= effect.id :default.status.indicators) "parallel status renderer")
+    (set render effect.value.render)))
+(misa._setup_effects {:fx (icollect [_ effect (ipairs component.fx)]
+                           (when (not= effect.type :register/component) effect))})
 (local key-spans [{:text :Alt-M}])
 (set misa.render_keybinding (fn [] key-spans))
 (fn text [view]
   (table.concat (icollect [_ line (ipairs view.lines)]
                  (table.concat (icollect [_ span (ipairs line.spans)] span.text)))))
-(local sample {:label :model :value :test :representation :value :hotkey :Alt-M :action :models.open})
+(local sample {:label :model :fact {:type :text :value :test} :representation :value :hotkey :Alt-M :action :models.open})
 (local view (render {:indicators [sample]} {:columns 10}))
 (assert (= (text view) "test Alt-M") "value-only width included the hidden label")
 (assert (= (. key-spans 1 :action) nil) "status mutated shared keybinding spans")
-(assert (= (text (render {:indicators [{:label "◆" :value :test :representation :icon}]} {:columns 6})) "◆ test"))
-(assert (= (text (render {:indicators [{:label :model :value :test :representation :label}]} {:columns 10})) "model test"))
+(assert (= (text (render {:indicators [{:label "◆" :fact {:type :text :value :test} :representation :icon}]} {:columns 6})) "◆ test"))
+(assert (= (text (render {:indicators [{:label :model :fact {:type :text :value :test} :representation :label}]} {:columns 10})) "model test"))
 ;; The default header and input use no ornamental corner glyphs. Structural
 ;; borders in Markdown tables/code are independent and tested elsewhere.
 (fn renderer [path id]

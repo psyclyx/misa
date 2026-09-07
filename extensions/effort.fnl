@@ -35,9 +35,7 @@
                                    :icon "◈"
                                    :id :effort
                                    :label :effort
-                                   :value (fn [db]
-                                            (misa.request_option_value db
-                                                                       option-name))}}))
+                                   :query [:request-options/indicator option-name]}}))
           (table.insert setup-fx
                         {:type :register/command
                          :value {:choice_purpose :command

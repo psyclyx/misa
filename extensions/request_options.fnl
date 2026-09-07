@@ -107,6 +107,22 @@
                                      config.values)
                                 config))
           (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :request-options/indicator
+                                 :inputs [[:db/path :models :entries] [:db/path :models :selected]
+                                          [:db/path :request_options]]
+                                 :compute (fn [inputs query]
+                                            (local db {:models {:entries (. inputs 1) :selected (. inputs 2)}
+                                                       :request_options (. inputs 3)})
+                                            (local value (. (reconcile db) :values (. query 2)))
+                                            (when (not= value nil)
+                                              (local kind (type value))
+                                              (if (or (= kind :boolean) (= kind :string)
+                                                      (and (= kind :number) (= value value)
+                                                           (< (math.abs value) math.huge)))
+                                                  {:type (if (= kind :string) :text kind) : value}
+                                                  {:type :unavailable :reason :unsupported_option_value})))}})
+          (table.insert setup-fx
                         {:type :register/service
                          :name :request_option_choices
                          :value (fn [db name]

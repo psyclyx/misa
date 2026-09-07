@@ -11,7 +11,13 @@
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
   (when (= spec.type :register/interceptor) (set input-policy spec.value.before))
   (when (= spec.name :transcript_blocks) (set blocks-for spec.value))
+  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]}))
   (when (= spec.name :register/transcript-delta) (set register spec.handler)))
+(local summary-fact (misa.sub {} [:messages/detail-indicator]))
+(assert (= summary-fact.type :text))
+(assert (= summary-fact.value :summary))
+(assert (= summary-fact (misa.sub {:messages {:blocks []}} [:messages/detail-indicator])))
+(assert (= (. (misa.sub {:messages {:verbose true}} [:messages/detail-indicator]) :value) :verbose))
 (fn initial [kind]
   (local blocks [{:id :block :response_id :reply :kind kind :streaming true :chunks [] :byte_count 0
                  :argument_chunks [] :argument_bytes 0}])

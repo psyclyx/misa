@@ -154,7 +154,6 @@
         "root.header": "default.root.header",
         "editor.input": "default.editor.input",
         "editor.completions": "default.editor.completions",
-        "status.metrics": "default.status.metrics",
         "status.indicators": "default.status.indicators",
         "picker": "default.picker",
         "dialog": "default.dialog",

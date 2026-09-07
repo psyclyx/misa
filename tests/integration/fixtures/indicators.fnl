@@ -10,14 +10,20 @@
                          :value {:icon "!"
                                  :id :important
                                  :label :Important
-                                 :value (fn [] :yes)}})
+                                 :query [:test/important]}})
+          (table.insert setup-fx {:type :register/sub
+                                 :value {:id :test/important :inputs []
+                                         :compute (fn [] {:type :text :value :yes})}})
           (table.insert setup-fx
                         {:type :register/indicator
                          :value {:hotkey {:action :cycle :context :test}
                                  :icon "?"
                                  :id :optional
                                  :label :Optional
-                                 :value (fn [] :wide)}})
+                                 :query [:test/optional]}})
+          (table.insert setup-fx {:type :register/sub
+                                 :value {:id :test/optional :inputs []
+                                         :compute (fn [] {:type :text :value :wide})}})
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start

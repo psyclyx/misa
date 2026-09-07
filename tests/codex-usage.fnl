@@ -78,13 +78,19 @@
 (set misa.has_setup_effect (fn [] true))
 (set misa.selected_model_projection (fn [] {:provider :openai-codex}))
 (local status ((. (fennel.dofile :extensions/status.fnl) :setup)))
-(var (open-usage plan-value) (values nil nil))
+(var (open-usage plan-query) (values nil nil))
 (each [_ spec (ipairs status.fx)]
   (when (= spec.name :usage/open) (set open-usage spec.handler))
+  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]}))
   (when (and (= spec.type :register/indicator) (= spec.value.id :plan))
-    (set plan-value spec.value.value)))
-(assert (= (plan-value ready) "0% left"))
-(assert (= (plan-value failed) "unavailable"))
+    (assert (= spec.value.value nil))
+    (set plan-query spec.value.query)))
+(fn plan-value [db]
+  (misa.sub (misa.patch db {:models {:selected :codex
+                                    :entries [{:id :codex :provider :openai-codex}]}}) plan-query))
+(assert (= (. (plan-value ready) :value) 0))
+(assert (= (. (plan-value ready) :type) :percent))
+(assert (= (. (plan-value failed) :type) :unavailable))
 (local dashboard (. (open-usage ready {}) :fx 1 :event))
 (local facts {})
 (each [_ section (ipairs dashboard.sections)]

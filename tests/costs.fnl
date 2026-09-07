@@ -133,7 +133,7 @@
                                                       (not second.estimated))
                                                  (not second.unknown))
                                             "reported cost did not override missing rates")
-                                    (local total (misa.costs_projection db))
+                                    (local total (misa.sub db [:costs/total]))
                                     (assert (and (= total.responses 2)
                                                  (< (math.abs (- total.usd
                                                                  0.0148))
@@ -148,10 +148,10 @@
                         {:type :register/event
                          :name :test/costs-reset
                          :handler (fn [db]
-                                    (assert (and (= (. (misa.costs_projection db)
+                                    (assert (and (= (. (misa.sub db [:costs/total])
                                                        :usd)
                                                     0)
-                                                 (= (. (misa.costs_projection db)
+                                                 (= (. (misa.sub db [:costs/total])
                                                        :responses)
                                                     0))
                                             "clear retained conversation cost")
