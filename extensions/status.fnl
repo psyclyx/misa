@@ -105,8 +105,9 @@
 (fn projection [db context]
   (if misa.indicators_projection (misa.indicators_projection db context)
       misa.render_component
-      (. (misa.render_component db :status.metrics
-                                {:metrics [{:prefix "●" :value (or (and db.status db.status.mode) :ready)}]}
+      (. (misa.render_component db :status.indicators
+                                {:indicators [{:id :activity :label "●"
+                                               :value (or (and db.status db.status.mode) :ready)}]}
                                 context) :lines)
       []))
 

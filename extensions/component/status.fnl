@@ -99,29 +99,4 @@
                         {:type :register/component
                          :id :default.status.indicators
                          :value {:render render-indicators}})
-          ;; Compatibility for custom profiles using the former metrics role.
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :default.status.metrics
-                         :value {:render (fn [model]
-                                           (local spans {})
-                                           (each [index metric (ipairs (or model.metrics
-                                                                           {}))]
-                                             (when (> index 1)
-                                               (tset spans (+ (length spans) 1)
-                                                     (span "  " :plain)))
-                                             (tset spans (+ (length spans) 1)
-                                                   (span (tostring (or metric.prefix
-                                                                       ""))
-                                                         :dim))
-                                             (tset spans (+ (length spans) 1)
-                                                   (span " " :plain))
-                                             (tset spans (+ (length spans) 1)
-                                                   (span (tostring (or metric.value
-                                                                       ""))
-                                                         (or metric.style
-                                                             :plain))))
-                                           {:lines (or (and (> (length spans) 0)
-                                                            [{: spans}])
-                                                       {})})}})
           {:fx setup-fx})}

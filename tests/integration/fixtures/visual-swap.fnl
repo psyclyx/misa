@@ -17,7 +17,7 @@
                          :name :app/start
                          :handler (fn []
                                     {:fx [{:event {:implementation :test.status
-                                                   :role :status.metrics
+                                                   :role :status.indicators
                                                    :type :components/swap}
                                            :type :dispatch}
                                           {:event {:type :test/status-swapped}
@@ -27,8 +27,8 @@
                          :name :test/status-swapped
                          :handler (fn [db]
                                     (assert (= (. (misa.render_component db
-                                                                         :status.metrics
-                                                                         {:metrics {}})
+                                                                         :status.indicators
+                                                                         {:indicators {}})
                                                   :lines 1 :spans 1 :text)
                                                "independent status"))
                                     (assert (= (. (misa.render_component db
@@ -48,8 +48,8 @@
                          :name :test/chrome-swapped
                          :handler (fn [db]
                                     (assert (= (. (misa.render_component db
-                                                                         :status.metrics
-                                                                         {:metrics {}})
+                                                                         :status.indicators
+                                                                         {:indicators {}})
                                                   :lines 1 :spans 1 :text)
                                                "independent status")
                                             "chrome swap changed status")

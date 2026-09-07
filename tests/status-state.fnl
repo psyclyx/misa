@@ -9,6 +9,23 @@
 (local handlers {})
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+;; Minimal profiles without the indicator registry use the same component model.
+(local original-render misa.render_component)
+(local original-projection misa.indicators_projection)
+(set misa.indicators_projection nil)
+(local fallback-lines [{:spans [{:text :fallback}]}])
+(set misa.render_component
+     (fn [_ role model context]
+       (assert (= role :status.indicators) "status fallback uses a parallel renderer")
+       (assert (= (. model.indicators 1 :id) :activity))
+       (assert (= (. model.indicators 1 :value) :working))
+       (assert (= context.columns 20))
+       {:lines fallback-lines}))
+(each [_ spec (ipairs specs.fx)]
+  (when (= spec.name :status_projection)
+    (assert (= (spec.value {:status {:mode :working}} {:columns 20}) fallback-lines))))
+(set misa.render_component original-render)
+(set misa.indicators_projection original-projection)
 (fn transition [db event]
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))

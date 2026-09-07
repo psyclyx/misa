@@ -632,6 +632,9 @@ structured keybinding reminder, and drop priority. The common component styles t
 removes low-priority items at narrow widths. Standard registrations cover
 activity, model, effort (with its cycle hotkey), session usage, context usage,
 and transcript detail (`summary`/`verbose`). Root composition stays generic.
+The component role is `status.indicators`, including the activity-only fallback
+when the registry is omitted. The former `status.metrics` role and `metrics`
+model are removed; custom status components should consume `model.indicators`.
 
 `request_options` derives request readiness and selected option values entirely
 from the active model's `api.request_options` metadata. Required options without

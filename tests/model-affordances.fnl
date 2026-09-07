@@ -64,6 +64,8 @@
 (assert (= model.value :provider/model))
 (assert (= model.hotkey :Alt-M))
 (local component ((. (fennel.dofile :extensions/component/status.fnl) :setup)))
+(assert (= (length component.fx) 1) "status installed a parallel compatibility renderer")
+(assert (= (. component.fx 1 :id) :default.status.indicators))
 (local render (. component.fx 1 :value :render))
 (local key-spans [{:text :Alt-M}])
 (set misa.render_keybinding (fn [] key-spans))

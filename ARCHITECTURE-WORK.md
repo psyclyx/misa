@@ -69,9 +69,13 @@ immutable input/output, numeric counts, raw text, and role overrides.
 Verification passed: focused component contracts, full ReleaseSafe baseline
 suite, installed build, and installed PTY interaction checks.
 
-Numeric status facts formatted before components receive them, indicator
-callbacks without declared query dependencies, and the legacy `status.metrics`
-rendering path remain part of the presentation cutover.
+The legacy `status.metrics` component and model have been removed. Minimal
+profiles without the indicator registry use `status.indicators` too; component
+swap coverage now exercises that role. Focused status/model tests check the
+fallback model and reject installation of a parallel compatibility renderer.
+The full ReleaseSafe baseline suite passed, including the component-swap fixture.
+Numeric status facts formatted before components receive them and indicator
+callbacks without declared query dependencies remain part of the cutover.
 
 ### On-demand Claude quota retrieval (2026-09-07)
 
