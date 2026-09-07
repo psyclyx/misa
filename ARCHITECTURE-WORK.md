@@ -51,6 +51,13 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The default header no longer has ornamental corner prefixes, and the editor's
+insert/continuation prompt uses a straight rail instead of opening/closing corners.
+Normal/visual mode markers remain distinct; their glyphs are declared as data.
+Focused tests cover multiline input, narrow prompt widths, Unicode, and cursor
+byte bounds. The PTY checks the initial default frame for the removed corners.
+Structural borders in Markdown tables/code and dialogs are unchanged.
+
 The Ghostty-protocol PTY fixture now includes a visible Markdown footer link.
 Native SGR motion must set `hover_link` rather than `hover_action`, emit the hover
 background, and remove it on exit while preserving OSC hyperlink sequences in

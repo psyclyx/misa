@@ -76,4 +76,31 @@
 (assert (= (. key-spans 1 :action) nil) "status mutated shared keybinding spans")
 (assert (= (text (render {:indicators [{:label "◆" :value :test :representation :icon}]} {:columns 6})) "◆ test"))
 (assert (= (text (render {:indicators [{:label :model :value :test :representation :label}]} {:columns 10})) "model test"))
+;; The default header and input use no ornamental corner glyphs. Structural
+;; borders in Markdown tables/code are independent and tested elsewhere.
+(fn renderer [path id]
+  (local setup ((. (fennel.dofile path) :setup) {}))
+  (each [_ effect (ipairs setup.fx)]
+    (when (= effect.id id) (lua "return effect.value.render")))
+  (error (.. "missing component " id)))
+(local header ((renderer :extensions/component/chrome.fnl :default.root.header)))
+(assert (= (. header.lines 1 :spans 1 :text) :misa))
+(local input-render (renderer :extensions/component/editor.fnl :default.editor.input))
+(each [_ mode (ipairs [:insert :normal :visual])]
+  (each [_ columns (ipairs [1 2 3 8 80])]
+    (local text "one\ntwo\n世界")
+    (each [_ cursor (ipairs [0 1 (length text)])]
+      (local view (input-render {: text : cursor : mode} {: columns}))
+      (each [_ line (ipairs view.lines)]
+        (local rendered (table.concat (icollect [_ span (ipairs line.spans)] span.text)))
+        (assert (not (rendered:find "┌" 1 true)))
+        (assert (not (rendered:find "└" 1 true)))
+        ;; The root clips a wide grapheme that cannot fit a tiny viewport;
+        ;; this component's marker must itself fit the available columns.
+        (assert (<= (misa.layout.width (. line.spans 1 :text)) columns)))
+      (local cursor-line (. view.lines view.cursor.row))
+      (local rendered (table.concat (icollect [_ span (ipairs cursor-line.spans)] span.text)))
+      (assert (<= 0 view.cursor.byte (length rendered))))))
+(local multiline (input-render {:text "one\ntwo" :mode :insert} {:columns 80}))
+(each [_ line (ipairs multiline.lines)] (assert (= (. line.spans 1 :text) "│ ")))
 (output "model affordance contracts passed\n")

@@ -34,7 +34,7 @@
                                     (assert (= (. (misa.render_component db
                                                                          :root.header
                                                                          {})
-                                                  :lines 1 :spans 2 :text)
+                                                  :lines 1 :spans 1 :text)
                                                :misa)
                                             "status swap changed chrome")
                                     {:fx [{:event {:implementation :test.chrome

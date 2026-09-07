@@ -75,6 +75,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     try:
         until(lambda: b'smoke/model' in output)
         until(lambda: b'\x1b[?2026l' in output)
+        assert all(glyph.encode() not in output for glyph in ('┌', '└')), 'default chrome retained ornamental corners'
         assert b'\x1b[?1003h' in output, 'all-motion mouse reporting was not enabled'
         # The empty default UI puts its model button on row 4, column 20.
         # Wait for presentation as well as state: an inspection can complete

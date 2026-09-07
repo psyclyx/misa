@@ -2,6 +2,8 @@
 
 (fn span [text style] {: style : text})
 
+(local markers {:insert "│ " :normal "◆ " :visual "◇ "})
+
 {:setup (fn []
           (local setup-fx [])
           (assert (and misa.layout misa.layout.wrap_input)
@@ -11,12 +13,7 @@
                          :id :default.editor.input
                          :value {:render (fn [model context]
                                            (local mode (or model.mode :insert))
-                                           (local marker
-                                                  (or (and (= mode :normal)
-                                                           "◆ ")
-                                                      (or (and (= mode :visual)
-                                                               "◇ ")
-                                                          "┌ ")))
+                                           (local marker (or (. markers mode) markers.insert))
                                            (local prompt-style
                                                   (or (and (= mode :insert)
                                                            :accent)
@@ -35,14 +32,8 @@
                                            (each [index line (ipairs rendered.lines)]
                                              (local previous
                                                     (. line.spans 1 :text))
-                                             (var prefix
-                                                  (or (and (= index 1) marker)
-                                                      (or (and (= index
-                                                                  (length rendered.lines))
-                                                               "└ ")
-                                                          "│ ")))
-                                             (set prefix
-                                                  (misa.layout.clip prefix
+                                             (local prefix
+                                                  (misa.layout.clip (if (= index 1) marker markers.insert)
                                                                     (misa.layout.width previous)))
                                              (tset (. line.spans 1) :text
                                                    prefix)
