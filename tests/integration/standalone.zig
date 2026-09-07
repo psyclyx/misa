@@ -97,6 +97,18 @@ test "modal editing preserves state and undo boundaries" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/editing-state.fnl"} }, "editing state properties passed\n");
 }
 
+test "dialogs preserve state and protected input ownership" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/dialog-state.fnl"} }, "dialog state properties passed\n");
+}
+
+test "authentication preserves startup and dialog state" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/auth-state.fnl"} }, "auth state contracts passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

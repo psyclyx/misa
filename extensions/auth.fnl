@@ -4,14 +4,9 @@
           (local setup-fx [])
           (local providers (misa.auth_providers))
 
-          (fn provider-by-id [id]
-            (each [_ provider (ipairs providers)]
-              (when (= provider.id id) (lua "return provider")))
-            nil)
-
-          (fn auth-effect [action provider id]
+          (fn auth-effect [action provider id completion]
             {: action
-             :completion :auth/complete
+             :completion (or completion :auth/complete)
              : id
              :interaction :auth/interaction
              :profile provider.profile
@@ -19,12 +14,14 @@
              :strategy provider.strategy
              :type :auth/command})
 
-          (fn model-provider-for [id]
-            (each [_ provider (ipairs providers)]
-              (when (= provider.id id)
-                (let [___antifnl_rtn_1___ provider.model_provider]
-                  (lua "return ___antifnl_rtn_1___"))))
-            nil)
+          (fn startup-progress [startup patch effects]
+            (local next-state (misa.patch startup patch))
+            (local ready (and (= (next next-state.pending_status) nil)
+                             (= (next next-state.pending_discovery) nil)))
+            (when ready
+              (table.insert effects {:event {:type :auth/startup-ready} :type :dispatch}))
+            {:patch {:auth_startup (misa.replace (misa.patch next-state {: ready}))}
+             :fx effects})
 
           (table.insert setup-fx
                         {:type :register/interceptor
@@ -32,11 +29,13 @@
                                            (when (and (= tx.event.type
                                                          :app/start)
                                                       (not tx.db.auth_startup))
-                                             (set tx.db.auth_startup
-                                                  {:pending_discovery 0
-                                                   :pending_status (length providers)
-                                                   :ready (= (length providers)
-                                                             0)}))
+                                             (local pending {})
+                                             (each [_ provider (ipairs providers)]
+                                               (tset pending provider.model_provider true))
+                                             (set tx.db (misa.patch tx.db
+                                                  {:auth_startup (misa.replace {:pending_discovery {}
+                                                                               :pending_status pending
+                                                                               :ready (= (length providers) 0)})})))
                                            tx)
                                  :id :auth/startup-state}})
           (table.insert setup-fx
@@ -47,16 +46,14 @@
                                     (each [_ provider (ipairs providers)]
                                       (local effect
                                              (auth-effect :status provider
-                                                          provider.model_provider))
-                                      (set effect.completion
-                                           :auth/provider-status)
+                                                          provider.model_provider :auth/provider-status))
                                       (tset effects (+ (length effects) 1)
                                             effect))
                                     (when (= (length providers) 0)
                                       (tset effects (+ (length effects) 1)
                                             {:event {:type :auth/startup-ready}
                                              :type :dispatch}))
-                                    {: db :fx effects})})
+                                    {:fx effects})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :auth/provider-status
@@ -64,57 +61,34 @@
                                     (local startup
                                            (assert db.auth_startup
                                                    "auth startup state is missing"))
-                                    (set startup.pending_status
-                                         (- startup.pending_status 1))
-                                    (local available
-                                           (and event.ok
-                                                (= event.logged_in true)))
-                                    (local effects
-                                           [{:event {: available
-                                                     :provider event.id
-                                                     :subscription_type event.subscription_type
-                                                     :type :models/provider-availability}
-                                             :type :dispatch}])
-                                    (var declaration nil)
-                                    (each [_ provider (ipairs providers)]
-                                      (when (= provider.model_provider event.id)
-                                        (set declaration provider)
-                                        (lua :break)))
-                                    (when (and (and available declaration)
-                                               declaration.discover_models)
-                                      (set startup.pending_discovery
-                                           (+ startup.pending_discovery 1))
-                                      (tset effects (+ (length effects) 1)
-                                            {:event {:provider event.id
-                                                     :type :models/discover}
-                                             :type :dispatch}))
-                                    (when (and (= startup.pending_status 0)
-                                               (= startup.pending_discovery 0))
-                                      (set startup.ready true)
-                                      (tset effects (+ (length effects) 1)
-                                            {:event {:type :auth/startup-ready}
-                                             :type :dispatch}))
-                                    {: db :fx effects})})
+                                    (when (. startup.pending_status event.id)
+                                      (local available
+                                             (and event.ok
+                                                  (= event.logged_in true)))
+                                      (local effects
+                                             [{:event {: available
+                                                       :provider event.id
+                                                       :subscription_type event.subscription_type
+                                                       :type :models/provider-availability}
+                                               :type :dispatch}])
+                                      (local declaration (misa.auth_provider_for_model event.id))
+                                      (local discover (and available declaration declaration.discover_models))
+                                      (when discover
+                                        (tset effects (+ (length effects) 1)
+                                              {:event {:provider event.id
+                                                       :type :models/discover}
+                                               :type :dispatch}))
+                                      (startup-progress startup
+                                                        {:pending_status {event.id misa.delete}
+                                                         :pending_discovery (when discover {event.id true})}
+                                                      effects)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :models/discovery-complete
-                         :handler (fn [db]
+                         :handler (fn [db event]
                                     (local startup db.auth_startup)
-                                    (if (or (not startup) startup.ready) nil
-                                        (do
-                                          (set startup.pending_discovery
-                                               (math.max 0
-                                                         (- startup.pending_discovery
-                                                            1)))
-                                          (if (and (= startup.pending_status 0)
-                                                   (= startup.pending_discovery
-                                                      0))
-                                              (do
-                                                (set startup.ready true)
-                                                {: db
-                                                 :fx [{:event {:type :auth/startup-ready}
-                                                       :type :dispatch}]})
-                                              {: db}))))})
+                                    (when (and startup (. startup.pending_discovery event.provider))
+                                      (startup-progress startup {:pending_discovery {event.provider misa.delete}} [])))})
           (each [_ command (ipairs [{:action :login
                                      :description "Log in to a provider"
                                      :name :/login}
@@ -163,7 +137,7 @@
                                                              :type :transcript/harness}
                                                      :type :dispatch}))
                                             (local declaration
-                                                   (provider-by-id provider))
+                                                   (misa.auth_provider provider))
                                             (if (not declaration)
                                                 (tset effects
                                                       (+ (length effects) 1)
@@ -206,22 +180,19 @@
                                                            :dialog/update)
                                                       :dialog/open)
                                             :url event.url})
-                                    {: db
-                                     :fx [{:event dialog :type :dispatch}
+                                    {:fx [{:event dialog :type :dispatch}
                                           {:type :terminal/read}]})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :auth/dialog-action
                          :handler (fn [db event]
                                     (if event.cancelled
-                                        {: db
-                                         :fx [{:id event.id
+                                        {:fx [{:id event.id
                                                :type :operation/cancel}
                                               {:type :terminal/read}]}
                                         (if event.protected
-                                            {: db :fx [{:type :terminal/read}]}
-                                            {: db
-                                             :fx [{:action event.action
+                                            {:fx [{:type :terminal/read}]}
+                                            {:fx [{:action event.action
                                                    :correlation event.correlation
                                                    :id event.id
                                                    :type :auth/respond
@@ -230,9 +201,6 @@
                         {:type :register/event
                          :name :auth/complete
                          :handler (fn [db event]
-                                    (when (and db.dialog
-                                               (= db.dialog.id event.id))
-                                      (set db.dialog nil))
                                     (var message event.message)
                                     (when (and event.subscription_type
                                                (not= event.subscription_type
@@ -247,8 +215,8 @@
                                                      :text message
                                                      :type :transcript/harness}
                                              :type :dispatch}])
-                                    (local provider
-                                           (model-provider-for event.provider))
+                                    (local declaration (misa.auth_provider event.provider))
+                                    (local provider (and declaration declaration.model_provider))
                                     (when (and provider event.ok)
                                       (tset effects (+ (length effects) 1)
                                             {:event {:available (= event.logged_in
@@ -265,10 +233,11 @@
                                     (tset effects (+ (length effects) 1)
                                           {:event {:type :auth/ready}
                                            :type :dispatch})
-                                    {:fx effects})})
+                                    {:patch {:dialog (when (and db.dialog (= db.dialog.id event.id)) misa.delete)}
+                                     :fx effects})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :auth/ready
                          :handler (fn [db]
-                                    {: db :fx [{:type :terminal/read}]})})
+                                    {:fx [{:type :terminal/read}]})})
           {:fx setup-fx})}

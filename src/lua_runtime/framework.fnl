@@ -16,7 +16,7 @@
 
 (local (keybindings keybinding-ids) (values {} {}))
 
-(local (auth-providers auth-provider-ids auth-model-providers)
+(local (auth-providers auth-by-id auth-by-model)
        (values {} {} {}))
 
 (local request-serializers {})
@@ -357,11 +357,11 @@
                       (= (type provider.profile.authorization_url) :string))
                  (= (type provider.profile.token_url) :string))
             "device OAuth requires endpoint profile"))
-  (assert (not (. auth-provider-ids provider.id)) "duplicate auth provider")
-  (assert (not (. auth-model-providers provider.model_provider))
+  (assert (not (. auth-by-id provider.id)) "duplicate auth provider")
+  (assert (not (. auth-by-model provider.model_provider))
           "duplicate auth model provider")
-  (tset auth-provider-ids provider.id true)
-  (tset auth-model-providers provider.model_provider true)
+  (tset auth-by-id provider.id provider)
+  (tset auth-by-model provider.model_provider provider)
   (tset auth-providers (+ (length auth-providers) 1) provider)
   (registrations.reg_completion :auth-provider
                                 {:description provider.description
@@ -460,6 +460,8 @@
           (do
             (assert (= kind :table) "state must contain only data")
             (set-forcibly! active (or active {}))
+(fn misa.auth_provider [id] (. auth-by-id id))
+(fn misa.auth_provider_for_model [id] (. auth-by-model id))
             (assert (not (. active value)) "cyclic state")
             (tset active value true)
             (local result {})

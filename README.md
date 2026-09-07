@@ -178,6 +178,8 @@ Registration effects use these payloads:
   a candidate to a shared completion group. The UI handles filtering, sorting,
   display, and insertion, so providers only declare their authentication ID.
 - `{type="register/tool", value=tool}`: adds a semantic tool schema and its effect type.
+  `misa.auth_provider(id)` and `misa.auth_provider_for_model(id)` look up declarations
+  in the live registry, including providers registered later during setup.
   `misa.models()`, `misa.model(id)`, `misa.auth_providers()`, `misa.commands()`, `misa.command(name)`,
   `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
 - `{type="register/service", name="namespace.member", value=value}` exports a
@@ -602,6 +604,10 @@ so a pasted key cannot fall through into a conversation.
 `dialog_view` projects that state through the replaceable
 `dialog` component role. Dialog data and hints are generic—providers do not own
 UI paths or rendering. Default dialogs are compact overlays that retain the
+Dialog handlers return patches. Additional ordinary input kinds use
+`{type="register/dialog-input", id="my_input", value=function(dialog, event) ... end}`;
+the pure handler returns `{patch=<application patch>, fx=<array>}`. Protected
+dialogs bypass ordinary input handlers entirely.
 transcript, with clickable URLs and wrapped input. `picker` is only the overlay lifecycle adapter and
 `picker_view` renders the centralized projection. `commands` normalizes every
 typed, picked, or replayed command into one canonical invocation and records

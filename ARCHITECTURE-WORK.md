@@ -58,3 +58,10 @@ Vim policy now applies patches too, with open motion/action registries.
 insert groups, discarded drafts, range operations, Unicode motions, and custom
 transitions. Other state owners and provider reducers still need migration
 before transaction drafts can be removed.
+
+Dialog lifecycle/input and authentication handlers now return patches.
+`tests/dialog-state.fnl` covers generated input sequences, stale correlations,
+empty replacements, and the protected-input boundary. `tests/auth-state.fnl`
+covers late provider registration, provider-keyed startup work, duplicate and
+unrelated completions, and auth-owned dialog cleanup. Registry lookups live with
+provider registration instead of taking setup-time snapshots.
