@@ -1,0 +1,70 @@
+;; Input-docked controls use the same semantic component/hover path as other UI.
+(local fennel (require :fennel))
+(local output io.write)
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(local context {:argv [] :config {:themes {:persist false} :components {:persist false}}})
+(local layers {})
+(each [_ name (ipairs [:json :themes :theme/default :components :layout :queue_view :attachments])]
+  (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
+  (each [_ spec (ipairs specs.fx)]
+    (when (= spec.type :register/view-layer) (tset layers spec.id spec.handler)))
+  (misa._setup_effects specs))
+(var observed nil)
+(var received nil)
+(misa._setup_effects
+ {:fx [{:type :register/event :name :test/read :handler (fn [db] (set observed db) nil)}
+       {:type :register/component :id :default.attachment.fixture
+        :value {:render (fn [] {:lines []})}}
+       {:type :register/component :id :custom.controls
+        :value {:render (fn [model] (set received model)
+                         {:lines [{:spans [{:text :custom :style :plain}]}]})}}]})
+(misa._seal context)
+(each [_ event (ipairs [{:type :app/start} {:type :test/read}])]
+  (misa._dispatch event {:columns 80 :lines 24 :interactive true} {:wall_ms 0 :monotonic_ms 0})
+  (misa._commit))
+(local db (misa.patch observed {:queue {:pending "first\nsecond" :attachments [{:type :fixture}]}
+                               :editor {:attachments [{:type :fixture}]}
+                               :images {:pending {:loading true}}}))
+(local cofx {:terminal {:columns 80 :images false}})
+(local before (misa.json.encode db))
+(fn action-span [view id]
+  (each [_ line (ipairs view.lines)]
+    (each [_ span (ipairs line.spans)]
+      (when (= span.action id) (lua "return span"))))
+  (error (.. "missing action: " id)))
+(each [_ spec (ipairs [{:layer :pending-prompt :action :queue.edit}
+                       {:layer :pending-prompt :action :queue.steer}
+                       {:layer :draft-attachments :action :images.remove}])]
+  (local layer (. layers spec.layer))
+  (local rest (layer db cofx))
+  (local encoded (misa.json.encode rest))
+  (local normal (action-span rest spec.action))
+  (assert (= (misa.json.encode normal.style) (misa.json.encode (misa.theme_style db :keybinding)))
+          "resting appearance changed")
+  (local hovered (layer (misa.patch db {:hover_action spec.action}) cofx))
+  (local highlighted (action-span hovered spec.action))
+  (assert (= (misa.json.encode highlighted.style.background)
+             (misa.json.encode (. (misa.theme_style db :hover) :background))))
+  (assert (not= highlighted.style.background normal.style.background))
+  (assert (= (misa.json.encode highlighted.style.foreground)
+             (misa.json.encode normal.style.foreground)))
+  (assert (= highlighted.text normal.text))
+  (assert (= encoded (misa.json.encode rest)) "hover mutated reusable output")
+  (assert (= encoded (misa.json.encode (layer db cofx))) "hover did not clear"))
+(assert (= before (misa.json.encode db)))
+(local queued ((. layers :pending-prompt) db cofx))
+(assert (= (. queued.lines 2 :spans 1 :text) "first ↵ second  [1 image(s)]"))
+(local attachments ((. layers :draft-attachments) db cofx))
+(assert (= (. attachments.lines 1 :spans 1 :text) "Loading image…"))
+(local custom-queue ((. layers :pending-prompt)
+                    (misa.swap_component db :pending-prompt :custom.controls) cofx))
+(assert (= received.pending "first\nsecond") "view layer pre-rendered queue text")
+(assert (= received.attachment_count 1))
+(assert (= (. custom-queue.lines 1 :spans 1 :text) :custom))
+((. layers :draft-attachments) (misa.swap_component db :attachment-controls :custom.controls) cofx)
+(assert (= received.count 1))
+(assert (= received.pending true))
+(assert (= ((. layers :pending-prompt) observed cofx) nil))
+(assert (= ((. layers :draft-attachments) observed cofx) nil))
+(output "input layer component contracts passed\n")

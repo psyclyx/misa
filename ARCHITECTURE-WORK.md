@@ -59,10 +59,19 @@ Verification: the focused startup/auth/model tests, full ReleaseSafe baseline
 suite, installed build, and installed Ghostty PTY protocol/input suite passed.
 The PTY check covers application output and input routing, not GUI painting.
 
-The presentation audit also identified queue/attachment controls bypassing
-component resolution, numeric status facts formatted before components receive
-them, indicator callbacks without declared query dependencies, and the legacy
-`status.metrics` rendering path. These remain part of the presentation cutover.
+Queue/attachment controls now use component resolution: `pending-prompt` receives
+raw pending text and attachment count; `attachment-controls` receives pending
+acquisition and attachment count. Both roles are overridable, and the default
+components emit semantic styles and actions. This fixes their previously missing
+hover backgrounds without changing resting styles. The focused
+`tests/input-layer-components.fnl` checks all three action targets, hover leave,
+immutable input/output, numeric counts, raw text, and role overrides.
+Verification passed: focused component contracts, full ReleaseSafe baseline
+suite, installed build, and installed PTY interaction checks.
+
+Numeric status facts formatted before components receive them, indicator
+callbacks without declared query dependencies, and the legacy `status.metrics`
+rendering path remain part of the presentation cutover.
 
 ### On-demand Claude quota retrieval (2026-09-07)
 

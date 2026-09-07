@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "input layer controls share semantic components and hover resolution" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/input-layer-components.fnl"} }, "input layer component contracts passed\n");
+}
+
 test "model startup and option reconciliation are registration-order independent" {
     var h = try Harness.init();
     defer h.deinit();

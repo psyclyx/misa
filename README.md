@@ -884,6 +884,11 @@ Alt-Enter interrupts and sends the pending message together with the draft.
 Ctrl-C interrupts while preserving the draft. Effort cycling uses Alt-F.
 `queue` owns scheduling, `queue_view` owns its dock, and the editor targets the
 installed submission capability. These plugins can be replaced independently.
+The dock renders the `pending-prompt` component role with
+`{pending=<raw text>, attachment_count=<number>}`. Draft attachment controls use
+`attachment-controls` with `{pending=<boolean>, count=<number>}`. Their default
+components keep existing resting styles and use shared action-hover backgrounds;
+override either role through `config.components.roles` to change presentation.
 
 Ctrl-V pastes a PNG/JPEG image from the system clipboard; `/image <path>` loads
 a file. Ghostty, Kitty, and WezTerm receive bounded inline previews through the
