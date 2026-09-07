@@ -73,7 +73,8 @@
       (each [_ field (ipairs [{:key :used :label "used"} {:key :limit :label "limit"}
                               {:key :remaining :label "remaining"} {:key :reset_at :label "resets at"}
                               {:key :reset_at_unix :label "resets at (Unix seconds)"}
-                              {:key :reset_after_seconds :label "reset delay (seconds at fetch)"}])]
+                              {:key :reset_after_seconds :label "reset delay (seconds at fetch)"}
+                              {:key :status :label "status"}])]
         (when (not= (. window field.key) nil)
           (table.insert fields {:label (.. (or window.label "Quota") " " field.label)
                                 :value (. window field.key)}))))

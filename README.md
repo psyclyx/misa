@@ -777,7 +777,17 @@ stale completions are ignored, and failures clear stale quota values.
 Native credential trust permits this exact usage URL, not the surrounding ChatGPT
 backend. An explicit `config.providers.openai_codex.usage_url` override still needs
 native credential-origin authorization. Account identifiers are not retained in
-quota state. Claude coding-plan retrieval remains unfinished.
+quota state.
+
+Claude consumes the CLI's `rate_limit_event` records through its existing process
+transport. The latest reported window, status, reset time, and optional utilization
+feed the same dashboard/widget contract. Missing utilization stays unknown; an
+`allowed` status does not imply zero usage. These are stream observations, not a
+complete account snapshot: `/usage` does not yet fetch Claude's full quota set on
+demand. No additional Claude credential access or model request is used to obtain
+these observations. The wire fields and fractional utilization follow the
+[official SDK parser](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/message_parser.py)
+and [rate-limit types](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py).
 Provider-reported USD takes precedence over estimates; missing prices remain
 explicitly unknown. Dynamic provider metadata supplies prices where available.
 `config.costs.models["provider/model-id"]` overrides `input`, `output`,

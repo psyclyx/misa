@@ -33,6 +33,22 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Claude stream quota observations (2026-09-07)
+
+The existing open record dispatcher now handles `rate_limit_event`, normalizing
+the CLI's fractional utilization, affected window, status, and reset timestamp
+into provider-owned usage facts. A separate event reducer publishes those facts
+and notifies the shared dashboard. Missing/invalid utilization clears prior
+percentages; status alone does not invent a percentage. Account/session identifiers
+are excluded. Tests cover generated batching invariance with quota records,
+zero/exhausted/unknown values, malformed records, and replacement of stale facts.
+This uses the official Python SDK parser/type definitions, not an inferred HTTP
+schema. Only the latest affected window is represented; this is not the full
+account snapshot or on-demand Claude quota retrieval still required above.
+Focused Claude/status checks, the complete ReleaseSafe baseline-CPU suite,
+installed build, and PTY interaction regression passed. No live Claude inference
+request was made for verification; live stream acceptance remains unverified.
+
 ### Codex quota retrieval verified (2026-09-07)
 
 The provider now handles targeted/broadcast usage refresh through the native

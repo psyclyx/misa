@@ -26,6 +26,8 @@
 (local final {:type :assistant :message {:id :message :content [{:type :tool_use :id :call :name :tool :input {:x 1}}]}})
 (local result {:type :result :result :done})
 (local pool [start tool-start arguments final
+             {:type :rate_limit_event :rate_limit_info {:status :allowed_warning :rateLimitType :five_hour
+                                                       :utilization 0.8 :resetsAt 1800000000}}
              {:type :stream_event :event {:type :message_delta :usage {:output_tokens 1}}}
              {:type :assistant :message {:id :other :content [{:type :text :text :fallback}]}}
              {:type :user :message {:content [{:type :tool_result :tool_use_id :call :content :done}]}}
@@ -97,4 +99,34 @@
 (local extended (transition initial [{:type :custom} {:type :stream_event :event {:type :custom}}]))
 (assert extended.providers.claude_streams.request.custom)
 (assert extended.providers.claude_streams.request.custom_partial)
+;; CLI quota events are account facts, not response token counts or transcript text.
+(each [_ utilization (ipairs [0 0.8 1 -1 2 misa.json_null "0.5"])]
+  (local valid (and (= (type utilization) :number) (>= utilization 0) (<= utilization 1)))
+  (local (_ quota-fx) (transition initial
+                                 [{:type :rate_limit_event :uuid :private-id :session_id :private-session
+                                   :rate_limit_info {:status :allowed_warning :rateLimitType :five_hour
+                                                     : utilization :resetsAt 1800000000}}]))
+  (assert (= (length quota-fx) 1))
+  (local event (. quota-fx 1 :event))
+  (assert (= event.type :provider/claude-quota))
+  (local applied ((. handlers event.type) initial event))
+  (local db (misa.patch initial applied.patch))
+  (local quota db.providers.claude.usage)
+  (local window (. quota.windows 1))
+  (assert (= quota.unavailable (not valid)))
+  (assert (= window.used (when valid (* utilization 100))))
+  (assert (= window.remaining (when valid (- 100 (* utilization 100)))))
+  (assert (= window.label "Claude · 5h"))
+  (assert (= window.reset_at_unix 1800000000))
+  (assert (= window.status :allowed_warning))
+  (assert (= (. applied.fx 1 :event :type) :usage/updated))
+  (local encoded (misa.json.encode quota))
+  (assert (not (encoded:find "private" 1 true)))
+  (local (_ unknown-fx) (transition initial [{:type :rate_limit_event :rate_limit_info {:status :allowed}}]))
+  (local unknown-event (. unknown-fx 1 :event))
+  (local cleared (misa.patch db (. ((. handlers unknown-event.type) db unknown-event) :patch)))
+  (assert cleared.providers.claude.usage.unavailable)
+  (assert (= (. cleared.providers.claude.usage.windows 1 :used) nil)))
+(local (_ malformed-quota) (transition initial [{:type :rate_limit_event :rate_limit_info false}]))
+(assert (= (length malformed-quota) 0))
 (output "Claude stream state properties passed\n")

@@ -194,12 +194,37 @@
   (table.insert fx (usage id record.usage record.total_cost_usd))
   {:state (misa.patch state {:result true :failed (= record.is_error true)}) : fx :finish true})
 
+(fn quota-number [value]
+  (when (and (= (type value) :number) (= value value) (>= value 0) (< value math.huge)) value))
+
+(local quota-labels {:five_hour "Claude · 5h" :seven_day "Claude · 7d"
+                     :seven_day_opus "Claude Opus · 7d" :seven_day_sonnet "Claude Sonnet · 7d"
+                     :overage "Claude overage"})
+
+(fn quota-record [_ record]
+  (local info record.rate_limit_info)
+  (when (= (type info) :table)
+    (local fraction (quota-number info.utilization))
+    (local used (when (and fraction (<= fraction 1)) (* fraction 100)))
+    (local kind (when (= (type info.rateLimitType) :string) info.rateLimitType))
+    (local status (when (= (type info.status) :string) info.status))
+    (local reset (quota-number info.resetsAt))
+    ;; A record is the latest affected window, not a complete account snapshot.
+    ;; Do not retain older percentages when a new report omits utilization.
+    {:fx [{:type :dispatch :event {:type :provider/claude-quota
+                                  :usage {:source :stream :unavailable (= used nil)
+                                          :windows [{:label (or (. quota-labels (or kind "")) kind "Claude")
+                                                     :unit :percent :status status :reset_at_unix reset
+                                                     :used used :limit (when used 100)
+                                                     :remaining (when used (math.max 0 (- 100 used)))}]}}}]}))
+
 (local records
        {:stream_event (fn [state record id]
                          (local streamed (and (= (type record.event) :table) record.event))
                          (local handler (and streamed (. partials streamed.type)))
                          (when handler (handler state streamed id)))
-        :assistant assistant-record :user user-record :result result-record})
+        :assistant assistant-record :user user-record :result result-record
+        :rate_limit_event quota-record})
 
 (fn stream-update [id state fx]
   {:patch {:providers {:claude_streams {id (misa.replace state)}}} : fx})
@@ -421,6 +446,11 @@
                                      :stdout_format :json_lines_stream
                                      :type :process/run})})
           (table.insert setup-fx {:type :register/event :name :provider/claude-complete :handler stream})
+          (table.insert setup-fx
+                        {:type :register/event :name :provider/claude-quota
+                         :handler (fn [_ event]
+                                    {:patch {:providers {:claude {:usage (misa.replace event.usage)}}}
+                                     :fx [{:type :dispatch :event {:type :usage/updated}}]})})
           (each [name registry (pairs {:register/claude-record records :register/claude-stream-event partials})]
             (table.insert setup-fx
                           {:type :register/setup-effect : name
