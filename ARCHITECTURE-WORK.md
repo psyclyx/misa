@@ -51,6 +51,13 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+The bundled extension catalog now declares ID/path pairs once as data. Discovery
+IDs derive from those entries, runtime resolution searches them, and build-time
+translation consumes their paths directly. Tests retain exact public mappings
+and reject duplicate IDs/paths and unsafe relative paths. Adding a bundled
+extension no longer requires synchronizing a list with an imperative lookup
+chain. This is catalog-data cleanup, not the pending transcript-cache cutover.
+
 The per-message subscription-cache prototype was rejected after a working-set
 probe: three redraws of 300 messages rose from 34.399 ms median to 1075.684 ms,
 with identical semantic output. Per-message entries exceeded the shared bounded

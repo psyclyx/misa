@@ -133,8 +133,8 @@ pub fn build(b: *std.Build) void {
         lua_runtime.addAnonymousImport(b.fmt("misa_core_{s}", .{name}), .{ .root_source_file = output });
     }
     const catalog = @import("src/standard_extensions/root.zig");
-    for (catalog.ids) |id| {
-        const source = catalog.catalogPath(id).?;
+    for (catalog.entries) |entry| {
+        const source = entry.path;
         const generated = b.fmt("{s}.lua", .{source[0 .. source.len - 4]});
         translate.addFileArg(b.path(b.fmt("extensions/{s}", .{source})));
         const output = translate.addOutputFileArg(generated);

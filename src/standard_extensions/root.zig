@@ -4,72 +4,79 @@ const build_options = @import("misa_build_options");
 
 pub const default_config_path = build_options.default_config_path;
 
-pub const ids = [_][]const u8{
-    "costs",
-    "history",
-    "queue",
-    "queue_view",
-    "images",
-    "attachments",
-    "component.image",
+pub const Entry = struct { id: []const u8, path: []const u8 };
 
-    "actions",
-    "clipboard",
-    "selection_document",
-    "selection",
-    "component.selection",
-    "editing",
-    "agent",
-    "auth",
-    "choices",
+/// Single source for discovery, build-time translation, and runtime resolution.
+pub const entries = [_]Entry{
+    .{ .id = "costs", .path = "costs.fnl" },
+    .{ .id = "history", .path = "history.fnl" },
+    .{ .id = "queue", .path = "queue.fnl" },
+    .{ .id = "queue_view", .path = "queue_view.fnl" },
+    .{ .id = "images", .path = "images.fnl" },
+    .{ .id = "attachments", .path = "attachments.fnl" },
+    .{ .id = "component.image", .path = "component/image.fnl" },
+    .{ .id = "actions", .path = "actions.fnl" },
+    .{ .id = "clipboard", .path = "clipboard.fnl" },
+    .{ .id = "selection_document", .path = "selection_document.fnl" },
+    .{ .id = "selection", .path = "selection.fnl" },
+    .{ .id = "component.selection", .path = "component/selection.fnl" },
+    .{ .id = "editing", .path = "editing.fnl" },
+    .{ .id = "agent", .path = "agent.fnl" },
+    .{ .id = "auth", .path = "auth.fnl" },
+    .{ .id = "choices", .path = "choices.fnl" },
+    .{ .id = "choice_layout", .path = "choice_layout.fnl" },
+    .{ .id = "commands", .path = "commands.fnl" },
+    .{ .id = "omnipicker", .path = "omnipicker.fnl" },
+    .{ .id = "dialogs", .path = "dialogs.fnl" },
+    .{ .id = "dialog_view", .path = "dialog_view.fnl" },
+    .{ .id = "components", .path = "components.fnl" },
+    .{ .id = "layout", .path = "layout.fnl" },
+    .{ .id = "markdown", .path = "markdown.fnl" },
+    .{ .id = "syntax", .path = "syntax.fnl" },
+    .{ .id = "component.markdown", .path = "component/markdown.fnl" },
+    .{ .id = "component.tool", .path = "component/tool.fnl" },
+    .{ .id = "component.message", .path = "component/message.fnl" },
+    .{ .id = "component.editor", .path = "component/editor.fnl" },
+    .{ .id = "component.picker", .path = "component/picker.fnl" },
+    .{ .id = "component.status", .path = "component/status.fnl" },
+    .{ .id = "component.chrome", .path = "component/chrome.fnl" },
+    .{ .id = "component.dialog", .path = "component/dialog.fnl" },
+    .{ .id = "editor", .path = "editor.fnl" },
+    .{ .id = "fuzzy", .path = "fuzzy.fnl" },
+    .{ .id = "keybindings", .path = "keybindings.fnl" },
+    .{ .id = "indicators", .path = "indicators.fnl" },
+    .{ .id = "json", .path = "json.fnl" },
+    .{ .id = "messages", .path = "messages.fnl" },
+    .{ .id = "models", .path = "models.fnl" },
+    .{ .id = "picker", .path = "picker.fnl" },
+    .{ .id = "picker_view", .path = "picker_view.fnl" },
+    .{ .id = "preferences", .path = "preferences.fnl" },
+    .{ .id = "request_options", .path = "request_options.fnl" },
+    .{ .id = "effort", .path = "effort.fnl" },
+    .{ .id = "status", .path = "status.fnl" },
+    .{ .id = "themes", .path = "themes.fnl" },
+    .{ .id = "theme.default", .path = "theme/default.fnl" },
+    .{ .id = "animations", .path = "animations.fnl" },
+    .{ .id = "animation.default", .path = "animation/default.fnl" },
+    .{ .id = "provider.fake", .path = "provider/fake.fnl" },
+    .{ .id = "provider.command", .path = "provider/command.fnl" },
+    .{ .id = "provider.claude", .path = "provider/claude.fnl" },
+    .{ .id = "protocol.anthropic", .path = "protocol/anthropic.fnl" },
+    .{ .id = "provider.anthropic", .path = "provider/anthropic.fnl" },
+    .{ .id = "provider.kimi", .path = "provider/kimi.fnl" },
+    .{ .id = "protocol.openai", .path = "protocol/openai.fnl" },
+    .{ .id = "provider.openai", .path = "provider/openai.fnl" },
+    .{ .id = "provider.openai-codex", .path = "provider/openai-codex.fnl" },
+    .{ .id = "provider.openrouter", .path = "provider/openrouter.fnl" },
+    .{ .id = "tool.files", .path = "tool/files.fnl" },
+    .{ .id = "tool.shell", .path = "tool/shell.fnl" },
+    .{ .id = "ui", .path = "ui.fnl" },
+};
 
-    "choice_layout",
-    "commands",
-    "omnipicker",
-    "dialogs",
-    "dialog_view",
-    "components",
-    "layout",
-    "markdown",
-    "syntax",
-    "component.markdown",
-    "component.tool",
-    "component.message",
-    "component.editor",
-    "component.picker",
-    "component.status",
-    "component.chrome",
-    "component.dialog",
-    "editor",
-    "fuzzy",
-    "keybindings",
-    "indicators",
-    "json",
-    "messages",
-    "models",
-    "picker",
-    "picker_view",
-    "preferences",
-    "request_options",
-    "effort",
-    "status",
-    "themes",
-    "theme.default",
-    "animations",
-    "animation.default",
-    "provider.fake",
-    "provider.command",
-    "provider.claude",
-    "protocol.anthropic",
-    "provider.anthropic",
-    "provider.kimi",
-    "protocol.openai",
-    "provider.openai",
-    "provider.openai-codex",
-    "provider.openrouter",
-    "tool.files",
-    "tool.shell",
-    "ui",
+pub const ids = blk: {
+    var result: [entries.len][]const u8 = undefined;
+    for (entries, 0..) |entry, index| result[index] = entry.id;
+    break :blk result;
 };
 
 pub const ResolveError = error{
@@ -82,70 +89,9 @@ pub fn isLiteralPath(value: []const u8) bool {
 }
 
 pub fn catalogPath(id: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, id, "actions")) return "actions.fnl";
-    if (std.mem.eql(u8, id, "clipboard")) return "clipboard.fnl";
-    if (std.mem.eql(u8, id, "selection_document")) return "selection_document.fnl";
-    if (std.mem.eql(u8, id, "selection")) return "selection.fnl";
-    if (std.mem.eql(u8, id, "component.selection")) return "component/selection.fnl";
-    if (std.mem.eql(u8, id, "editing")) return "editing.fnl";
-    if (std.mem.eql(u8, id, "costs")) return "costs.fnl";
-    if (std.mem.eql(u8, id, "history")) return "history.fnl";
-    if (std.mem.eql(u8, id, "queue")) return "queue.fnl";
-    if (std.mem.eql(u8, id, "queue_view")) return "queue_view.fnl";
-    if (std.mem.eql(u8, id, "images")) return "images.fnl";
-    if (std.mem.eql(u8, id, "attachments")) return "attachments.fnl";
-    if (std.mem.eql(u8, id, "component.image")) return "component/image.fnl";
-
-    if (std.mem.eql(u8, id, "agent")) return "agent.fnl";
-    if (std.mem.eql(u8, id, "auth")) return "auth.fnl";
-    if (std.mem.eql(u8, id, "choices")) return "choices.fnl";
-    if (std.mem.eql(u8, id, "choice_layout")) return "choice_layout.fnl";
-    if (std.mem.eql(u8, id, "commands")) return "commands.fnl";
-    if (std.mem.eql(u8, id, "omnipicker")) return "omnipicker.fnl";
-    if (std.mem.eql(u8, id, "dialogs")) return "dialogs.fnl";
-    if (std.mem.eql(u8, id, "dialog_view")) return "dialog_view.fnl";
-    if (std.mem.eql(u8, id, "components")) return "components.fnl";
-    if (std.mem.eql(u8, id, "layout")) return "layout.fnl";
-    if (std.mem.eql(u8, id, "markdown")) return "markdown.fnl";
-    if (std.mem.eql(u8, id, "syntax")) return "syntax.fnl";
-    if (std.mem.eql(u8, id, "component.markdown")) return "component/markdown.fnl";
-    if (std.mem.eql(u8, id, "component.tool")) return "component/tool.fnl";
-    if (std.mem.eql(u8, id, "component.message")) return "component/message.fnl";
-    if (std.mem.eql(u8, id, "component.editor")) return "component/editor.fnl";
-    if (std.mem.eql(u8, id, "component.picker")) return "component/picker.fnl";
-    if (std.mem.eql(u8, id, "component.status")) return "component/status.fnl";
-    if (std.mem.eql(u8, id, "component.chrome")) return "component/chrome.fnl";
-    if (std.mem.eql(u8, id, "component.dialog")) return "component/dialog.fnl";
-    if (std.mem.eql(u8, id, "editor")) return "editor.fnl";
-    if (std.mem.eql(u8, id, "fuzzy")) return "fuzzy.fnl";
-    if (std.mem.eql(u8, id, "keybindings")) return "keybindings.fnl";
-    if (std.mem.eql(u8, id, "indicators")) return "indicators.fnl";
-    if (std.mem.eql(u8, id, "json")) return "json.fnl";
-    if (std.mem.eql(u8, id, "messages")) return "messages.fnl";
-    if (std.mem.eql(u8, id, "models")) return "models.fnl";
-    if (std.mem.eql(u8, id, "picker")) return "picker.fnl";
-    if (std.mem.eql(u8, id, "picker_view")) return "picker_view.fnl";
-    if (std.mem.eql(u8, id, "preferences")) return "preferences.fnl";
-    if (std.mem.eql(u8, id, "request_options")) return "request_options.fnl";
-    if (std.mem.eql(u8, id, "effort")) return "effort.fnl";
-    if (std.mem.eql(u8, id, "status")) return "status.fnl";
-    if (std.mem.eql(u8, id, "themes")) return "themes.fnl";
-    if (std.mem.eql(u8, id, "theme.default")) return "theme/default.fnl";
-    if (std.mem.eql(u8, id, "animations")) return "animations.fnl";
-    if (std.mem.eql(u8, id, "animation.default")) return "animation/default.fnl";
-    if (std.mem.eql(u8, id, "provider.fake")) return "provider/fake.fnl";
-    if (std.mem.eql(u8, id, "provider.command")) return "provider/command.fnl";
-    if (std.mem.eql(u8, id, "provider.claude")) return "provider/claude.fnl";
-    if (std.mem.eql(u8, id, "protocol.anthropic")) return "protocol/anthropic.fnl";
-    if (std.mem.eql(u8, id, "provider.anthropic")) return "provider/anthropic.fnl";
-    if (std.mem.eql(u8, id, "provider.kimi")) return "provider/kimi.fnl";
-    if (std.mem.eql(u8, id, "protocol.openai")) return "protocol/openai.fnl";
-    if (std.mem.eql(u8, id, "provider.openai")) return "provider/openai.fnl";
-    if (std.mem.eql(u8, id, "provider.openai-codex")) return "provider/openai-codex.fnl";
-    if (std.mem.eql(u8, id, "provider.openrouter")) return "provider/openrouter.fnl";
-    if (std.mem.eql(u8, id, "tool.files")) return "tool/files.fnl";
-    if (std.mem.eql(u8, id, "tool.shell")) return "tool/shell.fnl";
-    if (std.mem.eql(u8, id, "ui")) return "ui.fnl";
+    for (entries) |entry| {
+        if (std.mem.eql(u8, id, entry.id)) return entry.path;
+    }
     return null;
 }
 
@@ -165,6 +111,28 @@ pub fn resolve(
     const compiled = try std.fmt.allocPrint(allocator, "{s}.lua", .{relative[0 .. relative.len - 4]});
     defer allocator.free(compiled);
     return std.fs.path.join(allocator, &.{ root, compiled });
+}
+
+test "catalog entries are unique relative Fennel sources" {
+    try std.testing.expect(entries.len > 0);
+    for (entries, 0..) |entry, index| {
+        try std.testing.expectEqualStrings(entry.id, ids[index]);
+        try std.testing.expectEqualStrings(entry.path, catalogPath(entry.id).?);
+        try std.testing.expect(entry.id.len > 0);
+        try std.testing.expect(!isLiteralPath(entry.id));
+        try std.testing.expect(!std.fs.path.isAbsolute(entry.path));
+        try std.testing.expect(std.mem.endsWith(u8, entry.path, ".fnl"));
+        var parts = std.mem.splitScalar(u8, entry.path, '/');
+        while (parts.next()) |part| {
+            try std.testing.expect(part.len > 0);
+            try std.testing.expect(!std.mem.eql(u8, part, ".."));
+            try std.testing.expect(!std.mem.eql(u8, part, "."));
+        }
+        for (entries[0..index]) |previous| {
+            try std.testing.expect(!std.mem.eql(u8, previous.id, entry.id));
+            try std.testing.expect(!std.mem.eql(u8, previous.path, entry.path));
+        }
+    }
 }
 
 test "catalog accepts exact IDs only" {
@@ -221,7 +189,6 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("ui.fnl", catalogPath("ui").?);
     try std.testing.expectEqualStrings("tool/files.fnl", catalogPath("tool.files").?);
     try std.testing.expectEqualStrings("tool/shell.fnl", catalogPath("tool.shell").?);
-    try std.testing.expectEqual(@as(usize, 63), ids.len);
 }
 
 test "resolver preserves literals and resolves catalog roots" {
