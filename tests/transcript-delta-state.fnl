@@ -1,0 +1,55 @@
+(local fennel (require :fennel))
+(local output io.write)
+(local G (require :tests.generators))
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) {:config {:messages {:max_string 12}}}))
+(var (handler register) nil)
+(each [_ spec (ipairs specs.fx)]
+  (when (= spec.name :transcript/block-delta) (set handler spec.handler))
+  (when (= spec.name :register/transcript-delta) (set register spec.handler)))
+(fn initial [kind]
+  (local blocks [{:id :block :kind kind :streaming true :chunks [] :byte_count 0
+                 :argument_chunks [] :argument_bytes 0}])
+  {:messages {:blocks blocks :transcript blocks :by_response {:reply 1}
+              :responses [{:id :reply :block_start 1 :block_count 1 :status :streaming}]}})
+(fn transition [db fields]
+  (local event (misa.patch fields {:type :transcript/block-delta :response_id :reply :block_id :block}))
+  (local before (misa.json.encode db))
+  (local input (misa.json.encode event))
+  (local result (handler db event))
+  (assert (= before (misa.json.encode db)) "delta mutated prior transcript")
+  (assert (= input (misa.json.encode event)) "delta mutated provider event")
+  (assert (not (and result result.db)))
+  (local next (misa.patch db (or (and result result.patch) {})))
+  (assert (= next.messages.responses db.messages.responses))
+  (assert (= (misa.json.encode next.messages.blocks) (misa.json.encode next.messages.transcript)))
+  next)
+(local failure
+       (G.for_all (G.vector (G.elements [{:text :hello} {:text ""} {:text "世界"}
+                                         {:arguments_json "{}"} {:arguments_json_delta "long argument fragment"}
+                                         {:arguments_json_delta :x} {:arguments {:token :secret :x 1}}]))
+                  (fn [events]
+                    (each [_ kind (ipairs [:assistant :thinking :tool_call])]
+                      (var db (initial kind))
+                      (each [_ event (ipairs events)] (set db (transition db event)))
+                      (local block (. db.messages.blocks 1))
+                      (when (not= kind :tool_call)
+                        (assert (= block.byte_count (length (table.concat block.chunks)))))))
+                  {:cases 500 :size 20}))
+(assert (not failure) (and failure (fennel.view failure)))
+(local text (initial :assistant))
+(assert (= (transition text {:text ""}) text))
+(local tool (initial :tool_call))
+(local truncated (transition tool {:arguments_json_delta "abcdefghijklmnop"}))
+(assert (. truncated.messages.blocks 1 :arguments_truncated))
+(assert (= (transition truncated {:arguments_json_delta :ignored}) truncated))
+(local replaced (transition truncated {:arguments_json "{}" :arguments_json_delta :ignored}))
+(assert (= (. replaced.messages.blocks 1 :arguments_truncated) nil))
+(assert (= (table.concat (. replaced.messages.blocks 1 :argument_chunks)) "{}"))
+(local structured (transition tool {:arguments {:token :secret :x 1}}))
+(assert (not= (. structured.messages.blocks 1 :arguments :token) :secret))
+(register {:id :custom :value (fn [_ event] {:custom event.text})})
+(assert (= (. (transition (initial :custom) {:text :value}) :messages :blocks 1 :custom) :value))
+(output "transcript delta state properties passed\n")

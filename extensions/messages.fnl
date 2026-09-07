@@ -191,11 +191,43 @@
     (or (and tool (printable-text tool.description)) nil)))
 
 ;; Structural tool previews have a size budget; conversation text does not.
-(fn append-delta [block value]
-  (local text (printable-text (tostring (or value ""))))
+(fn append-chunk [chunks text]
+  (local next (icollect [_ chunk (ipairs (or chunks []))] chunk))
+  (table.insert next text)
+  next)
+
+(fn text-delta [block event]
+  (local text (printable-text (tostring (or event.text ""))))
   (when (not= text "")
-    (table.insert block.chunks text)
-    (set block.byte_count (+ (or block.byte_count 0) (length text)))))
+    {:chunks (misa.replace (append-chunk block.chunks text))
+     :byte_count (+ (or block.byte_count 0) (length text))}))
+
+(fn tool-delta [previous event policy]
+  (local replacement (not= event.arguments_json nil))
+  (local block (if replacement
+                  (misa.patch previous {:argument_chunks (misa.replace []) :argument_bytes 0
+                                        :arguments_truncated misa.delete})
+                  previous))
+  (local raw (if replacement event.arguments_json event.arguments_json_delta))
+  (local value (when (not= raw nil) (printable-text (tostring raw))))
+  (local remaining (- policy.max_string (or block.argument_bytes 0)))
+  (local active (and value (not block.arguments_truncated)))
+  (local truncated (and active (or (<= remaining 0) (> (length value) remaining))))
+  (local chunk (when active (if (<= remaining 0) "… [truncated]"
+                               truncated (truncate-text value remaining) value)))
+  {:name (when (not= event.name nil) (printable-text (tostring event.name)))
+   :call_id (when (not= event.call_id nil) (printable-text (tostring event.call_id)))
+   :argument_chunks (when (or active replacement)
+                      (misa.replace (if active (append-chunk block.argument_chunks chunk) block.argument_chunks)))
+   :argument_bytes (when (or active replacement)
+                     (if truncated policy.max_string active (+ (or block.argument_bytes 0) (length value)) 0))
+   :arguments_truncated (if truncated true replacement misa.delete nil)
+   :arguments (when (not= event.arguments nil) (misa.replace (copy-structural event.arguments policy 0)))})
+
+(fn replace-transcript-block [db block patch]
+  (local blocks (icollect [_ previous (ipairs db.messages.blocks)]
+                 (if (= previous block) (misa.patch previous patch) previous)))
+  {:patch {:messages {:blocks (misa.replace blocks) :transcript (misa.replace blocks)}}})
 
 (fn finish-block [block event policy]
   (when block.chunks (set block.text (table.concat block.chunks))
@@ -231,6 +263,14 @@
 
 {:setup (fn [context]
           (local setup-fx [])
+          (local delta-handlers {:assistant text-delta :thinking text-delta :tool_call tool-delta})
+          (table.insert setup-fx
+                        {:type :register/setup-effect :name :register/transcript-delta
+                         :handler (fn [effect]
+                                    (assert (and (= (type effect.id) :string) (not= effect.id "")
+                                                 (= (type effect.value) :function) (not (. delta-handlers effect.id)))
+                                            "invalid or duplicate transcript delta handler")
+                                    (tset delta-handlers effect.id effect.value))})
           (var config (or (and (= (type context.config) :table)
                                context.config.messages)
                           nil))
@@ -712,64 +752,10 @@
                                                    "unknown transcript block"))
                                     (assert block.streaming
                                             "transcript block is finalized")
-                                    (if (or (= block.kind :assistant)
-                                            (= block.kind :thinking))
-                                        (append-delta block event.text)
-                                        (do
-                                          (when (not= event.name nil)
-                                            (set block.name
-                                                 (printable-text (tostring event.name))))
-                                          (when (not= event.call_id nil)
-                                            (set block.call_id
-                                                 (printable-text (tostring event.call_id))))
-                                          (when (not= event.arguments_json nil)
-                                            (set block.argument_chunks {})
-                                            (set block.argument_bytes 0)
-                                            (set block.arguments_truncated nil)
-                                            (set event.arguments_json_delta
-                                                 event.arguments_json))
-                                          (when (and (not= event.arguments_json_delta
-                                                           nil)
-                                                     (not block.arguments_truncated))
-                                            (local value
-                                                   (printable-text (tostring event.arguments_json_delta)))
-                                            (local remaining
-                                                   (- policy.max_string
-                                                      (or block.argument_bytes
-                                                          0)))
-                                            (if (<= remaining 0)
-                                                (do
-                                                  (tset block.argument_chunks
-                                                        (+ (length block.argument_chunks)
-                                                           1)
-                                                        "… [truncated]")
-                                                  (set block.arguments_truncated
-                                                       true))
-                                                (> (length value) remaining)
-                                                (do
-                                                  (tset block.argument_chunks
-                                                        (+ (length block.argument_chunks)
-                                                           1)
-                                                        (truncate-text value
-                                                                       remaining))
-                                                  (set block.argument_bytes
-                                                       policy.max_string)
-                                                  (set block.arguments_truncated
-                                                       true))
-                                                (do
-                                                  (tset block.argument_chunks
-                                                        (+ (length block.argument_chunks)
-                                                           1)
-                                                        value)
-                                                  (set block.argument_bytes
-                                                       (+ (or block.argument_bytes
-                                                              0)
-                                                          (length value))))))
-                                          (when (not= event.arguments nil)
-                                            (set block.arguments
-                                                 (copy-structural event.arguments
-                                                                  policy 0)))))
-                                    {: db})})
+                                    (local handler (assert (. delta-handlers block.kind)
+                                                           (.. "unsupported transcript delta: " block.kind)))
+                                    (local patch (handler block event policy))
+                                    (when patch (replace-transcript-block db block patch)))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/block-end

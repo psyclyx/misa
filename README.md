@@ -535,6 +535,19 @@ The agent applies request/cancellation correlation before dispatch. Handlers
 assemble canonical text, thinking, or tool-call blocks and emit transcript
 events; they do not mutate prior stream state or append conversation history.
 
+Transcript block updates expose
+`{type="register/transcript-delta", id="block_kind", value=function(block, event, policy) ... end}`.
+Pure reducers return a block patch or nil; the transcript owner applies it without
+mutating the event or earlier blocks. `policy` provides the configured preview
+limits and redaction keys. This registry handles deltas, not block creation.
+
+Agent delta assembly is extensible through
+`{type="register/agent-delta", id="my_delta", value=function(stream, delta, request_id) ... end}`.
+Pure handlers return `{patch=<stream-state patch>, fx=<ordered array>}` or nil.
+The agent applies request/cancellation correlation before dispatch. Handlers
+assemble canonical text, thinking, or tool-call blocks and emit transcript
+events; they do not mutate prior stream state or append conversation history.
+
 and transcript detail (`summary`/`verbose`). Root composition stays generic.
 
 `request_options` derives request readiness and selected option values entirely

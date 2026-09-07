@@ -139,3 +139,10 @@ both tool completion orders, duplicates, cancellation draining, unknown and
 provider-owned tools, usage accumulation, and blocked submissions/continuations.
 The agent no longer returns legacy `db` results or mutates input state. Transcript
 state and framework transaction/subscription contracts still need their cutover.
+
+Transcript deltas now use pure block patches through `register/transcript-delta`.
+Full argument replacements no longer rewrite incoming events. Generated tests
+cover state/event ownership, Unicode text byte accounting, preview truncation,
+replacement after truncation, structured redaction, and custom delta reducers.
+Transcript lifecycle helpers and the viewport's mutable projection cache remain
+to migrate; the delta slice does not establish render-cache rollback safety.
