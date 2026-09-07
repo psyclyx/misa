@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "status facts retain sharing and optional presentation boundaries" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/status-state.fnl"} }, "status state properties passed\n");
+}
+
 test "selection transitions and decoration preserve prior values" {
     var h = try Harness.init();
     defer h.deinit();

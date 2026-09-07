@@ -110,3 +110,10 @@ mutable frame identity; changing documents resets document-local ranges.
 extension, parent transitions, copy effects, custom actions, and non-mutating
 rich-line decoration. Cross-document ranges and the broader transcript/render
 cutover still need work; this does not complete the interaction requirement.
+
+Status fact handlers now return immutable patches, with optional usage fields
+replaced explicitly (including empty snapshots). Command registration no longer
+depends on whether indicators are installed. `tests/status-state.fnl` checks
+generated updates, unchanged-branch identity, empty replacement, event ownership,
+and profiles with/without indicators. The existing usage dialog still needs the
+semantic dashboard and actual provider quota retrieval listed above.
