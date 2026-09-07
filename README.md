@@ -541,6 +541,12 @@ Pure reducers return a block patch or nil; the transcript owner applies it witho
 mutating the event or earlier blocks. `policy` provides the configured preview
 limits and redaction keys. This registry handles deltas, not block creation.
 
+`register/transcript-presentation` takes `id=<block kind>` and
+`value=function(model, transcript_state, selected_range) ... end`. Pure projectors
+return `{role=<component role>, model=<additional render fields>}` or nil to omit
+the block. Selection is nil for other blocks. These projections choose rendering
+without changing transcript facts or the component's returned line collection.
+
 Agent delta assembly is extensible through
 `{type="register/agent-delta", id="my_delta", value=function(stream, delta, request_id) ... end}`.
 Pure handlers return `{patch=<stream-state patch>, fx=<ordered array>}` or nil.

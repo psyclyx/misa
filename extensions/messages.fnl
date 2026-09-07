@@ -269,8 +269,42 @@
   (let [owner (tostring (or block.response_id ""))]
     (.. (length owner) ":" owner (tostring block.id))))
 
+(local presentations
+       {:user (fn [] {:role :transcript.user :model {:rail :rail.user}})
+        :assistant (fn [] {:role :transcript.assistant :model {:rail :rail.assistant}})
+        :thinking (fn [model state selected]
+                    {:role (if (or state.verbose model.streaming selected) :transcript.thinking :transcript.thinking_collapsed)
+                     :model {:rail :rail.thinking :summary (if model.streaming :streaming :summary)}})
+        :tool_call (fn [model state selected]
+                     (local result-selected (and selected (not= model.result nil)))
+                     {:role :transcript.tool_call
+                      :model {:rail (if model.is_error :rail.error :rail.tool)
+                              :detail (if (and selected (not result-selected)) selected.text
+                                          (or state.verbose selected)
+                                          (if model.arguments (describe model.arguments 0)
+                                              (printable-text (or model.argument_text (table.concat (or model.argument_chunks [])))))
+                                          :summary)
+                              :result_detail (if result-selected selected.text
+                                                 (and state.verbose model.result) model.result
+                                                 (not= model.result nil) :summary nil)
+                              :selection_source (when selected (if result-selected :result :args))}})
+        :tool_result (fn [model state selected]
+                       {:role :transcript.tool_result
+                        :model {:rail (if model.is_error :rail.error :rail.tool) :collapsed (not (or state.verbose selected))}})
+        :harness (fn [model]
+                   {:role :transcript.harness :model {:rail (if (= model.level :error) :rail.error :rail.harness)}})})
+
 {:setup (fn [context]
           (local setup-fx [])
+          (local projectors {})
+          (each [id project (pairs presentations)] (tset projectors id project))
+          (table.insert setup-fx
+                        {:type :register/setup-effect :name :register/transcript-presentation
+                         :handler (fn [effect]
+                                    (assert (and (= (type effect.id) :string) (not= effect.id "")
+                                                 (= (type effect.value) :function) (not (. projectors effect.id)))
+                                            "invalid or duplicate transcript presentation")
+                                    (tset projectors effect.id effect.value))})
           (local delta-handlers {:assistant text-delta :thinking text-delta :tool_call tool-delta})
           (table.insert setup-fx
                         {:type :register/setup-effect :name :register/transcript-delta
@@ -483,97 +517,22 @@
                                              (misa.response_cost_projection db
                                                                             model.response_id))
                                       (set model.cost (and cost cost.text)))
-                                    (var role nil)
-                                    (if (= model.kind :user)
-                                        (set role :transcript.user)
-                                        (= model.kind :assistant)
-                                        (set role :transcript.assistant)
-                                        (= model.kind :thinking)
-                                        (do
-                                          (set role
-                                               (or (and (or (or state.verbose
-                                                                model.streaming)
-                                                            selecting)
-                                                        :transcript.thinking)
-                                                   :transcript.thinking_collapsed))
-                                          (set model.summary
-                                               (or (and model.streaming
-                                                        :streaming)
-                                                   :summary)))
-                                        (= model.kind :tool_call)
-                                        (do
-                                          (set role :transcript.tool_call)
-                                          (set model.detail
-                                               (or (and (or state.verbose
-                                                            selecting)
-                                                        (or (and model.arguments
-                                                                 (describe model.arguments
-                                                                           0))
-                                                            (printable-text (or model.argument_text
-                                                                                (table.concat (or model.argument_chunks
-                                                                                                  {}))))))
-                                                   :summary))
-                                          (set model.result_detail
-                                               (or (and state.verbose
-                                                        model.result)
-                                                   (or (and (not= model.result
-                                                                  nil)
-                                                            :summary)
-                                                       nil)))
-                                          (when selecting
-                                            (if (not= model.result nil)
-                                                (do
-                                                  (set model.result_detail
-                                                       selected.text)
-                                                  (set model.selection_source
-                                                       :result))
-                                                (do
-                                                  (set model.detail
-                                                       selected.text)
-                                                  (set model.selection_source
-                                                       :args)))))
-                                        (= model.kind :tool_result)
-                                        (do
-                                          (set role :transcript.tool_result)
-                                          (set model.collapsed
-                                               (not (or state.verbose selecting))))
-                                        (= model.kind :harness)
-                                        (set role :transcript.harness))
-                                    (if (= model.kind :user)
-                                        (set model.rail :rail.user)
-                                        (= model.kind :assistant)
-                                        (set model.rail :rail.assistant)
-                                        (= model.kind :thinking)
-                                        (set model.rail :rail.thinking)
-                                        (or (= model.kind :tool_call)
-                                            (= model.kind :tool_result))
-                                        (set model.rail
-                                             (or (and model.is_error
-                                                      :rail.error)
-                                                 :rail.tool))
-                                        (= model.kind :harness)
-                                        (set model.rail
-                                             (or (and (= model.level :error)
-                                                      :rail.error)
-                                                 :rail.harness)))
+                                    (local projector (. projectors model.kind))
+                                    (local presentation (and projector (projector model state (and selecting selected))))
+                                    (local role (and presentation presentation.role))
+                                    (each [key value (pairs (or (and presentation presentation.model) {}))]
+                                      (tset model key value))
                                     (when role
                                       (local rendered
                                              (misa.render_component db role
                                                                     model
                                                                     context-copy))
-                                      (when misa.selection_decorate
-                                        (set rendered.lines
-                                             (misa.selection_decorate db
-                                                                      (selection-id model)
-                                                                      (or (or (or model.text
-                                                                                  model.result)
-                                                                              model.argument_text)
-                                                                          "")
-                                                                      (or rendered.lines
-                                                                          {}))))
-                                      (each [_ line (ipairs (or rendered.lines
-                                                                {}))]
-                                        (tset result (+ (length result) 1) line))
+                                      (local lines (if misa.selection_decorate
+                                                       (misa.selection_decorate db (selection-id model)
+                                                                                  (or model.text model.result model.argument_text "")
+                                                                                  (or rendered.lines []))
+                                                       (or rendered.lines [])))
+                                      (each [_ line (ipairs lines)] (table.insert result line))
                                       (when (and misa.attachment_lines
                                                  model.attachments)
                                         (each [_ line (ipairs (misa.attachment_lines db

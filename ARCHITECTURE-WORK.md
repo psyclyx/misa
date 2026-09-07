@@ -168,3 +168,10 @@ and input preservation; focused checks cover streaming creation, tool-result
 attachment, and interrupted fallback messages. Generated legacy response IDs now
 advance the counter. No transcript event handler returns a legacy `db` result;
 viewport closure ownership and renderer-input mutation still require an audit.
+
+Transcript presentation now uses an open `register/transcript-presentation`
+registry with role/model results instead of closed kind branches. Selection
+decoration no longer assigns into a component's returned line collection. Tests
+cover projection/context ownership, cached component output, collapsed/expanded
+thinking, selected tool results, and extension-defined presentation. This remains
+separate from the pending unified render composition and subscription cutover.
