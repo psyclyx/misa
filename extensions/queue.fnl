@@ -3,18 +3,19 @@
 ;; pending prompt coalesces consecutive submissions, preserving their order.
 
 (fn state [db]
-  (set db.queue (or db.queue {:attachments {} :pending "" :sending false}))
-  db.queue)
+  (or db.queue {:attachments {} :pending "" :sending false}))
 
 (fn append [queue text attachments]
   (assert (= (type text) :string) "queued prompt must be a string")
+  (local next {:attachments {} :pending queue.pending :sending queue.sending})
   (when (not= text "")
-    (set queue.pending (or (and (= queue.pending "") text)
-                           (.. queue.pending "\n" text))))
-  (set queue.attachments (or queue.attachments {}))
+    (set next.pending (or (and (= queue.pending "") text)
+                          (.. queue.pending "\n" text))))
+  (each [key image (pairs (or queue.attachments {}))]
+    (tset next.attachments key image))
   (each [_ image (ipairs (or attachments {}))]
-    (tset queue.attachments (+ (length queue.attachments) 1) image))
-  nil)
+    (tset next.attachments (+ (length next.attachments) 1) image))
+  next)
 
 (fn empty [queue]
   (and (= queue.pending "") (= (length (or queue.attachments {})) 0)))
@@ -22,15 +23,16 @@
 (fn ready [db queue]
   (and (and db.agent (= db.agent.status :ready)) (not queue.sending)))
 
-(fn drain [db]
-  (let [queue (state db)]
-    (if (or (empty queue) (not (ready db queue))) {: db}
-        (let [(prompt attachments) (values queue.pending queue.attachments)]
-          (set (queue.pending queue.attachments queue.sending)
-               (values "" {} true))
-          {: db
-           :fx [{:event {: attachments : prompt :type :agent/submit}
-                 :type :dispatch}]}))))
+(fn drain [db queue]
+  (if (or (empty queue) (not (ready db queue))) {:patch {:queue queue}}
+      (let [(prompt attachments) (values queue.pending queue.attachments)]
+        {:patch {:queue {:pending ""
+                         :attachments (misa.replace {})
+                         :sending true}}
+         :fx [{:event {:attachments attachments
+                       :prompt prompt
+                       :type :agent/submit}
+               :type :dispatch}]})))
 
 {:setup (fn []
           {:fx [{:type :register/service
@@ -50,24 +52,30 @@
                 {:type :register/event
                  :name :queue/submit
                  :handler (fn [db event]
-                            (append (state db) event.prompt event.attachments)
-                            (drain db))}
+                            (drain db
+                                   (append (state db)
+                                           event.prompt
+                                           event.attachments)))}
                 {:type :register/event
                  :name :agent/status
                  :handler (fn [db event]
-                            (when (not= event.status :ready)
-                              (tset (state db) :sending false))
-                            {: db})}
+                            (if (not= event.status :ready)
+                                {:patch {:queue (misa.patch (state db)
+                                                           {:sending false})}}
+                                nil))}
                 {:type :register/event
                  :name :agent/completed
-                 :handler (fn [db] (tset (state db) :sending false)
-                            (drain db))}
+                 :handler (fn [db]
+                            (drain db
+                                   (misa.patch (state db)
+                                               {:sending false})))}
                 {:type :register/event
                  :name :agent/reset
-                 :handler (fn [db]
-                            (set db.queue
-                                 {:attachments {} :pending "" :sending false})
-                            {: db})}
+                 :handler (fn [_]
+                            {:patch {:queue
+                                     (misa.replace {:attachments {}
+                                                    :pending ""
+                                                    :sending false})}})}
                 {:type :register/event
                  :name :queue/take
                  :handler (fn [db]
@@ -77,9 +85,8 @@
                                   (local (text attachments)
                                          (values queue.pending
                                                  queue.attachments))
-                                  (set (queue.pending queue.attachments)
-                                       (values "" {}))
-                                  {: db
+                                  {:patch {:queue {:pending ""
+                                                   :attachments (misa.replace {})}}
                                    :fx [{:event {: attachments
                                                  : text
                                                  :type :editor/restore}
@@ -87,11 +94,13 @@
                 {:type :register/event
                  :name :queue/steer
                  :handler (fn [db event]
-                            (append (state db) (or event.prompt "")
-                                    event.attachments)
-                            (if (empty (state db)) nil
-                                (if (ready db (state db)) (drain db)
-                                    {: db
+                            (local queue
+                                   (append (state db)
+                                           (or event.prompt "")
+                                           event.attachments))
+                            (if (empty queue) nil
+                                (if (ready db queue) (drain db queue)
+                                    {:patch {:queue queue}
                                      :fx [{:event {:type :agent/cancel-active}
                                            :type :dispatch}]})))}
                 {:type :register/action
