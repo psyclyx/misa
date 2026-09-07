@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "effect-only controls and keepalive policies preserve inputs" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/control-ownership.fnl"} }, "control ownership contracts passed\n");
+}
+
 test "transcript viewports have no speculative render state" {
     var h = try Harness.init();
     defer h.deinit();

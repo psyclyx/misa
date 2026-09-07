@@ -15,21 +15,21 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (when (and tx.db.images
+                                           (if (and tx.db.images
                                                       (not= (next tx.db.images.pending)
                                                             nil))
                                              (if (= tx.event.type
                                                     :agent/completed)
-                                                 (set tx.event.keep_alive true)
+                                                 (misa.patch tx {:event {:keep_alive true}})
                                                  (or (= tx.event.type
                                                         :editor/steer)
                                                      (and (= tx.event.type
                                                              :terminal/input)
                                                           (= tx.event.kind
                                                              :enter)))
-                                                 (set tx.event
-                                                      {:type :ui/redraw})))
-                                           tx)
+                                                 (misa.patch tx {:event (misa.replace {:type :ui/redraw})})
+                                                 tx)
+                                               tx))
                                  :id :images/pending}})
           (table.insert setup-fx
                         {:type :register/action

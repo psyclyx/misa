@@ -184,3 +184,10 @@ snapshot rollback, selection reveal/manual scroll, streaming anchors, bounds,
 and one transcript projection per viewport or scroll query. This is an ownership
 cutover, not a measured speed improvement: scroll queries now derive layout, and
 sharing that work with rendering remains part of subscription/performance work.
+
+Effect-only effort controls no longer return application state; their input
+policy returns a new transaction. Queue/image keep-alive policies no longer
+modify incoming events in place. `tests/control-ownership.fnl` checks original
+event/transaction preservation, pending-image input replacement, effort cycling,
+selection, and unsupported options. Remaining model affordances and the framework
+cutover are still pending.

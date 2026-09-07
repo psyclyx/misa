@@ -41,13 +41,13 @@
                 {:type :register/interceptor
                  :value {:before (fn [tx]
                                    (local queue tx.db.queue)
-                                   (when (and (and (= tx.event.type
+                                   (if (and (and (= tx.event.type
                                                       :agent/completed)
                                                    queue)
                                               (or (not (empty queue))
                                                   queue.sending))
-                                     (set tx.event.keep_alive true))
-                                   tx)
+                                       (misa.patch tx {:event {:keep_alive true}})
+                                       tx))
                          :id :queue/lifecycle}}
                 {:type :register/event
                  :name :queue/submit

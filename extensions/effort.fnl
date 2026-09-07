@@ -8,8 +8,7 @@
 
 (fn unavailable [db]
   (let [model (or (and db.models db.models.selected) "selected model")]
-    {: db
-     :fx [{:event {:level :info
+    {     :fx [{:event {:level :info
                    :problem {:code :unsupported
                              :kind :request_option
                              : model
@@ -61,23 +60,15 @@
           (table.insert setup-fx
                         {:type :register/interceptor
                          :value {:before (fn [tx]
-                                           (if (and (and (= tx.event.type
-                                                            :choices/command-open)
-                                                         (= tx.event.command
-                                                            :/effort))
-                                                    (= (length (choices tx.db))
-                                                       0))
-                                               (set tx.event
-                                                    {:type :effort/unsupported})
-                                               (and (and (= tx.event.type
-                                                            :terminal/input)
-                                                         misa.keybinding_action)
-                                                    (= (misa.keybinding_action :global
-                                                                               tx.event)
-                                                       :cycle_effort))
-                                               (set tx.event
-                                                    {:type :effort/cycle}))
-                                           tx)
+                                           (local event (if (and (= tx.event.type :choices/command-open)
+                                                                 (= tx.event.command :/effort)
+                                                                 (= (length (choices tx.db)) 0))
+                                                            {:type :effort/unsupported}
+                                                            (and (= tx.event.type :terminal/input) misa.keybinding_action
+                                                                 (= (misa.keybinding_action :global tx.event) :cycle_effort))
+                                                            {:type :effort/cycle}
+                                                            tx.event))
+                                           (misa.patch tx {:event (misa.replace event)}))
                                  :id :effort/input}})
           (table.insert setup-fx
                         {:type :register/action
@@ -103,24 +94,18 @@
                                                              :string)
                                                           (event.arguments:match "^%s*(%S+)%s*$"))
                                                      nil))
-                                          (each [_ value (ipairs available)]
-                                            (when (= (tostring value) requested)
-                                              (let [___antifnl_rtn_1___ {: db
-                                                                         :fx [{:event {:name option-name
-                                                                                       :type :request-options/select
-                                                                                       : value}
-                                                                               :type :dispatch}
-                                                                              {:type :terminal/read}]}]
-                                                (lua "return ___antifnl_rtn_1___"))))
-                                          (error "unsupported reasoning effort for the selected model")
-                                          nil)))})
+                                          (local found (accumulate [selected nil _ value (ipairs available) &until selected]
+                                                         (when (= (tostring value) requested) {: value})))
+                                          (assert found "unsupported reasoning effort for the selected model")
+                                          {:fx [{:type :dispatch :event {:type :request-options/select :name option-name :value found.value}}
+                                                {:type :terminal/read}]})))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :effort/cycle
                          :handler (fn [db]
                                     (local available (choices db))
                                     (if (= (length available) 0)
-                                        {: db :fx [{:type :terminal/read}]}
+                                        {:fx [{:type :terminal/read}]}
                                         (do
                                           (local current
                                                  (misa.request_option_value db
@@ -135,8 +120,7 @@
                                                     (+ (% index
                                                           (length available))
                                                        1)))
-                                          {: db
-                                           :fx [{:event {:name option-name
+                                          {                                           :fx [{:event {:name option-name
                                                          :type :request-options/select
                                                          : value}
                                                  :type :dispatch}
