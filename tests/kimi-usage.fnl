@@ -29,10 +29,21 @@
         "unrelated provider refresh changed Kimi state")
 (local mainland ((. (handlers-for :mainland) :usage/refresh) {} {}))
 (assert (= (. mainland.fx 1 :url) "https://api.kimi.com/coding/v1/usages"))
-(local newer (apply pending {:type :usage/refresh}))
+(local (queued no-requests) (apply pending {:type :usage/refresh}))
+(assert queued.providers.kimi.usage_again)
+(assert (= (length no-requests) 0) "refresh overlapped an in-flight request")
+(assert (= queued (apply queued {:type :usage/refresh})) "repeated refresh changed queued state")
+(local (settled followup) (apply queued {:type :provider/kimi-usage :id request.id :ok true
+                                        :data {:usage {:limit 100 :used 10}}}))
+(assert (= (length followup) 2))
+(assert (= (. followup 2 :event :type) :usage/refresh))
+(assert (= (. followup 2 :event :provider) :kimi))
+(assert (= settled.providers.kimi.usage_again nil))
+(local (newer new-requests) (apply settled (. followup 2 :event)))
+(assert (not= (. new-requests 1 :id) request.id))
 (assert (= newer (apply newer {:type :provider/kimi-usage :id request.id :ok true
                                :data {:usage {:limit 100 :used 10}}}))
-        "stale response replaced current usage")
+        "late completion replaced current usage")
 (local (ready effects) (apply pending {:type :provider/kimi-usage :id request.id :ok true
                                       :data {:usage {:limit "100" :remaining "75" :resetAt "2026-09-08T00:00:00Z"}
                                              :limits [{:name "5h" :detail {:limit 20 :used 0}}]}}))
@@ -49,6 +60,13 @@
                               :data {:secret :discarded}}))
 (assert failed.providers.kimi.usage.unavailable)
 (assert (= (length failed.providers.kimi.usage.windows) 0))
+(local (failed-queued retry) (apply queued {:type :provider/kimi-usage :id request.id :ok false}))
+(assert failed-queued.providers.kimi.usage.unavailable)
+(assert (= (. retry 2 :event :type) :usage/refresh) "failure dropped a queued refresh")
+(local (refreshing refresh-requests) (apply ready {:type :usage/refresh}))
+(local no-stale (apply refreshing {:type :provider/kimi-usage :id (. refresh-requests 1 :id) :ok false}))
+(assert (= (length no-stale.providers.kimi.usage.windows) 0)
+        "failed refresh left old quota displayed as current")
 (local malformed (apply pending {:type :provider/kimi-usage :id request.id :ok true
                                  :data {:usage {:limit -1 :used "nonsense" :name {}}
                                         :limits [false {:detail {:remaining 0 :name {}}}]}}))

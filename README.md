@@ -741,6 +741,8 @@ remaining, limit, and reset values. Results update an open usage dashboard;
 closing it does not cancel the request or reopen the dialog on completion.
 `config.providers.kimi.usage_url` can override the quota endpoint explicitly.
 Failures or responses without usable windows display unavailable, not zero usage.
+Concurrent Kimi refresh triggers coalesce into one follow-up request after the
+in-flight request finishes, including when it fails.
 This integration follows [Kimi Code's usage implementation](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/ui/shell/usage.py).
 The default `plan` status indicator shows the lowest known remaining percentage
 across the selected provider's windows; it shows unavailable when fetched data

@@ -51,6 +51,12 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Automatic Kimi refreshes now coalesce while a request is in flight, retaining one
+follow-up refresh rather than launching overlapping operations. Success and
+failure both release the in-flight slot and honor the queued refresh. Tests
+verify request IDs, late completions, repeated-trigger identity, failure retry,
+and removal of prior quota values after a failed refresh.
+
 Quota refresh now follows selected-provider changes, authentication readiness,
 and response completion/interruption, with provider-addressed events. Kimi ignores
 requests for other providers; manual dashboard refresh still broadcasts. Immutable

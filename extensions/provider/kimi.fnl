@@ -53,25 +53,31 @@
                         {:type :register/event :name :usage/refresh
                          :handler (fn [db event]
                                     (when (or (not event.provider) (= event.provider :kimi))
-                                    (local sequence (+ (or (and db.providers db.providers.kimi
-                                                               db.providers.kimi.usage_sequence) 0) 1))
-                                    (local id (.. "kimi-usage-" sequence))
-                                    {:patch {:providers {:kimi {:usage_sequence sequence :usage_request id}}}
-                                     :fx [{:type :http/request :method :GET : id
-                                           :url (or config.usage_url (.. profile.api_base :/usages))
-                                           :credential {:id :kimi-coding :header :authorization :prefix "Bearer "}
-                                           :response_format :json :completion :provider/kimi-usage
-                                           :timeouts config.timeouts}]}))})
+                                      (local provider (and db.providers db.providers.kimi))
+                                      (if (and provider provider.usage_request)
+                                          {:patch {:providers {:kimi {:usage_again true}}}}
+                                          (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
+                                                id (.. "kimi-usage-" sequence)]
+                                            {:patch {:providers {:kimi {:usage_sequence sequence :usage_request id}}}
+                                             :fx [{:type :http/request :method :GET : id
+                                                   :url (or config.usage_url (.. profile.api_base :/usages))
+                                                   :credential {:id :kimi-coding :header :authorization :prefix "Bearer "}
+                                                   :response_format :json :completion :provider/kimi-usage
+                                                   :timeouts config.timeouts}]}))))})
           (table.insert setup-fx
                         {:type :register/event :name :provider/kimi-usage
                          :handler (fn [db event]
                                     (local provider (and db.providers db.providers.kimi))
                                     (when (and provider provider.usage_request (= provider.usage_request event.id))
                                       (local windows (if event.ok (usage-windows event.data) []))
+                                      (local updated {:type :dispatch :event {:type :usage/updated}})
                                       {:patch {:providers {:kimi {:usage_request misa.delete
+                                                                  :usage_again misa.delete
                                                                   :usage (misa.replace {: windows
                                                                                        :unavailable (= (length windows) 0)})}}}
-                                       :fx [{:type :dispatch :event {:type :usage/updated}}]}))})
+                                       :fx (if provider.usage_again
+                                               [updated {:type :dispatch :event {:type :usage/refresh :provider :kimi}}]
+                                               [updated])}))})
           (local models-url (or config.models_url
                                 (or (and (and (not= config.discover_models
                                                     false)
