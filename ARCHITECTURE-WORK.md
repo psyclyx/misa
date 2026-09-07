@@ -33,6 +33,19 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Native transcript latency baseline (2026-09-07)
+
+`benchmarks/native-transcript.py` now exercises keyboard-to-completed-frame latency
+through the default native UI with 1/16/300 Markdown blocks. Every frame validates
+sequence and output; redraws have a byte oracle, and streaming also checks exact
+state and sharing. Back-to-back inputs encounter the driver's 16 ms frame pacing.
+With an untimed 25 ms idle gap, 300-block streaming measures roughly 10 ms median
+but 21–23 ms maxima across three sessions. The full-path latency requirement is
+therefore still open. See `benchmarks/native-transcript-2026-09-07.md` for exact
+scope, limitations and reproducible commands. Next: attribute native-path costs
+and expand to tool-heavy/multi-response workloads; do not infer completion from
+the faster Fennel-only measurements.
+
 ### Claude stream quota observations (2026-09-07)
 
 The existing open record dispatcher now handles `rate_limit_event`, normalizing
