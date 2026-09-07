@@ -20,48 +20,55 @@
                 (and (or (c:match "[%w_]") (>= (or (c:byte) 0) 128)) :word))
             :punctuation))))
 
-(fn motion [editor action]
-  (var (text at) (values editor.text editor.cursor))
-  (if (= action :left) (prev text at) (= action :right) (next-at text at)
-      (= action :line_start) (line-start text at) (= action :line_end)
-      (line-end text at) (or (= action :down) (= action :up))
-      (let [start (line-start text at)
-            column (misa.layout.width (text:sub (+ start 1) at))]
-        (var target nil)
-        (if (= action :down)
-            (do
-              (set target (+ (line-end text at) 1))
-              (when (> target (length text)) (lua "return at")))
-            (= start 0)
-            (lua "return at")
-            (set target (line-start text (- start 1))))
-        (local finish (line-end text target))
-        (local (_ bytes) (misa.layout.clip (text:sub (+ target 1) finish)
-                                           column))
-        (+ target bytes)) (= action :word_next)
-      (let [group (class text at)]
-        (while (and (< at (length text)) (= (class text at) group))
-          (set at (next-at text at)))
-        (while (and (< at (length text)) (= (class text at) :space))
-          (set at (next-at text at)))
-        at) (= action :word_previous)
-      (do
-        (set at (prev text at))
-        (while (and (> at 0) (= (class text at) :space))
-          (set at (prev text at)))
-        (local group (class text at))
-        (while (and (> at 0) (= (class text (prev text at)) group))
-          (set at (prev text at)))
-        at) (= action :word_end)
-      (do
-        (set at (next-at text at))
-        (while (and (< at (length text)) (= (class text at) :space))
-          (set at (next-at text at)))
-        (local group (class text at))
-        (while (and (< (next-at text at) (length text))
-                    (= (class text (next-at text at)) group))
-          (set at (next-at text at)))
-        at) (= action :first) 0 (= action :last) (length text) nil))
+
+(fn vertical [editor direction]
+  (local (text at) (values editor.text editor.cursor))
+  (local start (line-start text at))
+  (local column (misa.layout.width (text:sub (+ start 1) at)))
+  (local target (if (= direction :down) (+ (line-end text at) 1)
+                    (> start 0) (line-start text (- start 1)) nil))
+  (if (or (= target nil) (> target (length text))) at
+      (let [finish (line-end text target)
+            (_ bytes) (misa.layout.clip (text:sub (+ target 1) finish) column)]
+        (+ target bytes))))
+
+(local motions
+       {:left (fn [editor] (prev editor.text editor.cursor))
+        :right (fn [editor] (next-at editor.text editor.cursor))
+        :line_start (fn [editor] (line-start editor.text editor.cursor))
+        :line_end (fn [editor] (line-end editor.text editor.cursor))
+        :down (fn [editor] (vertical editor :down))
+        :up (fn [editor] (vertical editor :up))
+        :first (fn [] 0)
+        :last (fn [editor] (length editor.text))
+        :word_next (fn [editor]
+                     (local text editor.text)
+                     (var at editor.cursor)
+                     (local group (class text at))
+                     (while (and (< at (length text)) (= (class text at) group))
+                       (set at (next-at text at)))
+                     (while (and (< at (length text)) (= (class text at) :space))
+                       (set at (next-at text at)))
+                     at)
+        :word_previous (fn [editor]
+                         (local text editor.text)
+                         (var at (prev text editor.cursor))
+                         (while (and (> at 0) (= (class text at) :space))
+                           (set at (prev text at)))
+                         (local group (class text at))
+                         (while (and (> at 0) (= (class text (prev text at)) group))
+                           (set at (prev text at)))
+                         at)
+        :word_end (fn [editor]
+                    (local text editor.text)
+                    (var at (next-at text editor.cursor))
+                    (while (and (< at (length text)) (= (class text at) :space))
+                      (set at (next-at text at)))
+                    (local group (class text at))
+                    (while (and (< (next-at text at) (length text))
+                                (= (class text (next-at text at)) group))
+                      (set at (next-at text at)))
+                    at)})
 
 (fn selection [editor state]
   (if (= state.anchor nil) nil
@@ -73,44 +80,194 @@
                               (+ (line-end editor.text last) 1)))
             (values first (next-at editor.text last))))))
 
-(fn reset-choice [editor]
-  (set (editor.choice editor.choice_kind editor.choice_command
-                      editor.choice_overlay) (values nil nil nil nil))
-  nil)
+
+(fn reset-navigation []
+  {:anchor misa.delete :operator misa.delete :insert_group misa.delete})
+
+(fn appended [entries value]
+  (local result {})
+  (local source (or entries {}))
+  (for [index (math.max 1 (- (length source) 62)) (length source)]
+    (table.insert result (. source index)))
+  (table.insert result value)
+  result)
 
 (fn remember [state text cursor]
-  (set state.undo (or state.undo {}))
-  (tset state.undo (+ (length state.undo) 1) {: cursor : text})
-  (while (> (length state.undo) 64) (table.remove state.undo 1))
-  (set state.redo {})
-  nil)
+  (misa.patch state {:undo (misa.replace (appended state.undo {: text : cursor}))
+                     :redo (misa.replace {})}))
+
+(fn insert [editor _ event]
+  (local action event.action)
+  (local places {:append next-at :insert_start line-start :append_end line-end
+                 :open_below line-end :open_above line-start})
+  (local position (. places action))
+  (local at (if position (position editor.text editor.cursor) editor.cursor))
+  (local open (or (= action :open_above) (= action :open_below)))
+  {:editor {:text (if open (.. (editor.text:sub 1 at) "\n" (editor.text:sub (+ at 1))) editor.text)
+            :cursor (if (= action :open_below) (+ at 1) at) :mode :insert}
+   :editing (reset-navigation)})
+
+(fn visual [editor _ event]
+  {:editor {:mode :visual}
+   :editing {:anchor editor.cursor :linewise (= event.action :visual_line)}})
+
+(fn undo [editor state event]
+  (local from (if (= event.action :undo) :undo :redo))
+  (local to (if (= event.action :undo) :redo :undo))
+  (local source (or (. state from) {}))
+  (local value (. source (length source)))
+  (local rest {})
+  (for [index 1 (- (length source) 1)] (tset rest index (. source index)))
+  (local patch (reset-navigation))
+  (tset patch from (misa.replace rest))
+  (tset patch to (misa.replace (if value
+                                 (appended (. state to) {:text editor.text :cursor editor.cursor})
+                                 (or (. state to) {}))))
+  {:editor {:mode :normal :text (and value value.text) :cursor (and value value.cursor)}
+   :editing patch})
+
+(fn paste [editor _ _event db]
+  (local register (or db.clipboard {}))
+  (var text (or register.text ""))
+  (var at (next-at editor.text editor.cursor))
+  (when (and register.linewise (not= text ""))
+    (local finish (line-end editor.text editor.cursor))
+    (if (< finish (length editor.text))
+        (do
+          (set at (+ finish 1))
+          (when (not= (text:sub (- 1)) "\n") (set text (.. text "\n"))))
+        (do
+          (set at finish)
+          (set text (.. "\n" (text:gsub "\n$" ""))))))
+  {:editor {:text (.. (editor.text:sub 1 at) text (editor.text:sub (+ at 1)))
+            :cursor (+ at (length text))}})
+
+(local actions
+       {:normal (fn [editor]
+                  {:editor {:mode :normal
+                            :cursor (if (and (= editor.mode :insert)
+                                             (> editor.cursor (line-start editor.text editor.cursor)))
+                                        (prev editor.text editor.cursor) editor.cursor)}
+                   :editing (reset-navigation)})
+        :submit (fn []
+                  {:editor {:mode :insert} :editing {:anchor misa.delete}
+                   :fx [{:event {:type :terminal/input :kind :enter} :type :dispatch}]})
+        :insert insert :append insert :insert_start insert :append_end insert
+        :open_below insert :open_above insert
+        :visual visual :visual_line visual
+        :undo undo :redo undo :paste paste})
+
+(local operators {:delete true :change true :yank true})
+
+(fn operate [editor state event]
+  (local action event.action)
+  (local movement (. motions action))
+  (local target (and movement (movement editor)))
+  (var (first last) (selection editor state))
+  (var operator state.operator)
+  (var linewise (and (not= first nil) (= state.linewise true)))
+  (local (editor-patch state-patch) (values {} {}))
+  (if target
+      (if operator
+          (do
+            (set (first last) (values (math.min editor.cursor target) (math.max editor.cursor target)))
+            (when (= action :word_end) (set last (next-at editor.text last))))
+          (tset editor-patch :cursor target))
+      (= action :delete_character)
+      (set (first last operator) (values editor.cursor (next-at editor.text editor.cursor) :delete))
+      (. operators action)
+      (if first (set operator action)
+          (= operator action)
+          (do
+            (set linewise true)
+            (set (first last) (values (line-start editor.text editor.cursor)
+                                      (math.min (length editor.text) (+ (line-end editor.text editor.cursor) 1)))))
+          (tset state-patch :operator action))
+      (tset state-patch :operator misa.delete))
+  (if (and first (or operator (. operators action)))
+      (let [op (or operator action)
+            text (editor.text:sub (+ first 1) last)]
+        {:editor {:text (when (not= op :yank)
+                          (.. (editor.text:sub 1 first) (editor.text:sub (+ last 1))))
+                  :cursor (when (not= op :yank) first)
+                  :mode (if (= op :change) :insert :normal)}
+         :editing (reset-navigation)
+         :fx [{:event {: linewise : text :type :clipboard/copy} :type :dispatch}]})
+      {:editor editor-patch :editing state-patch}))
+
+(fn action [db event]
+  (if (not db.editor) {:fx [{:type :terminal/read}]}
+      (let [previous db.editor
+            editor (misa.patch previous {:choice misa.delete :choice_kind misa.delete
+                                         :choice_command misa.delete :choice_overlay misa.delete})
+            state (or db.editing {})
+            handler (or (. actions event.action) operate)
+            result (handler editor state event db)
+            next-editor (misa.patch editor (or result.editor {}))]
+        (var next-state (misa.patch state (or result.editing {})))
+        (when (and (not= next-editor.text previous.text)
+                   (not= event.action :undo) (not= event.action :redo))
+          (set next-state (remember next-state previous.text previous.cursor)))
+        (local (first last) (selection next-editor next-state))
+        (local fx [{:type :terminal/read}])
+        (each [_ effect (ipairs (or result.fx {}))] (table.insert fx effect))
+        {:patch {:editor (misa.replace (misa.patch next-editor
+                                                  {:selection_start (misa.replace first)
+                                                   :selection_end (misa.replace last)}))
+                 :editing (misa.replace next-state)}
+         : fx})))
+
+(fn reset-draft [db]
+  {:patch {:editing (when db.editing
+                      {:anchor misa.delete :operator misa.delete :insert_group misa.delete
+                       :undo (misa.replace {}) :redo (misa.replace {})})
+           :editor (when db.editor {:selection_start misa.delete :selection_end misa.delete})}})
+
+(fn after-input [tx]
+  (local editor tx.db.editor)
+  (local discarded (and tx.editing_input (= editor.text "") (not= tx.editing_input.text "")
+                         (not= tx.event.type :editing/action) (not= tx.editing_input.kind :backspace)))
+  (if discarded
+      (set tx.db (misa.patch tx.db {:editing {:undo (misa.replace {}) :redo (misa.replace {})
+                                             :insert_group misa.delete}}))
+      (and tx.editing_before (not= editor.text tx.editing_before.text)
+           (not tx.db.editing.insert_group))
+      (set tx.db (misa.patch tx.db
+                             {:editing (misa.replace
+                                        (misa.patch (remember tx.db.editing tx.editing_before.text
+                                                              tx.editing_before.cursor)
+                                                    {:insert_group true}))})))
+  tx)
+
+(fn before-input [tx enabled]
+  (if (or (not= tx.event.type :terminal/input) (not enabled)
+          (not tx.cofx.terminal.interactive) tx.db.dialog tx.db.picker tx.db.selection
+          (not tx.db.editor))
+      tx
+      (let [editor (misa.patch tx.db.editor {:mode (or tx.db.editor.mode :insert)})]
+        (set tx.db (misa.patch tx.db {:editor (misa.replace editor)
+                                     :editing (misa.replace (or tx.db.editing {}))}))
+        (set tx.editing_input {:kind tx.event.kind :text editor.text})
+        (if (= editor.mode :insert)
+            (if (= tx.event.kind :escape)
+                (set tx.event {:action :normal :type :editing/action})
+                (or (= tx.event.kind :text) (= tx.event.kind :shift_enter) (= tx.event.kind :backspace))
+                (set tx.editing_before {:cursor editor.cursor :text editor.text}))
+            (or (= tx.event.kind :ctrl_c) (= tx.event.kind :eof) (= tx.event.kind :ctrl_d))
+            (set tx.db (misa.patch tx.db {:editor {:mode :insert :selection_start misa.delete
+                                                  :selection_end misa.delete}
+                                         :editing {:anchor misa.delete}}))
+            (set tx.event {:action (or (misa.keybinding_action :editor.normal tx.event) :ignore)
+                           :type :editing/action}))
+        tx)))
 
 {:setup (fn [context]
           (local setup-fx [])
           (local mode (or (. (or context.config.editing {}) :mode) :vim))
-          (assert (or (= mode :vim) (= mode :plain))
-                  "editing.mode must be vim or plain")
+          (assert (or (= mode :vim) (= mode :plain)) "editing.mode must be vim or plain")
           (local enabled (= mode :vim))
-
-          (fn reset-draft [db]
-            (when db.editing
-              (set (db.editing.anchor db.editing.operator
-                                      db.editing.insert_group)
-                   (values nil nil nil))
-              (set (db.editing.undo db.editing.redo) (values {} {})))
-            (when db.editor
-              (set (db.editor.selection_start db.editor.selection_end)
-                   (values nil nil)))
-            {: db})
-
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :editor/restore
-                         :handler reset-draft})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :editor/steer
-                         :handler reset-draft})
+          (each [_ name (ipairs [:editor/restore :editor/steer])]
+            (table.insert setup-fx {:type :register/event : name :handler reset-draft}))
           (local bindings {:append [:a]
                            :append_end [:A]
                            :change [:c]
@@ -160,344 +317,18 @@
                                    :event {: action :type :editing/action}
                                    :id (.. :editor. action)
                                    :label (.. "Editor: " (action:gsub "_" " "))}}))
+
           (table.insert setup-fx
                         {:type :register/interceptor
-                         :value {:after (fn [tx]
-                                          (when (and (and (and (and tx.editing_input
-                                                                    (= tx.db.editor.text
-                                                                       ""))
-                                                               (not= tx.editing_input.text
-                                                                     ""))
-                                                          (not= tx.event.type
-                                                                :editing/action))
-                                                     (not= tx.editing_input.kind
-                                                           :backspace))
-                                            (set (tx.db.editing.undo tx.db.editing.redo
-                                                                     tx.db.editing.insert_group)
-                                                 (values {} {} nil)))
-                                          (when (and tx.editing_before
-                                                     (not= tx.db.editor.text
-                                                           tx.editing_before.text))
-                                            (local state tx.db.editing)
-                                            (when (not state.insert_group)
-                                              (remember state
-                                                        tx.editing_before.text
-                                                        tx.editing_before.cursor)
-                                              (set state.insert_group true)))
-                                          tx)
-                                 :before (fn [tx]
-                                           (if (or (or (or (or (or (not= tx.event.type
-                                                                         :terminal/input)
-                                                                   (not enabled))
-                                                               (not tx.cofx.terminal.interactive))
-                                                           tx.db.dialog)
-                                                       tx.db.picker)
-                                                   tx.db.selection)
-                                               tx
-                                               (do
-                                                 (local editor tx.db.editor)
-                                                 (if (not editor) tx
-                                                     (do
-                                                       (set editor.mode
-                                                            (or editor.mode
-                                                                :insert))
-                                                       (set tx.db.editing
-                                                            (or tx.db.editing
-                                                                {}))
-                                                       (local state
-                                                              tx.db.editing)
-                                                       (set tx.editing_input
-                                                            {:kind tx.event.kind
-                                                             :text editor.text})
-                                                       (if (= editor.mode
-                                                              :insert)
-                                                           (if (= tx.event.kind
-                                                                  :escape)
-                                                               (set tx.event
-                                                                    {:action :normal
-                                                                     :type :editing/action})
-                                                               (or (or (= tx.event.kind
-                                                                          :text)
-                                                                       (= tx.event.kind
-                                                                          :shift_enter))
-                                                                   (= tx.event.kind
-                                                                      :backspace))
-                                                               (set tx.editing_before
-                                                                    {:cursor editor.cursor
-                                                                     :text editor.text}))
-                                                           (do
-                                                             (local action
-                                                                    (misa.keybinding_action :editor.normal
-                                                                                            tx.event))
-                                                             (if (or (or (= tx.event.kind
-                                                                            :ctrl_c)
-                                                                         (= tx.event.kind
-                                                                            :eof))
-                                                                     (= tx.event.kind
-                                                                        :ctrl_d))
-                                                                 (do
-                                                                   (set editor.mode
-                                                                        :insert)
-                                                                   (set state.anchor
-                                                                        nil))
-                                                                 (set tx.event
-                                                                      {:action (or action
-                                                                                   :ignore)
-                                                                       :type :editing/action}))))
-                                                       tx)))))
-                                 :id :editing/input}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :editing/action
-                         :handler (fn [db event]
-                                    (local editor db.editor)
-                                    (if (not editor)
-                                        {: db :fx [{:type :terminal/read}]}
-                                        (do
-                                          (set db.editing (or db.editing {}))
-                                          (local state db.editing)
-                                          (local action event.action)
-                                          (local fx [{:type :terminal/read}])
-                                          (local (old-text old-cursor)
-                                                 (values editor.text
-                                                         editor.cursor))
-                                          (reset-choice editor)
-                                          (if (= action :normal)
-                                              (do
-                                                (when (and (= editor.mode
-                                                              :insert)
-                                                           (> editor.cursor
-                                                              (line-start editor.text
-                                                                          editor.cursor)))
-                                                  (set editor.cursor
-                                                       (prev editor.text
-                                                             editor.cursor)))
-                                                (set editor.mode :normal)
-                                                (set (state.anchor state.operator
-                                                                   state.insert_group)
-                                                     (values nil nil nil)))
-                                              (= action :submit)
-                                              (do
-                                                (set editor.mode :insert)
-                                                (set state.anchor nil)
-                                                (tset fx (+ (length fx) 1)
-                                                      {:event {:kind :enter
-                                                               :type :terminal/input}
-                                                       :type :dispatch}))
-                                              (or (or (or (or (or (= action
-                                                                     :insert)
-                                                                  (= action
-                                                                     :append))
-                                                              (= action
-                                                                 :insert_start))
-                                                          (= action :append_end))
-                                                      (= action :open_below))
-                                                  (= action :open_above))
-                                              (do
-                                                (if (= action :append)
-                                                    (set editor.cursor
-                                                         (next-at editor.text
-                                                                  editor.cursor))
-                                                    (= action :insert_start)
-                                                    (set editor.cursor
-                                                         (line-start editor.text
-                                                                     editor.cursor))
-                                                    (= action :append_end)
-                                                    (set editor.cursor
-                                                         (line-end editor.text
-                                                                   editor.cursor))
-                                                    (or (= action :open_below)
-                                                        (= action :open_above))
-                                                    (do
-                                                      (set editor.cursor
-                                                           (or (and (= action
-                                                                       :open_below)
-                                                                    (line-end editor.text
-                                                                              editor.cursor))
-                                                               (line-start editor.text
-                                                                           editor.cursor)))
-                                                      (set editor.text
-                                                           (.. (editor.text:sub 1
-                                                                                editor.cursor)
-                                                               "\n"
-                                                               (editor.text:sub (+ editor.cursor
-                                                                                   1))))
-                                                      (when (= action
-                                                               :open_below)
-                                                        (set editor.cursor
-                                                             (+ editor.cursor 1)))))
-                                                (set editor.mode :insert)
-                                                (set (state.anchor state.operator
-                                                                   state.insert_group)
-                                                     (values nil nil nil)))
-                                              (or (= action :visual)
-                                                  (= action :visual_line))
-                                              (do
-                                                (set editor.mode :visual)
-                                                (set state.anchor editor.cursor)
-                                                (set state.linewise
-                                                     (= action :visual_line)))
-                                              (or (= action :undo)
-                                                  (= action :redo))
-                                              (do
-                                                (local from
-                                                       (or (and (= action :undo)
-                                                                :undo)
-                                                           :redo))
-                                                (local to
-                                                       (or (and (= action :undo)
-                                                                :redo)
-                                                           :undo))
-                                                (tset state from
-                                                      (or (. state from) {}))
-                                                (tset state to
-                                                      (or (. state to) {}))
-                                                (local value
-                                                       (table.remove (. state
-                                                                        from)))
-                                                (when value
-                                                  (tset (. state to)
-                                                        (+ (length (. state to))
-                                                           1)
-                                                        {:cursor editor.cursor
-                                                         :text editor.text})
-                                                  (set (editor.text editor.cursor)
-                                                       (values value.text
-                                                               value.cursor)))
-                                                (set (state.anchor state.operator)
-                                                     (values nil nil))
-                                                (set editor.mode :normal))
-                                              (= action :paste)
-                                              (do
-                                                (local register
-                                                       (or db.clipboard {}))
-                                                (var text (or register.text ""))
-                                                (if (and register.linewise
-                                                         (not= text ""))
-                                                    (do
-                                                      (local finish
-                                                             (line-end editor.text
-                                                                       editor.cursor))
-                                                      (if (< finish
-                                                             (length editor.text))
-                                                          (do
-                                                            (set editor.cursor
-                                                                 (+ finish 1))
-                                                            (when (not= (text:sub (- 1))
-                                                                        "\n")
-                                                              (set text
-                                                                   (.. text
-                                                                       "\n"))))
-                                                          (do
-                                                            (set editor.cursor
-                                                                 finish)
-                                                            (set text
-                                                                 (.. "\n"
-                                                                     (text:gsub "
-$"
-                                                                                ""))))))
-                                                    (set editor.cursor
-                                                         (next-at editor.text
-                                                                  editor.cursor)))
-                                                (set editor.text
-                                                     (.. (editor.text:sub 1
-                                                                          editor.cursor)
-                                                         text
-                                                         (editor.text:sub (+ editor.cursor
-                                                                             1))))
-                                                (set editor.cursor
-                                                     (+ editor.cursor
-                                                        (length text))))
-                                              (do
-                                                (local target
-                                                       (motion editor action))
-                                                (var (first last)
-                                                     (selection editor state))
-                                                (var operator state.operator)
-                                                (var linewise
-                                                     (and (not= first nil)
-                                                          (= state.linewise
-                                                             true)))
-                                                (if target
-                                                    (if operator
-                                                        (do
-                                                          (set (first last)
-                                                               (values (math.min editor.cursor
-                                                                                 target)
-                                                                       (math.max editor.cursor
-                                                                                 target)))
-                                                          (when (= action
-                                                                   :word_end)
-                                                            (set last
-                                                                 (next-at editor.text
-                                                                          last))))
-                                                        (set editor.cursor
-                                                             target))
-                                                    (= action :delete_character)
-                                                    (do
-                                                      (set (first last)
-                                                           (values editor.cursor
-                                                                   (next-at editor.text
-                                                                            editor.cursor)))
-                                                      (set operator :delete))
-                                                    (or (or (= action :delete)
-                                                            (= action :change))
-                                                        (= action :yank))
-                                                    (if first
-                                                        (set operator action)
-                                                        (= operator action)
-                                                        (do
-                                                          (set linewise true)
-                                                          (set (first last)
-                                                               (values (line-start editor.text
-                                                                                   editor.cursor)
-                                                                       (math.min (length editor.text)
-                                                                                 (+ (line-end editor.text
-                                                                                              editor.cursor)
-                                                                                    1)))))
-                                                        (set state.operator
-                                                             action))
-                                                    (not target)
-                                                    (set state.operator nil))
-                                                (when (and first
-                                                           (or (or (or operator
-                                                                       (= action
-                                                                          :delete))
-                                                                   (= action
-                                                                      :change))
-                                                               (= action :yank)))
-                                                  (set operator
-                                                       (or operator action))
-                                                  (local text
-                                                         (editor.text:sub (+ first
-                                                                             1)
-                                                                          last))
-                                                  (tset fx (+ (length fx) 1)
-                                                        {:event {: linewise
-                                                                 : text
-                                                                 :type :clipboard/copy}
-                                                         :type :dispatch})
-                                                  (when (not= operator :yank)
-                                                    (set editor.text
-                                                         (.. (editor.text:sub 1
-                                                                              first)
-                                                             (editor.text:sub (+ last
-                                                                                 1))))
-                                                    (set editor.cursor first))
-                                                  (set editor.mode
-                                                       (or (and (= operator
-                                                                   :change)
-                                                                :insert)
-                                                           :normal))
-                                                  (set (state.anchor state.operator
-                                                                     state.insert_group)
-                                                       (values nil nil nil)))))
-                                          (when (and (and (not= editor.text
-                                                                old-text)
-                                                          (not= action :undo))
-                                                     (not= action :redo))
-                                            (remember state old-text old-cursor))
-                                          (set (editor.selection_start editor.selection_end)
-                                               (selection editor state))
-                                          {: db : fx})))})
+                         :value {:id :editing/input :after after-input
+                                 :before (fn [tx] (before-input tx enabled))}})
+          (table.insert setup-fx {:type :register/event :name :editing/action :handler action})
+          (each [name registry (pairs {:register/editing-motion motions :register/editing-action actions})]
+            (table.insert setup-fx
+                          {:type :register/setup-effect : name
+                           :handler (fn [effect]
+                                      (assert (and (= (type effect.id) :string) (not= effect.id "")
+                                                   (= (type effect.value) :function) (not (. registry effect.id)))
+                                              "invalid or duplicate editing transition")
+                                      (tset registry effect.id effect.value))}))
           {:fx setup-fx})}

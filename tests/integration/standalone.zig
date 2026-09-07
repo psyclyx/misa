@@ -91,6 +91,12 @@ test "editor transitions preserve draft and event ownership" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/editor-state.fnl"} }, "editor state properties passed\n");
 }
 
+test "modal editing preserves state and undo boundaries" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/editing-state.fnl"} }, "editing state properties passed\n");
+}
+
 test "history transitions preserve previous state" {
     var h = try Harness.init();
     defer h.deinit();

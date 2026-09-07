@@ -53,5 +53,8 @@ Editor handlers now return patches, with text edits dispatched through an open
 `register/editor-edit` registry. `tests/editor-state.fnl` checks generated input
 sequences, state/event ownership, Unicode cursor boundaries, attachment handoff,
 command completion, busy cancellation, and projection ownership. The separate
-Vim editing policy still mutates editor and undo state; it must be migrated
+Vim policy now applies patches too, with open motion/action registries.
+`tests/editing-state.fnl` checks generated modal transitions, undo/redo bounds,
+insert groups, discarded drafts, range operations, Unicode motions, and custom
+transitions. Other state owners and provider reducers still need migration
 before transaction drafts can be removed.
