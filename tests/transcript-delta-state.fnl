@@ -151,10 +151,11 @@
 (local cached {:lines [{:spans [{:text :cached}]}]})
 (var rendered-role nil)
 (var rendered-model nil)
-(set misa.render_component (fn [_ role model]
-                            (set rendered-role role)
-                            (set rendered-model model)
-                            cached))
+(set misa.project_components (fn [_ _ items]
+                              {:views (icollect [_ item (ipairs items)]
+                                        (do (set rendered-role item.role)
+                                            (set rendered-model item.model)
+                                            cached))}))
 (set misa.selection_decorate (fn [] [{:spans [{:text :decorated}]}]))
 (set misa.selection_projection nil)
 (set misa.syntax_projection nil)

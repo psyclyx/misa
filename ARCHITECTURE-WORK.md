@@ -51,6 +51,19 @@ the final audit; this cutover does not complete rendering or performance work.
 
 ## Verified migration slices
 
+Transcript rendering now uses a collection-owned component projection. Semantic
+output, incremental Markdown hints, and themed views survive unchanged items;
+hover/theme changes do not rerun semantic component callbacks. The global message
+document cache and reset handlers are removed. Syntax and cost enrichment use
+incremental collections too, avoiding the earlier flat-cache eviction failure.
+Tests cover 300 enriched items, retained view identity, changed/removed items,
+layout/theme/component changes, hover precedence, and speculative rollback.
+The interleaved 300-block probe improves average redraw CPU cost from about
+28.7 to 2.6 ms/frame, and combined streaming work from 25.1 to 1.8 ms/frame.
+See `benchmarks/component-collections-2026-09-07.md` for the single-block overhead,
+exact measurement scope, and remaining native/mixed-transcript verification.
+Model preparation still traverses all blocks; this is not the entire render audit.
+
 Replacement materialization now allocates only when values differ or keys are
 removed, while retaining full recursive validation. Equal-identity invalid-data
 tests prevent sharing from becoming a validation bypass. Isolated A/B probes show

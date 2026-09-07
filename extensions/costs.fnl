@@ -129,19 +129,28 @@
                                         {: lines : pricing : summary})))})
           (table.insert setup-fx
                         {:type :register/sub
-                         :value {:id :costs/response
-                                 :inputs (fn [query] [[:db/path :costs :responses (. query 2)]])
-                                 :compute (fn [inputs]
-                                  (local response (. inputs 1))
-                                  (if (not response) nil
+                         :value {:id :costs/responses
+                                 :inputs [[:db/path :costs :responses]]
+                                 :compute (fn [inputs _ previous]
+                                  (local entries {})
+                                  (each [id response (pairs (or (. inputs 1) {}))]
+                                    (local old (and previous (. previous id)))
+                                    (if (and old (= response old.input)) (tset entries id old)
                                       (do
                                         (local result response.cost)
-                                        {:estimated (and result
+                                        (tset entries id {:input response :value {:estimated (and result
                                                          result.estimated)
                                          :model response.model
                                          :text (label result)
                                          :unknown (and result result.unknown)
-                                         :usd (and result result.usd)})))}})
+                                         :usd (and result result.usd)}}))))
+                                  entries)}})
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :costs/response :inputs [[:costs/responses]]
+                                 :compute (fn [inputs query]
+                                            (local entry (. (. inputs 1) (. query 2)))
+                                            (and entry entry.value))}})
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :costs/total
@@ -174,7 +183,9 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :response_cost_projection
-                         :value (fn [db id] (misa.sub db [:costs/response id]))})
+                         :value (fn [db id]
+                                  (local entry (. (misa.sub db [:costs/responses]) id))
+                                  (and entry entry.value))})
           (table.insert setup-fx
                         {:type :register/service
                          :name :costs_projection

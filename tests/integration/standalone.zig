@@ -1,6 +1,12 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "component collections retain output and roll back speculative projections" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/component-projections.fnl"} }, "component projection contracts passed\n");
+}
+
 test "Kimi usage requests preserve credential boundaries and reject stale results" {
     var h = try Harness.init();
     defer h.deinit();

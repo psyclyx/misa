@@ -7,7 +7,10 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local candidate {:patch misa.patch :replace misa.replace :delete misa.delete})
-(local baseline-path (. arg 1))
+(local projection-directory (when (= (. arg 1) :--projection-baseline)
+                              (assert (. arg 2) "saved projection directory required")))
+(local baseline-path (when (not projection-directory) (. arg 1)))
+(local comparing (or baseline-path projection-directory))
 (local baseline (if baseline-path ((fennel.dofile baseline-path) misa.json_null) candidate))
 (local context {:config {}})
 (each [_ name (ipairs [:json :layout :markdown :themes :theme/default :components
@@ -15,6 +18,20 @@
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 (local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) context))
 (misa._setup_effects specs)
+(set candidate.project misa.transcript_projection)
+(var baseline-project misa.transcript_projection)
+(local baseline-roles {})
+(when projection-directory
+  (local saved ((. (fennel.dofile (.. projection-directory :/messages.fnl)) :setup) context))
+  (each [_ spec (ipairs saved.fx)]
+    (when (= spec.name :transcript_projection) (set baseline-project spec.value)))
+  (local saved-components ((. (fennel.dofile (.. projection-directory :/message.fnl)) :setup)))
+  (each [_ spec (ipairs saved-components.fx)]
+    (when (= spec.type :register/component)
+      (local role (spec.id:sub 9))
+      (local id (.. :baseline. role))
+      (tset baseline-roles role id)
+      (misa._setup_effects {:fx [{:type :register/component : id :value spec.value}]}))))
 (var delta nil)
 (each [_ spec (ipairs specs.fx)]
   (when (= spec.name :transcript/block-delta) (set delta spec.handler)))
@@ -40,11 +57,12 @@
                 :block_id (tostring count) :text fragment})
   (each [_ mode (ipairs [:redraw :stream])]
     (local oracle [])
-    (fn run [record api]
+    (fn run [record api baseline-mode]
       (set misa.patch api.patch)
       (set misa.replace api.replace)
       (set misa.delete api.delete)
-      (var db initial)
+      (var db (if (and projection-directory baseline-mode)
+                  (misa.patch initial {:components {:roles baseline-roles}}) initial))
       (var (render-time update-time) (values 0 0))
       (for [frame 1 8]
         (when (= mode :stream)
@@ -53,7 +71,7 @@
           (set db (misa.patch db (or (and result result.patch) {})))
           (set update-time (+ update-time (- (clock) start))))
         (local start (clock))
-        (local lines (misa.transcript_projection db render-context))
+        (local lines ((if baseline-mode baseline-project candidate.project) db render-context))
         (set render-time (+ render-time (- (clock) start)))
         ;; Compare complete output records, including styles and link metadata.
         (local encoded (misa.json.encode lines))
@@ -67,15 +85,16 @@
           (assert (= (. initial.messages.blocks i) (. db.messages.blocks i))
                   "stream update replaced an unrelated block")))
       (values render-time update-time))
-    (run true baseline)
+    (run true baseline true)
     ;; Six unchanged repetitions establish the oracle and warm both paths.
-    (for [_ 1 6] (run false baseline) (when baseline-path (run false candidate)))
+    (for [_ 1 6] (run false baseline true) (when comparing (run false candidate false)))
     (local samples {:baseline {:renders [] :updates [] :totals []}
                     :candidate {:renders [] :updates [] :totals []}})
     (for [iteration 1 10]
-      (each [_ variant (ipairs (if (not baseline-path) [:baseline]
+      (each [_ variant (ipairs (if (not comparing) [:baseline]
                                   (= (% iteration 2) 0) [:candidate :baseline] [:baseline :candidate]))]
-        (local (render-time update-time) (run false (if (= variant :baseline) baseline candidate)))
+        (local (render-time update-time) (run false (if (= variant :baseline) baseline candidate)
+                                                 (= variant :baseline)))
         (table.insert (. samples variant :renders) render-time)
         (table.insert (. samples variant :updates) update-time)
         (table.insert (. samples variant :totals) (+ render-time update-time))))

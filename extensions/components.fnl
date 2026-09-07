@@ -7,6 +7,23 @@
   (each [key value (pairs source)] (tset result key value))
   result)
 
+(fn same-fields [a b]
+  (if (= a b) true
+      (or (not a) (not b)) false
+      (do
+        (each [key value (pairs a)] (when (not= value (. b key)) (lua "return false")))
+        (each [key value (pairs b)] (when (not= value (. a key)) (lua "return false")))
+        true)))
+
+(fn hover-targets [rendered]
+  (local actions {})
+  (local links {})
+  (each [_ line (ipairs (or rendered.lines []))]
+    (each [_ span (ipairs (or line.spans []))]
+      (if span.action (tset actions span.action true)
+          span.link (tset links span.link true))))
+  (values actions links))
+
 {:setup (fn [context]
           (local setup-fx [])
           (local implementations {})
@@ -58,13 +75,8 @@
                                               ": " id)))})
           (table.insert setup-fx
                         {:type :register/service
-                         :name :render_component
-                         :value (fn [db role model render-context]
-                                  (local component (misa.component db role))
-                                  (local rendered
-                                         ;; Inputs are immutable, as with subscriptions and reducers.
-                                         ;; Preserve identity for derived data across this boundary.
-                                         (component.render model (or render-context {})))
+                         :name :resolve_component
+                         :value (fn [db rendered render-context]
                                   (assert (= (type rendered) :table)
                                           "component render must return a table")
                                   ;; Components emit semantic tokens (or ordered token lists) and know
@@ -139,6 +151,57 @@
                                                          :text (string.rep " "
                                                                            padding)})))))
                                   result)})
+          (table.insert setup-fx
+                        {:type :register/service :name :render_component
+                         :value (fn [db role model render-context]
+                                  (local rendered ((. (misa.component db role) :render) model (or render-context {})))
+                                  (misa.resolve_component db rendered render-context))})
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :components/projection
+                                 :inputs [[:db/path :db] [:db/path :items] [:db/path :context]]
+                                 :compute (fn [inputs _ previous]
+                                            (local db (. inputs 1))
+                                            (local items (. inputs 2))
+                                            (local render-context (. inputs 3))
+                                            (local theme (misa.theme db))
+                                            (local entries {})
+                                            (local views [])
+                                            (each [_ item (ipairs items)]
+                                              (assert (and (= (type item.id) :string) (not= item.id "")
+                                                           (not (. entries item.id)))
+                                                      "component collection requires unique nonempty ids")
+                                              (local old (and previous (. previous.entries item.id)))
+                                              (local component (misa.component db item.role))
+                                              (local same (and old (= component old.component)
+                                                               (same-fields item.model old.model)
+                                                               (same-fields render-context old.context)))
+                                              (local (source cache)
+                                                     (if same (values old.source old.cache)
+                                                         (component.render item.model render-context
+                                                                           (and old (= component old.component) old.cache))))
+                                              (local (actions links) (if same (values old.actions old.links)
+                                                                        (hover-targets source)))
+                                              (local hover-action (and db.hover_action (. actions db.hover_action) db.hover_action))
+                                              (local hover-link (and db.hover_link (. links db.hover_link) db.hover_link))
+                                              (local entry
+                                                     (if (and same (= theme old.theme)
+                                                              (= hover-action old.hover_action) (= hover-link old.hover_link))
+                                                         old
+                                                         {: component :model item.model :context render-context
+                                                          : source : cache : actions : links : theme
+                                                          :hover_action hover-action :hover_link hover-link
+                                                          :view (misa.resolve_component db source render-context)}))
+                                              (tset entries item.id entry)
+                                              (table.insert views entry.view))
+                                            {: entries : views})}})
+          (table.insert setup-fx
+                        {:type :register/service :name :project_components
+                         :value (fn [db id items render-context]
+                                  (assert (and (= (type id) :string) (not= id ""))
+                                          "component collection requires an owner id")
+                                  (misa.sub {: db : items :context (or render-context {})}
+                                            [:components/projection id]))})
           (table.insert setup-fx
                         {:type :register/service
                          :name :swap_component

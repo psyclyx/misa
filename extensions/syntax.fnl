@@ -62,22 +62,34 @@
             state)
 
           {:fx [{:type :register/sub
-                 :value {:id :syntax/projection
-                         :inputs (fn [query] [[:db/path :syntax :documents (. query 2)]])
-                         :compute (fn [inputs]
-                                    (local entry (. inputs 1))
-                                    (when entry
+                 :value {:id :syntax/projections
+                         :inputs [[:db/path :syntax :documents]]
+                         :compute (fn [inputs _ previous]
+                                    (local result {})
+                                    (each [key entry (pairs (or (. inputs 1) {}))]
+                                      (local old (and previous (. previous key)))
+                                      (if (and old (= entry old.input))
+                                          (tset result key old)
+                                          (do
                                       (local captures {})
                                       (each [_ slot (ipairs entry.slots)]
                                         (when slot.data (tset captures slot.start slot.data)))
-                                      {:document entry.document : captures
-                                       :source entry.source :revision entry.revision}))}}
+                                      (tset result key {:input entry
+                                                        :value {:document entry.document : captures
+                                                                :source entry.source :revision entry.revision}}))))
+                                    result)}}
+                {:type :register/sub
+                 :value {:id :syntax/projection :inputs [[:syntax/projections]]
+                         :compute (fn [inputs query]
+                                    (local entry (. (. inputs 1) (. query 2)))
+                                    (and entry entry.value))}}
                 {:type :register/service
                  :name :syntax_projection
                  :value (fn [db model]
                           (local key (key-for model))
                           (local source (source-for model))
-                          (local projection (misa.sub db [:syntax/projection key]))
+                          (local entry (. (misa.sub db [:syntax/projections]) key))
+                          (local projection (and entry entry.value))
                           (when (and projection (= projection.source source)) projection))}
                 {:type :register/event
                  :name :app/start

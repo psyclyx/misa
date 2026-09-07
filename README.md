@@ -222,8 +222,10 @@ ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
 `attribute`, `operator`, `punctuation`, `escape`, and `embedded`). Highlighting
 is derived data: the `syntax` extension tracks pending requests and accepted
 revisions, immutable parsed documents, and accepted capture arrays in transactional
-state. The `syntax/projection` subscription depends on one document entry and
-passes that data into rendering; retained states do not depend on an external
+state. The `syntax/projections` subscription incrementally projects document
+entries, retaining unchanged results. Point queries use `syntax/projection`;
+transcript enrichment shares the collection directly to avoid per-document scope
+eviction. Retained states do not depend on an external
 cache. Projection results are immutable, including when adding layout options.
 Source parsing and grammar
 loading run on native workers with a reusable parser cache. Missing, unknown,
@@ -414,10 +416,21 @@ semantic-span wrapping, and responsive-column primitives. Theme resolution is
 centralized at the component registry boundary. Custom code calls
 `misa.render_component(db, role, model, context)` and
 `misa.animation_span(db, role, options?)` for clock-driven visual motion.
-Component `render(model, context)` receives those tables directly and must not
+Component `render(model, context, previous?)` receives those tables directly and must not
 mutate them or any nested values. Allocate output records when decorating input
 data. Syntax projections in message models are ordinary immutable tables, not
 callbacks; their document/capture identities survive the component boundary.
+For a retained collection, use
+`misa.project_components(db, owner_id, [{id, role, model}, ...], context)`;
+its `views` vector follows item order. Owner and item IDs must be nonempty strings,
+with unique item IDs per collection. Unchanged model/context fields reuse output;
+theme and relevant hover changes resolve decoration without recomputing semantics.
+Components may return an immutable incremental hint as a second result, received
+as `previous` on the next semantic computation. Rendering must remain correct
+without a hint. The framework's subscription scope owns these values and rolls
+them back with rejected transactions. Direct `render_component` is uncached.
+Prepare subscription-derived model data before calling the collection; retained
+component callbacks consume model/context and cannot recursively query subscriptions.
 Configure individual roles with
 `config.components.roles` (for example, `"picker": "my.picker"`) and dispatch
 `components/swap` with `role` and `implementation` to swap one at runtime.
@@ -530,8 +543,9 @@ Explicit `options.document` and `options.captures` are immutable inputs; changin
 either invalidates document-level reuse. Revision counters are not layout inputs.
 Unchanged inputs return the same projection; branches never modify the previous
 projection. The former mutable Markdown-view object is removed. Default message
-components retain projections for the transcript's lifetime and copy cached
-bodies before applying titles, rails, and theme colors.
+components return projections explicitly as incremental hints and copy cached
+bodies before applying titles and rails. The component collection owns those
+hints and themed output; there is no global message-document cache.
 Animation-only redraws therefore reuse parsing, highlighting, and body layout.
 `agent` emits explicit stable response/block start, delta, end, and interruption
 `transcript/*` events plus `agent/status` and `agent/usage`; visual extensions do

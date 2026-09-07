@@ -24,11 +24,19 @@ values plus `inputs.n`, the dependency count: missing values remain nil even at
 the end of the vector. Do not use Lua's length operator to count those values.
 Constant computations declare `:inputs []`.
 
+`compute(inputs, query, previous?)` may receive its previous immutable output as
+an incremental-computation hint. It must produce the same semantic result when
+the hint is absent: eviction, clearing, and a new consumer can all remove it.
+Never mutate or retain a history chain through the hint. Forks share prior
+outputs, but newly computed output belongs only to the evaluating scope.
+
 Bundled cost accounting exposes `[:costs/total]` as numeric facts (`usd`,
 `responses`, `estimated`, `unknown`), with no formatted text. The dependent
 `[:costs/projection]` adds display text; `[:costs/response id]` projects a single
-response. The total depends on the response collection, while a response query
-depends only on its own record. Unrelated state changes preserve these results
+response. `[:costs/responses]` incrementally projects the response collection,
+preserving each result whose record is unchanged. Point queries depend on that
+collection; bundled transcript lookups share the collection directly, avoiding
+one scope entry per historical response. Unrelated state changes preserve results
 while cached. Existing cost presentation services query this graph rather than
 owning a separate cache.
 
@@ -70,5 +78,9 @@ Dispatch passes persistent state directly to handlers and projections; it does
 not clone the database or reconcile a mutable draft. Updates enter through
 patches. Ordinary tables are not write-protected: callback purity is a contract,
 not a sandbox, and in-place mutation cannot be rolled back. Sharing layout work
-through subscriptions remains unfinished; this API does not itself establish
-selective rendering performance.
+through subscriptions uses collection ownership rather than one flat scope
+entry per historical item. `misa.project_components` owns semantic component
+output, incremental hints, and resolved views in one collection subscription;
+syntax and cost enrichment likewise use shared collection projections.
+Model preparation, viewport indexing, and other rendering consumers still need
+further work; this API does not itself establish end-to-end rendering performance.

@@ -92,7 +92,10 @@
                     (var same (and previous previous.inputs (= previous.inputs.n n)))
                     (when same
                       (for [i 1 n] (when (not= (. inputs i) (. previous.inputs i)) (set same false))))
-                    (set entry {: inputs :value (if same previous.value (definition.compute inputs q))})))
+                    ;; Previous output is an optional immutable optimization
+                    ;; hint. Compute must remain correct without it after eviction.
+                    (set entry {: inputs :value (if same previous.value
+                                                  (definition.compute inputs q (and previous previous.value)))})))
               (set depth (- depth 1))
               (tset active key nil)
               (tset staged key entry)

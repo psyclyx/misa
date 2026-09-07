@@ -496,8 +496,8 @@
                                   (each [key value (pairs (or render-context {}))]
                                     (tset context-copy key value))
                                   (set context-copy.markdown markdown)
-                                  (local (result state)
-                                         (values {}
+                                  (local (items state)
+                                         (values []
                                                  (assert db.messages
                                                          "message state is not initialized")))
                                   (each [_ source (ipairs state.blocks)]
@@ -544,10 +544,12 @@
                                     (each [key value (pairs (or (and presentation presentation.model) {}))]
                                       (tset model key value))
                                     (when role
-                                      (local rendered
-                                             (misa.render_component db role
-                                                                    model
-                                                                    context-copy))
+                                      (table.insert items {:id (selection-id model) : role : model})))
+                                  (local projection (misa.project_components db :transcript items context-copy))
+                                  (local result [])
+                                  (each [index item (ipairs items)]
+                                      (local model item.model)
+                                      (local rendered (. projection.views index))
                                       (local lines (if misa.selection_decorate
                                                        (misa.selection_decorate db (selection-id model)
                                                                                   (or model.text model.result model.argument_text "")
@@ -560,7 +562,7 @@
                                                                                      model.attachments
                                                                                      context-copy))]
                                           (tset result (+ (length result) 1)
-                                                line)))))
+                                                line))))
                                   result)})
           (table.insert setup-fx {:type :register/service :name :transcript_viewport :value transcript-viewport})
           (table.insert setup-fx
