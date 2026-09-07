@@ -104,6 +104,10 @@ terminal-protocol regressions run with `python3 tests/ghostty-input.py
 zig-out/bin/misa`, `python3 tests/settled-frames.py zig-out/bin/misa`, and
 `python3 tests/threaded-terminal.py zig-out/bin/misa`. They
 use a PTY and local provider fixtures, with no account or network dependency.
+Pass `--installed` to `tests/ghostty-input.py` to verify the executable's installed
+catalog rather than loading extensions from the worktree. This mode also clears
+an inherited `MISA_EXTENSION_DIR`; it works with a Nix store executable after
+`nix-build -A default --no-out-link`.
 
 Without an override, misa loads the installed `share/misa/default.json`, which
 selects all shipped real providers, Claude Code by default, coding tools, model

@@ -33,6 +33,23 @@ must permit them without coupling structural selection to clipboard behavior.
 
 ## Audit findings to resolve
 
+### Packaged catalog verification (2026-09-07)
+
+`nix-build -A default --no-out-link` passed build, check and fixup for the runtime
+at `9ae1008`, producing
+`/nix/store/zhczkbg9cpqs6qch7sn1i63d1pnxxrly-misa-0.1.0`.
+The output contains 63 build-translated Lua extensions, and its installed default
+configuration matches `config/default.json` byte-for-byte.
+
+The PTY regression previously always forced worktree extensions. It now supports
+`--installed`, which clears the source override and exercises the executable's
+installed catalog. This mode passed against both `zig-out/bin/misa` and the Nix
+store executable, including a run with an intentionally invalid inherited
+`MISA_EXTENSION_DIR`. The regular worktree mode remains supported. The packaged
+test covers action/link hover, images, editor/queue/history interactions, selection,
+scrolling, RGB and OSC links. This closes the stale package-build verification
+gap from the AOT startup changes; it is not a new startup performance measurement.
+
 ### Subscription-core requirement audit (2026-09-07)
 
 Direct inspection of `src/lua_runtime/subscriptions.fnl`, framework dispatch/

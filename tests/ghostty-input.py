@@ -4,6 +4,7 @@
 Only provider/auth transports are substituted. State observations use a fixture
 event, while every tested interaction arrives through the real terminal decoder.
 """
+import argparse
 import fcntl
 import json
 import os
@@ -20,7 +21,12 @@ import zlib
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-binary = str(Path(sys.argv[1]).resolve())
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('binary', type=Path)
+parser.add_argument('--installed', action='store_true',
+                    help='load the executable\'s installed catalog instead of worktree extensions')
+args = parser.parse_args()
+binary = str(args.binary.resolve())
 fixture = (root / 'tests/ghostty-input.fnl').read_text()
 
 
@@ -44,7 +50,11 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     (work / 'config.json').write_text(json.dumps(config))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
-    env = dict(os.environ, TERM='xterm-ghostty', TERM_PROGRAM='ghostty', MISA_EXTENSION_DIR=str(root/'extensions'), MISA_AUTH_FILE=str(work/'auth'), MISA_STATE_FILE=str(work/'state'))
+    env = dict(os.environ, TERM='xterm-ghostty', TERM_PROGRAM='ghostty', MISA_AUTH_FILE=str(work/'auth'), MISA_STATE_FILE=str(work/'state'))
+    if args.installed:
+        env.pop('MISA_EXTENSION_DIR', None)
+    else:
+        env['MISA_EXTENSION_DIR'] = str(root/'extensions')
     env.pop('TMUX', None)
     env.pop('STY', None)
     process = subprocess.Popen([binary, '--config', str(work/'config.json')], stdin=slave, stdout=slave, stderr=slave, env=env)
