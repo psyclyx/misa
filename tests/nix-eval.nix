@@ -64,7 +64,9 @@ assert
     animationDefault = "animation.default";
     auth = "auth";
     choices = "choices";
+    choicePreview = "choice_preview";
     choiceLayout = "choice_layout";
+    values = "values";
     commands = "commands";
     omnipicker = "omnipicker";
     dialogs = "dialogs";
@@ -141,6 +143,8 @@ assert builtins.pathExists ../extensions/component/selection.fnl;
 assert builtins.pathExists ../extensions/animations.fnl;
 assert builtins.pathExists ../extensions/animation/default.fnl;
 assert builtins.pathExists ../extensions/components.fnl;
+assert builtins.pathExists ../extensions/choice_preview.fnl;
+assert builtins.pathExists ../extensions/values.fnl;
 assert builtins.pathExists ../extensions/layout.fnl;
 assert builtins.pathExists ../extensions/markdown.fnl;
 assert builtins.pathExists ../extensions/component/markdown.fnl;

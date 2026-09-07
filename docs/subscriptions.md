@@ -95,5 +95,7 @@ through subscriptions uses collection ownership rather than one flat scope
 entry per historical item. `misa.project_components` owns semantic component
 output, incremental hints, and resolved views in one collection subscription;
 syntax and cost enrichment likewise use shared collection projections.
-Model preparation, viewport indexing, and other rendering consumers still need
-further work; this API does not itself establish end-to-end rendering performance.
+Model preparation and viewport assembly still perform general traversal; this
+API does not imply O(1) streaming or guarantee a frame budget. The bounded
+[startup and mixed-transcript check](../benchmarks/architecture-handoff-2026-09-07.md)
+records measured scope and limitations separately from subscription correctness.
