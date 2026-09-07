@@ -146,3 +146,9 @@ cover state/event ownership, Unicode text byte accounting, preview truncation,
 replacement after truncation, structured redaction, and custom delta reducers.
 Transcript lifecycle helpers and the viewport's mutable projection cache remain
 to migrate; the delta slice does not establish render-cache rollback safety.
+
+Transcript block/response completion and interruption now produce immutable
+blocks and response metadata. Tests cover generated fragment finalization,
+timing/token rates, metadata attachment, argument compaction, and clearing stale
+tool descriptions. Creation/standalone transcript handlers and viewport state
+remain to migrate.

@@ -230,27 +230,36 @@
   {:patch {:messages {:blocks (misa.replace blocks) :transcript (misa.replace blocks)}}})
 
 (fn finish-block [block event policy]
-  (when block.chunks (set block.text (table.concat block.chunks))
-    (set block.chunks nil))
-  (when (and event (not= event.arguments nil))
-    (set block.arguments (copy-structural event.arguments policy 0)))
-  (when (and event (not= event.name nil))
-    (set block.name (printable-text (tostring event.name)))
-    (when (= block.kind :tool_call)
-      (set block.description (tool-description block.name))))
-  (when (and event (not= event.call_id nil))
-    (set block.call_id (printable-text (tostring event.call_id))))
-  (if (not= block.arguments nil)
-      (do
-        (set block.argument_chunks nil)
-        (set block.argument_text nil))
-      block.argument_chunks
-      (do
-        (set block.argument_text (table.concat block.argument_chunks))
-        (set block.argument_chunks nil)))
-  (set block.argument_bytes nil)
-  (set block.streaming false)
-  nil)
+  (local value (or event {}))
+  (local name (when (not= value.name nil) (printable-text (tostring value.name))))
+  (local has-arguments (or (not= value.arguments nil) (not= block.arguments nil)))
+  (misa.patch block
+              {:text (when block.chunks (table.concat block.chunks))
+               :chunks misa.delete
+               :arguments (when (not= value.arguments nil) (misa.replace (copy-structural value.arguments policy 0)))
+               :name name
+               :description (when (and name (= block.kind :tool_call)) (misa.replace (tool-description name)))
+               :call_id (when (not= value.call_id nil) (printable-text (tostring value.call_id)))
+               :argument_text (if has-arguments misa.delete block.argument_chunks (table.concat block.argument_chunks) nil)
+               :argument_chunks misa.delete :argument_bytes misa.delete :streaming false}))
+
+(fn finalized-response [db owner now interrupted policy]
+  (local blocks
+         (icollect [index block (ipairs db.messages.blocks)]
+           (if (and (>= index owner.block_start) (< index (+ owner.block_start owner.block_count)))
+               (let [finished (if (or interrupted block.streaming) (finish-block block nil policy) block)]
+                 (if interrupted (misa.patch finished {:interrupted true}) finished))
+               block)))
+  (values blocks
+          (misa.patch owner {:status (if interrupted :interrupted :complete)
+                             :completed_monotonic_ms now :elapsed_ms (math.max 0 (- now owner.started_monotonic_ms))})))
+
+(fn response-update [db owner blocks fx]
+  (local responses (icollect [_ previous (ipairs db.messages.responses)]
+                     (if (= previous.id owner.id) owner previous)))
+  {:patch {:messages {:responses (misa.replace responses) :blocks (misa.replace blocks)
+                       :transcript (misa.replace blocks)}}
+   : fx})
 
 (fn timestamp [ms]
   (let [seconds (% (math.floor (/ (or (tonumber ms) 0) 1000)) 86400)]
@@ -764,92 +773,45 @@
                                            (assert (response db
                                                              event.response_id)
                                                    "unknown transcript response"))
-                                    (finish-block (assert (find-block db owner
-                                                                      event.block_id)
-                                                          "unknown transcript block")
-                                                  event policy)
-                                    {: db})})
+                                    (local block (assert (find-block db owner event.block_id) "unknown transcript block"))
+                                    (let [finished (finish-block block event policy)
+                                          blocks (icollect [_ previous (ipairs db.messages.blocks)] (if (= previous block) finished previous))]
+                                      {:patch {:messages {:blocks (misa.replace blocks) :transcript (misa.replace blocks)}}}))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/response-end
+                        {:type :register/event :name :transcript/response-end
                          :handler (fn [db event cofx]
-                                    (local owner
-                                           (assert (response db
-                                                             event.response_id)
-                                                   "unknown transcript response"))
+                                    (local previous (assert (response db event.response_id) "unknown transcript response"))
                                     (local (_ now) (clock cofx))
-                                    (for [index owner.block_start (- (+ owner.block_start
-                                                                        owner.block_count)
-                                                                     1)]
-                                      (local block (. db.messages.blocks index))
-                                      (when block.streaming
-                                        (finish-block block nil policy)))
-                                    (set owner.status :complete)
-                                    (set owner.completed_monotonic_ms now)
-                                    (set owner.elapsed_ms
-                                         (math.max 0
-                                                   (- now
-                                                      owner.started_monotonic_ms)))
-                                    (local output
-                                           (or (and (= (type event.usage)
-                                                       :table)
-                                                    event.usage.output_tokens)
-                                               nil))
-                                    (when (and (and (= (type output) :number)
-                                                    (>= output 0))
-                                               (> owner.elapsed_ms 0))
-                                      (set owner.output_tokens output)
-                                      (set owner.tokens_per_second
-                                           (/ (* output 1000) owner.elapsed_ms)))
-                                    (local fx {})
+                                    (local (blocks finished) (finalized-response db previous now false policy))
+                                    (local output (and (= (type event.usage) :table) event.usage.output_tokens))
+                                    (local rate (and (= (type output) :number) (>= output 0) (> finished.elapsed_ms 0)))
+                                    (var owner (misa.patch finished {:output_tokens (when rate output)
+                                                                    :tokens_per_second (when rate (/ (* output 1000) finished.elapsed_ms))}))
+                                    (local fx [])
                                     (when (= owner.role :assistant)
-                                      (var (text last-text) {})
-                                      (for [i owner.block_start (- (+ owner.block_start
-                                                                      owner.block_count)
-                                                                   1)]
-                                        (local block (. db.messages.blocks i))
+                                      (local text [])
+                                      (var last-text nil)
+                                      (for [index owner.block_start (- (+ owner.block_start owner.block_count) 1)]
+                                        (local block (. blocks index))
                                         (when (= block.kind :assistant)
-                                          (tset text (+ (length text) 1)
-                                                (or block.text ""))
+                                          (table.insert text (or block.text ""))
                                           (set last-text block)))
                                       (when last-text
-                                        (set owner.metadata_block_id
-                                             last-text.id))
+                                        (set owner (misa.patch owner {:metadata_block_id last-text.id})))
                                       (when (> (length text) 0)
-                                        (local committed
-                                               {:text (table.concat text "")
-                                                :timestamp (timestamp owner.started_wall_ms)
-                                                :tokens_per_second owner.tokens_per_second})
-                                        (each [_ effect (ipairs (noninteractive-commit db
-                                                                                       :transcript.assistant
-                                                                                       committed
-                                                                                       cofx
-                                                                                       markdown))]
-                                          (tset fx (+ (length fx) 1) effect))))
-                                    {: db : fx})})
+                                        (local committed {:text (table.concat text "") :timestamp (timestamp owner.started_wall_ms)
+                                                          :tokens_per_second owner.tokens_per_second})
+                                        (each [_ effect (ipairs (noninteractive-commit db :transcript.assistant committed cofx markdown))]
+                                          (table.insert fx effect))))
+                                    (response-update db owner blocks fx))})
           (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/response-interrupted
+                        {:type :register/event :name :transcript/response-interrupted
                          :handler (fn [db event cofx]
-                                    (local owner
-                                           (response db event.response_id))
-                                    (if (not owner) {: db}
-                                        (do
-                                          (local (_ now) (clock cofx))
-                                          (set owner.status :interrupted)
-                                          (set owner.completed_monotonic_ms now)
-                                          (set owner.elapsed_ms
-                                               (math.max 0
-                                                         (- now
-                                                            owner.started_monotonic_ms)))
-                                          (for [i owner.block_start (- (+ owner.block_start
-                                                                          owner.block_count)
-                                                                       1)]
-                                            (local block
-                                                   (. db.messages.blocks i))
-                                            (finish-block block nil policy)
-                                            (set block.interrupted true))
-                                          {: db})))})
+                                    (local previous (response db event.response_id))
+                                    (when previous
+                                      (local (_ now) (clock cofx))
+                                      (local (blocks owner) (finalized-response db previous now true policy))
+                                      (response-update db owner blocks [])))})
 
           (fn standalone [db kind text event cofx]
             (set db.messages.next_id (+ db.messages.next_id 1))
