@@ -6,7 +6,7 @@ const file = @import("misa_file");
 const image = @import("misa_image");
 const syntax = @import("misa_syntax");
 const process = @import("misa_process");
-const http = @import("http.zig");
+const http = @import("misa_http");
 const channel = @import("operation/channel.zig");
 const result_json = @import("operation/result_json.zig");
 const operation_task = @import("operation/task.zig");
@@ -56,6 +56,13 @@ pub const Owner = struct {
         try self.ensureUnique(source.id);
         try self.active.ensureUnusedCapacity(self.allocator, 1);
         const task = try Task.createProcess(self.allocator, self.io, self.wakeup, source);
+        self.startPrepared(task);
+    }
+
+    pub fn startProviderProcess(self: *Owner, source: process.Spec, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(source.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createProviderProcess(self.allocator, self.io, self.wakeup, source, environ);
         self.startPrepared(task);
     }
 

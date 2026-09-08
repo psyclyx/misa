@@ -286,9 +286,12 @@ fn lockDirectoryFile(io: std.Io, directory: std.Io.Dir) !std.Io.File {
 /// only come from the user's process environment, never from an extension:
 /// MISA_CREDENTIAL_ORIGINS='{"openai":["https://gateway.example"]}'.
 pub fn validateCredentialOrigin(id: []const u8, url: []const u8, store: ?*Store, environ: *const std.process.Environ.Map) !void {
-    // Coding-plan usage lives outside the Codex responses prefix. Trust only
-    // this endpoint, not the rest of ChatGPT's backend API.
-    if (std.mem.eql(u8, id, "openai-codex") and std.mem.eql(u8, url, "https://chatgpt.com/backend-api/wham/usage")) return;
+    // Subscription quota operations live outside the Codex responses prefix.
+    // Grant only these exact endpoints, not the rest of ChatGPT's backend API.
+    if (std.mem.eql(u8, id, "openai-codex") and
+        (std.mem.eql(u8, url, "https://chatgpt.com/backend-api/wham/usage") or
+            std.mem.eql(u8, url, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") or
+            std.mem.eql(u8, url, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"))) return;
     if (std.mem.eql(u8, id, "kimi-coding")) {
         const credential_store = store orelse return error.CredentialStoreUnavailable;
         const api_base = credential_store.getField(id, "api_base") orelse return error.CredentialProfileMissing;
@@ -433,9 +436,7 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     try declaration.validate();
     const provider = declaration.provider;
     if (std.mem.eql(u8, provider, "claude")) {
-        if (action == .status) return claudeStatus(allocator, io);
-        try claudeAuth(allocator, io, @tagName(action));
-        return .{ .logged_in = action != .logout };
+        return commandCli(allocator, io, environ, action, "claude");
     }
     if (!managedProvider(provider)) return error.UnknownProvider;
     var store = try Store.init(allocator, io, environ);
@@ -488,9 +489,18 @@ fn managedProvider(provider: []const u8) bool {
         std.mem.eql(u8, provider, "kimi-coding");
 }
 
-fn claudeStatus(allocator: std.mem.Allocator, io: std.Io) !CommandResult {
+/// CLI adapter takes its executable explicitly; fixture composition supplies
+/// its registered script without resolving an installed provider command.
+pub fn commandCli(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, action: Action, executable: []const u8) !CommandResult {
+    if (action == .status) return claudeStatus(allocator, io, environ, executable);
+    try claudeAuth(allocator, io, environ, executable, @tagName(action));
+    return .{ .logged_in = action != .logout };
+}
+
+fn claudeStatus(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, executable: []const u8) !CommandResult {
     const captured = try std.process.run(allocator, io, .{
-        .argv = &.{ "claude", "auth", "status" },
+        .argv = &.{ executable, "auth", "status" },
+        .environ_map = environ,
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
     });
@@ -515,10 +525,11 @@ fn claudeStatus(allocator: std.mem.Allocator, io: std.Io) !CommandResult {
     return .{ .logged_in = logged_in, .subscription_type = subscription };
 }
 
-fn claudeAuth(allocator: std.mem.Allocator, io: std.Io, action: []const u8) !void {
+fn claudeAuth(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, executable: []const u8, action: []const u8) !void {
     if (std.mem.eql(u8, action, "logout")) {
         const result = try std.process.run(allocator, io, .{
-            .argv = &.{ "claude", "auth", action },
+            .argv = &.{ executable, "auth", action },
+            .environ_map = environ,
             .stdout_limit = .limited(64 * 1024),
             .stderr_limit = .limited(64 * 1024),
         });
@@ -527,7 +538,7 @@ fn claudeAuth(allocator: std.mem.Allocator, io: std.Io, action: []const u8) !voi
         if (result.term != .exited or result.term.exited != 0) return error.ClaudeAuthFailed;
         return;
     }
-    var child = try std.process.spawn(io, .{ .argv = &.{ "claude", "auth", action } });
+    var child = try std.process.spawn(io, .{ .argv = &.{ executable, "auth", action }, .environ_map = environ });
     defer child.kill(io);
     const term = try child.wait(io);
     if (term != .exited or term.exited != 0) return error.ClaudeAuthFailed;

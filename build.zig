@@ -72,17 +72,50 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const provider_process = b.createModule(.{
+        .root_source_file = b.path("src/provider/process/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    provider_process.addImport("misa_process", process_effect);
+    const fixture_process = b.createModule(.{
+        .root_source_file = b.path("tests/fixtures/provider_process/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fixture_process.addImport("misa_process", process_effect);
     const state = b.createModule(.{
         .root_source_file = b.path("src/state/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    const http = b.createModule(.{
+        .root_source_file = b.path("src/http/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    http.addImport("misa_auth", auth);
+    const fixture_http = b.createModule(.{
+        .root_source_file = b.path("tests/fixtures/http/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fixture_http.addImport("misa_http_contract", http);
+    const fixture_auth = b.createModule(.{
+        .root_source_file = b.path("tests/fixtures/auth/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fixture_auth.addImport("misa_auth", auth);
     const session = b.createModule(.{
         .root_source_file = b.path("src/session/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     session.addImport("misa_auth", auth);
+    session.addImport("misa_provider_auth", auth);
+    session.addImport("misa_provider_process", provider_process);
+    session.addImport("misa_http", http);
     session.addImport("misa_wakeup", wakeup);
     session.addImport("misa_image", image);
     session.addImport("misa_syntax", syntax);
@@ -106,6 +139,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     main_module.addImport("misa_auth", auth);
+    main_module.addImport("misa_provider_auth", auth);
     main_module.addImport("misa_config", config);
     main_module.addImport("misa_lua_runtime", lua_runtime);
     main_module.addImport("misa_mcp", mcp);
@@ -116,6 +150,29 @@ pub fn build(b: *std.Build) void {
     main_module.addImport("misa_session", session);
 
     const exe = b.addExecutable(.{ .name = "misa", .root_module = main_module });
+    // Fixture applications share session behavior, but acquire provider I/O
+    // from fixture dependencies. There is no runtime switch to enable live I/O.
+    const fixture_session = b.createModule(.{
+        .root_source_file = b.path("src/session/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    copyImports(fixture_session, session);
+    fixture_session.addImport("misa_provider_auth", fixture_auth);
+    fixture_session.addImport("misa_provider_process", fixture_process);
+    fixture_session.addImport("misa_http", fixture_http);
+    const fixture_main = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    copyImports(fixture_main, main_module);
+    fixture_main.addImport("misa_session", fixture_session);
+    fixture_main.addImport("misa_provider_auth", fixture_auth);
+    const fixture_exe = b.addExecutable(.{ .name = "misa-fixture", .root_module = fixture_main });
+    const install_fixture = b.addInstallArtifact(fixture_exe, .{});
+    install_fixture.step.dependOn(b.getInstallStep());
+    b.step("fixture-app", "Build the application with fixture provider dependencies").dependOn(&install_fixture.step);
     b.installArtifact(exe);
     b.installDirectory(.{
         .source_dir = b.path("extensions"),
@@ -166,6 +223,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     operation_test_module.addImport("misa_auth", auth);
+    operation_test_module.addImport("misa_provider_auth", fixture_auth);
+    operation_test_module.addImport("misa_provider_process", fixture_process);
+    operation_test_module.addImport("misa_http", fixture_http);
     operation_test_module.addImport("misa_wakeup", wakeup);
     operation_test_module.addImport("misa_image", image);
     operation_test_module.addImport("misa_syntax", syntax);
@@ -181,7 +241,7 @@ pub fn build(b: *std.Build) void {
     const image_unit = b.addTest(.{ .root_module = image });
     const syntax_unit = b.addTest(.{ .root_module = syntax });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
-    const session_unit = b.addTest(.{ .root_module = session });
+    const session_unit = b.addTest(.{ .root_module = fixture_session });
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&b.addRunArtifact(auth_unit).step);
     test_step.dependOn(&b.addRunArtifact(oauth_unit).step);
@@ -198,8 +258,8 @@ pub fn build(b: *std.Build) void {
 
     const integration_options = b.addOptions();
     integration_options.addOption([]const u8, "source_root", b.pathFromRoot("."));
-    integration_options.addOptionPath("binary", exe.getEmittedBin());
-    integration_options.addOption([]const u8, "installed_binary", b.getInstallPath(.bin, "misa"));
+    integration_options.addOptionPath("binary", fixture_exe.getEmittedBin());
+    integration_options.addOption([]const u8, "installed_binary", b.getInstallPath(.bin, "misa-fixture"));
     const integration_module = b.createModule(.{
         .root_source_file = b.path("tests/integration/root.zig"),
         .target = target,
@@ -209,10 +269,15 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.addTest(.{ .root_module = integration_module });
     const integration = b.addRunArtifact(integration_tests);
     integration.step.dependOn(b.getInstallStep());
+    integration.step.dependOn(&install_fixture.step);
     test_step.dependOn(&integration.step);
     b.step("test-integration", "Run isolated application integration cases").dependOn(&integration.step);
 
     // Nix is intentionally opt-in rather than part of normal package checks.
     const nix_eval = b.addSystemCommand(&.{ "nix-instantiate", "--eval", "--strict", b.pathFromRoot("tests/nix-eval.nix") });
     b.step("test-nix", "Evaluate Nix API tests").dependOn(&nix_eval.step);
+}
+
+fn copyImports(destination: *std.Build.Module, source: *std.Build.Module) void {
+    for (source.import_table.keys(), source.import_table.values()) |name, module| destination.addImport(name, module);
 }

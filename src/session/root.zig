@@ -2,7 +2,7 @@
 const std = @import("std");
 const auth = @import("misa_auth");
 const file = @import("misa_file");
-const http = @import("http.zig");
+const http = @import("misa_http");
 const operation = @import("operation.zig");
 const lua = @import("misa_lua_runtime");
 const state = @import("misa_state");
@@ -191,6 +191,7 @@ pub const Session = struct {
             .view_commit => |lines| try self.terminal.commit(lines),
             .app_quit => self.quit = true,
             .process_run => |spec| try self.startProcess(spec),
+            .provider_process => |spec| try self.startProviderProcess(spec),
             .image => |spec| try self.operations.startImage(spec, self.environ),
             .syntax_highlight => |spec| try self.operations.startSyntax(spec),
             .http_request => |spec| try self.startHttp(spec),
@@ -381,6 +382,15 @@ pub const Session = struct {
     fn startProcess(self: *Session, source: process.Spec) !void {
         if (source.stdout_format == .json_lines_stream) try self.enqueueStreamStart(source.completion, source.id);
         self.operations.startProcess(source) catch |err| {
+            if (source.stdout_format == .json_lines_stream) if (self.queue.pop()) |json| self.allocator.free(json);
+            return err;
+        };
+        if (self.interactive) self.read_requested = true;
+    }
+
+    fn startProviderProcess(self: *Session, source: process.Spec) !void {
+        if (source.stdout_format == .json_lines_stream) try self.enqueueStreamStart(source.completion, source.id);
+        self.operations.startProviderProcess(source, self.environ) catch |err| {
             if (source.stdout_format == .json_lines_stream) if (self.queue.pop()) |json| self.allocator.free(json);
             return err;
         };

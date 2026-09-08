@@ -20,6 +20,7 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+from fixture_environment import fixture_environment
 
 
 class UnsupportedLoader(Exception):
@@ -38,7 +39,7 @@ def main():
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
         original = termios.tcgetattr(slave)
-        env = dict(os.environ, TERM='xterm-256color', MISA_TREE_SITTER_DIR=directory,
+        env = fixture_environment(work, TERM='xterm-256color', MISA_TREE_SITTER_DIR=directory,
                    MISA_AUTH_FILE=str(work / 'auth'), MISA_STATE_FILE=str(work / 'state'))
         process = subprocess.Popen([binary, '--config', str(config)],
                                    stdin=slave, stdout=slave, stderr=slave,

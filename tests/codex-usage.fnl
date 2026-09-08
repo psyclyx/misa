@@ -9,7 +9,7 @@
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
 (fn apply [db event]
   (local before (misa.json.encode db))
-  (local result ((. handlers event.type) db event))
+  (local result ((. handlers event.type) db event {:clock {:wall_ms 0 :monotonic_ms 0}}))
   (assert (= before (misa.json.encode db)) "quota handler mutated old state")
   (values (misa.patch db (or (and result result.patch) {})) (or (and result result.fx) [])))
 (local initial {})
@@ -64,7 +64,7 @@
 (local failed (apply refreshing {:type :provider/codex-usage :id next-id :ok false}))
 (assert failed.providers.openai-codex.usage.unavailable)
 (assert (= (length failed.providers.openai-codex.usage.windows) 0))
-(assert (= failed.providers.openai-codex.subscription_type nil))
+(assert (= failed.providers.openai-codex.subscription_type :pro))
 (assert (= failed (apply failed {:type :provider/codex-usage :ok true :data payload})))
 (local malformed (apply pending {:type :provider/codex-usage :id request.id :ok true
                                  :data {:plan_type {} :rate_limit {:primary_window {:used_percent -1}
@@ -79,8 +79,9 @@
 (set misa.selected_model_projection (fn [] {:provider :openai-codex}))
 (local status ((. (fennel.dofile :extensions/status.fnl) :setup)))
 (var (open-usage plan-query) (values nil nil))
+(each [_ spec (ipairs (. ((. (fennel.dofile :extensions/usage.fnl) :setup)) :fx))]
+  (when (= spec.name :usage/open) (set open-usage spec.handler)))
 (each [_ spec (ipairs status.fx)]
-  (when (= spec.name :usage/open) (set open-usage spec.handler))
   (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]}))
   (when (and (= spec.type :register/indicator) (= spec.value.id :plan))
     (assert (= spec.value.value nil))
@@ -91,11 +92,11 @@
 (assert (= (. (plan-value ready) :value) 0))
 (assert (= (. (plan-value ready) :type) :percent))
 (assert (= (. (plan-value failed) :type) :unavailable))
-(local dashboard (. (open-usage ready {}) :fx 1 :event))
+(local dashboard (. (open-usage ready {} {:clock {:wall_ms 0 :monotonic_ms 0}}) :fx 1 :event))
 (local facts {})
 (each [_ section (ipairs dashboard.sections)]
-  (each [_ field (ipairs section.fields)] (tset facts field.label field.value)))
-(assert (= (. facts "Codex · 7d used") 25))
-(assert (= (. facts "Codex · 7d resets at (Unix seconds)") 1800000000))
-(assert (= (. facts "Codex · 7d reset delay (seconds at fetch)") 3600))
+  (each [_ row (ipairs (or section.rows []))] (tset facts row.label row)))
+(assert (= (. facts "Codex · 7d" :meter :used) 25))
+(assert (= (. facts "Codex · 7d" :detail :value) 1800000000))
+(assert (= (. facts "Codex · 7d" :detail :type) :datetime))
 (output "Codex usage contracts passed")

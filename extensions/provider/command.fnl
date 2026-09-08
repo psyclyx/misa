@@ -52,7 +52,7 @@
                                     {:argv direct
                                      :completion :provider/command-complete
                                      :id effect.id
-                                     :type :process/run})})
+                                     :type :provider/process})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :provider/command-complete

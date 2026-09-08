@@ -430,3 +430,19 @@ test "HTTP effect validation keeps credentials referential" {
     try std.testing.expectEqualStrings("openai", spec.credential.?.id);
     try std.testing.expectEqual(std.http.Method.POST, spec.method);
 }
+
+/// Live composition owns credential resolution alongside the transport. Fixture
+/// applications replace this dependency before either capability is acquired.
+pub fn request(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, spec: Spec, activity: ?Activity) !Result {
+    var store = if (spec.credential != null) try auth.Store.init(allocator, io, environ) else null;
+    defer if (store) |*value| value.deinit();
+    if (spec.credential) |credential| try auth.validateCredentialOrigin(credential.id, spec.url, if (store) |*value| value else null, environ);
+    return run(allocator, io, if (store) |*value| value else null, spec, activity);
+}
+
+pub fn requestSse(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, spec: Spec, sink: StreamSink) !SseResult {
+    var store = if (spec.credential != null) try auth.Store.init(allocator, io, environ) else null;
+    defer if (store) |*value| value.deinit();
+    if (spec.credential) |credential| try auth.validateCredentialOrigin(credential.id, spec.url, if (store) |*value| value else null, environ);
+    return runSse(allocator, io, if (store) |*value| value else null, spec, sink);
+}

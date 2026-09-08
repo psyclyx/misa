@@ -37,8 +37,8 @@
                       (local previous db)
                       (set db (transition db event))
                       (when db.dialog
-                        (assert (and (>= db.dialog.selected_action 1)
-                                     (<= db.dialog.selected_action (math.max 1 (length db.dialog.actions))))))
+                        (assert (= db.dialog.selected_action nil))
+                        (assert (>= db.dialog.scroll 0)))
                       (when (= event.correlation :stale) (assert (= db previous)))))
                   {:cases 1000 :size 25}))
 (assert (not failure) (and failure (fennel.view failure)))

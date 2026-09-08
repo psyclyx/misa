@@ -1,12 +1,14 @@
 //! One native operation's owned inputs, worker lifetime, interaction, and result.
 const std = @import("std");
 const auth = @import("misa_auth");
+const provider_auth = @import("misa_provider_auth");
+const provider_process = @import("misa_provider_process");
 const file = @import("misa_file");
 const image = @import("misa_image");
 const syntax = @import("misa_syntax");
 const process = @import("misa_process");
 const state = @import("misa_state");
-const http = @import("../http.zig");
+const http = @import("misa_http");
 const buffered_records = @import("../buffered_records.zig");
 const channel_module = @import("channel.zig");
 const result_json = @import("result_json.zig");
@@ -16,7 +18,11 @@ const StateSpec = struct { namespace: []const u8, completion: []const u8, id: []
 const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
 const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
 const SyntaxSpec = struct { spec: syntax.Spec, service: *syntax.Service };
-const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: process.Spec, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
+const ProcessRequest = struct {
+    spec: process.Spec,
+    execution: union(enum) { tool, provider: *const std.process.Environ.Map },
+};
+const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
 
 pub const Task = struct {
     pub const max_records_per_event = 32;
@@ -66,10 +72,17 @@ pub const Task = struct {
             .stdin = if (source.stdin) |v| try a.dupe(u8, v) else null,
             .stdin_json = if (source.stdin_json) |v| try cloneJson(a, v) else null,
             .timeouts = source.timeouts,
+            .environment = source.environment,
         };
-        task.kind = .{ .process = spec };
+        task.kind = .{ .process = .{ .spec = spec, .execution = .tool } };
         try task.prepare(spec.completion, spec.id, .{ .first_byte_ms = spec.timeouts.startup_ms, .idle_ms = spec.timeouts.idle_ms, .overall_ms = spec.timeouts.overall_ms });
         task.timeout_kind = .process;
+        return task;
+    }
+
+    pub fn createProviderProcess(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: process.Spec, environ: *const std.process.Environ.Map) !*Task {
+        const task = try createProcess(owner_allocator, io, wakeup, source);
+        task.kind.process.execution = .{ .provider = environ };
         return task;
     }
 
@@ -297,7 +310,7 @@ pub const Task = struct {
         return switch (self.kind) {
             .auth => |spec| .{ .auth = .{ .action = spec.action, .declaration = spec.declaration } },
             .http => |request| if (request.spec.response_format == .sse_json_stream) .http_stream else .ordinary,
-            .process => |spec| if (spec.stdout_format == .json_lines_stream) .process_stream else .ordinary,
+            .process => |request| if (request.spec.stdout_format == .json_lines_stream) .process_stream else .ordinary,
             .file => .file,
             .image, .syntax => .ordinary,
             .state_load => |spec| .{ .state_load = spec.namespace },
@@ -381,32 +394,14 @@ pub const Task = struct {
                 self.result = .{ .ok = true, .data = value, .message = null };
             },
             .http => |request| if (request.spec.response_format == .sse_json_stream) {
-                var store = if (request.spec.credential != null) auth.Store.init(self.arena.allocator(), self.io, request.environ) catch |err| {
-                    self.result = .{ .message = @errorName(err) };
-                    return;
-                } else null;
-                defer if (store) |*value| value.deinit();
-                if (request.spec.credential) |credential| auth.validateCredentialOrigin(credential.id, request.spec.url, if (store) |*value| value else null, request.environ) catch |err| {
-                    self.result = .{ .message = @errorName(err) };
-                    return;
-                };
-                const run_result = http.runSse(self.arena.allocator(), self.io, if (store) |*value| value else null, request.spec, .{ .context = self, .emit = emitHttpRecord, .activity = noteActivityOpaque }) catch |err| {
+                const run_result = http.requestSse(self.arena.allocator(), self.io, request.environ, request.spec, .{ .context = self, .emit = emitHttpRecord, .activity = noteActivityOpaque }) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     self.result = .{ .message = @errorName(err) };
                     return;
                 };
                 self.result = .{ .ok = run_result.status >= 200 and run_result.status < 300 and run_result.failure == null, .status = run_result.status, .body = run_result.error_body, .message = if (run_result.failure) |failure| @errorName(failure) else null };
             } else {
-                var store = if (request.spec.credential != null) auth.Store.init(self.arena.allocator(), self.io, request.environ) catch |err| {
-                    self.result = .{ .message = @errorName(err) };
-                    return;
-                } else null;
-                defer if (store) |*value| value.deinit();
-                if (request.spec.credential) |credential| auth.validateCredentialOrigin(credential.id, request.spec.url, if (store) |*value| value else null, request.environ) catch |err| {
-                    self.result = .{ .message = @errorName(err) };
-                    return;
-                };
-                const run_result = http.run(self.arena.allocator(), self.io, if (store) |*value| value else null, request.spec, .{ .context = self, .note = noteActivityOpaque }) catch |err| {
+                const run_result = http.request(self.arena.allocator(), self.io, request.environ, request.spec, .{ .context = self, .note = noteActivityOpaque }) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     self.result = .{ .message = @errorName(err) };
                     return;
@@ -425,27 +420,38 @@ pub const Task = struct {
                     self.result = .{ .ok = true, .status = run_result.status, .message = null, .data = parsed.value };
                 } else self.result = .{ .ok = ok, .status = run_result.status, .body = process.sanitizeOutput(self.arena.allocator(), run_result.body, 8 * 1024 * 1024) catch "", .message = null };
             },
-            .process => |spec| if (spec.stdout_format == .json_lines_stream) {
-                const run_result = process.runJsonLines(self.arena.allocator(), self.io, spec, .{ .context = self, .emit = emitProcessRecord, .activity = noteActivityOpaque }) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    self.result = .{ .status = -1, .message = @errorName(err) };
-                    return;
-                };
-                self.result = .{ .ok = run_result.status == 0, .status = run_result.status, .body = run_result.stderr, .message = null };
-            } else {
-                const run_result = process.runWithActivity(self.arena.allocator(), self.io, spec, .{ .context = self, .note = noteActivityOpaque }) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    self.result = .{ .status = -1, .message = @errorName(err) };
-                    return;
-                };
-                self.records.noteActivity();
-                if (spec.stdout_format == .json_lines and run_result.status == 0) {
-                    const parsed = buffered_records.parseJsonLines(self.arena.allocator(), run_result.stdout) catch {
-                        self.result = .{ .status = run_result.status, .message = "InvalidJsonResponse" };
+            .process => |request| {
+                const spec = request.spec;
+                if (spec.stdout_format == .json_lines_stream) {
+                    const sink: process.StreamSink = .{ .context = self, .emit = emitProcessRecord, .activity = noteActivityOpaque };
+                    const run_result = (switch (request.execution) {
+                        .tool => process.runJsonLines(self.arena.allocator(), self.io, spec, sink),
+                        .provider => |environ| provider_process.runJsonLines(self.arena.allocator(), self.io, environ, spec, sink),
+                    }) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        self.result = .{ .status = -1, .message = @errorName(err) };
                         return;
                     };
-                    self.result = .{ .ok = true, .status = run_result.status, .body = run_result.stderr, .message = null, .data = parsed.value };
-                } else self.result = .{ .ok = run_result.status == 0, .status = run_result.status, .body = run_result.stdout, .message = run_result.stderr };
+                    self.result = .{ .ok = run_result.status == 0, .status = run_result.status, .body = run_result.stderr, .message = null };
+                } else {
+                    const activity: process.ActivitySink = .{ .context = self, .note = noteActivityOpaque };
+                    const run_result = (switch (request.execution) {
+                        .tool => process.runWithActivity(self.arena.allocator(), self.io, spec, activity),
+                        .provider => |environ| provider_process.runWithActivity(self.arena.allocator(), self.io, environ, spec, activity),
+                    }) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        self.result = .{ .status = -1, .message = @errorName(err) };
+                        return;
+                    };
+                    self.records.noteActivity();
+                    if (spec.stdout_format == .json_lines and run_result.status == 0) {
+                        const parsed = buffered_records.parseJsonLines(self.arena.allocator(), run_result.stdout) catch {
+                            self.result = .{ .status = run_result.status, .message = "InvalidJsonResponse" };
+                            return;
+                        };
+                        self.result = .{ .ok = true, .status = run_result.status, .body = run_result.stderr, .message = null, .data = parsed.value };
+                    } else self.result = .{ .ok = run_result.status == 0, .status = run_result.status, .body = run_result.stdout, .message = run_result.stderr };
+                }
             },
             .file => |spec| {
                 const run_result = file.run(self.arena.allocator(), self.io, spec) catch |err| {
@@ -479,7 +485,7 @@ pub const Task = struct {
                 self.result = .{ .ok = true, .message = null };
             },
             .auth => |spec| {
-                const command_result = auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction, .protected_input = spec.managed_input }) catch |err| {
+                const command_result = provider_auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction, .protected_input = spec.managed_input }) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     self.result = .{ .message = @errorName(err) };
                     return;

@@ -19,6 +19,7 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+from fixture_environment import fixture_environment
 
 binary = str(Path(sys.argv[1]).resolve())
 fixture = (Path(__file__).resolve().parent / 'settled-frames.fnl').read_text()
@@ -36,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='misa-settled-frames-') as directory:
         (work / 'producer.py').write_text(f"import time\nfor i in range({count}):\n print('{{}}',flush=True)\n" + (f" time.sleep({delay})\n" if delay else ""))
         master,slave=pty.openpty()
         fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,100,0,0))
-        env=dict(os.environ,TERM='xterm-256color',MISA_AUTH_FILE=str(work/'auth.json'),MISA_STATE_FILE=str(work/'state.json'))
+        env=fixture_environment(work,TERM='xterm-256color',MISA_AUTH_FILE=str(work/'auth.json'),MISA_STATE_FILE=str(work/'state.json'))
         process=subprocess.Popen([binary,'--config',str(work/'config.json')],stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
         os.close(slave)
         data=bytearray()

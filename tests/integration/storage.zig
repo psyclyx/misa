@@ -48,7 +48,7 @@ test "Claude authentication delegates to the CLI without copying credentials" {
         \\[ "$1" = auth ]
         \\case "$2" in login|logout) ;; status) printf '{"loggedIn":true,"subscriptionType":"max"}\n' ;; *) exit 1 ;; esac
     );
-    try h.environ.put("PATH", try std.fmt.allocPrint(h.allocator(), "{s}:{s}", .{ h.directory, h.environ.get("PATH") orelse "" }));
+    try h.claudeFixture("claude");
     try h.expect(.{ .args = &.{ "login", "claude" } }, "");
     try h.expect(.{ .args = &.{ "status", "claude" } }, "logged in (max)\n");
     try h.expect(.{ .args = &.{ "logout", "claude" } }, "");

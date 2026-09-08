@@ -20,6 +20,7 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+from fixture_environment import fixture_environment
 
 
 SYNC_END = b'\x1b[?2026l'
@@ -37,7 +38,7 @@ def main():
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
         original = termios.tcgetattr(slave)
-        env = dict(os.environ, TERM='xterm-256color',
+        env = fixture_environment(work, TERM='xterm-256color',
                    MISA_AUTH_FILE=str(work / 'auth'), MISA_STATE_FILE=str(work / 'state'))
         env.pop('TMUX', None)
         env.pop('STY', None)

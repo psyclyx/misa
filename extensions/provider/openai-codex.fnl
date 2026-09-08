@@ -39,6 +39,24 @@
                                  (.. "Additional quota " index))))))
   windows)
 
+(fn reset-count [payload]
+  (local summary (and (= (type payload) :table) payload.rate_limit_reset_credits))
+  (when (= (type summary) :table) (quota-number summary.available_count)))
+
+;; The usage endpoint carries only a count. Detail rows come from the separate
+;; read-only reset-credit endpoint; keep wire dates out of display code.
+(fn reset-credits [payload]
+  (when (and (= (type payload) :table) (= (type payload.credits) :table) (not= payload.credits misa.json_null))
+    (icollect [_ credit (ipairs payload.credits)]
+      (when (and (= (type credit) :table) (= (type credit.id) :string)
+                 (= (type credit.status) :string)
+                 (or (quota-label credit.granted_at) (quota-number credit.granted_at)))
+        {:id credit.id :label (or (quota-label credit.title) "Quota reset")
+         :status (quota-label credit.status)
+         :granted_at (quota-label credit.granted_at) :granted_at_unix (quota-number credit.granted_at)
+         :expires_at (quota-label credit.expires_at) :expires_at_unix (quota-number credit.expires_at)
+         :expires_never (or (= credit.expires_at nil) (= credit.expires_at misa.json_null))}))))
+
 (fn input [messages]
   (let [result {}]
     (each [_ message (ipairs messages)]
@@ -228,21 +246,94 @@
                                                    :timeouts config.timeouts}]}))))})
           (table.insert setup-fx
                         {:type :register/event :name :provider/codex-usage
-                         :handler (fn [db event]
+                         :handler (fn [db event cofx]
                                     (local provider (and db.providers db.providers.openai-codex))
                                     (when (and provider provider.usage_request (= provider.usage_request event.id))
                                       (local windows (if event.ok (usage-windows event.data) []))
+                                      (each [_ window (ipairs windows)]
+                                        (when (and (not window.reset_at_unix) window.reset_after_seconds)
+                                          (tset window :reset_at_unix (+ (/ cofx.clock.wall_ms 1000)
+                                                                        window.reset_after_seconds))))
                                       (local plan (when (and event.ok (= (type event.data) :table))
                                                     (quota-label event.data.plan_type)))
+                                      (local count (when event.ok (reset-count event.data)))
+                                      (local details-id (when (and count (> count 0)) (.. event.id "-resets")))
                                       (local updated {:type :dispatch :event {:type :usage/updated}})
+                                      (local fx [updated])
+                                      (when details-id
+                                        (table.insert fx {:type :http/request :method :GET :id details-id
+                                                          :url (or config.reset_credits_url "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
+                                                          :credential {:id :openai-codex :header :authorization :prefix "Bearer "
+                                                                       :metadata_field :account_id :metadata_header :chatgpt-account-id}
+                                                          :response_format :json :completion :provider/codex-reset-credits
+                                                          :timeouts config.timeouts}))
+                                      (when provider.usage_again
+                                        (table.insert fx {:type :dispatch :event {:type :usage/refresh :provider :openai-codex}}))
                                       {:patch {:providers {:openai-codex {:usage_request misa.delete
                                                                           :usage_again misa.delete
-                                                                          :subscription_type (misa.replace plan)
+                                                                          :reset_count (misa.replace count)
+                                                                          :reset_credits_request (or details-id misa.delete)
+                                                                          :reset_credits misa.delete
+                                                                          :reset_refresh (if provider.usage_again provider.reset_refresh misa.delete)
+                                                                          :subscription_type (if event.ok (misa.replace plan) provider.subscription_type)
                                                                           :usage (misa.replace {: windows
                                                                                                :unavailable (= (length windows) 0)})}}}
-                                       :fx (if provider.usage_again
-                                               [updated {:type :dispatch :event {:type :usage/refresh :provider :openai-codex}}]
-                                               [updated])}))})
+                                       : fx}))})
+          (table.insert setup-fx
+                        {:type :register/event :name :provider/codex-reset-credits
+                         :handler (fn [db event]
+                                    (local provider (and db.providers db.providers.openai-codex))
+                                    (when (and provider provider.reset_credits_request
+                                               (= event.id provider.reset_credits_request))
+                                      {:patch {:providers {:openai-codex
+                                                          {:reset_credits_request misa.delete
+                                                           :reset_credits (misa.replace (when event.ok (reset-credits event.data)))}}}
+                                       :fx [{:type :dispatch :event {:type :usage/updated}}]}))})
+          ;; The Codex backend client maps account/rateLimitResetCredit/consume
+          ;; to this WHAM endpoint with redeem_request_id as its idempotency key.
+          ;; Never send this request from setup, usage refresh, or a retry timer.
+          (table.insert setup-fx
+                        {:type :register/event :name :provider/codex-reset
+                         :handler (fn [db _ cofx]
+                                    (local provider (and db.providers db.providers.openai-codex))
+                                    (when (and provider (not provider.reset_request) (not provider.reset_refresh)
+                                               (or provider.reset_attempt
+                                                   (> (or provider.reset_count 0) 0)))
+                                      (local sequence (+ (or provider.reset_sequence 0) 1))
+                                      (local attempt (or provider.reset_attempt
+                                                         (.. "misa-codex-reset-" cofx.clock.wall_ms "-"
+                                                             cofx.clock.monotonic_ms "-" sequence)))
+                                      (local id (.. "codex-reset-" sequence))
+                                      {:patch {:providers {:openai-codex {:reset_sequence sequence :reset_request id
+                                                                         :reset_attempt attempt
+                                                                         :reset_message "Resetting Codex quota…"}}}
+                                       :fx [{:type :http/request :method :POST : id
+                                             :url "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+                                             :credential {:id :openai-codex :header :authorization :prefix "Bearer "
+                                                          :metadata_field :account_id :metadata_header :chatgpt-account-id}
+                                             :headers [{:name :content-type :value :application/json}]
+                                             :json {:redeem_request_id attempt}
+                                             :response_format :json :completion :provider/codex-reset-complete
+                                             :timeouts config.timeouts}
+                                            {:type :dispatch :event {:type :usage/updated}}]}))})
+          (table.insert setup-fx
+                        {:type :register/event :name :provider/codex-reset-complete
+                         :handler (fn [db event]
+                                    (local provider (and db.providers db.providers.openai-codex))
+                                    (when (and provider provider.reset_request (= event.id provider.reset_request))
+                                      (local outcome (and event.ok (= (type event.data) :table) event.data.outcome))
+                                      (local messages {:reset "Codex quota reset used."
+                                                       :already_redeemed "Codex quota reset already applied."
+                                                       :nothing_to_reset "No Codex quota window is eligible for a reset."
+                                                       :no_credit "No Codex quota resets are available."})
+                                      (local message (and outcome (. messages outcome)))
+                                      {:patch {:providers {:openai-codex {:reset_request misa.delete
+                                                                         :reset_attempt (if message misa.delete provider.reset_attempt)
+                                                                         :reset_refresh true
+                                                                         :reset_message (or message
+                                                                                           "Could not confirm the Codex reset. Retry to check the same redemption.")}}}
+                                       :fx [{:type :dispatch :event {:type :usage/refresh :provider :openai-codex}}
+                                            {:type :dispatch :event {:type :usage/updated}}]}))})
           (local serializer-id :openai.responses.codex)
           (table.insert setup-fx
                         {:type :register/request-options-serializer

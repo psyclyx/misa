@@ -11,6 +11,9 @@ pub const Spec = struct {
     stdin: ?[]const u8,
     stdin_json: ?std.json.Value,
     timeouts: Timeouts = .{},
+    /// Supplied by native composition only; parse never accepts environment
+    /// variables from extension effects.
+    environment: ?*const std.process.Environ.Map = null,
 
     pub const Timeouts = struct {
         startup_ms: u64 = 10_000,
@@ -99,7 +102,7 @@ pub fn runWithActivity(allocator: std.mem.Allocator, io: std.Io, spec: Spec, act
         encoded_stdin = try std.fmt.allocPrint(allocator, "{s}\n", .{json});
     }
     const process_stdin: ?[]const u8 = if (spec.stdin) |value| value else if (encoded_stdin) |value| value else null;
-    const captured = capture(allocator, io, argv.items, process_stdin, activity) catch |err| {
+    const captured = capture(allocator, io, argv.items, process_stdin, activity, spec.environment) catch |err| {
         const stdout = try allocator.dupe(u8, "");
         errdefer allocator.free(stdout);
         return .{
@@ -138,7 +141,7 @@ pub fn runJsonLines(allocator: std.mem.Allocator, io: std.Io, spec: Spec, sink: 
         encoded = try std.fmt.allocPrint(allocator, "{s}\n", .{json});
     }
     const stdin = spec.stdin orelse encoded;
-    var child = try std.process.spawn(io, .{ .argv = argv.items, .stdin = if (stdin != null) .pipe else .ignore, .stdout = .pipe, .stderr = .pipe });
+    var child = try std.process.spawn(io, .{ .argv = argv.items, .environ_map = spec.environment, .stdin = if (stdin != null) .pipe else .ignore, .stdout = .pipe, .stderr = .pipe });
     defer child.kill(io);
     var stdin_group: std.Io.Group = .init;
     defer stdin_group.cancel(io);
@@ -207,8 +210,8 @@ fn termStatus(term: std.process.Child.Term) i64 {
     };
 }
 
-fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin: ?[]const u8, activity: ?ActivitySink) !std.process.RunResult {
-    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = if (stdin != null) .pipe else .ignore, .stdout = .pipe, .stderr = .pipe });
+fn capture(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin: ?[]const u8, activity: ?ActivitySink, environ: ?*const std.process.Environ.Map) !std.process.RunResult {
+    var child = try std.process.spawn(io, .{ .argv = argv, .environ_map = environ, .stdin = if (stdin != null) .pipe else .ignore, .stdout = .pipe, .stderr = .pipe });
     defer child.kill(io);
     var stdin_group: std.Io.Group = .init;
     defer stdin_group.cancel(io);
@@ -395,7 +398,7 @@ test "stdin and stdout are pumped concurrently" {
         // deadlocks because the child writes before it reads.
         "dd if=/dev/zero bs=262144 count=1 2>/dev/null; cat >/dev/null",
     };
-    const captured = try capture(std.testing.allocator, std.testing.io, &argv, input, null);
+    const captured = try capture(std.testing.allocator, std.testing.io, &argv, input, null, null);
     defer std.testing.allocator.free(captured.stdout);
     defer std.testing.allocator.free(captured.stderr);
     try std.testing.expectEqual(@as(i64, 0), termStatus(captured.term));

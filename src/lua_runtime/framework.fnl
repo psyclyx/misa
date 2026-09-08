@@ -1,6 +1,9 @@
 ;; Trusted event framework, embedded by Zig.
 
 (local traceback debug.traceback)
+(local locale-date os.date)
+;; Initialize time formatting from LC_TIME/LANG before hiding the OS library.
+(os.setlocale "" :time)
 
 (local (events event-routes route-ids) (values {} {} {}))
 
@@ -38,6 +41,11 @@
 (local MAX_DEPTH 128)
 
 (global misa {:json_null {}})
+
+;; Format an explicit instant; current time still comes from the clock coeffect.
+(fn misa.local_datetime [seconds]
+  (local (ok value) (pcall locale-date "%x %X %Z" seconds))
+  (when ok value))
 
 (local state-updates ((require :misa.runtime.state) misa.json_null))
 (set misa.delete state-updates.delete)

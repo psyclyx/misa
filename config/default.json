@@ -16,6 +16,7 @@
     "fuzzy",
     "keybindings",
     "actions",
+    "links",
     "clipboard",
     "dialogs",
     "commands",
@@ -42,11 +43,14 @@
     "component.picker",
     "component.status",
     "component.chrome",
+    "component.buttons",
+    "component.data",
     "component.dialog",
     "component.selection",
     "dialog_view",
     "messages",
     "status",
+    "usage",
     "picker",
     "picker_view",
     "models",
@@ -166,7 +170,8 @@
         "transcript.tool_call": "default.transcript.tool_call",
         "transcript.tool_result": "default.transcript.tool_result",
         "transcript.harness": "default.transcript.harness",
-        "selection": "default.selection"
+        "selection": "default.selection",
+        "data": "default.data"
       }
     },
     "themes": {

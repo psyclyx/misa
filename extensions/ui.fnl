@@ -190,6 +190,9 @@
 {:setup (fn []
           (local setup-fx [{:type :register/service :name :ui_regions :value regions}])
           (table.insert setup-fx
+                        {:type :register/service :name :overlay_available_lines
+                         :value (fn [db terminal] (. (chrome db terminal) :available))})
+          (table.insert setup-fx
                         {:type :register/service
                          :name :ui_bound_frame
                          :value bound-frame})

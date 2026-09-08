@@ -21,6 +21,10 @@
   choicePreview = "choice_preview";
   choiceLayout = "choice_layout";
   values = "values";
+  usage = "usage";
+  links = "links";
+  componentButtons = "component.buttons";
+  componentData = "component.data";
   commands = "commands";
   omnipicker = "omnipicker";
   dialogs = "dialogs";

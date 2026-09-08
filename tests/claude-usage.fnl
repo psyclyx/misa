@@ -32,7 +32,7 @@
 (local (pending requests) (apply initial {:type :usage/refresh :provider :claude}))
 (assert (= (length requests) 1))
 (local request (. requests 1))
-(assert (= request.type :process/run))
+(assert (= request.type :provider/process))
 (assert (= (. request.argv 1) :claude))
 (assert (= request.completion :provider/claude-usage))
 (assert (= request.stdout_format :json_lines))
@@ -184,31 +184,29 @@
 (assert (= (. generic-usage.windows 1 :reset_at) reset))
 (assert (= (. generic-usage.windows 1 :used) nil))
 (assert (= (. generic-usage.windows 2 :id) :zeta))
-(fn fields-by-label [usage]
-  (local fields {})
-  (each [_ field (ipairs usage.fields)] (tset fields field.label field.value))
-  fields)
-(local fields (fields-by-label generic-usage))
-(assert (= (. fields "Extra usage enabled") false))
-(assert (= (. fields "Extra usage currency") :USD))
-(assert (= (. fields "Extra usage monthly limit (USD)") 123.45))
-(assert (= (. fields "Extra usage used (USD)") 0))
+(local extra generic-usage.extra_usage)
+(assert (= extra.enabled false))
+(assert (= extra.currency :USD))
+(assert (= extra.limit 123.45))
+(assert (= extra.used 0))
+(assert (= extra.unlimited false))
+(assert (= extra.manage_url "https://claude.ai/settings/usage"))
 (each [_ decimals (ipairs [misa.json_null -1 1.5 10 math.huge])]
   (local minor (completed pending request.id
                           (records request.id {:rate_limits_available true
                                                :rate_limits {:extra_usage {:is_enabled true :currency :USD
                                                                            :decimal_places decimals
                                                                            :monthly_limit 12345 :used_credits 12}}})))
-  (local raw (fields-by-label minor.providers.claude.usage))
-  (assert (= (. raw "Extra usage monthly limit (minor units)") 12345))
-  (assert (= (. raw "Extra usage used (minor units)") 12)))
+  (local amount minor.providers.claude.usage.extra_usage)
+  (assert (= amount.limit 123.45))
+  (assert (= amount.used 0.12)))
 (each [_ decimals (ipairs [0 9])]
   (local scaled (completed pending request.id
                            (records request.id {:rate_limits_available true
                                                 :rate_limits {:extra_usage {:is_enabled true :currency :USD
                                                                             :decimal_places decimals
                                                                             :monthly_limit 1000000000}}})))
-  (assert (= (. (fields-by-label scaled.providers.claude.usage) "Extra usage monthly limit (USD)")
+  (assert (= scaled.providers.claude.usage.extra_usage.limit
              (/ 1000000000 (^ 10 decimals)))))
 ;; A targeted stream update replaces only its matching full-snapshot window.
 (local full-snapshot (completed pending request.id
@@ -232,8 +230,8 @@
 (assert (= (. merged-usage.windows 2 :id) :seven_day))
 (assert (= (. merged-usage.windows 2 :used) 75))
 (assert (= (. merged-usage.windows 2) (. full-usage.windows 2)) "stream merge replaced the untouched weekly record")
-(assert (= merged-usage.fields full-usage.fields) "stream merge discarded extra usage fields")
-(assert (= (. (fields-by-label merged-usage) "Extra usage enabled") false))
+(assert (= merged-usage.extra_usage full-usage.extra_usage) "stream merge discarded extra usage settings")
+(assert (= merged-usage.extra_usage.enabled false))
 (assert (= (length merge-fx) 1))
 (assert (= (. merge-fx 1 :event :type) :usage/updated))
 (local unnamed (apply full-snapshot {:type :provider/claude-quota
@@ -241,5 +239,5 @@
                                              :windows [{:label :Claude :unit :percent}]}}))
 (assert (= (length unnamed.providers.claude.usage.windows) 1))
 (assert (= unnamed.providers.claude.usage.source :stream))
-(assert (= unnamed.providers.claude.usage.fields nil) "unnamed stream window retained an uncorrelated full snapshot")
+(assert (= unnamed.providers.claude.usage.extra_usage nil) "unnamed stream window retained an uncorrelated full snapshot")
 (output "Claude usage contracts passed\n")

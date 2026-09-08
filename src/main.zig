@@ -1,6 +1,7 @@
 //! Thin CLI entry point: resolve configuration, then hand it to the Lua runtime.
 const std = @import("std");
 const auth = @import("misa_auth");
+const provider_auth = @import("misa_provider_auth");
 const config_module = @import("misa_config");
 const lua = @import("misa_lua_runtime");
 const mcp = @import("misa_mcp");
@@ -21,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
     if (argv.items.len > 1 and (std.mem.eql(u8, argv.items[1], "login") or std.mem.eql(u8, argv.items[1], "logout") or std.mem.eql(u8, argv.items[1], "status"))) {
         if (argv.items.len != 3) fatal("usage: misa <login|logout|status> <openai|openai-codex|anthropic|openrouter|kimi-coding|claude>");
         const action: auth.Action = if (std.mem.eql(u8, argv.items[1], "login")) .login else if (std.mem.eql(u8, argv.items[1], "logout")) .logout else .status;
-        const result = auth.commandTerminal(allocator, init.io, init.environ_map, action, argv.items[2]) catch |err| {
+        const result = provider_auth.commandTerminal(allocator, init.io, init.environ_map, action, argv.items[2]) catch |err| {
             if (err == error.UnknownProvider) fatal("unknown provider");
             return err;
         };

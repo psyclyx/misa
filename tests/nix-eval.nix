@@ -47,6 +47,7 @@ assert
   standard == {
     actions = "actions";
     clipboard = "clipboard";
+    links = "links";
     editing = "editing";
     costs = "costs";
     history = "history";
@@ -83,6 +84,8 @@ assert
     componentStatus = "component.status";
     componentChrome = "component.chrome";
     componentDialog = "component.dialog";
+    componentButtons = "component.buttons";
+    componentData = "component.data";
     editor = "editor";
     fuzzy = "fuzzy";
     keybindings = "keybindings";
@@ -96,6 +99,7 @@ assert
     requestOptions = "request_options";
     effort = "effort";
     status = "status";
+    usage = "usage";
     themes = "themes";
     themeDefault = "theme.default";
     providerFake = "provider.fake";

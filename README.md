@@ -31,6 +31,7 @@ adapters precede the API providers that use them:
     "keybindings",
     "actions",
     "clipboard",
+    "links",
     "dialogs",
     "commands",
     "choices",
@@ -55,11 +56,14 @@ adapters precede the API providers that use them:
     "component.picker",
     "component.status",
     "component.chrome",
+    "component.buttons",
+    "component.data",
     "component.dialog",
     "component.selection",
     "dialog_view",
     "messages",
     "status",
+    "usage",
     "picker",
     "picker_view",
     "models",
@@ -98,18 +102,34 @@ Use `nix-shell -A shell` for the pinned development dependencies. `zig build tes
 runs native unit tests and the named Zig integration cases in `tests/integration/`.
 The suite owns temporary configurations, child processes, deadlines, and output
 assertions; extension fixtures live in `tests/integration/fixtures/*.fnl`.
+Application integration runs `misa-fixture`, composed with fixture HTTP and
+authentication dependencies. HTTP requests fail as `UnmatchedHttpFixture`
+before credentials are loaded; OAuth login has no fixture implementation.
+Authentication storage tests use temporary stores, and CLI authentication tests
+register their fixture executable explicitly. Fixture environments inherit only
+tool paths, locale, terminal type, and the grammar dependency; HOME, XDG paths,
+and provider configuration directories belong to the fixture.
+Provider command effects use a separate `provider/process` capability. The
+fixture implementation only runs absolute executables registered by the fixture
+owner under its temporary root, with the owner's explicit environment; it never
+falls back to an installed provider CLI.
+
+Provider policy tests inspect emitted effects and supply synthetic responses.
+The native process and MCP adapter tests intentionally execute local shell
+fixtures: this is dependency separation, not an OS security sandbox or a promise
+about arbitrary new test code. Directly invoking the production executable or
+writing a test that spawns a live provider bypasses the fixture composition.
 Run standalone policy tests with `tools/fennel tests/runtime-state.fnl`. The same
 runner supports the Fennel benchmark scripts and uses the bundled compiler.
 
-Optional
+Build the fixture executable with `zig build fixture-app`. Optional
 terminal-protocol regressions run with `python3 tests/ghostty-input.py
-zig-out/bin/misa`, `python3 tests/settled-frames.py zig-out/bin/misa`, and
-`python3 tests/threaded-terminal.py zig-out/bin/misa`. They
+zig-out/bin/misa-fixture`, `python3 tests/settled-frames.py zig-out/bin/misa-fixture`, and
+`python3 tests/threaded-terminal.py zig-out/bin/misa-fixture`. They
 use a PTY and local provider fixtures, with no account or network dependency.
 Pass `--installed` to `tests/ghostty-input.py` to verify the executable's installed
-catalog rather than loading extensions from the worktree. This mode also clears
-an inherited `MISA_EXTENSION_DIR`; it works with a Nix store executable after
-`nix-build -A default --no-out-link`.
+catalog rather than loading extensions from the worktree. This mode uses the
+catalog installed alongside `misa-fixture` by `zig build fixture-app`.
 
 Without an override, misa loads the installed `share/misa/default.json`, which
 selects all shipped real providers, Claude Code by default, coding tools, model
@@ -313,6 +333,7 @@ The fixed native effects are:
 - `{type="dispatch", event=<table>}`
 - `{type="syntax/highlight", language=..., source=..., completion=..., id=..., timeout_ms=?}`
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
+- `{type="provider/process", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="http/request", url=..., json=..., credential=..., completion=..., id=..., timeouts={first_byte_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="file/read", path=..., completion=..., id=...}`
 - `{type="file/list", path=..., completion=..., id=...}`
@@ -334,7 +355,9 @@ correlation=..., action=..., value=...}`
 - `{type="app/quit"}`
 
 Unknown native effects fail the session. `http/request` injects credentials by
-ID inside Zig, so secret bytes never cross into Fennel policy. `process/run` invokes direct argv,
+ID inside Zig, so secret bytes never cross into Fennel policy. Provider adapters
+use `provider/process`, whose execution dependency is selected by application
+composition. General-purpose tools use `process/run`. Both invoke direct argv,
 never a shell, captures stdout and stderr with 1 MiB bounds, and never inherits
 the terminal output. The shell tool explicitly translates its command to
 `["sh" "-lc" command]` in Fennel; filesystem and process isolation are concerns
@@ -764,12 +787,21 @@ session without resetting its query, highlight, or narrowing context. `replace_v
 kept only for that choice session and never changes purpose defaults.
 
 `dialogs` owns correlated modal/progress/alert lifecycle, actions, cancellation,
-and optional text input. Tab or Left/Right selects among multiple actions.
-Dialogs may carry `sections=[{id?,title?,fields=[{label,value}]}]` alongside ordinary
-message text. Nil-valued fields are omitted; numbers and booleans remain typed
-until presentation. `dialog/update` replaces supplied sections as a collection.
-The usage dashboard uses this data contract, including deterministic provider
-ordering, rather than inserting a pre-rendered report string.
+and optional text input. Buttons activate by click or their configurable binding;
+there is no implicit first action. Only an action with `primary=true` responds to
+Enter. A button may declare `confirm={title,message,label}` to require the shared
+confirmation flow, and `persistent=true` to keep the original dialog open after
+completion. Escape cancels a confirmation first, then dismisses the dialog.
+
+Dialogs may carry `sections=[{id?,title?,heading?,rows=[{label,fact,meter?,detail?,actions?}]}]`.
+Facts and details use `values`' typed formatting; optional meters carry `used` and
+`limit`. Row action IDs refer to the dialog's action definitions, with `inline=true`
+placing their buttons in the row. `component.data` measures shared columns across
+all sections, and `component.buttons` uses the ordinary keybinding and action span
+presentation. `dialog_view` composes data with the replaceable dialog chrome.
+`dialog/update` replaces supplied sections as a collection while preserving open
+confirmations and scroll position. Arrow, wheel, and page keys scroll overflow.
+Usage supplies this semantic data contract and owns no rendering or input model.
 Dialog handlers return patches. Additional ordinary input kinds use
 `{type="register/dialog-input", id="my_input", value=function(dialog, event) ... end}`;
 the pure handler returns `{patch=<application patch>, fx=<array>}`. Protected
@@ -857,7 +889,7 @@ weekly and additional quota windows remain numeric data, including known used,
 remaining, limit, and reset values. Results update an open usage dashboard;
 closing it does not cancel the request or reopen the dialog on completion.
 `config.providers.kimi.usage_url` can override the quota endpoint explicitly.
-Failures or responses without usable windows display unavailable, not zero usage.
+Providers without usable quota windows are omitted from the dashboard; missing values never imply zero usage.
 Concurrent Kimi refresh triggers coalesce into one follow-up request after the
 in-flight request finishes, including when it fails.
 This integration follows [Kimi Code's usage implementation](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/ui/shell/usage.py).
@@ -873,10 +905,23 @@ Codex OAuth fetches `https://chatgpt.com/backend-api/wham/usage` using Misa's
 stored Codex credential and native account-ID header binding. Main, code-review,
 and additional quota windows normalize to percentage facts; their actual window
 durations determine labels rather than assuming a fixed primary/secondary order.
-The dashboard includes plan type and available reset timestamps/delays (the delay
-is explicitly at fetch time, not a live countdown). Concurrent refreshes coalesce,
-stale completions are ignored, and failures clear stale quota values.
-Native credential trust permits this exact usage URL, not the surrounding ChatGPT
+The `usage` extension projects provider facts into the generic `data` component.
+Its rows share label and meter columns, with typed values formatted by `values`.
+Dates use the local locale/time zone and relative durations, updated once a minute.
+Dialog chrome, scrolling, click/hotkey buttons, and confirmations are shared UI
+primitives. Usage has no primary action: Enter does nothing until a confirmation
+is open. Escape dismisses confirmation first, then closes Usage and resumes input.
+Concurrent refreshes coalesce, stale completions are ignored, and failures clear
+stale quota values.
+
+Codex reset details come from `/wham/rate-limit-reset-credits`; the dashboard shows
+the available count and each returned expiry. The inline **Use reset** button (`r`,
+configurable through `keybindings.usage.codex-reset`) requires confirmation before
+POSTing to `/wham/rate-limit-reset-credits/consume`. Pending operations disable the
+button; an uncertain result retains the redemption key for an explicit retry.
+Refreshing usage never consumes a reset. The API follows the
+[Codex reset-credit contract](https://learn.chatgpt.com/docs/app-server#8-earned-rate-limit-resets-chatgpt).
+Native credential trust permits only these exact WHAM endpoints, not the surrounding ChatGPT
 backend. An explicit `config.providers.openai_codex.usage_url` override still needs
 native credential-origin authorization. Account identifiers are not retained in
 quota state.
@@ -887,8 +932,13 @@ Claude refreshes full plan quota snapshots through the CLI's experimental
 The query sends no prompt, disables hooks and MCP configuration for the probe,
 and leaves credential handling inside Claude Code. It reports available quota
 windows, model-scoped limits, subscription type and extra-usage amounts. Monetary
-scaling requires an explicit decimal-place field; otherwise amounts are labeled
-as minor units. The probe session's cost is not used as Misa's conversation cost.
+scaling uses explicit decimal places when present, otherwise the CLI's currency
+minor-unit conversion. Extra usage is one row with enabled state, spending, and
+monthly limit. **Manage** (`e`, configurable through `keybindings.usage.extra-manage`)
+opens Claude's usage settings for enablement and limit changes; the CLI has no
+exposed settings-update control. `config.links.command` selects the browser opener
+(default `["xdg-open"]`; use `["open"]` on macOS). The probe session's cost is not
+used as Misa's conversation cost.
 Refreshes coalesce; stale completions are ignored. Unsupported CLI versions,
 failed queries and missing quota data show unavailable instead of invented limits.
 The experimental response may change; CLI 2.1.261 was checked against a live account.
@@ -1068,8 +1118,9 @@ symbol.
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
   extensions = with p.lib.standardExtensions; [
-    themes themeDefault animations animationDefault components layout choiceLayout markdown componentMarkdown indicators dialogs dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
-    messages status picker pickerView models omnipicker requestOptions effort agent editor ui
+    values json providerFake keybindings links actions
+    themes themeDefault animations animationDefault components layout choiceLayout markdown componentMarkdown indicators dialogs componentButtons componentData dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
+    messages status usage picker pickerView models omnipicker requestOptions effort agent editor ui
   ];
   config = {
     models.default = "fake/default";

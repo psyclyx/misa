@@ -1,183 +1,71 @@
-;; Generic popup content. Root composition retains the transcript behind it.
+;; Dialog chrome composes already-projected content, inputs, and shared buttons.
+;; It has no knowledge of quota data, number formats, or provider operations.
+(fn span [text style link] {: text :style (or style :dialog.message) : link})
+(fn append [target source]
+  (each [_ value (ipairs source)] (table.insert target value)))
 
-(fn span [text style link] {: link : style : text})
-
-(local fields [{:key :message :omit_empty true :style :dialog.message}
-               {:key :url :label "URL  " :link true :style :link}
-               {:key :code :label "Code " :style :dialog.code}
-               {:key :progress :style :dialog.progress}
-               {:key :input_error :style :dialog.message}])
+(fn render [model context]
+  (local width (math.max 1 (- (or context.columns 80) 2)))
+  (local room (math.max 0 (or context.available_lines 24)))
+  (local body [])
+  (fn add [spans]
+    (each [_ line (ipairs (misa.layout.wrap_spans [{: spans}] width))]
+      (table.insert line.spans 1 (span "│ " :dialog.label))
+      (table.insert body line)))
+  (each [_ field (ipairs [{:key :message :style :dialog.message}
+                          {:key :url :label "URL  " :style :link :link true}
+                          {:key :code :label "Code " :style :dialog.code}
+                          {:key :progress :style :dialog.progress}
+                          {:key :input_error :style :dialog.message}])]
+    (local value (. model field.key))
+    (when (and value (not= value ""))
+      (add [(span (.. (or field.label "") (tostring value)) field.style (when field.link value))])))
+  (each [_ line (ipairs (or model.content []))] (add line.spans))
+  (local buttons (icollect [_ action (ipairs (or model.actions []))]
+                   (when (not action.inline) action)))
+  (local footer-spans (misa.render_buttons buttons model))
+  (each [_ hint (ipairs (or model.hints []))]
+    (table.insert footer-spans (span (.. "   " hint) :dialog.hint)))
+  (fn wrap-footer []
+    (local wrapped (misa.layout.wrap_spans [{:spans footer-spans}] (math.max 1 (- width 1))))
+    (each [index line (ipairs wrapped)]
+      (table.insert line.spans 1 (span (if (= index 1) "└─ " "   ") :dialog.label)))
+    wrapped)
+  (var footer (wrap-footer))
+  (var input nil)
+  (when model.input_enabled
+    (local value (if model.protected
+                    (string.rep "•" (math.min (or model.input_length 0) (math.max 1 (- width 2))))
+                    (or model.input "")))
+    (set input (misa.layout.wrap_input value (or context.columns 80) (length value)
+                                        "│ " :dialog.input :dialog.label)))
+  (var input-room (if input (math.min (length input.lines) (math.max 1 (- room (length footer) 1))) 0))
+  (var body-room (math.max 0 (- room (length footer) input-room 1)))
+  (when (> (length body) body-room)
+    (table.insert footer-spans (span "   "))
+    (append footer-spans (misa.render_keybinding_reference [{:key :arrow_up :label ""} {:key :arrow_down :label "Scroll"}]))
+    (set footer (wrap-footer))
+    (set input-room (if input (math.min (length input.lines) (math.max 1 (- room (length footer) 1))) 0))
+    (set body-room (math.max 0 (- room (length footer) input-room 1))))
+  (local maximum (math.max 0 (- (length body) body-room)))
+  (local offset (math.min maximum (math.max 0 (or model.scroll 0))))
+  (local lines [{:spans [(span "┌─ " :dialog.label) (span (or model.title "Interaction") :dialog.title)]}])
+  (for [index (+ offset 1) (math.min (length body) (+ offset body-room))]
+    (table.insert lines (. body index)))
+  (var cursor nil)
+  (when (and input (> room 1))
+    (local first (math.max 1 (+ (- input.cursor.row input-room) 1)))
+    (local before (length lines))
+    (for [index first (math.min (length input.lines) (+ first input-room -1))]
+      (table.insert lines (. input.lines index)))
+    (set cursor {:byte input.cursor.byte :row (+ before (- input.cursor.row first) 1)}))
+  (append lines footer)
+  (while (> (length lines) room)
+    (table.remove lines 1)
+    (when cursor (set cursor.row (- cursor.row 1))))
+  (when (and cursor (or (< cursor.row 1) (> cursor.row (length lines)))) (set cursor nil))
+  {: lines : cursor :max_scroll maximum :scroll_page (math.max 1 body-room) :overlay true :surface :surface.dialog})
 
 {:setup (fn []
-          (local setup-fx [])
-          (assert misa.layout "component.dialog requires layout")
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :default.dialog
-                         :value {:render (fn [model context]
-                                           (local width
-                                                  (math.max 1
-                                                            (- (or context.columns
-                                                                   80)
-                                                               2)))
-                                           (local lines {})
-
-                                           (fn add [spans]
-                                             (each [_ line (ipairs (misa.layout.wrap_spans [{: spans}]
-                                                                                           width))]
-                                               (table.insert line.spans 1
-                                                             (span "│ "
-                                                                   :dialog.label))
-                                               (tset lines (+ (length lines) 1)
-                                                     line)))
-
-                                           (tset lines (+ (length lines) 1)
-                                                 {:spans [(span "┌─ "
-                                                                :dialog.label)
-                                                          (span (or (and (not= model.title
-                                                                               "")
-                                                                         model.title)
-                                                                    :Interaction)
-                                                                :dialog.title)]})
-                                           (each [_ field (ipairs fields)]
-                                             (local value (. model field.key))
-                                             (when (and value
-                                                        (or (not field.omit_empty)
-                                                            (not= value "")))
-                                               (local spans {})
-                                               (when field.label
-                                                 (tset spans
-                                                       (+ (length spans) 1)
-                                                       (span field.label
-                                                             :dialog.label)))
-                                               (tset spans (+ (length spans) 1)
-                                                     (span (tostring value)
-                                                           field.style
-                                                           (or (and field.link
-                                                                    value)
-                                                               nil)))
-                                               (add spans)))
-                                           (each [_ section (ipairs (or model.sections []))]
-                                             (when section.title (add [(span section.title :dialog.title)]))
-                                             (each [_ field (ipairs (or section.fields []))]
-                                               (when (not= field.value nil)
-                                                 (add [(span (.. field.label ": ") :dialog.label)
-                                                       (span (tostring field.value) :dialog.message)]))))
-                                           (var (input-lines cursor) nil)
-                                           (when model.input_enabled
-                                             (local text
-                                                    (or (and model.protected
-                                                             (string.rep "•"
-                                                                         (math.min (or model.input_length
-                                                                                       0)
-                                                                                   (math.max 1
-                                                                                             (- width
-                                                                                                2)))))
-                                                        (or model.input "")))
-                                             (set input-lines
-                                                  (misa.layout.wrap_input text
-                                                                          (or context.columns
-                                                                              80)
-                                                                          (length text)
-                                                                          "│ "
-                                                                          :dialog.input
-                                                                          :dialog.label)))
-                                           (local hints {})
-                                           (each [_ hint (ipairs (or model.hints
-                                                                     {}))]
-                                             (tset hints (+ (length hints) 1)
-                                                   {:text (tostring hint)}))
-                                           (each [index action (ipairs (or model.actions
-                                                                           {}))]
-                                             (tset hints (+ (length hints) 1)
-                                                   {:text (or (and (= index
-                                                                      (or model.selected_action
-                                                                          1))
-                                                                   (.. "["
-                                                                       action.label
-                                                                       "]"))
-                                                              action.label)}))
-                                           (when (> (length (or model.actions
-                                                                {}))
-                                                    1)
-                                             (tset hints (+ (length hints) 1)
-                                                   {:key :tab
-                                                    :label "next action"}))
-                                           (when model.cancellable
-                                             (tset hints (+ (length hints) 1)
-                                                   {:key :escape
-                                                    :label :cancel}))
-                                           (local footer
-                                                  [(span "└─ "
-                                                         :dialog.label)])
-                                           (each [index hint (ipairs hints)]
-                                             (when (> index 1)
-                                               (tset footer
-                                                     (+ (length footer) 1)
-                                                     (span "    " :dialog.hint)))
-                                             (if (and hint.key
-                                                      misa.render_keybinding)
-                                                 (do
-                                                   (each [_ key-span (ipairs (misa.render_keybinding hint.key))]
-                                                     (tset footer
-                                                           (+ (length footer) 1)
-                                                           key-span))
-                                                   (tset footer
-                                                         (+ (length footer) 1)
-                                                         (span (.. " "
-                                                                   hint.label)
-                                                               :dialog.hint)))
-                                                 (tset footer
-                                                       (+ (length footer) 1)
-                                                       (span hint.text
-                                                             :dialog.hint))))
-                                           (local room
-                                                  (math.max 0
-                                                            (or context.available_lines
-                                                                24)))
-                                           (local input-room
-                                                  (or (and input-lines
-                                                           (math.min (length input-lines.lines)
-                                                                     (math.max 1
-                                                                               (- room
-                                                                                  2))))
-                                                      0))
-                                           (local body-room
-                                                  (math.max 0
-                                                            (- (- room
-                                                                  input-room)
-                                                               1)))
-                                           (when (> (length lines) body-room)
-                                             (while (> (length lines) body-room)
-                                               (table.remove lines))
-                                             (when (> body-room 1)
-                                               (tset lines body-room
-                                                     {:spans [(span "│ … more content"
-                                                                    :dialog.hint)]})))
-                                           (when (and input-lines (> room 1))
-                                             (local first
-                                                    (math.max 1
-                                                              (+ (- input-lines.cursor.row
-                                                                    input-room)
-                                                                 1)))
-                                             (local offset (length lines))
-                                             (for [row first (math.min (length input-lines.lines)
-                                                                       (- (+ first
-                                                                             input-room)
-                                                                          1))]
-                                               (tset lines (+ (length lines) 1)
-                                                     (. input-lines.lines row)))
-                                             (set cursor
-                                                  {:byte input-lines.cursor.byte
-                                                   :row (+ (- (+ offset
-                                                                 input-lines.cursor.row)
-                                                              first)
-                                                           1)}))
-                                           (when (> room 0)
-                                             (tset lines (+ (length lines) 1)
-                                                   {:spans footer}))
-                                           {: cursor
-                                            : lines
-                                            :overlay true
-                                            :surface :surface.dialog})}})
-          {:fx setup-fx})}
+          (assert (and misa.layout misa.render_buttons) "component.dialog requires layout and buttons")
+          {:fx [{:type :register/component :id :default.dialog :value {: render}}]})}

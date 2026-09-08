@@ -4,7 +4,7 @@ const auth = @import("misa_auth");
 const file = @import("misa_file");
 const image = @import("misa_image");
 const syntax = @import("misa_syntax");
-const http = @import("http.zig");
+const http = @import("misa_http");
 const process = @import("misa_process");
 const state = @import("misa_state");
 const terminal = @import("misa_terminal");
@@ -27,6 +27,7 @@ pub const Effect = union(enum) {
     view_commit: std.json.Value,
     app_quit,
     process_run: process.Spec,
+    provider_process: process.Spec,
     http_request: http.Spec,
     file: file.Spec,
     image: image.Spec,
@@ -92,6 +93,7 @@ pub const Effect = union(enum) {
             .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
         } };
         if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
+        if (std.mem.eql(u8, kind, "provider/process")) return .{ .provider_process = try .parse(object) };
         if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
         if (std.mem.eql(u8, kind, "syntax/highlight")) return .{ .syntax_highlight = try .parse(object) };
         if (std.mem.startsWith(u8, kind, "image/")) return .{ .image = try .parse(kind, object) };

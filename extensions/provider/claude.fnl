@@ -213,7 +213,7 @@
 ;; probe session's zero cost as this application's conversation cost.
 (fn quota-snapshot [data]
   (local windows [])
-  (local fields [])
+  (var extra-usage nil)
   (local limits (and (= data.rate_limits_available true)
                      (= (type data.rate_limits) :table) data.rate_limits))
   (when limits
@@ -231,20 +231,22 @@
                                               (.. value.display_name " · 7d") value)))))
     (local extra limits.extra_usage)
     (when (and (= (type extra) :table) (= (type extra.is_enabled) :boolean))
-      (table.insert fields {:label "Extra usage enabled" :value extra.is_enabled})
-      (local currency (when (= (type extra.currency) :string) extra.currency))
+      (local currency (if (= (type extra.currency) :string) (string.upper extra.currency) :USD))
       (local decimals (quota-number extra.decimal_places))
       (local scaled (and decimals (<= decimals 9) (= (% decimals 1) 0)))
-      (local divisor (if scaled (^ 10 decimals) 1))
-      (local unit (if scaled (or currency :currency) "minor units"))
-      (when currency (table.insert fields {:label "Extra usage currency" :value currency}))
-      (each [_ item (ipairs [{:key :monthly_limit :label "Extra usage monthly limit"}
-                             {:key :used_credits :label "Extra usage used"}])]
-        (local amount (quota-number (. extra item.key)))
-        (when amount
-          (table.insert fields {:label (.. item.label " (" unit ")") :value (/ amount divisor)})))))
+      ;; Match the CLI's currency minor-unit conversion when decimal_places is absent.
+      (local divisor (if scaled (^ 10 decimals)
+                         (or (= currency :JPY) (= currency :KRW) (= currency :VND)) 1 100))
+      (local used (quota-number extra.used_credits))
+      (local limit (quota-number extra.monthly_limit))
+      ;; CLI get_usage has no mutation control. Its settings page owns enablement
+      ;; and monthly limits until a supported authenticated update adapter exists.
+      (set extra-usage {:enabled extra.is_enabled : currency :unit currency
+                        :used (when used (/ used divisor)) :limit (when limit (/ limit divisor))
+                        :unlimited (or (= extra.monthly_limit nil) (= extra.monthly_limit misa.json_null))
+                        :manage_url "https://claude.ai/settings/usage"})))
   (local available (accumulate [found false _ window (ipairs windows)] (or found (not= window.used nil))))
-  {:source :cli : windows : fields :unavailable (not available)})
+  {:source :cli : windows :extra_usage extra-usage :unavailable (not available)})
 
 (fn usage-response [event]
   (when (and event.ok (= (type event.data) :table))
@@ -361,7 +363,7 @@
                                           (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
                                                 id (.. :claude-usage- sequence)]
                                             {:patch {:providers {:claude {:usage_sequence sequence :usage_request id}}}
-                                             :fx [{:type :process/run : id :completion :provider/claude-usage
+                                             :fx [{:type :provider/process : id :completion :provider/claude-usage
                                                    :argv [executable :--print :--input-format :stream-json
                                                           :--output-format :stream-json :--verbose
                                                           :--no-session-persistence :--setting-sources ""
@@ -551,7 +553,7 @@
                                                   :parent_tool_use_id misa.json_null
                                                   :type :user}
                                      :stdout_format :json_lines_stream
-                                     :type :process/run})})
+                                     :type :provider/process})})
           (table.insert setup-fx {:type :register/event :name :provider/claude-complete :handler stream})
           (table.insert setup-fx
                         {:type :register/event :name :provider/claude-quota

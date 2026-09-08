@@ -33,50 +33,6 @@
    :last_usage (when event.last_usage (misa.replace event.last_usage))
    :provider_usage (when event.provider_usage (misa.replace event.provider_usage))})
 
-(fn usage-sections [db]
-  (local status (or db.status {}))
-  (local usage (or status.usage {}))
-  (local last (or status.last_usage {}))
-  (local model (and misa.selected_model_projection
-                     (misa.selected_model_projection db)))
-  (local sections [{:id :model :fields [{:label "Model" :value (or (and model model.label) :none)}
-                                       {:label "Context window" :value (and model model.context_window)}]}
-                   {:id :session :title "Session usage"
-                    :fields [{:label "Input tokens" :value (or usage.input_tokens 0)}
-                             {:label "Output tokens" :value (or usage.output_tokens 0)}
-                             {:label "Last request" :value (total last)}]}])
-  (local providers {})
-  (each [provider details (pairs (or db.providers {}))]
-    (when (and (= (type details) :table) (or details.subscription_type details.usage))
-      (tset providers provider {:plan details.subscription_type :usage details.usage})))
-  (each [provider plan (pairs (or status.provider_usage {}))]
-    (tset providers provider {:plan (and (. providers provider) (. providers provider :plan)) :usage plan}))
-  (local ids (icollect [provider (pairs providers)] provider))
-  (table.sort ids)
-  (each [_ provider (ipairs ids)]
-    (local details (. providers provider))
-    (local usage details.usage)
-    (local fields [{:label "Plan" :value details.plan}
-                   {:label "Plan usage"
-                    :value (if (= (type usage) :table)
-                               (or usage.summary usage.used
-                                   (if (and (not usage.unavailable) (> (length (or usage.windows [])) 0))
-                                       "Available" "Unavailable"))
-                               (or usage "Unavailable"))}])
-    (each [_ window (ipairs (or (and (= (type usage) :table) usage.windows) []))]
-      (each [_ field (ipairs [{:key :used :label "used"} {:key :limit :label "limit"}
-                              {:key :remaining :label "remaining"} {:key :reset_at :label "resets at"}
-                              {:key :reset_at_unix :label "resets at (Unix seconds)"}
-                              {:key :reset_after_seconds :label "reset delay (seconds at fetch)"}
-                              {:key :status :label "status"}])]
-        (when (not= (. window field.key) nil)
-          (table.insert fields {:label (.. (or window.label "Quota") " " field.label)
-                                :value (. window field.key)}))))
-    (each [_ field (ipairs (or (and (= (type usage) :table) usage.fields) []))]
-      (table.insert fields field))
-    (table.insert sections
-                  {:id provider :title provider : fields}))
-  sections)
 
 
 (local indicators
@@ -156,27 +112,7 @@
                               {:patch {:status (usage-patch event event.status)}})}
                   {:type :register/event :name :agent/usage
                    :handler (fn [_ event] {:patch {:status (usage-patch event)}})}
-                  {:type :register/service :name :status_projection :value projection}
-                  {:type :register/action
-                   :value {:id :usage.open :label "Show usage" :event {:type :usage/open}
-                           :available (fn [db] (not db.dialog))}}
-                  {:type :register/command
-                   :value {:choice_purpose :command :description "Show token and coding-plan usage"
-                           :event :usage/open :name :/usage}}
-                  {:type :register/event :name :usage/open
-                   :handler (fn [db]
-                              {:fx [{:type :dispatch
-                                     :event {:type :dialog/open :id :usage :title "Usage"
-                                             :sections (usage-sections db)
-                                             :actions [{:id :close :label "Close" :primary true}]
-                                             :cancellable true :completion :usage/close :correlation :usage}}
-                                    {:type :dispatch :event {:type :usage/refresh}}]})}
-                  {:type :register/event :name :usage/updated
-                   :handler (fn [db]
-                              (when (and db.dialog (= db.dialog.id :usage))
-                                {:fx [{:type :dispatch :event {:type :dialog/update :id :usage
-                                                              :correlation :usage :sections (usage-sections db)}}]}))}
-                  {:type :register/event :name :usage/close :handler (fn [] nil)}])
+                  {:type :register/service :name :status_projection :value projection}])
           ;; The queued check observes the completed model transaction, even
           ;; when this extension registers before the model owner.
           (each [name force (pairs refresh-events)]

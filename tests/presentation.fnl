@@ -325,7 +325,9 @@ local x = 1
                                                     :F1))
                                             "chord/function hints lost display convention")
                                     (local model
-                                           {:cancellable true
+                                           {:id :presentation :correlation :current
+                                            :actions [{:id :dialog-close :label "Close" :key :escape}]
+                                            :cancellable true
                                             :code :1234
                                             :input "a long paste across lines"
                                             :input_enabled true

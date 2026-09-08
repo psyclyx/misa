@@ -9,6 +9,7 @@ pub const Harness = struct {
     directory: []const u8,
     binary: []const u8,
     environ: std.process.Environ.Map,
+    provider_executables: std.ArrayList([]const u8) = .empty,
 
     pub fn init() !Harness {
         const arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
@@ -19,8 +20,20 @@ pub const Harness = struct {
         var temporary = std.testing.tmpDir(.{});
         errdefer temporary.cleanup();
         const directory = try temporary.dir.realPathFileAlloc(io, ".", gpa);
-        var environ = try std.testing.environ.createMap(gpa);
-        for ([_][]const u8{ "MISA_CONFIG", "MISA_AUTH_FILE", "MISA_STATE_FILE", "MISA_EXTENSION_DIR", "XDG_CONFIG_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY" }) |key| _ = environ.swapRemove(key);
+        var environ = std.process.Environ.Map.init(gpa);
+        var host = try std.testing.environ.createMap(gpa);
+        defer host.deinit();
+        // Fixtures own their environment. Only tool discovery, locale, and the
+        // explicitly supplied grammar dependency come from the build process.
+        for ([_][]const u8{ "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "MISA_TREE_SITTER_DIR" }) |key| {
+            if (host.get(key)) |value| try environ.put(key, value);
+        }
+        try environ.put("HOME", directory);
+        try environ.put("MISA_FIXTURE_ROOT", directory);
+        try environ.put("CODEX_HOME", try std.fs.path.join(gpa, &.{ directory, "codex" }));
+        try environ.put("CLAUDE_CONFIG_DIR", try std.fs.path.join(gpa, &.{ directory, "claude-config" }));
+        try environ.put("XDG_CACHE_HOME", try std.fs.path.join(gpa, &.{ directory, "cache" }));
+        try environ.put("XDG_DATA_HOME", try std.fs.path.join(gpa, &.{ directory, "data" }));
         // Exercise the installed generated catalog by default. Custom fixture
         // paths remain literal Fennel/Lua; source overrides have explicit tests.
         try environ.put("MISA_AUTH_FILE", try std.fs.path.join(gpa, &.{ directory, "auth.json" }));
@@ -62,6 +75,12 @@ pub const Harness = struct {
 
     pub fn executable(self: *Harness, name: []const u8, value: []const u8) !void {
         try self.temporary.dir.writeFile(io, .{ .sub_path = name, .data = try self.expand(value), .flags = .{ .permissions = .fromMode(0o700) } });
+        try self.provider_executables.append(self.allocator(), try self.path(name));
+        try self.environ.put("MISA_FIXTURE_PROCESSES", try std.json.Stringify.valueAlloc(self.allocator(), self.provider_executables.items, .{}));
+    }
+
+    pub fn claudeFixture(self: *Harness, name: []const u8) !void {
+        try self.environ.put("MISA_FIXTURE_CLAUDE", try self.path(name));
     }
 
     pub fn read(self: *Harness, name: []const u8) ![]const u8 {

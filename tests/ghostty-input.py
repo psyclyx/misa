@@ -19,6 +19,7 @@ import termios
 import time
 import zlib
 from pathlib import Path
+from fixture_environment import fixture_environment
 
 root = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
@@ -74,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     (work / 'config.json').write_text(json.dumps(config))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
-    env = dict(os.environ, TERM='xterm-ghostty', TERM_PROGRAM='ghostty', MISA_AUTH_FILE=str(work/'auth'), MISA_STATE_FILE=str(work/'state'))
+    env = fixture_environment(work, TERM='xterm-ghostty', TERM_PROGRAM='ghostty', MISA_AUTH_FILE=str(work/'auth'), MISA_STATE_FILE=str(work/'state'))
     if args.installed:
         env.pop('MISA_EXTENSION_DIR', None)
     else:
