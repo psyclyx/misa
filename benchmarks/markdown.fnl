@@ -6,7 +6,7 @@
 
 ;; Public parser A/B harness. Run sequentially in a quiet environment:
 
-;; tools/fennel benchmarks/markdown.fnl /path/to/baseline.lua extensions/misa/text/markdown.fnl
+;; tools/fennel benchmarks/markdown.fnl /path/to/baseline.lua extensions/misa/markdown/init.fnl
 
 (local baseline-path (assert (. arg 1) "baseline source required"))
 

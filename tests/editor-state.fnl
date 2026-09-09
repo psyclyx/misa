@@ -6,9 +6,9 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
-(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices
-                       :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.components.editor
-                       :misa.ui.components.picker :misa.ui.values :misa.choices.preview :misa.choices.layout])]
+(each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices
+                       :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.editor.render
+                       :misa.choices.picker.render :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout])]
   (app.define ((require name) context)))
 (local specs ((fennel.dofile :extensions/misa/editor/init.fnl) context))
 (local handlers {})

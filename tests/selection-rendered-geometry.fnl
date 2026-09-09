@@ -4,7 +4,7 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.text.markdown :misa.ui.components.markdown :misa.selection.document])]
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown :misa.markdown.render :misa.selection.document])]
   (app.define ((require name) {})))
 (local specs ((fennel.dofile :extensions/misa/selection/init.fnl) {}))
 (local events {})
@@ -83,7 +83,7 @@
 ;; A tool's arguments and result use the same transcript section, but a frozen
 ;; selection keeps its original source owner when the result arrives.
 
-(local message-specs ((fennel.dofile :extensions/misa/ui/transcript.fnl) {:config {}}))
+(local message-specs ((fennel.dofile :extensions/misa/transcript/init.fnl) {:config {}}))
 (local tool-documents (. message-specs :selection-sources :transcript :documents))
 (local pending {:messages {:blocks [{:id :call :response_id :response :kind :tool_call
                                    :text "" :arguments {:path :settings}}]}})

@@ -52,7 +52,7 @@
   result)
 
 (fn []
-  "Build the declarations for component status."
+  "Declare status-line rendering."
   (local declarations [{:catalog :value-renderers
                         :id :activity
                         :value activity}])

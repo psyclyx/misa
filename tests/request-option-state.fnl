@@ -4,7 +4,7 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(app.include (fennel.dofile :extensions/misa/agent/request-options.fnl) {:argv [] :config {}})
+(app.include (fennel.dofile :extensions/misa/models/options.fnl) {:argv [] :config {}})
 (app.install)
 (local model {:id :one
               :api {:request_options {:enabled {:choices [false true]

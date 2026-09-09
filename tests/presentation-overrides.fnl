@@ -7,7 +7,7 @@
 (local context {:config {:values {:roles {:tokens :custom.tokens}}
                         :tool_presentations {:roles {:shell :custom.shell}}
                         :status {:indicator_overrides {:session false :plan {:priority 1} :extra {:priority 200}}}}})
-(each [_ name (ipairs [:misa.ui.values :misa.ui.tools :misa.ui.status.indicators])]
+(each [_ name (ipairs [:misa.ui.values :misa.transcript.tools :misa.ui.status.indicators])]
   (app.define ((require name) context)))
 
 (app.define (definitions :fixture [{:catalog :value-renderers :id :custom.tokens :value (fn [fact] [{:text (.. fact.value " tokens")}])}

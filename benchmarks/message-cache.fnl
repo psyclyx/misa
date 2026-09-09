@@ -7,11 +7,11 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:config {}}))
 (local context {:config {}})
-(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.text.markdown :misa.ui.components.markdown])]
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown :misa.markdown.render])]
   (app.define ((require name) context)))
 (fn renderer [specs] (assert (. specs :components :default.transcript.assistant :render)))
 (local baseline (renderer ((fennel.dofile baseline-path) context)))
-(local specs ((fennel.dofile :extensions/misa/ui/components/message.fnl) context))
+(local specs ((fennel.dofile :extensions/misa/transcript/render.fnl) context))
 (local candidate (renderer specs))
 (app.define {:subscriptions (or specs.subscriptions {})})
 (app.install)

@@ -11,7 +11,7 @@
   (setup (fennel.dofile component))
   {:parser misa.markdown :view misa.markdown.view})
 (local baseline (load (assert (. arg 1)) (assert (. arg 2))))
-(local candidate (load :extensions/misa/text/markdown.fnl :extensions/misa/ui/components/markdown.fnl))
+(local candidate (load :extensions/misa/markdown/init.fnl :extensions/misa/markdown/render.fnl))
 (local source (string.rep "# Heading\n\nordinary **bold** and [link](https://example.test) with escaped \\* text\n  continuing on another source line\n\n- first second third fourth\n- next item\n\n| key | value |\n| --- | --- |\n| one | **two** |\n\n" 30))
 (local streaming [])
 (local redraw [])

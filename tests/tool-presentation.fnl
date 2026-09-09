@@ -4,9 +4,9 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.layout :misa.text.markdown
-                       :misa.ui.components.markdown :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation
-                       :misa.ui.tools :misa.ui.components.tool])]
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.layout :misa.markdown
+                       :misa.markdown.render :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation
+                       :misa.transcript.tools :misa.transcript.tools.render])]
   (app.define ((require name) {:config {}})))
 (app.define (definitions :fixture [{:catalog :components :id :fixture.text :value {:render (fn [] {:lines [{:spans [{:text :replacement}]}]})}}]))
 (app.define (definitions :fixture [(let [definition (fn [model]

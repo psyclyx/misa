@@ -7,7 +7,7 @@
 (local specs ((fennel.dofile :extensions/misa/agent/init.fnl) {:config {}}))
 (local application (misa.compose
  [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/agent/stream.fnl) {})}
   (misa.compose [{:definitions specs}])
   {:definitions (definitions :test [{:catalog :agent-deltas :id :custom :value (fn [_ value] {:patch {:custom value.value}})}])}]))
 (misa._install application.definitions {:argv [] :config {}})

@@ -4,8 +4,8 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.commands.actions :misa.ui.layout
-                       :misa.text.markdown :misa.ui.components.markdown :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation :misa.ui.tools :misa.ui.components.tool
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.actions :misa.ui.layout
+                       :misa.markdown :misa.markdown.render :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation :misa.transcript.tools :misa.transcript.tools.render
                        :misa.selection.document :misa.selection])]
   (app.include (require name) {:config {}}))
 (app.install)

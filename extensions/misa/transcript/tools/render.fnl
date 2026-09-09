@@ -131,7 +131,7 @@
   {: lines})
 
 (fn []
-  "Build the declarations for component tool."
+  "Declare transcript tool-call rendering."
   (definitions :component.tool
     [{:catalog :components
       :id :default.transcript.tool_call

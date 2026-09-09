@@ -11,7 +11,7 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(app.include (fennel.dofile :extensions/misa/protocols/stream.fnl) {})
+(app.include (fennel.dofile :extensions/misa/agent/stream.fnl) {})
 
 (each [_ name (ipairs [:misa.json
                        :misa.protocols.openai

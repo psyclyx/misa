@@ -5,7 +5,7 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(local specs ((fennel.dofile :extensions/misa/agent/costs.fnl)
+(local specs ((fennel.dofile :extensions/misa/costs.fnl)
               {:config {:costs {:models {:test {:input 2 :output 4}}}}}))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]

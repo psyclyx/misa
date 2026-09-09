@@ -12,7 +12,7 @@
 ;; committed model, not depend on the ordering of extension registrations.
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:misa.json :misa.agent.request-options :misa.agent.models])]
+(each [_ name (ipairs [:misa.json :misa.models.options :misa.models])]
   (local specs ((require name) context))
 
   (app.define specs))

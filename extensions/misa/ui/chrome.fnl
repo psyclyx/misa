@@ -3,7 +3,7 @@
 ;; Static application chrome; dynamic model/session facts belong in status.
 
 (fn []
-  "Build the declarations for component chrome."
+  "Declare application header rendering."
   (definitions :component.chrome
     [{:catalog :components
       :id :default.root.header

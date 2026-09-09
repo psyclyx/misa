@@ -555,7 +555,7 @@
                 :source_end (- offset 1)}]})))
 
 (fn []
-  "Build the declarations for component markdown."
+  "Declare Markdown projection and rendering services."
   (local declarations [])
   (table.insert declarations
                 {:catalog :services

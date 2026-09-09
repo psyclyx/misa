@@ -102,7 +102,7 @@
    :surface :surface.dialog})
 
 (fn []
-  "Build the declarations for component dialog."
+  "Declare dialog rendering."
   (definitions :component.dialog
     [{:catalog :components :id :default.dialog :value {:compose true : render}}]
     {:requirements {:component.dialog [:layout :components.buttons]}}))

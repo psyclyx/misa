@@ -5,7 +5,7 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(local specs ((fennel.dofile :extensions/misa/editor/images.fnl) {:config {}}))
+(local specs ((fennel.dofile :extensions/misa/editor/images/init.fnl) {:config {}}))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))

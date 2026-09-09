@@ -7,7 +7,7 @@
 (local misa _G.misa)
 (local context {:config {} :argv []})
 (local db {})
-(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.ui.layout :misa.choices :misa.ui.values :misa.choices.preview :misa.choices.layout])]
+(each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.choices :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout])]
   (app.define ((require name) context)))
 (app.define (definitions :test [{:catalog :choice-inputs :id :clear :value (fn [session] {:session (misa.choices.set-items session [] db) :consumed true})}]))
 (app.define (definitions :test [{:catalog :choice-views :id :custom-db-view :value {:project (fn [session _ current]

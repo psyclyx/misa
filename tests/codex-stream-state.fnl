@@ -7,7 +7,7 @@
 (local specs ((fennel.dofile :extensions/misa/providers/openai-codex.fnl) {:config {}}))
 (local application (misa.compose
  [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/agent/stream.fnl) {})}
   (misa.compose [{:definitions specs}])
   {:definitions (definitions :test [{:catalog :codex-records :id :test.metadata :value (fn [_ record] {:patch {:metadata record.value}})}])}]))
 (misa._install application.definitions {:argv [] :config {}})

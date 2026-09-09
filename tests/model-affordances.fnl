@@ -3,13 +3,13 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.ui.layout :misa.ui.values :misa.ui.status.indicators])]
+(each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.values :misa.ui.status.indicators])]
   (app.include (require name) {:config {}}))
-(local specs ((fennel.dofile :extensions/misa/agent/models.fnl) {:config {}}))
+(local specs ((fennel.dofile :extensions/misa/models/init.fnl) {:config {}}))
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (assert (= specs.routes nil) "model binding should be action data")
 (app.define specs)
-(local component ((fennel.dofile :extensions/misa/ui/components/status.fnl)))
+(local component ((fennel.dofile :extensions/misa/ui/status/render.fnl)))
 (app.define {:value-renderers component.value-renderers})
 (app.install)
 (local default-config (require :misa.default))
@@ -76,9 +76,9 @@
 (fn renderer [path id]
   (local description ((fennel.dofile path) {}))
   (. (assert (. description.components id) (.. "missing component " id)) :render))
-(local header ((renderer :extensions/misa/ui/components/chrome.fnl :default.root.header)))
+(local header ((renderer :extensions/misa/ui/chrome.fnl :default.root.header)))
 (assert (= (. header.lines 1 :spans 1 :text) :misa))
-(local input-render (renderer :extensions/misa/ui/components/editor.fnl :default.editor.input))
+(local input-render (renderer :extensions/misa/editor/render.fnl :default.editor.input))
 (each [_ mode (ipairs [:insert :normal :visual])]
   (each [_ columns (ipairs [1 2 3 8 80])]
     (local text "one\ntwo\n世界")

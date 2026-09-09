@@ -6,7 +6,7 @@
 (local misa _G.misa)
 (app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
 (app.install)
-(local specs ((fennel.dofile :extensions/misa/tools/summary.fnl)))
+(local specs ((fennel.dofile :extensions/misa/transcript/tools/summary.fnl)))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))

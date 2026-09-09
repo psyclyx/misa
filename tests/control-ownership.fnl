@@ -9,7 +9,7 @@
 (set misa.request-options.value (fn [db] db.selected))
 (set misa.keybindings.action (fn [_ event] event.action))
 (local specs {})
-(each [name source (pairs {:effort :misa.agent.effort
+(each [name source (pairs {:effort :misa.models.effort
                            :images :misa.editor.images :queue :misa.editor.queue})]
   (tset specs name ((require source) {:config {}})))
 (each [_ command (pairs specs.effort.commands)]

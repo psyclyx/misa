@@ -3,10 +3,10 @@
 (standard.application
   {:config {"models" {"default" "claude/claude-sonnet-5"} "providers" {"claude" {"executable" "@WORK@/claude"}}}
    :modules {
-    "module-1" {:priority 0 :build (require "misa.protocols.stream")}
+    "module-1" {:priority 0 :build (require "misa.agent.stream")}
     "module-2" {:priority 1000 :build (require "misa.json")}
     "module-3" {:priority 2000 :build (require "misa.providers.claude")}
     "module-4" {:priority 3000 :build (require "misa.tools.shell")}
-    "module-5" {:priority 4000 :build (require "misa.agent.models")}
+    "module-5" {:priority 4000 :build (require "misa.models")}
     "module-6" {:priority 5000 :build (require "misa.agent")}
     "module-7" {:priority 6000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/runtime-regressions-check.fnl")}}})

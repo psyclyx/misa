@@ -6,7 +6,7 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
-(local specs ((fennel.dofile :extensions/misa/ui/transcript.fnl) {:config {:messages {:max_string 12}}}))
+(local specs ((fennel.dofile :extensions/misa/transcript/init.fnl) {:config {:messages {:max_string 12}}}))
 (local handlers {})
 (local input-policy (. specs.routes :messages/global-keys :resolve))
 (local blocks-for (. specs.services :transcript.blocks))
@@ -393,7 +393,7 @@
 (assert (= selected-result.selection_source :result))
 (assert (= selected-result.selection_text :frozen))
 (assert (= selected-result.collapsed false))
-(local override-specs ((fennel.dofile :extensions/misa/ui/transcript.fnl)
+(local override-specs ((fennel.dofile :extensions/misa/transcript/init.fnl)
                       {:config {:messages {:presentations {:assistant :custom.assistant}}}}))
 (local override-project (. override-specs.projections :transcript.project :render))
 

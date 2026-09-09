@@ -30,7 +30,7 @@
   {:type :dispatch :event (misa.patch (or data {}) {: type})})
 
 (fn []
-  "Build the declarations for tool summary."
+  "Declare transcript tool-result summarization."
   (local fx [])
 
   (fn register [name handler]

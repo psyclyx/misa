@@ -10,9 +10,9 @@
   (local app _G.misa)
   (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
   (local construction ((require :tests.application) context))
-  (each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices
-                         :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.components.editor
-                         :misa.ui.components.picker :misa.ui.values :misa.choices.preview :misa.choices.layout :misa.agent])]
+  (each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices
+                         :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.editor.render
+                         :misa.choices.picker.render :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout :misa.agent])]
     (construction.include (require name) context))
   (construction.define
    {:subscriptions {:test/lifecycle {:inputs [[:db/path :test_lifecycle]]

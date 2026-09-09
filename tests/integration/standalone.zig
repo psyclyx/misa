@@ -31,6 +31,12 @@ test "choice preview renderers receive semantic pricing before shared geometry" 
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/choice-preview.fnl"} }, "choice preview contracts passed\n");
 }
 
+test "usage lifecycle works without status presentation" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/usage-state.fnl"} }, "usage lifecycle is independent of status UI\n");
+}
+
 test "provider adapters feed the common usage dashboard and selected indicator" {
     var h = try Harness.init();
     defer h.deinit();

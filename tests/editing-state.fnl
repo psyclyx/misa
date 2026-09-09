@@ -6,7 +6,7 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {}})
-(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices])]
+(each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices])]
   (app.define ((require name) context)))
 (local handlers {})
 (var policy nil)

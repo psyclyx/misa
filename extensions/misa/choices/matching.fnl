@@ -45,7 +45,7 @@
         (< left.ordinal right.ordinal))))
 
 (fn []
-  "Build the declarations for fuzzy."
+  "Declare fuzzy ranking for choices."
   (local declarations [])
   (table.insert declarations {:catalog :services :id :fuzzy.score :value score})
   (table.insert declarations {:catalog :services

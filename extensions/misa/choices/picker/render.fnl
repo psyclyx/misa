@@ -23,7 +23,7 @@
   spans)
 
 (fn []
-  "Build the declarations for component picker."
+  "Declare picker rendering."
   (local declarations [])
   (table.insert declarations
                 {:catalog :components

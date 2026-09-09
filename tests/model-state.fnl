@@ -8,7 +8,7 @@
 (local context {:argv [] :config {}})
 (app.define ((fennel.dofile :extensions/misa/json.fnl) context))
 (local handlers {})
-(local specs ((fennel.dofile :extensions/misa/agent/models.fnl) context))
+(local specs ((fennel.dofile :extensions/misa/models/init.fnl) context))
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define {:subscriptions (. specs :subscriptions)})

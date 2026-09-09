@@ -110,9 +110,8 @@
     (table.insert rows {:label "" :fact (text provider.reset_message)})))
 
 (fn model [db now]
-  (local status (or db.status {}))
-  (local usage (or status.usage {}))
-  (local last (or status.last_usage {}))
+  (local usage (or (misa.sub db [:usage/session]) {}))
+  (local last (or (misa.sub db [:usage/last-request]) {}))
   (local selected (and misa.models misa.models.selected
                        (misa.models.selected db)))
   (local sections
@@ -137,7 +136,7 @@
     (when (and (= (type details) :table)
                (or details.subscription_type details.usage))
       (tset providers id {:plan details.subscription_type :usage details.usage})))
-  (each [id plan (pairs (or status.provider_usage {}))]
+  (each [id plan (pairs (or (misa.sub db [:usage/providers]) {}))]
     (tset providers id {:plan (and (. providers id) (. providers id :plan))
                         :usage plan}))
   (local ids (icollect [id (pairs providers)] id))
@@ -184,7 +183,7 @@
                    :actions display.actions}}]}))
 
 (fn []
-  "Build the declarations for usage."
+  "Declare the usage dashboard and its interactions."
   (definitions :usage
     [(let [definition {:context :usage :action :codex-reset :default ["r"]}]
        {:catalog :keybindings

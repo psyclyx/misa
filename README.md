@@ -145,7 +145,7 @@ definition until installation, including defaults produced by module constructor
 A later concrete definition re-enables that ID. Deleted modules are removed during
 composition. `standard.default.modules` contains independently selectable policy,
 provider, protocol, and component modules. Stock module IDs equal their source
-names, such as `misa.editor` and `misa.ui.components.markdown`.
+names, such as `misa.editor` and `misa.markdown.render`.
 `modules[id].source` names a module
 to require only when selected; `modules[id].build` can supply a pure constructor
 directly instead. `modules[id].priority` contributes to its event priorities.
@@ -230,7 +230,7 @@ with an optional `timeout_ms` (1–60000; default 1000). Its completion event ha
 ranges. Captures use a finite generic vocabulary (`comment`, `string`, `number`,
 `keyword`, `type`, `function`, `constant`, `variable`, `property`, `tag`,
 `attribute`, `operator`, `punctuation`, `escape`, and `embedded`). Highlighting
-is derived data: the `misa.text.syntax` extension tracks pending requests and accepted
+is derived data: the `misa.transcript.syntax` extension tracks pending requests and accepted
 revisions, immutable parsed documents, and accepted capture arrays in transactional
 state. It consumes explicit `transcript/updated` notifications, not a global
 before/after interceptor; projections never schedule highlighting.
@@ -469,15 +469,20 @@ termination signals. Bracketed-paste mode is enabled while the managed screen is
 
 ## Standard extensions
 
-The application UI is split at semantic boundaries. `misa.ui.components` resolves
-visual roles to registered implementations. The independently loadable
-`misa.ui.components.message`, `misa.ui.components.group`, `misa.ui.components.tool`, `misa.ui.components.content`,
-`misa.ui.components.truncation`, `misa.ui.components.markdown`, `misa.ui.components.editor`, `misa.ui.components.picker`, `misa.ui.components.status`,
-`misa.ui.components.chrome`, and `misa.ui.components.dialog` plugins provide the default roles; none owns behavior or
-depends on a theme. `misa.ui.layout` provides pure terminal-cell width, fitting,
-semantic-span wrapping, and responsive-column primitives. Theme resolution is
-centralized at the component registry boundary. Custom code calls
-`misa.components.render(db, role, model, context)` and
+Features own their behavior and presentation together. For example,
+`misa.editor.render`, `misa.dialogs.render`, and `misa.transcript.tools.render`
+implement feature-specific visual roles beside the models they present.
+`misa.markdown` owns parsing and its `misa.markdown.render` terminal renderer;
+choice matching belongs to `misa.choices.matching`. Shared input types or a common
+component interface do not make these features one subsystem.
+
+`misa.ui.components` resolves visual roles to registered implementations and
+protects component boundaries. Its children provide shared content, truncation,
+data, and button primitives. `misa.ui.layout` supplies terminal-cell width,
+fitting, semantic-span wrapping, and responsive-column operations. Root chrome,
+status composition, themes, and animations also live under `misa.ui`.
+Theme resolution is centralized at the component registry boundary. Custom code
+calls `misa.components.render(db, role, model, context)` and
 `misa.animations.span(db, role, options?)` for clock-driven visual motion.
 Component `render(model, context, previous?)` receives those tables directly and must not
 mutate them or any nested values. Allocate output records when decorating input
@@ -554,7 +559,7 @@ Selections live in `db`, so failed transactions roll back; successful swaps pers
 the generic state service. Set `persist = false` in the corresponding config
 section to disable persistence. These registries contain no input or agent behavior.
 
-`misa.ui.transcript` owns ordered response and block models in `db.messages.responses` and
+`misa.transcript` owns ordered response and block models in `db.messages.responses` and
 `db.messages.blocks` for user, assistant, thinking, tool call/result,
 authentication, and harness entries. The root managed view reprojects those
 models. Stable `transcript/response-*` and `transcript/block-*` lifecycle events
@@ -582,12 +587,12 @@ borders, spacing, and dim omitted-line notices. Group dividers have blank lines
 around them and stay outside those backgrounds. User and thinking blocks rely on
 their distinct styling rather than redundant labels. Collapsed thinking shows a
 short excerpt of its actual text and a hidden-line count. Markdown
-quotes use the thinner `▏` rail. The focused `misa.text.markdown`
-extension performs a pure parse into semantic blocks and inlines; `misa.ui.components.markdown` turns that data into
-terminal flow, while `misa.ui.components.message` supplies the outer rail, block surface, and collapsed previews.
-`misa.ui.components.tool` composes compact lifecycle headings and reusable content views;
+quotes use the thinner `▏` rail. The focused `misa.markdown`
+extension performs a pure parse into semantic blocks and inlines; `misa.markdown.render` turns that data into
+terminal flow, while `misa.transcript.render` supplies the outer rail, block surface, and collapsed previews.
+`misa.transcript.tools.render` composes compact lifecycle headings and reusable content views;
 tool descriptions remain API documentation and are not displayed in the transcript.
-`misa.ui.tools` binds tools to generic field, text, code, numbered-line, and
+`misa.transcript.tools` binds tools to generic field, text, code, numbered-line, and
 diff components, with a generic fallback for unconfigured tools. These bindings
 live outside tool definitions; content components know nothing about tool names
 or execution. `content.truncated` bounds rendered rows and shows a dim exact count
@@ -598,7 +603,7 @@ quotes, responsive bordered tables, inline/fenced code, and OSC 8-capable links.
 Fenced code has no frame or language-label rows. Line numbers, code, and trailing
 padding share `surface.code`; three columns on each side keep the parent block's
 background. Narrow layouts reduce the margins and gutter to preserve readable code.
-Languages still select the `misa.text.syntax` extension's asynchronous captures when their grammar is installed.
+Languages still select the `misa.transcript.syntax` extension's asynchronous captures when their grammar is installed.
 Code renders plainly while highlighting is pending; stale streaming results are
 discarded and the latest source is requested. Rendering consumes capture data
 without loading grammars or calling a native parser. The pure `misa.ui.layout`
@@ -617,8 +622,8 @@ text is retained in full, including streaming chunks. `config.messages` controls
 initial `verbose` and the structured tool-argument `redact_keys`, `max_string`,
 `max_items`, and `max_depth` limits. Headless output remains plain.
 
-Include `misa.ui.components.content`, `misa.ui.components.truncation`, and `misa.ui.tools` with
-`misa.ui.components.tool`; include `misa.ui.components.truncation` and `misa.ui.components.group` with `misa.ui.components.message`.
+Include `misa.ui.components.content`, `misa.ui.components.truncation`, and `misa.transcript.tools` with
+`misa.transcript.tools.render`; include `misa.ui.components.truncation` and `misa.transcript.groups` with `misa.transcript.render`.
 Presentation extensions can register a tool binding without modifying its definition:
 
 ```fennel
@@ -743,10 +748,10 @@ Animation selection is separate presentation data from
 `misa.animations.state(db,role)` / `[:animations/presentation role]`; the
 activity renderer turns it into clock-driven spans without changing activity facts.
 
-`misa.agent.request-options` derives request readiness and selected option values entirely
+`misa.models.options` derives request readiness and selected option values entirely
 from the active model's `api.request_options` metadata. Required options without
 values block a request before the user turn is recorded and emit a structured
-harness problem. `misa.agent.effort` is the reasoning-effort affordance: `/effort` lists
+harness problem. `misa.models.effort` is the reasoning-effort affordance: `/effort` lists
 only the selected model's declared choices, and the configurable global
 `cycle_effort` binding (default `alt+f`) cycles those choices. Model switches
 retain an equivalent value when supported, otherwise use the new model default;
@@ -816,7 +821,7 @@ Inline and overlay sessions resolve the same `keybindings.choices` actions and
 positional banks. `misa.choices.layout` is the single projection for responsive
 preferred/min/max overlay bounds, preview and panel allocation, shared hints,
 and positional targets. The picker component only renders that projection.
-Include `misa.commands.keybindings` with choice layout and the editor, picker, and status
+Include `misa.keybindings` with choice layout and the editor, picker, and status
 components. All key hints use its shared token renderer, preserving input case;
 equivalent encodings such as `ctrl_n` and `ctrl+n` produce identical spans.
 Include `misa.choices.preview` with `misa.choices.layout`. It renders typed preview data to
@@ -829,7 +834,9 @@ unknown IDs fail explicitly; named definitions are replaced during composition.
 Model previews carry `type="model"`, raw `context_window`, and `cost` facts from
 `misa.costs.model`: `currency`, `token_unit`, `pricing`, `estimated`, and
 `unavailable`. Rate numbers are not converted to strings by model/cost owners.
-The default preview renderer owns summary wording, currency precision, and layout.
+`misa.models.preview` contributes the model preview renderer; it owns summary
+wording, currency precision, and layout. The choice preview module owns dispatch
+and generic metadata presentation.
 The picker receives both `preview.model` and rendered `preview.lines` records;
 custom previews retain their action, link, and animation span metadata.
 Overlays remain bounded, nonexclusive regions of the managed root: query input
@@ -890,8 +897,9 @@ per invocation, including typed commands; replay and registered commands share
 the same identity. `misa.commands.palette` (global `alt+/`, also used by the
 slash menu) composes commands with those recents; commands with completion
 narrow to argument choices before emitting that same canonical event.
-`misa.agent.models` owns only model catalogue, availability, rich metadata preview, and
-selection policy; `/model` has no model-specific picker behavior.
+`misa.models` owns the model catalogue, availability, metadata, and selection
+policy. `misa.models.preview` owns its choice presentation; `/model` has no
+model-specific picker behavior.
 Type in the picker to filter provider-qualified IDs, labels, or model names,
 then use the arrow keys and Enter to select. Models from providers that are not logged in
 are hidden. OpenAI, Anthropic, OpenRouter, and Kimi catalogues are loaded from
@@ -941,14 +949,18 @@ context window and other plans get 200k. `config.providers.claude.max_plan` is
 an optional boolean override for environments where status discovery is
 unavailable. API-backed Anthropic catalogues are
 refreshed from `GET /v1/models` for the models available to that API key.
-`misa.editor` owns multiline UTF-8 editor state and transitions. `misa.ui.transcript` owns
-transcript scrolling and bounded window extraction. `misa.agent.models`, `misa.agent.request-options`,
-and `misa.ui.transcript` expose narrow read-only projections used by status and composition;
+`misa.editor` owns multiline UTF-8 editor state and transitions. `misa.transcript` owns
+transcript scrolling and bounded window extraction. `misa.models`, `misa.models.options`,
+and `misa.transcript` expose narrow read-only projections used by status and composition;
 those consumers never traverse feature-private state. `misa.ui` owns only root
 composition. Interactive sessions return to the editor after each response;
 explicit argv remains a single headless turn.
 
-`misa.agent.costs` exposes model rates, response totals, and a session status indicator.
+`misa.costs` exposes model rates, response totals, and a session status indicator.
+`misa.usage` owns captured token usage and quota refresh policy in `db.usage`.
+Status consumes its named subscriptions and owns only status display policy.
+`misa.usage.dialog` separately contributes the dashboard and `/usage` command;
+usage tracking and refresh do not require that presentation module.
 `/usage` opens the shared dashboard and dispatches `usage/refresh`; provider
 extensions can handle that event independently. Kimi fetches `/usages` from its
 configured regional coding API using the stored `kimi-coding` credential. Its
@@ -972,7 +984,7 @@ Codex OAuth fetches `https://chatgpt.com/backend-api/wham/usage` using Misa's
 stored Codex credential and native account-ID header binding. Main, code-review,
 and additional quota windows normalize to percentage facts; their actual window
 durations determine labels rather than assuming a fixed primary/secondary order.
-The `misa.ui.status.usage` extension projects provider facts into the generic `data` component.
+The `misa.usage.dialog` extension projects provider facts into the generic `data` component.
 Its rows share label and meter columns, with typed values formatted by `misa.ui.values`.
 Dates use the local locale/time zone and relative durations, updated once a minute.
 Dialog chrome, scrolling, click/hotkey buttons, and confirmations are shared UI
@@ -1138,7 +1150,7 @@ unchanged; updates above it relocate the top visible content only if displaced.
 Scrolling applies its row movement once after that adjustment. At the bottom,
 the viewport follows new output until you scroll away.
 
-`misa.system.clipboard` separates copying from selection. Its default `clipboard/write`
+`misa.clipboard` separates copying from selection. Its default `clipboard/write`
 native effect sends OSC 52 to an interactive terminal (up to 1 MiB); terminal
 clipboard support must be enabled. Configure `config.clipboard.command` with
 an argv array such as `["wl-copy"]`, `["xclip", "-selection", "clipboard"]`, or
@@ -1149,7 +1161,7 @@ Features return `actions[id] = {label,event,keys?,binding?,available?}`
 in definition catalogs; `binding` identifies a configured `{context,action}`, and `available(db)`
 controls contextual discovery. Without `binding`, an action gets a global
 binding under its ID; `keys` supplies optional defaults. Configure it through
-`config.keybindings.global[id]`. The `misa.commands.actions` extension routes global action
+`config.keybindings.global[id]`. The `misa.actions` extension routes global action
 bindings and supplies the palette.
 `misa.selection` accepts `{["selection-sources"]={[id]=function(db) ... end}}`
 in definition catalogs, with the function returning
@@ -1212,8 +1224,8 @@ p.lib.mkMisa {
 `standardExtensions` mirrors the source tree. For example,
 `standardExtensions.misa.editor.init` is `"misa.editor"`,
 `standardExtensions.misa.editor.history` is `"misa.editor.history"`, and
-`standardExtensions.misa.ui.components.markdown` is
-`"misa.ui.components.markdown"`. The `init` attribute identifies an owner's
+`standardExtensions.misa.markdown.render` is
+`"misa.markdown.render"`. The `init` attribute identifies an owner's
 entrypoint alongside its child modules; it is not part of the module name.
 
 The Home Manager, NixOS, and Darwin modules expose the same file through
@@ -1263,7 +1275,7 @@ continues to own and refresh its existing subscription credentials.
 
 When assembling a smaller application, select provider and protocol constructors
 explicitly in `modules`. HTTP adapters also need `misa.json` and
-`misa.protocols.stream`;
+`misa.agent.stream`;
 UI and tool presentation modules are separate choices. The default specification
 shows the complete stock composition and its named module IDs.
 OpenAI and OpenRouter use `misa.protocols.openai`; Anthropic and Kimi use
@@ -1324,7 +1336,7 @@ Claude's CLI requires `mcp__misa__` names for its MCP transport and allowlist.
 Misa removes that private bridge prefix from observed tool names in canonical
 history and the transcript; names belonging to other MCP servers remain intact.
 
-The optional `misa.tools.summary` extension (included in the default profile) uses the
+The optional `misa.transcript.tools.summary` extension (included in the default profile) uses the
 `summarizer` model role for tool-free background summaries of successful tool
 results longer than 240 bytes. Requests run one at a time; short results and
 errors keep their direct previews. Summaries affect collapsed presentation only;

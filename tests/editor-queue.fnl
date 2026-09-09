@@ -15,15 +15,15 @@
 (local app ((require :tests.application) context))
 (local declarations (require :misa.definitions))
 (each [_ name (ipairs [:misa.json
-                       :misa.commands.keybindings
-                       :misa.commands.actions
+                       :misa.keybindings
+                       :misa.actions
                        :misa.ui.layout
                        :misa.commands
                        :misa.choices
                        :misa.ui.themes
                        :misa.ui.themes.default
                        :misa.ui.components
-                       :misa.ui.components.editor
+                       :misa.editor.render
                        :misa.agent
                        :misa.editor.queue
                        :misa.editor

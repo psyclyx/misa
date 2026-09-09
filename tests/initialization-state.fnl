@@ -7,7 +7,7 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.animations
-                       :misa.ui.animations.default :misa.providers.auth :misa.agent.models])]
+                       :misa.ui.animations.default :misa.providers.auth :misa.models])]
   (local specs ((require name) context))
   (each [_ spec (pairs (or specs.events {}))]
 

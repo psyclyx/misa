@@ -20,7 +20,7 @@
                                           (assert (= (next db.agent.last_usage)
                                                      nil)
                                                   "agent last usage survived clear")
-                                          (assert (= (next db.status.last_usage)
+                                          (assert (= (next db.usage.last_request)
                                                      nil)
                                                   "status context survived clear")
                                           {

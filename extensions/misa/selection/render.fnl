@@ -3,7 +3,7 @@
 ;; Selection status belongs beside the input; the transcript remains the view.
 
 (fn []
-  "Build the declarations for component selection."
+  "Declare selection rendering."
   (definitions :component.selection
     [{:catalog :components
       :id :default.selection

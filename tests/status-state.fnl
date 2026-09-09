@@ -8,9 +8,14 @@
 (app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
 (local feature (fennel.dofile :extensions/misa/ui/status/init.fnl))
 (local specs (feature {}))
+(local usage-specs ((require :misa.usage)))
 (local handlers {})
-(each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
+(each [_ module (ipairs [specs usage-specs])]
+  (each [_ spec (pairs module.events)]
+    (when (not (. handlers spec.event)) (tset handlers spec.event []))
+    (table.insert (. handlers spec.event) spec.handler)))
 (app.define specs)
+(app.define usage-specs)
 ;; Minimal profiles without the indicator registry use the same component model.
 (local requests [])
 (var observed nil)
@@ -47,11 +52,17 @@
 (fn transition [db event]
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))
-  (local result ((. handlers event.type) db event))
+  (var next-db db)
+  (local effects [])
+  (each [_ handler (ipairs (or (. handlers event.type) []))]
+    (local result (handler next-db event))
+    (assert (not (and result result.db)))
+    (set next-db (misa.patch next-db (or (and result result.patch) {})))
+    (each [_ effect (ipairs (or (and result result.fx) []))]
+      (table.insert effects effect)))
   (assert (= before (misa.json.encode db)) "status mutated prior state")
   (assert (= input (misa.json.encode event)) "status mutated event data")
-  (assert (not (and result result.db)))
-  (values (misa.patch db (or (and result result.patch) {})) (or (and result result.fx) [])))
+  (values next-db effects))
 (local initial (transition {} {:type :app/start}))
 (local activity (misa.sub initial [:status/activity]))
 (assert (= activity.type :activity))
@@ -61,7 +72,7 @@
 (assert (= (. (misa.sub initial [:status/session]) :value) 0))
 (assert (= (. (misa.sub initial [:status/context]) :type) :tokens)
         "optional models required an absent subscription")
-(local context-db (misa.patch initial {:status {:last_usage {:input_tokens 1200 :output_tokens 34}}
+(local context-db (misa.patch initial {:usage {:last_request {:input_tokens 1200 :output_tokens 34}}
                                        :models {:selected :test :entries [{:id :test :context_window 200000}]}}))
 (local context-fact (misa.sub context-db [:status/context]))
 (assert (= context-fact.type :ratio))
@@ -84,11 +95,11 @@
                     (var db initial)
                     (each [_ event (ipairs events)]
                       (local next (transition db event))
-                      (each [_ field (ipairs [:usage :last_usage :provider_usage])]
+                      (each [field key (pairs {:usage :session :last_usage :last_request :provider_usage :providers})]
                         (if (. event field)
-                            (assert (= (misa.json.encode (. next.status field))
+                            (assert (= (misa.json.encode (. next.usage key))
                                        (misa.json.encode (. event field))))
-                            (assert (= (. next.status field) (. db.status field)))))
+                            (assert (= (. next.usage key) (. db.usage key)))))
                       (set db next)))
                   {:cases 500 :size 20}))
 (assert (not failure) (and failure (fennel.view failure)))
@@ -167,7 +178,7 @@
 (assert (= (. switched 1 :event :provider) :other))
 (local (removed removed-fx) (transition (misa.patch stable {:selected misa.delete})
                                        {:type :usage/check-selected}))
-(assert (= removed.status.quota_provider nil))
+(assert (= removed.usage.quota_provider nil))
 (assert (= (length removed-fx) 0))
 ;; Exercise real dispatch with status registered BEFORE the model owner. Effects
 ;; run only after commit, so the check must use the newly selected provider.
@@ -192,7 +203,7 @@
 (assert (= (. requests 2) :other) "selection check used the previous provider")
 (dispatch {:type :model/select})
 (dispatch {:type :test/read})
-(assert (= observed.status.quota_provider nil))
+(assert (= observed.usage.quota_provider nil))
 (assert (= (length requests) 2) "provider disappearance scheduled a request")
 (dispatch {:type :model/select :model {:provider :kimi :id :first}})
 (dispatch {:type :auth/ready})

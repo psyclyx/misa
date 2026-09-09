@@ -10,10 +10,10 @@
 (local app ((require :tests.application) {:config {} :argv []}))
 (each [_ name (ipairs [:misa.json
                        :misa.ui.layout
-                       :misa.commands.keybindings
+                       :misa.keybindings
                        :misa.choices
                        :misa.ui.values
-                       :misa.choices.preview
+                       :misa.choices.preview :misa.models.preview
                        :misa.choices.layout])]
   (local saved (and baseline (. {:misa.choices :choices
                                  :misa.choices.layout :choice_layout}

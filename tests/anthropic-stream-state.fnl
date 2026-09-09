@@ -8,7 +8,7 @@
 (local specs (protocol.configure {:id :test :url "https://example.invalid/messages" :models []}))
 (local application (misa.compose
  [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/agent/stream.fnl) {})}
   (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
   {:definitions (definitions :test [{:catalog :anthropic-block-deltas :id :custom :value (fn [_ record] {:patch {:custom record.delta.value}})}
                          {:catalog :anthropic-block-starts :id :custom :value (fn [] {:patch {:custom_started true}})}

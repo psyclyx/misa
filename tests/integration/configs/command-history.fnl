@@ -4,13 +4,13 @@
   {:config {"choices" {"purposes" {"command-completion" ["browse" "favorites"]}}}
    :modules {
     "module-1" {:priority 0 :build (require "misa.ui.values")}
-    "module-2" {:priority 1000 :build (require "misa.text.fuzzy")}
-    "module-3" {:priority 2000 :build (require "misa.commands.keybindings")}
+    "module-2" {:priority 1000 :build (require "misa.choices.matching")}
+    "module-3" {:priority 2000 :build (require "misa.keybindings")}
     "module-4" {:priority 3000 :build (require "misa.ui.themes")}
     "module-5" {:priority 4000 :build (require "misa.ui.themes.default")}
     "module-6" {:priority 5000 :build (require "misa.ui.components")}
     "module-7" {:priority 6000 :build (require "misa.ui.layout")}
-    "module-8" {:priority 7000 :build (require "misa.ui.components.editor")}
+    "module-8" {:priority 7000 :build (require "misa.editor.render")}
     "module-9" {:priority 8000 :build (require "misa.commands")}
     "module-10" {:priority 9000 :build (require "misa.choices")}
     "module-11" {:priority 10000 :build (require "misa.choices.preferences")}
@@ -19,4 +19,5 @@
     "module-14" {:priority 13000 :build (require "misa.choices.picker")}
     "module-15" {:priority 14000 :build (require "misa.commands.palette")}
     "module-16" {:priority 15000 :build (require "misa.editor")}
-    "module-17" {:priority 16000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/command-history.fnl")}}})
+    "module-17" {:priority 16000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/command-history.fnl")}
+    :misa.models.preview {:source :misa.models.preview}}})

@@ -20,7 +20,7 @@
       model.text ""))
 
 (fn [context]
-  "Build the declarations for syntax."
+  "Declare transcript syntax highlighting."
   (local enabled (not= (. (or (. (or context.config {}) :messages) {})
                           :markdown) false))
 

@@ -41,9 +41,9 @@ test "installed generated extensions preserve actionable diagnostics" {
     try h.config(
         \\(local standard (require :misa.standard))
         \\(standard.application {:config {:models {:default 42}}
-        \\                       :modules {:models {:build (require :misa.agent.models)}}})
+        \\                       :modules {:models {:build (require :misa.models)}}})
     );
-    try expectFailure(&h, .{ .binary = @import("integration_options").installed_binary }, &.{ "models.lua:", "config.models.default must be a nonempty string", "stack traceback:" });
+    try expectFailure(&h, .{ .binary = @import("integration_options").installed_binary }, &.{ "models/init.lua:", "config.models.default must be a nonempty string", "stack traceback:" });
 }
 
 test "configuration conversion bounds nesting" {

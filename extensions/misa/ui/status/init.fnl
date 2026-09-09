@@ -1,7 +1,6 @@
 (local definitions (require :misa.definitions))
 
-;; Agent facts and their status projections. Provider quota retrieval is owned
-;; by providers; this feature consumes normalized usage, never transport records.
+;; Status presents usage facts and tracks the current activity label.
 
 (fn total [usage]
   (+ (or (and usage usage.input_tokens) 0)
@@ -33,13 +32,6 @@
          :reason (if (and (= (type usage) :table) usage.unavailable)
                      :provider_unavailable
                      :missing_limit)})))
-
-(fn usage-patch [event mode]
-  {:mode mode
-   :usage (when event.usage (misa.replace event.usage))
-   :last_usage (when event.last_usage (misa.replace event.last_usage))
-   :provider_usage (when event.provider_usage
-                     (misa.replace event.provider_usage))})
 
 (local indicators [{:id :plan
                     :label :plan
@@ -77,28 +69,6 @@
                                    presentation) :lines))
       []))
 
-(local refresh-events
-       {:model/open false
-        :model/select false
-        :models/provider-availability false
-        :models/update false
-        :models/replace-provider false
-        :auth/ready true
-        :transcript/response-end true
-        :transcript/response-interrupted true})
-
-(fn refresh-selected [db event]
-  (local model (and misa.models misa.models.selected (misa.models.selected db)))
-  (local provider (and model model.provider))
-  (local previous (and db.status db.status.quota_provider))
-  (local changed (not= provider previous))
-  (local refresh (and provider (or changed event.force)))
-  (when (or changed refresh)
-    {:patch {:status {:quota_provider (misa.replace provider)}}
-     :fx (if refresh
-             [{:type :dispatch :event {:type :usage/refresh : provider}}]
-             [])}))
-
 (fn []
   "Build the declarations for status."
   (local fx
@@ -109,13 +79,13 @@
                                         :state (or (. inputs 1) :ready)})}]
             {:catalog :subscriptions :id (. definition :id) :value definition})
           (let [definition {:id :status/session
-                            :inputs [[:db/path :status :usage]]
+                            :inputs [[:usage/session]]
                             :compute (fn [inputs]
                                        {:type :tokens
                                         :value (total (. inputs 1))})}]
             {:catalog :subscriptions :id (. definition :id) :value definition})
           (let [definition {:id :status/context
-                            :inputs [[:db/path :status :last_usage]
+                            :inputs [[:usage/last-request]
                                      [:db/path :models :entries]
                                      [:db/path :models :selected]]
                             :compute (fn [inputs]
@@ -131,60 +101,18 @@
                                            {:type :tokens :value used}))}]
             {:catalog :subscriptions :id (. definition :id) :value definition})
           (let [definition {:id :status/plan
-                            :inputs [[:db/path :models :entries]
-                                     [:db/path :models :selected]
-                                     [:db/path :status :provider_usage]
-                                     [:db/path :providers]]
-                            :compute (fn [inputs]
-                                       (local model
-                                              (selected (. inputs 1)
-                                                        (. inputs 2)))
-                                       (local provider
-                                              (and model model.provider))
-                                       (local overrides (. inputs 3))
-                                       (local providers (. inputs 4))
-                                       (plan-value (and provider
-                                                        (or (and overrides
-                                                                 (. overrides
-                                                                    provider))
-                                                            (and providers
-                                                                 (. providers
-                                                                    provider)
-                                                                 (. providers
-                                                                    provider
-                                                                    :usage))))))}]
+                            :inputs [[:usage/selected-quota]]
+                            :compute (fn [inputs] (plan-value (. inputs 1)))}]
             {:catalog :subscriptions :id (. definition :id) :value definition})
-          {:catalog :events
-           :value {:event :usage/check-selected :handler refresh-selected}}
           {:catalog :events
            :value {:event :app/start
                    :handler (fn []
-                              {:patch {:status (misa.replace {:last_usage {}
-                                                              :mode :ready
-                                                              :provider_usage {}
-                                                              :usage {:input_tokens 0
-                                                                      :output_tokens 0}})}
-                               :fx [{:type :dispatch
-                                     :event {:type :usage/check-selected}}]})}}
+                              {:patch {:status (misa.replace {:mode :ready})}})}}
           {:catalog :events
            :value {:event :agent/status
                    :handler (fn [_ event]
-                              {:patch {:status (usage-patch event event.status)}})}}
-          {:catalog :events
-           :value {:event :agent/usage
-                   :handler (fn [_ event]
-                              {:patch {:status (usage-patch event)}})}}
+                              {:patch {:status {:mode event.status}}})}}
           {:catalog :services :id :status.model :value projection}])
-  ;; The queued check observes the completed model transaction, even
-  ;; when this extension registers before the model owner.
-  (each [name force (pairs refresh-events)]
-    (table.insert fx
-                  {:catalog :events
-                   :value {:event name
-                           :handler (fn []
-                                      {:fx [{:type :dispatch
-                                             :event {:type :usage/check-selected
-                                                     : force}}]})}}))
   (do
     (each [_ value (ipairs indicators)]
       (table.insert fx (let [definition value]

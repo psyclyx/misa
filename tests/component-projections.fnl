@@ -4,7 +4,7 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.text.syntax :misa.agent.costs])]
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.transcript.syntax :misa.costs])]
   (app.define ((require name) {:config {}})))
 (var renders 0)
 (var hints 0)

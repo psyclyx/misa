@@ -10,7 +10,7 @@
                                    :models_credential false :credential :test}))
 (local application (misa.compose
  [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/agent/stream.fnl) {})}
   (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
   {:definitions (definitions :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}])}]))
 (misa._install application.definitions {:argv [] :config {}})

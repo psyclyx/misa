@@ -6,7 +6,7 @@ state read or a computation in the `subscriptions` catalog:
 ```fennel
 {:subscriptions
  {:usage/total
-  {:inputs [[:db/path :status :usage]]
+  {:inputs [[:usage/session]]
    :compute (fn [inputs query]
               (local usage (or (. inputs 1) {}))
               (+ (or usage.input_tokens 0) (or usage.output_tokens 0)))}}}

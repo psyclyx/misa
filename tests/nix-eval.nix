@@ -50,9 +50,9 @@ assert project.default.src.filter "${toString ../.}/tools/compile-fennel.lua" "r
 assert project.default.src.filter "${toString ../.}/extensions/misa/agent/init.fnl" "regular";
 assert builtins.attrNames standard == [ "misa" ];
 assert standard.misa.agent.init == "misa.agent";
-assert standard.misa.agent.request-options == "misa.agent.request-options";
+assert standard.misa.models.options == "misa.models.options";
 assert standard.misa.ui.components.init == "misa.ui.components";
-assert standard.misa.ui.components.markdown == "misa.ui.components.markdown";
+assert standard.misa.markdown.render == "misa.markdown.render";
 assert standard.misa.ui.themes.default == "misa.ui.themes.default";
 assert standard.misa.editor.queue.view == "misa.editor.queue.view";
 assert standard.misa.providers.openai-codex == "misa.providers.openai-codex";

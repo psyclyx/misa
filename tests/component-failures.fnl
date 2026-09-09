@@ -20,7 +20,7 @@
                                                  {:spans [{:text :after}]}]})}}]))
 (app.define ((fennel.dofile :extensions/misa/ui/layout.fnl) context))
 (app.define (definitions :fixture [{:catalog :services :id :components.buttons :value (fn [] [])}]))
-(app.define ((fennel.dofile :extensions/misa/ui/components/dialog.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/dialogs/render.fnl) context))
 (app.install)
 (local db {:themes {:active :default} :components {:roles {}}})
 (local render-context {:columns 32})

@@ -5,7 +5,13 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local context {:argv [] :config {:choices {:preview_renderers {:custom :test.preview}}}})
-(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.ui.layout :misa.ui.values :misa.choices :misa.choices.preview :misa.choices.layout])]
+(local generic-preview ((require :misa.choices.preview) context))
+(assert (= (. generic-preview.choice-previews :model) nil)
+        "generic choices must not install model pricing presentation")
+(local model-preview ((require :misa.models.preview)))
+(assert (. model-preview.choice-previews :model)
+        "model previews must be independently selectable")
+(each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.values :misa.choices :misa.choices.preview :misa.models.preview :misa.choices.layout])]
   (app.define ((require name) context)))
 (local shared [{:spans [{:text "CUSTOM" :action :custom.action :link "https://example.test"
                         :animation {:id :preview :interval_ms 100 :frames [{:text "CUSTOM"} {:text "custom"}]}}]}])
@@ -43,7 +49,7 @@
 (assert (= (. geometry.preview.lines 1 :spans 1 :action) :custom.action))
 (assert (= (. geometry.preview.lines 1 :spans 1 :link) "https://example.test"))
 (assert (= (. shared 1 :spans 1 :text) "CUSTOM"))
-(local picker ((fennel.dofile :extensions/misa/ui/components/picker.fnl) {}))
+(local picker ((fennel.dofile :extensions/misa/choices/picker/render.fnl) {}))
 (local rendered ((. picker :components :default.picker :render) geometry))
 (assert (= calls 1) "picker repeated preview geometry")
 (local rendered-preview (. rendered.lines (+ geometry.preview.y 1)))

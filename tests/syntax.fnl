@@ -10,17 +10,17 @@
 (local misa _G.misa)
 (local app ((require :tests.application) context))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:misa.commands.keybindings
+(each [_ name (ipairs [:misa.keybindings
                        :misa.ui.themes
                        :misa.ui.themes.default
                        :misa.ui.components
                        :misa.ui.layout
-                       :misa.text.markdown
-                       :misa.ui.tools
-                       :misa.text.syntax
-                       :misa.ui.components.markdown
-                       :misa.ui.values :misa.ui.components.truncation :misa.ui.components.group :misa.ui.components.message :misa.ui.components.content :misa.ui.components.tool
-                       :misa.ui.transcript])]
+                       :misa.markdown
+                       :misa.transcript.tools
+                       :misa.transcript.syntax
+                       :misa.markdown.render
+                       :misa.ui.values :misa.ui.components.truncation :misa.ui.components.group :misa.transcript.groups :misa.transcript.render :misa.ui.components.content :misa.transcript.tools.render
+                       :misa.transcript])]
   (app.include (require name) context))
 
 (var db nil)

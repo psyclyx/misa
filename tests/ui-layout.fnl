@@ -94,7 +94,7 @@
   (assert (= (. source 1 :spans 1 :animation) animation)
           "root clipping mutated the source animation"))
 
-(each [id component (pairs (. ((fennel.dofile :extensions/misa/ui/components/editor.fnl) {}) :components))]
+(each [id component (pairs (. ((fennel.dofile :extensions/misa/editor/render.fnl) {}) :components))]
   (when (= id :default.editor.input)
     (each [_ mode (ipairs [:insert :normal :visual])]
       (local input (component.render {:text "hello" :cursor 2 : mode} {:columns 20}))

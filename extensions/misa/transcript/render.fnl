@@ -1,7 +1,6 @@
 (local definitions (require :misa.definitions))
 
-;; Default transcript chrome. Markdown parsing and terminal flow are delegated to
-;; the reusable markdown and component.markdown services.
+;; Transcript chrome delegates document parsing and terminal flow to Markdown.
 
 (fn rail [model]
   (assert model.rail "message model requires a semantic rail token"))
@@ -67,7 +66,7 @@
       (misa.markdown.view.plain model.text style)))
 
 (fn []
-  "Build the declarations for component message."
+  "Declare transcript message renderers."
   (local declarations [])
 
   (fn reg [role render compose]

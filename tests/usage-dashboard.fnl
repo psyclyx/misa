@@ -6,7 +6,7 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.ui.values :misa.commands.keybindings :misa.dialogs :misa.ui.components.buttons])]
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.ui.values :misa.keybindings :misa.dialogs :misa.ui.components.buttons])]
   (app.define ((require name) {:config {}})))
 (set misa.time.local-datetime (fn [_] "localized time"))
 (fn handlers [specs]
@@ -15,13 +15,15 @@
                    (values id (handlers ((require (.. :misa.providers. id))
                                          {:config {}})))))
 (local status-specs ((fennel.dofile :extensions/misa/ui/status/init.fnl)))
-(local status (handlers status-specs))
+(local usage-specs ((require :misa.usage)))
+(local status (handlers usage-specs))
+(app.define {:subscriptions usage-specs.subscriptions})
 (app.define {:subscriptions status-specs.subscriptions})
 (app.install)
-(local usage (handlers ((fennel.dofile :extensions/misa/ui/status/usage.fnl))))
+(local usage (handlers ((fennel.dofile :extensions/misa/usage/dialog.fnl))))
 (local dialogs (handlers ((fennel.dofile :extensions/misa/dialogs/init.fnl))))
 (local render-data (. ((fennel.dofile :extensions/misa/ui/components/data.fnl)) :components :default.data :render))
-(local render-dialog (. ((fennel.dofile :extensions/misa/ui/components/dialog.fnl)) :components :default.dialog :render))
+(local render-dialog (. ((fennel.dofile :extensions/misa/dialogs/render.fnl)) :components :default.dialog :render))
 (local clock {:clock {:wall_ms 1788825600000 :monotonic_ms 0}})
 (fn apply [registry db event]
   (local before (misa.json.encode db))

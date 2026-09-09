@@ -7,7 +7,7 @@
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}
                                   :animations {:persist false}
                                   :status {:indicators [:zero :false :hidden :custom :activity]}}})
-(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.ui.layout :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.values :misa.ui.components.status
+(each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.values :misa.ui.status.render
                        :misa.ui.animations :misa.ui.animations.default :misa.ui.status.indicators])]
   (app.define ((require name) context)))
 (local calls {})

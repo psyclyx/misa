@@ -9,15 +9,23 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
+(local boundary ((require :misa.ui.components.group)))
+(local groups ((require :misa.transcript.groups)))
+(assert (. boundary.components :default.group.boundary))
+(assert (= (. boundary.components :default.transcript.group_footer) nil)
+        "generic boundaries must not install transcript policy")
+(assert (. groups.components :default.transcript.group_footer))
+(assert (= (. groups.components :default.group.boundary) nil)
+        "transcript groups must compose the selected boundary implementation")
 (each [_ name (ipairs [:misa.json
                        :misa.ui.themes
                        :misa.ui.themes.default
                        :misa.ui.components
-                       :misa.commands.actions
+                       :misa.actions
                        :misa.ui.layout
-                       :misa.text.markdown
-                       :misa.ui.components.markdown
-                       :misa.ui.values :misa.ui.components.group :misa.ui.components.message :misa.ui.components.content :misa.ui.components.truncation :misa.ui.tools :misa.ui.components.tool])]
+                       :misa.markdown
+                       :misa.markdown.render
+                       :misa.ui.values :misa.ui.components.group :misa.transcript.groups :misa.transcript.render :misa.ui.components.content :misa.ui.components.truncation :misa.transcript.tools :misa.transcript.tools.render])]
   (app.define ((require name) context)))
 
 (local cached

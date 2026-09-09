@@ -3,7 +3,7 @@
 ;; A semantic image rectangle, with a readable fallback on text-only terminals.
 
 (fn []
-  "Build the declarations for component image."
+  "Declare image attachment rendering."
   (definitions :component.image
     [{:catalog :components
       :id :default.attachment.image

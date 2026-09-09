@@ -7,7 +7,7 @@
 (local markers {:insert "│ " :normal "◆ " :visual "◇ "})
 
 (fn []
-  "Build the declarations for component editor."
+  "Declare editor input and completion renderers."
   (local declarations [])
   (table.insert declarations
                 {:catalog :components
