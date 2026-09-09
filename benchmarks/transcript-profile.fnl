@@ -35,7 +35,9 @@
     (misa._commit)
     (each [_ effect (ipairs effects)]
       (when (= effect.type :dispatch) (table.insert queue effect.event)))
-    (set index (+ index 1))))
+    (set index (+ index 1)))
+  (misa._project terminal clock)
+  (misa._commit_projection))
 (dispatch {:type :app/start})
 (for [_ 1 6] (dispatch {:type :bench/frame :stream true}))
 (local samples {})

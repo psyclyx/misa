@@ -339,6 +339,21 @@
                                                 (when value (tset result key true))))
                                             result)}})
           (table.insert setup-fx
+                        {:type :register/projection :name :editor_input_projection
+                         :inputs (fn [db]
+                                   (local editor (assert db.editor "editor state is not initialized"))
+                                   {:cursor editor.cursor :mode editor.mode :text editor.text
+                                    :selection_end editor.selection_end :selection_start editor.selection_start
+                                    :components db.components :themes db.themes
+                                    :hover_action db.hover_action :hover_link db.hover_link
+                                    :choice_pending (and misa.choice_pending (misa.choice_pending db))})
+                         :render (fn [db context]
+                                   (local editor db.editor)
+                                   (misa.render_component db :editor.input
+                                     {:cursor editor.cursor :mode editor.mode :text editor.text
+                                      :selection_end editor.selection_end :selection_start editor.selection_start}
+                                     context))})
+          (table.insert setup-fx
                         {:type :register/service
                          :name :editor_projection
                          :value (fn [db projection-context]
@@ -350,13 +365,7 @@
                                          (and projection-context
                                               projection-context.terminal))
                                   (local input
-                                         (misa.render_component db
-                                                                :editor.input
-                                                                {:cursor editor.cursor
-                                                                 :mode editor.mode
-                                                                 :selection_end editor.selection_end
-                                                                 :selection_start editor.selection_start
-                                                                 :text editor.text}
+                                         (misa.editor_input_projection db
                                                                 {:columns (or (and terminal
                                                                                    terminal.columns)
                                                                               80)}))
@@ -367,6 +376,7 @@
                                                                            terminal
                                                                            (length input.lines)))
                                              5))
+                                  (local cursor (or input.cursor {:byte 0 :row 1 :shape :bar}))
                                   (when (and editor.choice
                                              (not editor.choice_overlay))
                                     (set completions
@@ -375,8 +385,8 @@
                                                                      terminal.columns)
                                                                 80))))
                                   {:busy false
-                                   :byte input.cursor.byte
-                                   :shape input.cursor.shape
+                                   :byte cursor.byte
+                                   :shape cursor.shape
                                    :completions (. (misa.render_component db
                                                                           (or (and completions.columns
                                                                                    :picker)
@@ -384,7 +394,7 @@
                                                                           completions)
                                                    :lines)
                                    :input input.lines
-                                   :row input.cursor.row})})
+                                   :row cursor.row})})
 
           (local handlers
                  {:app/start (fn [db _ cofx]

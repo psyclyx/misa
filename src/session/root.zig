@@ -44,6 +44,7 @@ pub const Session = struct {
     operations: operation.Owner,
     timers: timer.Collection,
     pending_view: ?terminal_module.Driver.View = null,
+    projection_dirty: bool = false,
     protected: ?protected_input.Input = null,
     protected_wait: ?[]u8 = null,
 
@@ -121,22 +122,12 @@ pub const Session = struct {
             var transaction = self.runtime.dispatch(event, clock) catch return error.LuaTransactionFailed;
             defer transaction.deinit();
             errdefer self.runtime.rollbackTransaction();
-            const view = transaction.view;
             var effects: std.ArrayList(native_effect.Effect) = .empty;
             defer effects.deinit(self.allocator);
             for (transaction.effects) |effect| try effects.append(self.allocator, try .parse(effect));
-            // Semantic validation is part of the transaction. Native rendering
-            // runs on the terminal owner after the dispatch chain settles.
-            if (view != .null) try terminal_module.validateView(self.allocator, view, self.dimensions, self.images_supported);
             try self.runtime.commitTransaction();
+            self.projection_dirty = true;
             for (effects.items) |effect| try self.execute(effect);
-            if (view != .null) {
-                if (self.pending_view) |*old| old.deinit();
-                self.pending_view = .{ .arena = transaction.arena, .value = view, .dimensions = self.dimensions };
-                // The view takes the transaction arena once every effect has
-                // consumed its borrowed arguments. No Lua memory crosses threads.
-                transaction.arena = .init(self.allocator);
-            }
             self.compactQueue();
             // A read request is level-triggered. Decoded terminal events are
             // released one at a time so policy effects from Enter run before
@@ -152,7 +143,7 @@ pub const Session = struct {
     fn hasWork(self: *const Session) bool {
         return (!self.quit or self.operations.isActive()) and
             (self.queue_head < self.queue.items.len or self.read_requested or
-                self.operations.isActive() or self.timers.count() != 0 or self.pending_view != null);
+                self.operations.isActive() or self.timers.count() != 0 or self.pending_view != null or self.projection_dirty);
     }
 
     fn enqueue(self: *Session, json: []const u8) !void {
@@ -430,9 +421,35 @@ pub const Session = struct {
     }
 
     fn publishView(self: *Session) !void {
+        if (self.projection_dirty) {
+            // A failed projection cannot undo committed model changes or
+            // effects. Retain the last valid frame and try only after a later
+            // transaction; otherwise a broken view would spin without input.
+            self.projection_dirty = false;
+            self.projectView() catch {};
+        }
         const view = self.pending_view orelse return;
         try self.terminal.publish(view);
         self.pending_view = null;
+    }
+
+    fn projectView(self: *Session) !void {
+        var projection = try self.runtime.project(.{
+            .wall_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds(),
+            .monotonic_ms = std.Io.Timestamp.now(self.io, .awake).toMilliseconds(),
+        });
+        defer projection.deinit();
+        errdefer self.runtime.rollbackProjection();
+        if (projection.value != .null) terminal_module.validateView(self.allocator, projection.value, self.dimensions, self.images_supported) catch |err| {
+            self.runtime.reportProjectionError(err);
+            return err;
+        };
+        try self.runtime.commitProjection();
+        if (projection.value != .null) {
+            if (self.pending_view) |*old| old.deinit();
+            self.pending_view = .{ .arena = projection.arena, .value = projection.value, .dimensions = self.dimensions };
+            projection.arena = .init(self.allocator);
+        }
     }
 
     fn enqueueStreamStart(self: *Session, completion: []const u8, id: []const u8) !void {

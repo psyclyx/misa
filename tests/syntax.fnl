@@ -23,6 +23,7 @@
 
 (var db nil)
 (var expected-syntax nil)
+(var syntax-input-checked false)
 (misa._setup_effects {:fx [{:type :register/event
                             :name :test/read
                             :handler (fn [value] (set db value))}]})
@@ -57,6 +58,7 @@
                                                               key)
                                                            data)
                                                         "component boundary copied derived captures"))
+                                              (set syntax-input-checked true)
                                               {:lines []})}}]})
 
 (misa._seal context)
@@ -78,7 +80,9 @@
         _ (error (.. "unexpected effect: " effect.type))))
     (set at (+ at 1)))
   (misa._dispatch {:type :test/read} terminal {:wall_ms 0 :monotonic_ms 0})
-  (misa._commit))
+  (misa._commit)
+  (misa._project terminal {:wall_ms 0 :monotonic_ms 0})
+  (misa._commit_projection))
 
 (fn start []
   (dispatch {:type :transcript/response-start :response_id :reply})
@@ -209,6 +213,7 @@
 (set expected-syntax (misa.syntax_projection (misa.syntax_projections db) (. db.messages.blocks 1)))
 (set (. db.components.roles :transcript.assistant) :test.syntax-input)
 (misa.transcript_projection db terminal)
+(assert syntax-input-checked "syntax component failed before validating its shared inputs")
 (set (. db.components.roles :transcript.assistant) nil)
 ;; Real component models preserve the explicit input and require no
 ;; synchronous native capability during projection.

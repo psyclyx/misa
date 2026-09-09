@@ -29,7 +29,7 @@ pub const ClockInfo = struct {
     monotonic_ms: i64,
 };
 
-/// Effects and view copied out of Lua into one short-lived arena.
+/// A projection copied out of Lua into one short-lived arena.
 pub const OwnedValue = struct {
     arena: std.heap.ArenaAllocator,
     value: std.json.Value,
@@ -42,7 +42,6 @@ pub const OwnedValue = struct {
 pub const Transaction = struct {
     arena: std.heap.ArenaAllocator,
     effects: []const std.json.Value,
-    view: std.json.Value,
 
     pub fn deinit(self: *Transaction) void {
         self.arena.deinit();
@@ -228,7 +227,7 @@ pub const Runtime = struct {
         self.terminal_info = info;
     }
 
-    /// Dispatch one event and copy only its effects/view out of Lua.
+    /// Dispatch one event and copy its effects out of Lua.
     pub fn dispatch(self: *Runtime, event_json: []const u8, clock: ClockInfo) !Transaction {
         self.assertStack(0);
         errdefer self.rollbackTransaction();
@@ -247,7 +246,7 @@ pub const Runtime = struct {
         try self.pushJson(event.value, 0);
         self.pushTerminalInfo(self.terminal_info orelse return error.TerminalInfoMissing);
         self.pushClockInfo(clock);
-        if (c.lua_pcall(self.state, 3, 2, error_handler) != 0) {
+        if (c.lua_pcall(self.state, 3, 1, error_handler) != 0) {
             self.setError("event dispatch: {s}", .{self.stackError()});
             c.lua_settop(self.state, 0);
             return error.EventDispatchFailed;
@@ -256,13 +255,12 @@ pub const Runtime = struct {
         var transaction: Transaction = .{
             .arena = std.heap.ArenaAllocator.init(self.allocator),
             .effects = undefined,
-            .view = undefined,
         };
         errdefer transaction.deinit();
         var active: std.ArrayList(?*const anyopaque) = .empty;
         defer active.deinit(self.allocator);
         const arena = transaction.arena.allocator();
-        const effects_value = self.readLuaValue(arena, -2, 0, &active) catch |err| {
+        const effects_value = self.readLuaValue(arena, -1, 0, &active) catch |err| {
             self.setError("invalid effects: {s}", .{@errorName(err)});
             c.lua_settop(self.state, 0);
             return error.EventDispatchFailed;
@@ -275,13 +273,67 @@ pub const Runtime = struct {
                 return error.EventDispatchFailed;
             },
         };
-        transaction.view = self.readLuaValue(arena, -1, 0, &active) catch |err| {
-            self.setError("invalid view: {s}", .{@errorName(err)});
-            c.lua_settop(self.state, 0);
-            return error.EventDispatchFailed;
-        };
         c.lua_settop(self.state, 0);
         return transaction;
+    }
+
+    /// Project committed state without running handlers or executing effects.
+    /// The caller validates the semantic view before accepting its cache.
+    pub fn project(self: *Runtime, clock: ClockInfo) !OwnedValue {
+        self.assertStack(0);
+        errdefer self.rollbackProjection();
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_getfield(self.state, -1, "_project");
+        c.lua_remove(self.state, -2);
+        self.pushTraceback();
+        c.lua_insert(self.state, -2);
+        const error_handler = c.lua_gettop(self.state) - 1;
+        self.pushTerminalInfo(self.terminal_info orelse return error.TerminalInfoMissing);
+        self.pushClockInfo(clock);
+        if (c.lua_pcall(self.state, 2, 1, error_handler) != 0) {
+            self.setError("view projection: {s}", .{self.stackError()});
+            c.lua_settop(self.state, 0);
+            return error.ViewProjectionFailed;
+        }
+        var result: OwnedValue = .{ .arena = .init(self.allocator), .value = undefined };
+        errdefer result.deinit();
+        var active: std.ArrayList(?*const anyopaque) = .empty;
+        defer active.deinit(self.allocator);
+        result.value = self.readLuaValue(result.arena.allocator(), -1, 0, &active) catch |err| {
+            self.setError("invalid view: {s}", .{@errorName(err)});
+            c.lua_settop(self.state, 0);
+            return error.ViewProjectionFailed;
+        };
+        c.lua_settop(self.state, 0);
+        return result;
+    }
+
+    pub fn commitProjection(self: *Runtime) !void {
+        self.assertStack(0);
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_getfield(self.state, -1, "_commit_projection");
+        c.lua_remove(self.state, -2);
+        self.pushTraceback();
+        c.lua_insert(self.state, -2);
+        if (c.lua_pcall(self.state, 0, 0, 1) != 0) {
+            self.failLua("committing projection");
+            c.lua_settop(self.state, 0);
+            return error.ViewProjectionFailed;
+        }
+        self.pop(1);
+    }
+
+    pub fn rollbackProjection(self: *Runtime) void {
+        c.lua_settop(self.state, 0);
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_getfield(self.state, -1, "_rollback_projection");
+        c.lua_remove(self.state, -2);
+        _ = c.lua_pcall(self.state, 0, 0, 0);
+        c.lua_settop(self.state, 0);
+    }
+
+    pub fn reportProjectionError(self: *Runtime, failure: anyerror) void {
+        self.setError("invalid view: {s}", .{@errorName(failure)});
     }
 
     pub fn mcpTools(self: *Runtime) !OwnedValue {
@@ -551,7 +603,37 @@ pub const Runtime = struct {
     }
 };
 
-test "native decoding rejection discards speculative subscription results" {
+test "model dispatches settle independently of projection" {
+    var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
+    defer runtime.deinit();
+    const source =
+        \\local projections = 0
+        \\misa._setup_effects({fx = {
+        \\  {type="register/event", name="increment", handler=function(db)
+        \\    assert(projections == 0, "dispatch eagerly projected an intermediate state")
+        \\    return {patch={count=(db.count or 0)+1}} end},
+        \\  {type="register/view", handler=function(db)
+        \\    projections = projections + 1
+        \\    return {lines={{spans={{text=tostring(db.count)}}}}} end}
+        \\}})
+        \\misa._seal({argv={}, config={}})
+    ;
+    try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@independent-projection.lua"));
+    try std.testing.expectEqual(@as(c_int, 0), c.lua_pcall(runtime.state, 0, 0, 0));
+    runtime.setTerminalInfo(.{ .interactive = true, .columns = 80, .lines = 24, .images = false });
+    const clock: ClockInfo = .{ .wall_ms = 0, .monotonic_ms = 0 };
+    for (0..2) |_| {
+        var transaction = try runtime.dispatch("{\"type\":\"increment\"}", clock);
+        defer transaction.deinit();
+        try runtime.commitTransaction();
+    }
+    var projection = try runtime.project(clock);
+    defer projection.deinit();
+    try std.testing.expectEqualStrings("2", projection.value.object.get("lines").?.array.items[0].object.get("spans").?.array.items[0].object.get("text").?.string);
+    try runtime.commitProjection();
+}
+
+test "projection decoding rejection preserves committed model and prior projection cache" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     const source =
@@ -559,7 +641,8 @@ test "native decoding rejection discards speculative subscription results" {
         \\misa._setup_effects({fx = {
         \\  {type="register/sub", value={id="probe", inputs=function() return {{"db/path", "value"}} end,
         \\    compute=function(inputs) return {value=inputs[1]} end}},
-        \\  {type="register/event", name="set", handler=function(_, event)
+        \\  {type="register/event", name="set", handler=function(db, event)
+        \\    if event.previous then assert(db.value == event.previous, "projection rejection rolled back model") end
         \\    return {patch={value=event.value, invalid=event.invalid or false}} end},
         \\  {type="register/view", handler=function(db)
         \\    local current = misa.sub(db, {"probe"})
@@ -579,10 +662,19 @@ test "native decoding rejection discards speculative subscription results" {
     var first = try runtime.dispatch("{\"type\":\"set\",\"value\":1}", clock);
     defer first.deinit();
     try runtime.commitTransaction();
-    try std.testing.expectError(error.EventDispatchFailed, runtime.dispatch("{\"type\":\"set\",\"value\":2,\"invalid\":true}", clock));
-    var recovered = try runtime.dispatch("{\"type\":\"set\",\"value\":1}", clock);
+    var initial_view = try runtime.project(clock);
+    defer initial_view.deinit();
+    try runtime.commitProjection();
+    var changed = try runtime.dispatch("{\"type\":\"set\",\"value\":2,\"invalid\":true}", clock);
+    defer changed.deinit();
+    try runtime.commitTransaction();
+    try std.testing.expectError(error.ViewProjectionFailed, runtime.project(clock));
+    var recovered = try runtime.dispatch("{\"type\":\"set\",\"value\":1,\"previous\":2}", clock);
     defer recovered.deinit();
     try runtime.commitTransaction();
+    var recovered_view = try runtime.project(clock);
+    defer recovered_view.deinit();
+    try runtime.commitProjection();
 }
 
 test "translated core retains source locations and leaves bootstrap stack empty" {

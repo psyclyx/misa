@@ -34,6 +34,11 @@
 (var subscription-scope (subscription-registry.scope))
 (var active-sub-scope nil)
 (var pending-sub-scope nil)
+(var projection-scope (subscription-registry.scope))
+(var pending-projection-scope nil)
+(var projection-entries {})
+(var pending-projection-entries nil)
+(var projecting false)
 
 (var (view sealed dispatching db pending-db base-context)
      (values nil false false {} nil nil))
@@ -572,6 +577,34 @@
   (tset target key effect.value)
   nil)
 
+;; A projection owner declares its invalidation inputs. Its render callback may
+;; compose other projections and subscriptions; only accepted frames retain
+;; these immutable results. Calls from model handlers compute without publishing
+;; speculative presentation caches.
+(fn same-fields [a b]
+  (and a b
+       (do
+         (each [key value (pairs a)] (when (not= value (. b key)) (lua "return false")))
+         (each [key value (pairs b)] (when (not= value (. a key)) (lua "return false")))
+         true)))
+
+(fn install-projection [effect]
+  (assert (and (= (type effect.inputs) :function) (= (type effect.render) :function))
+          "projection requires inputs and render callbacks")
+  (install-service
+    {:name effect.name
+     :value (fn [state context]
+              (local inputs (effect.inputs state context))
+              (assert (= (type inputs) :table) "projection inputs must be a table")
+              (local previous (. (if projecting pending-projection-entries projection-entries) effect.name))
+              (if (and previous (same-fields previous.inputs inputs)
+                       (same-fields previous.context (or context {}))) previous.value
+                  (let [value (effect.render state context)
+                        entry {:inputs (collect [key item (pairs inputs)] key item)
+                               :context (collect [key item (pairs (or context {}))] key item) : value}]
+                    (when projecting (tset pending-projection-entries effect.name entry))
+                    value)))}))
+
 (local builtin-setup {:register/event (fn [e]
                                         (registrations.reg_event e.name
                                                                  e.handler))
@@ -604,6 +637,7 @@
                                              (registrations.reg_completion e.group
                                                                            e.value))
                       :register/service install-service
+                      :register/projection install-projection
                       :register/setup-effect (fn [e]
                                                (assert (and (= (type e.name)
                                                                :string)
@@ -685,14 +719,14 @@
 (fn misa._seal [context] (set sealed true) (set base-context context) nil)
 
 (fn misa._dispatch [event terminal clock]
-  (assert (and sealed (not dispatching)) "invalid dispatch state")
+  (assert (and sealed (not dispatching) (not projecting) (= pending-projection-scope nil)) "invalid dispatch state")
   (assert (= pending-db nil) "previous transaction was not committed")
   (assert (and (and (= (type event) :table) (= (type event.type) :string))
                (not= event.type ""))
           "event.type must be a nonempty string")
   (set dispatching true)
   (set active-sub-scope (subscription-scope.fork))
-  (local (ok native projection)
+  (local (ok native)
          (xpcall (fn []
                    (assert (and (and (= (type clock) :table)
                                      (= (type clock.wall_ms) :number))
@@ -765,22 +799,14 @@
                                (append effects translated)))
                          (tset effects (+ (length effects) 1) effect)))
                    (each [_ effect (ipairs effects)] (runtime-effect effect))
-                   ;; The database is persistent by convention:
-                   ;; views receive it directly so subscription inputs retain
-                   ;; identity across transactions.  Views are projections
-                   ;; and must not mutate it.
-                   (var frame misa.json_null)
-                   (when view
-                     (set frame (view tx.db (clone tx.cofx)))
-                     (assert (= (type frame) :table) "view must return a table"))
                    (set pending-sub-scope active-sub-scope)
                    (set pending-db tx.db)
-                   (values effects frame)) traceback))
+                   effects) traceback))
   (set dispatching false)
   (when (not ok) (active-sub-scope.close))
   (set active-sub-scope nil)
   (when (not ok) (error native 0))
-  (values native projection))
+  native)
 
 (fn misa._commit [] (assert (not= pending-db nil) "no transaction to commit")
   (set (db pending-db) (values pending-db nil))
@@ -792,6 +818,38 @@
   (assert (not dispatching) "cannot roll back while dispatching")
   (when pending-sub-scope (pending-sub-scope.close))
   (set (pending-db pending-sub-scope) (values nil nil))
+  nil)
+
+(fn misa._project [terminal clock]
+  (assert (and sealed (not dispatching) (not projecting) (= pending-db nil)
+               (= pending-projection-scope nil)) "invalid projection state")
+  (set projecting true)
+  (set active-sub-scope (projection-scope.fork))
+  (set pending-projection-entries (collect [key entry (pairs projection-entries)] key entry))
+  (local (ok frame)
+    (xpcall (fn []
+              (local cofx {:argv base-context.argv :config base-context.config : terminal : clock})
+              (local result (if view (view db cofx) misa.json_null))
+              (assert (= (type result) :table) "view must return a table")
+              result) traceback))
+  (set projecting false)
+  (if ok (set pending-projection-scope active-sub-scope)
+      (do (active-sub-scope.close) (set pending-projection-entries nil)))
+  (set active-sub-scope nil)
+  (when (not ok) (error frame 0))
+  frame)
+
+(fn misa._commit_projection []
+  (assert pending-projection-scope "no projection to commit")
+  (projection-scope.close)
+  (set (projection-scope pending-projection-scope) (values pending-projection-scope nil))
+  (set (projection-entries pending-projection-entries) (values pending-projection-entries nil))
+  nil)
+
+(fn misa._rollback_projection []
+  (assert (not projecting) "cannot roll back while projecting")
+  (when pending-projection-scope (pending-projection-scope.close))
+  (set (pending-projection-scope pending-projection-entries) (values nil nil))
   nil)
 
 ;; Extensions are trusted policy. Keep ordinary Lua loading/composition, while

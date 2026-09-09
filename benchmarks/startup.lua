@@ -36,23 +36,28 @@ load_fennel("src/lua_runtime/framework.fnl")
 local json = load_fennel("extensions/json.fnl")
 misa._setup(json, {config = {}})
 local config = misa.json.decode(source("config/default.json"))
-assert(config.extensions[1] == "json")
 local context = {config = config.config, argv = {}, host = {executable = "misa"}}
-for index = 2, #config.extensions do
-  local path = "extensions/" .. config.extensions[index]:gsub("%.", "/") .. ".fnl"
-  local extension = load_fennel(path)
-  local start = clock()
-  misa._setup(extension, context)
-  local elapsed = clock() - start
-  rows[#rows].setup = elapsed
-  totals.setup = totals.setup + elapsed
+for index = 1, #config.extensions do
+  if config.extensions[index] ~= "json" then
+    local path = "extensions/" .. config.extensions[index]:gsub("%.", "/") .. ".fnl"
+    local extension = load_fennel(path)
+    local start = clock()
+    misa._setup(extension, context)
+    local elapsed = clock() - start
+    rows[#rows].setup = elapsed
+    totals.setup = totals.setup + elapsed
+  end
 end
 misa._seal(context)
 local start = clock()
-local effects, view = misa._dispatch({type = "app/start"},
+local effects = misa._dispatch({type = "app/start"},
   {columns = 80, lines = 24, interactive = false, images = false},
   {wall_ms = 0, monotonic_ms = 0})
 misa._commit()
+local view = misa._project(
+  {columns = 80, lines = 24, interactive = false, images = false},
+  {wall_ms = 0, monotonic_ms = 0})
+misa._commit_projection()
 local dispatch = clock() - start
 -- Deterministic semantic output lets the caller check repeated runs before
 -- trusting their timing. Do not serialize pointer addresses or callbacks.

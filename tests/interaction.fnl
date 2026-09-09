@@ -42,6 +42,10 @@
           (set misa._dispatch
                (fn [event _ clock]
                  (dispatch event {:columns 60 :interactive true :lines 24} clock)))
+          (local project misa._project)
+          (set misa._project
+               (fn [_ clock]
+                 (project {:columns 60 :interactive true :lines 24} clock)))
           (step {:key :alt+z :kind :key :type :terminal/input}
                 (fn [db]
                   (assert db.custom_action

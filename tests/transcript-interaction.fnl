@@ -236,6 +236,10 @@ Second paragraph with useful words."
           (set misa._dispatch
                (fn [event _ clock]
                  (dispatch event {:columns 54 :interactive true :lines 24 :images true} clock)))
+          (local project misa._project)
+          (set misa._project
+               (fn [_ clock]
+                 (project {:columns 54 :interactive true :lines 24 :images true} clock)))
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start

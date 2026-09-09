@@ -360,3 +360,9 @@ test "selection follows rendered wrapped rows and source ranges" {
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/selection-rendered-geometry.fnl"} }, "rendered selection geometry passed\n");
 }
+
+test "projection regions isolate editor and transcript invalidation" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/projection-regions.fnl"} }, "projection region ownership passed\n");
+}

@@ -229,7 +229,7 @@
 (set misa.render_component nil)
 (var (project register-presentation) nil)
 (each [_ spec (ipairs specs.fx)]
-  (when (= spec.name :transcript_projection) (set project spec.value))
+  (when (= spec.name :transcript_projection) (set project spec.render))
   (when (= spec.name :register/transcript-presentation) (set register-presentation spec.handler)))
 (local cached {:lines [{:spans [{:text :cached}]}]})
 (var rendered-role nil)

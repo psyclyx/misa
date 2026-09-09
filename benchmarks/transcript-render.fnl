@@ -24,7 +24,7 @@
 (when projection-directory
   (local saved ((. (fennel.dofile (.. projection-directory :/messages.fnl)) :setup) context))
   (each [_ spec (ipairs saved.fx)]
-    (when (= spec.name :transcript_projection) (set baseline-project spec.value)))
+    (when (= spec.name :transcript_projection) (set baseline-project (or spec.render spec.value))))
   (local saved-components ((. (fennel.dofile (.. projection-directory :/message.fnl)) :setup)))
   (each [_ spec (ipairs saved-components.fx)]
     (when (= spec.type :register/component)

@@ -415,9 +415,44 @@ output strips styles.
 once into a closed native union; `src/capability/process.zig` owns direct
 process execution and captured-output normalization, while
 `src/capability/file.zig` owns bounded file operations. Fennel owns canonical application
-state. Fennel handlers and semantic view projection share one serialized VM.
-The session validates effects and views before committing state, then transfers
-an owned view after the synchronous dispatch chain settles.
+state. Fennel handlers and semantic view projection share one serialized VM,
+with separate transactions. Dispatch validates effects before committing the
+model and executing effects. After the synchronous event chain settles, a
+presentation transaction projects the committed model, validates the frame,
+and transfers an owned view to the terminal. Rendering failure preserves the
+committed model, executed effects, last valid frame, and accepted projection
+caches. It retries after a later event rather than spinning on a broken view.
+Presentation receives `argv`, `config`, terminal facts, and a fresh clock;
+event-derived custom coeffects belong to model handlers. Views that need those
+facts should consume committed model state through declared projection inputs.
+
+Extensions can register a projection owner:
+
+```fennel
+{:type :register/projection :name :feature_projection
+ :inputs (fn [db] {:feature db.feature :theme db.themes})
+ :render (fn [db context] (render-feature db.feature context))}
+```
+
+This installs an ordinary service at `misa.feature_projection`. The owner must
+declare every state dependency used by its render callback; context fields are
+also compared. Inputs and outputs follow the framework's immutable-value
+contract. Calls can compose subscriptions and other projections. Accepted frames
+retain one result per registered owner; rejected frames discard speculative
+results. Model handlers may reuse an accepted result, but cannot publish new
+presentation caches. The transcript owns its content/layout dependencies, while
+the editor owns its input projection. Typing and scrolling reuse transcript
+layout; streaming reuses unchanged editor input. Viewport slicing still responds
+to editor height and selection changes.
+
+Component rendering is a local failure boundary. Exceptions and malformed
+semantic output produce a bounded placeholder with `component_error` diagnostic
+metadata, including for nested children. Other components remain available, and
+changed models, contexts, or implementations permit recovery. Native frame
+validation remains the backstop for invalid final geometry and encodings.
+An infinite loop or a long native callback is not isolated by exception handling:
+the shared VM still serializes execution. This separation does not promise a
+hard input-latency bound or introduce a second rendering VM.
 
 `src/terminal/driver.zig` runs a separate terminal thread. Its latest-view mailbox
 coalesces frames before native rendering; image updates use the actually displayed
