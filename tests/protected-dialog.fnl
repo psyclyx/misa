@@ -77,7 +77,9 @@
                         {:type :register/event
                          :name :check/actions
                          :handler (fn [db]
-                                    (assert (= db.dialog.selected_action 2))
+                                    ;; Dialog actions use explicit bindings and a primary Enter action;
+                                    ;; Tab does not move an implicit button selection.
+                                    (assert (. db.dialog.actions 2 :primary))
                                     {:fx [{:event {:kind :tab
                                                    :type :dialog/input}
                                            :type :dispatch}
@@ -88,7 +90,7 @@
                         {:type :register/event
                          :name :check/action
                          :handler (fn [db event]
-                                    (assert (and (= event.action :first)
+                                    (assert (and (= event.action :second)
                                                  (= db.dialog nil)))
                                     {:fx [{:lines [{:spans [{:text "protected dialog"}]}]
                                            :type :view/commit}

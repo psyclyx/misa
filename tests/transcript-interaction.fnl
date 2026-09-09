@@ -201,9 +201,8 @@ Second paragraph with useful words."
                           "completed message did not show response cost")
                   (assert (not (rendered:find :streaming 1 true))
                           "completed response retained streaming marker")
-                  (assert (not (rendered:find "Visible private rationale" 1
-                                              true))
-                          "finished thinking ignored configured summary presentation")
+                  (assert (rendered:find "Visible private rationale" 1 true)
+                          "finished thinking did not retain an actual text preview")
                   (local service misa.response_cost_projection)
                   (set misa.response_cost_projection nil)
                   (assert (pcall transcript db)

@@ -129,4 +129,10 @@
   (assert (= (. cleared.providers.claude.usage.windows 1 :used) nil)))
 (local (_ malformed-quota) (transition initial [{:type :rate_limit_event :rate_limit_info false}]))
 (assert (= (length malformed-quota) 0))
+(local (_ names) (transition initial
+                             [{:type :assistant :message {:id :names :content
+                                                         [{:type :tool_use :id :local :name :mcp__misa__read_file :input {}}
+                                                          {:type :tool_use :id :foreign :name :mcp__other__read_file :input {}}]}}]))
+(assert (= (. names 1 :event :delta :name) :read_file))
+(assert (= (. names 2 :event :delta :name) :mcp__other__read_file))
 (output "Claude stream state properties passed\n")

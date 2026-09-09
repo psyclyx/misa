@@ -29,11 +29,8 @@
                                            (misa.transcript_projection db
                                                                        {:columns 32
                                                                         :interactive true}))
-                                    (assert (and (= (. lines 1 :spans 1 :text)
-                                                    :You)
-                                                 (= (. lines 2 :spans 1 :text)
-                                                    "┃ "))
-                                            "message title/body separation is missing")
+                                    (assert (= (. lines 1 :spans 1 :text) "┃ ")
+                                            "user content should begin directly with its rail")
                                     (var (bold italic strike linked rails)
                                          (values false false false false {}))
 

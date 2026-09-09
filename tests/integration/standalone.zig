@@ -91,6 +91,12 @@ test "summarizer input preserves the main model and supports tab completion" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/model-role-input.fnl"} }, "model role input contracts passed\n");
 }
 
+test "tool presentation uses reusable components and preserves source geometry" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-presentation.fnl"} }, "tool presentation passed\n");
+}
+
 test "effect-only controls and keepalive policies preserve inputs" {
     var h = try Harness.init();
     defer h.deinit();
@@ -325,8 +331,26 @@ test "file tool contracts expose hashline reads and compatible edits" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/file-tools.fnl"} }, "file tool contracts passed\n");
 }
 
+test "tool summary role keeps background requests out of canonical conversation" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-summary.fnl"} }, "tool summary lifecycle passed\n");
+}
+
 test "Codex discovers the authenticated model catalogue" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/codex-models.fnl"} }, "Codex model discovery contracts passed\n");
+}
+
+test "transcript renders numbered code diffs and useful tool previews" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/transcript-render-details.fnl"} }, "transcript rendering details passed\n");
+}
+
+test "selection follows rendered wrapped rows and source ranges" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/selection-rendered-geometry.fnl"} }, "rendered selection geometry passed\n");
 }

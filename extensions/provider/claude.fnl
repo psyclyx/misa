@@ -80,13 +80,18 @@
                            :saw_content true}))
       state))
 
+;; The CLI requires the MCP namespace on the wire, but Misa's own tools
+;; retain their registered names in canonical conversation data.
+(fn tool-name [name]
+  (if (= (type name) :string) (name:gsub "^mcp__misa__" "") name))
+
 (fn tool [state index block complete fx id]
   (local call-id (assert block.id "Claude tool call requires an id"))
   (local previous (. state.tools call-id))
   (local key (or (and previous previous.index) (block-key state index)))
   (when (or (not previous) (and complete (not previous.complete)))
     (table.insert fx (delta id {:type :tool_call :execution :provider :index key
-                               :id call-id :name block.name
+                               :id call-id :name (tool-name block.name)
                                :arguments (when complete (or block.input {}))
                                :arguments_json (when (not complete) "")})))
   (misa.patch state {:saw_content true

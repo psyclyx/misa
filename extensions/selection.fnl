@@ -42,7 +42,7 @@
                                             :first current.first :last current.last})))
   (local document (. state.documents index))
   (when (and range document (<= range.first_document index range.last_document))
-    {:id document.id :text document.text
+    {:id document.id :text document.text :source_part document.source_part
      :kind (if (= index focused) current.kind document.kind)
      :first (if (= index range.first_document) range.first 0)
      :last (if (= index range.last_document) range.last (length document.text))}))
@@ -64,6 +64,93 @@
         (move next (. frames (length frames) :index) state.visual))
       state))
 
+(fn rendered-geometry [lines]
+  (local segments [])
+  (each [row line (ipairs lines)]
+    (var column 0)
+    (each [_ span (ipairs (or line.spans []))]
+      (when (and (or span.source span.selection_marker)
+                 (= (type span.source_start) :number) (= (type span.source_end) :number))
+        (table.insert segments {:first span.source_start :last span.source_end
+                                : row : column :text span.text}))
+      (set column (+ column (misa.layout.width (or span.text ""))))))
+  (table.sort segments (fn [a b] (if (= a.first b.first) (< a.last b.last) (< a.first b.first))))
+  (fn [node]
+    (var (low high) (values 1 (length segments)))
+    (while (<= low high)
+      (local middle (math.floor (/ (+ low high) 2)))
+      (if (<= (. segments middle :last) node.first) (set low (+ middle 1))
+          (set high (- middle 1))))
+    (var (first-row last-row first-column) nil)
+    (for [index low (length segments)]
+      (local segment (. segments index))
+      (when (>= segment.first node.last) (lua :break))
+      (local column (+ segment.column
+                       (if (= (- segment.last segment.first) (length segment.text))
+                           (misa.layout.width (segment.text:sub 1 (math.max 0 (- node.first segment.first)))) 0)))
+      (when (or (not first-row) (< segment.row first-row)
+                (and (= segment.row first-row) (< column first-column)))
+        (set (first-row first-column) (values segment.row column)))
+      (set last-row (math.max (or last-row segment.row) segment.row)))
+    (values first-row last-row first-column)))
+
+(fn directional [state direction geometry]
+  (local current (focus state))
+  (local depth (length state.frames))
+  (local vertical (or (= direction :up) (= direction :down)))
+  (local forward (or (= direction :down) (= direction :right)))
+  (if (not current) state
+      (= depth 1)
+      (if vertical (move state (+ (. state.frames 1 :index) (if forward 1 -1)) state.visual) state)
+      (let [document (. state.documents (. state.frames 1 :index))
+            starts [0]]
+        (when (not geometry)
+          (each [at (document.text:gmatch "()\n")] (table.insert starts at)))
+        (fn row-at [offset]
+          (var (low high) (values 1 (length starts)))
+          (while (<= low high)
+            (local middle (math.floor (/ (+ low high) 2)))
+            (if (<= (. starts middle) offset) (set low (+ middle 1))
+                (set high (- middle 1))))
+          (math.max 1 high))
+        (fn column-at [node row]
+          (misa.layout.width (document.text:sub (+ (. starts row) 1) node.first)))
+        (fn bounds [node]
+          (if geometry (geometry node)
+              (let [row (row-at node.first)]
+                (values row (row-at node.last) (column-at node row)))))
+        (local (row _ column) (bounds current))
+        (when (not row) (lua "return state"))
+        (local preferred (if vertical (or state.preferred_column column) column))
+        (var (best best-row best-distance) (values nil nil math.huge))
+        (fn visit [node frames]
+          (local (first-row last-row x) (bounds node))
+          (local relevant (and first-row (if vertical
+                              (if forward (and (> last-row row) (or (not best-row) (<= first-row best-row)))
+                                  (and (< first-row row) (or (not best-row) (>= last-row best-row))))
+                              (<= first-row row last-row))))
+          (when relevant
+            (if (= (length frames) depth)
+                (let [valid (if vertical (if forward (> first-row row) (< first-row row))
+                                (and (= first-row row) (if forward (> x column) (< x column))))]
+                  (when valid
+                    (local distance (math.abs (- x preferred)))
+                    (when (or (not best) (and vertical (< (math.abs (- first-row row)) (math.abs (- best-row row))))
+                              (and (= first-row best-row) (< distance best-distance)))
+                      (set (best best-row best-distance) (values frames first-row distance)))))
+                (let [children (misa.selection_children document node)]
+                  (for [step 1 (length children)]
+                    (local index (if forward step (+ (- (length children) step) 1)))
+                    (local path (icollect [_ frame (ipairs frames)] frame))
+                    (table.insert path {:nodes children : index})
+                    (visit (. children index) path))))))
+        (visit document [(. state.frames 1)])
+        (if best
+            (misa.patch (move (misa.patch state {:frames (misa.replace best)})
+                              (. best depth :index) state.visual)
+                        {:preferred_column (if vertical preferred misa.delete)})
+            (if vertical state (misa.patch state {:preferred_column misa.delete}))))))
+
 (local motions {:previous (fn [frame] (- frame.index 1))
                 :next (fn [frame] (+ frame.index 1))
                 :extend_previous (fn [frame] (- frame.index 1))
@@ -73,10 +160,11 @@
 {:setup (fn []
           (local setup-fx [])
           (local sources {})
+          (local layouts {})
           (local actions
                  {:close (fn [] {:state nil :close true})
-                  :child (fn [state] {:state (descend state)})
-                  :parent (fn [state] {:state (ascend state)})
+                  :child (fn [state] {:state (descend (misa.patch state {:preferred_column misa.delete}))})
+                  :parent (fn [state] {:state (ascend (misa.patch state {:preferred_column misa.delete}))})
                   :visual (fn [state]
                             (local (_ frame) (focus state))
                             {:state (misa.patch (move state frame.index false)
@@ -90,6 +178,13 @@
                                                                   (icollect [_ selected (ipairs slices)]
                                                                     (selected.text:sub (+ selected.first 1) selected.last))
                                                                   "\n\n")}}]}))})
+          (each [_ direction (ipairs [:left :right :up :down])]
+            (tset actions direction
+                  (fn [state db _ cofx]
+                    (local document (. state.documents (. state.frames 1 :index)))
+                    (local provider (and document state.sources (. layouts (. state.sources document.id))))
+                    (local lines (and provider cofx cofx.terminal (provider db document cofx.terminal)))
+                    {:state (directional state direction (and lines (rendered-geometry lines)))})))
           (each [name motion (pairs motions)]
             (tset actions name
                   (fn [state]
@@ -114,6 +209,9 @@
                                                    (= (type source) :function))
                                               "invalid selection source")
                                       (tset sources id source)
+                                      (when effect.layout
+                                        (assert (= (type effect.layout) :function) "selection layout must be a function")
+                                        (tset layouts id effect.layout))
                                       nil))})
           (table.insert setup-fx
                         {:type :register/event
@@ -167,8 +265,8 @@
                                                          (length selected.text))))
                                           (each [_ item (ipairs (or line.spans
                                                                     {}))]
-                                            (var (at parts marked)
-                                                 (values 0 {} nil))
+                                            (var (at parts marked parts-start)
+                                                 (values 0 {} nil 0))
 
                                             (fn flush []
                                               (if (= (length parts) 0) nil
@@ -178,6 +276,10 @@
                                                       (tset next key value))
                                                     (set next.text
                                                          (table.concat parts))
+                                                    (when (and item.source_start item.source_end
+                                                               (= (- item.source_end item.source_start) (length item.text)))
+                                                      (set next.source_start (+ item.source_start parts-start))
+                                                      (set next.source_end (+ next.source_start (length next.text))))
                                                     (when marked
                                                       (set next.style {})
                                                       (each [key value (pairs (or item.style
@@ -201,8 +303,19 @@
                                               (local piece
                                                      (item.text:sub (+ at 1)
                                                                     after))
-                                              (var active false)
-                                              (when item.source
+                                              (var active (and item.selection_marker
+                                                                (or whole
+                                                                    (and line.source_start line.source_end
+                                                                         (<= selected.first line.source_start)
+                                                                         (>= selected.last line.source_end)))))
+                                              (if (and item.source_start item.source_end)
+                                                  (let [nonliteral (or item.selection_marker
+                                                                        (not= (- item.source_end item.source_start) (length item.text)))
+                                                        first (+ item.source_start (if nonliteral 0 at))
+                                                        last (if nonliteral item.source_end (+ item.source_start after))]
+                                                    (set active (and (or item.source item.selection_marker)
+                                                                     (< first selected.last) (> last selected.first))))
+                                                  (when item.source
                                                 (set active (or whole
                                                                 (and line.source_start line.source_end
                                                                      (<= selected.first line.source_start)
@@ -223,10 +336,11 @@
                                                                selected.first)))
                                                   (set cursor
                                                        (+ (- found 1)
-                                                          (length piece)))))
+                                                          (length piece))))))
                                               (when (not= marked active)
                                                 (flush)
                                                 (set marked active))
+                                              (when (= (length parts) 0) (set parts-start at))
                                               (tset parts (+ (length parts) 1)
                                                     piece)
                                               (set at after))
@@ -255,18 +369,20 @@
                                  :event {:type :selection/open}
                                  :id :selection.open
                                  :label "Navigate transcript"}})
-          (local keys {:child [:l :arrow_right :enter]
+          (local keys {:child [:J :shift+j :enter]
                        :close [:escape :ctrl_c :q]
                        :copy [:y]
-                       :extend_next [:shift+j :shift+arrow_down]
-                       :extend_previous [:shift+k :shift+arrow_up]
+                       :extend_next [:shift+arrow_down]
+                       :extend_previous [:shift+arrow_up]
                        :first [:g]
                        :last [:G]
-                       :next [:j :arrow_down]
-                       :parent [:h :arrow_left :backspace]
-                       :previous [:k :arrow_up]
+                       :next []
+                       :left [:h :arrow_left] :right [:l :arrow_right]
+                       :up [:k :arrow_up] :down [:j :arrow_down]
+                       :parent [:K :shift+k :backspace]
+                       :previous []
                        :visual [:v]})
-          (each [_ action (ipairs [:previous
+          (each [_ action (ipairs [:left :right :up :down :previous
                                    :next
                                    :parent
                                    :child
@@ -304,12 +420,14 @@
                          :name :selection/open
                          :handler (fn [db]
                                     (local documents {})
+                                    (local origins {})
                                     (local ids {})
                                     (each [id (pairs sources)]
                                       (tset ids (+ (length ids) 1) id))
                                     (table.sort ids)
                                     (each [_ id (ipairs ids)]
                                       (each [_ document (ipairs ((. sources id) db))]
+                                        (tset origins document.id id)
                                         (tset documents
                                               (+ (length documents) 1) document)))
                                     (local frame {:index (math.max 1
@@ -324,14 +442,14 @@
                                       (tset indices document.id index))
                                     {:patch {:selection (misa.replace
                                                           {:anchor current :anchor_document frame.index : indices
-                                                           :documents documents :frames [frame]})}
+                                                           :documents documents :sources origins :frames [frame]})}
                                      :fx [{:type :terminal/read}]})})
           (table.insert setup-fx
                         {:type :register/event :name :selection/action
-                         :handler (fn [db event]
+                         :handler (fn [db event cofx]
                                     (local state db.selection)
                                     (local handler (. actions event.action))
-                                    (local result (and state handler (handler state db event)))
+                                    (local result (and state handler (handler state db event cofx)))
                                     (local fx [{:type :terminal/read}])
                                     (each [_ effect (ipairs (or (and result result.fx) []))]
                                       (table.insert fx effect))
@@ -360,8 +478,7 @@
                                               (tset path (+ (length path) 1)
                                                     item.label)))
                                           (local hints {})
-                                          (each [_ action (ipairs [:previous
-                                                                   :next
+                                          (each [_ action (ipairs [:left :right :up :down
                                                                    :parent
                                                                    :child
                                                                    :copy

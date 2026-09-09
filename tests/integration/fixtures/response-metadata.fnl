@@ -84,7 +84,7 @@
                                                        (= tool.argument_text
                                                           "{\"value\":1}"))
                                                   "final tool argument chunks were not compacted")
-                                          (local cost (misa.response_cost_projection db :metadata))
+                                          (local cost (misa.group_cost_projection db :metadata))
                                           (assert (= cost.type :money))
                                           (assert (= cost.amount 0.125))
                                           (assert (= cost.text nil))
@@ -95,9 +95,10 @@
                                                  (each [_ item (ipairs items)]
                                                    (assert (= item.model.timestamp nil) "timestamp was formatted upstream")
                                                    (assert (= (type item.model.started_wall_ms) :number))
-                                                   (when item.model.cost
+                                                   (when (= item.role :transcript.group_footer)
                                                      (assert (= item.model.cost cost) "cost fact lost identity")
-                                                     (assert (= item.model.id :metadata/3))
+                                                     (assert (= item.id "response:metadata:footer"))
+                                                     (assert (> item.model.tokens_per_second 0))
                                                      (set metadata-count (+ metadata-count 1))))
                                                  (project state id items context)))
                                           (local lines

@@ -1,0 +1,32 @@
+;; Bound an already laid-out view. Omitted rows are chrome, never source text.
+(fn render [model context]
+  (local source (or model.lines []))
+  (local limit (math.max 0 (math.floor (or model.limit (length source)))))
+  (local lines [])
+  (var total 0)
+  (each [_ line (ipairs source)] (when (not line.annotation) (set total (+ total 1))))
+  (local hidden (math.max 0 (- total limit)))
+  (var index 0)
+  (var visible false)
+  (each [_ line (ipairs source)]
+    (if line.annotation
+        (when visible (table.insert lines line))
+        (do
+          (set index (+ index 1))
+          (set visible (if model.tail (> index hidden) (<= index limit)))
+          (when visible (table.insert lines line)))))
+  (when (> hidden 0)
+    (local notice [])
+    (each [_ line (ipairs (misa.layout.wrap_spans
+                           [{:omitted_lines hidden
+                             :spans [{:text (.. "… " hidden (if (= hidden 1) " line hidden" " lines hidden"))
+                                      :style :dim :source false}]}]
+                           (math.max 1 (or context.columns 80)) model.notice_prefix))]
+      (table.insert notice line))
+    (if model.tail
+        (do (each [_ line (ipairs lines)] (table.insert notice line))
+            (set-forcibly! lines notice))
+        (each [_ line (ipairs notice)] (table.insert lines line))))
+  {: lines})
+{:setup (fn []
+          {:fx [{:type :register/component :id :default.content.truncated :value {: render}}]})}

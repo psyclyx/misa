@@ -17,9 +17,15 @@
                    ["*" :emphasis]
                    ["_" :emphasis]])
 
-(fn parse-inlines [text marks]
+(fn parse-inlines [text marks base]
+  (set-forcibly! base (or base 0))
   (local result [])
   (var plain [])
+  (var (plain-start plain-end) nil)
+  (fn literal [value at]
+    (when (= (length plain) 0) (set plain-start (- at 1)))
+    (set plain-end (+ (- at 1) (length value)))
+    (table.insert plain value))
   ;; The cursor only advances. Remember the next terminator (or its absence),
   ;; so incomplete markup does not search the same suffix for every opener.
   (local endings {})
@@ -36,6 +42,7 @@
       (table.insert result
                     {:kind :text
                      :marks (marks-copy marks)
+                     :source_start (+ base plain-start) :source_end (+ base plain-end)
                      :text (table.concat plain)})
       (set plain [])))
 
@@ -48,13 +55,14 @@
     (local special (text:find "[\\`%[%*_~]" at))
     (if (not= special at)
         (let [after (or special (+ (length text) 1))]
-          (table.insert plain (text:sub at (- after 1)))
+          (literal (text:sub at (- after 1)) at)
           (set at after))
         (let [char (text:sub at at)
               escaped (and (= char "\\") (text:sub (+ at 1) (+ at 1)))]
           (if (and escaped (not= escaped "") (escaped:match "[%p]"))
               (do
-                (table.insert plain escaped)
+                (emit {:kind :text :marks (marks-copy marks) :text escaped
+                       :source_start (+ base at) :source_end (+ base at 1)})
                 (set at (+ at 2)))
               (let [ticks (text:match "^(`+)" at)]
                 (if ticks
@@ -62,12 +70,14 @@
                       (if close
                           (do
                             (emit {:kind :code
+                                   :source_start (+ base (- at 1) (length ticks))
+                                   :source_end (+ base (- close 1))
                                    :marks (marks-copy marks)
                                    :text (text:sub (+ at (length ticks))
                                                    (- close 1))})
                             (set at (+ close (length ticks))))
                           (do
-                            (table.insert plain ticks)
+                            (literal ticks at)
                             (set at (+ at (length ticks))))))
                     (let [label-end (and (= char "[") (closing "]" (+ at 1)))
                           open (and label-end (+ label-end 1))]
@@ -87,10 +97,10 @@
                                                                                1)
                                                                             (- label-end
                                                                                1))
-                                                                  marks)})
+                                                                  marks (+ base at))})
                                   (set at (+ close 1)))
                                 (do
-                                  (table.insert plain char)
+                                  (literal char at)
                                   (set at (+ at 1)))))
                           (let [(delimiter mark) (accumulate [(delimiter mark) nil _ choice (ipairs delimiters)
                                                               &until delimiter]
@@ -114,14 +124,15 @@
                                                                                         (- close
                                                                                            1))
                                                                               (marks-copy marks
-                                                                                          mark)))]
+                                                                                          mark)
+                                                                              (+ base (- at 1) (length delimiter))))]
                                           (table.insert result child))
                                         (set at (+ close (length delimiter))))
                                       (do
-                                        (table.insert plain delimiter)
+                                        (literal delimiter at)
                                         (set at (+ at (length delimiter))))))
                                 (do
-                                  (table.insert plain char)
+                                  (literal char at)
                                   (set at (+ at 1)))))))))))))
   (emit-plain)
   result)
@@ -129,7 +140,7 @@
 (fn split-table [line]
   (if (not (line:find "|" 1 true)) nil
       (do
-        (var (cells current) (values {} {}))
+        (var (cells current positions start) (values {} {} {} 0))
         (var (escaped in-code) (values false false))
         (for [at 1 (length line)]
           (local char (line:sub at at))
@@ -146,15 +157,19 @@
                 (tset current (+ (length current) 1) char))
               (and (= char "|") (not in-code))
               (do
-                (tset cells (+ (length cells) 1) (trim (table.concat current)))
-                (set current {}))
+                (local content (table.concat current))
+                (table.insert positions (+ start (length (or (content:match "^%s*") ""))))
+                (tset cells (+ (length cells) 1) (trim content))
+                (set (current start) (values {} at)))
               (tset current (+ (length current) 1) char)))
-        (tset cells (+ (length cells) 1) (trim (table.concat current)))
+        (local content (table.concat current))
+        (table.insert positions (+ start (length (or (content:match "^%s*") ""))))
+        (tset cells (+ (length cells) 1) (trim content))
         (when (= (: (trim line) :sub 1 1) "|")
-          (table.remove cells 1))
+          (table.remove cells 1) (table.remove positions 1))
         (when (= (: (trim line) :sub (- 1)) "|")
-          (table.remove cells))
-        (if (< (length cells) 1) nil cells))))
+          (table.remove cells) (table.remove positions))
+        (if (< (length cells) 1) nil (values cells positions)))))
 
 (fn table-separator [line]
   (let [cells (split-table line)]
@@ -226,7 +241,8 @@
               (when (not fence)
                 (set (fence info) (raw:match "^%s*(~~~+)%s*([^%s~]*)[^~]*$")))
               (if fence
-                  (let [body {}]
+                  (let [body {} content-start (or (. offsets (+ index 1)) (length source))]
+                    (var closing-start nil)
                     (set index (+ index 1))
                     (while (<= index (length lines))
                       (local marker (fence:sub 1 1))
@@ -235,36 +251,41 @@
                       (when (and (and (and closing (= (closing:sub 1 1) marker))
                                       (not (closing:find (.. "[^" marker "]"))))
                                  (>= (length closing) (length fence)))
+                        (set closing-start (. offsets index))
                         (lua :break))
                       (tset body (+ (length body) 1) (. lines index))
                       (set index (+ index 1)))
                     (when (<= index (length lines)) (set index (+ index 1)))
-                    (add {:kind :code_block
+                    (add {:kind :code_block :content_start content-start :closing_start closing-start
                           :language (or (and (info:match "^[%w_+#.-]+$") info)
                                         "")
                           :text (table.concat body "\n")}))
-                  (let [header (split-table raw)
+                  (let [(header header-positions) (split-table raw)
                         alignment (or (and (< index (length lines))
                                            (table-separator (. lines
                                                                (+ index 1))))
                                       nil)]
                     (if (and (and header alignment)
                              (= (length header) (length alignment)))
-                        (let [rows [{}]]
-                          (each [_ cell (ipairs header)]
+                        (let [rows [{}] positions [{}]]
+                          (each [column cell (ipairs header)]
+                            (tset (. positions 1) column (+ (. offsets index) (. header-positions column)))
                             (tset (. rows 1) (+ (length (. rows 1)) 1)
                                   (parse-inline cell)))
                           (set index (+ index 2))
                           (while (<= index (length lines))
-                            (local cells (split-table (. lines index)))
+                            (local (cells cell-positions) (split-table (. lines index)))
                             (when (not cells) (lua :break))
                             (local row {})
+                            (local row-positions {})
                             (for [column 1 (length alignment)]
+                              (tset row-positions column (+ (. offsets index) (or (. cell-positions column) 0)))
                               (tset row column
                                     (parse-inline (or (. cells column) ""))))
+                            (table.insert positions row-positions)
                             (tset rows (+ (length rows) 1) row)
                             (set index (+ index 1)))
-                          (add {:align alignment :kind :table : rows}))
+                          (add {:align alignment :kind :table : rows :cell_positions positions}))
                         (let [(hashes heading) (raw:match "^%s*(#+)%s*(.-)%s*$")
                               quote-body (raw:match "^%s*>%s?(.*)$")]
                           (var (indent bullet item)
@@ -276,6 +297,7 @@
                           (if (and hashes (<= (length hashes) 6))
                               (do
                                 (add {:inlines (parse-inline heading)
+                                      :inline_start (+ (. offsets index) (- (or (raw:match "^%s*#+%s*()") 1) 1))
                                       :kind :heading
                                       :level (length hashes)})
                                 (set index (+ index 1)))
@@ -293,6 +315,7 @@
                                   (set after (raw:match "^%s*>%s?()" at)))
                                 (add {: depth
                                       :inlines (parse-inline (raw:sub at))
+                                      :inline_start (+ (. offsets index) (- at 1))
                                       :kind :quote})
                                 (set index (+ index 1)))
                               (or bullet ordered)
@@ -307,6 +330,7 @@
                                                                2))
                                                 1)
                                       :inlines (parse-inline item)
+                                      :inline_start (+ (. offsets index) (- (length raw) (length item)))
                                       :kind :list_item
                                       :number ordered
                                       :ordered (not= ordered nil)})
@@ -320,13 +344,16 @@
                               (let [(spaces body) (raw:match "^(%s+)(.*)$")]
                                 (add {:depth (math.floor (/ (length spaces) 2))
                                       :inlines (parse-inline body)
+                                      :inline_start (+ (. offsets index) (length spaces))
                                       :kind :list_continuation})
                                 (set index (+ index 1)))
                               (= raw "")
                               (do
                                 (add {:kind :blank})
                                 (set index (+ index 1)))
-                              (let [parts [raw]]
+                              (let [parts [raw]
+                                    mapping [{:first 0 :last (length raw) :source (. offsets index)}]]
+                                (var flattened (length raw))
                                 (set index (+ index 1))
                                 (while (and (and (and (and (and (and (and (and (<= index
                                                                                    (length lines))
@@ -356,12 +383,19 @@
                                             (not (thematic (. lines index))))
                                   (when (table-separator (. lines index))
                                     (lua :break))
-                                  (tset parts (+ (length parts) 1)
-                                        (trim (. lines index)))
+                                  (local next-line (. lines index))
+                                  (local content (trim next-line))
+                                  (table.insert mapping {:first flattened :last (+ flattened 1)
+                                                         :source (- (. offsets index) 1)})
+                                  (set flattened (+ flattened 1))
+                                  (table.insert mapping {:first flattened :last (+ flattened (length content))
+                                                         :source (+ (. offsets index) (length (or (next-line:match "^%s*") "")))})
+                                  (set flattened (+ flattened (length content)))
+                                  (tset parts (+ (length parts) 1) content)
                                   (set index (+ index 1)))
                                 (add {:inlines (parse-inline (table.concat parts
                                                                            " "))
-                                      :kind :paragraph})))))))
+                                      :inline_map mapping :kind :paragraph})))))))
               (for [block-index (+ block-count 1) (length blocks)]
                 (tset (. blocks block-index) :source_start
                       (. offsets source-index))

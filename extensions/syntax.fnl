@@ -3,8 +3,15 @@
   (local owner (tostring (or model.response_id "")))
   (.. (length owner) ":" owner (tostring model.id)))
 
+(fn tool-code [model]
+  (when (and (= model.kind :tool_call) misa.tool_presentation)
+    (var code nil)
+    (each [_ view (ipairs (or (. (misa.tool_presentation model) :arguments) [])) &until code]
+      (when (and (= view.role :content.code) view.model.language) (set code view.model)))
+    code))
 (fn source-for [model]
-  (or (and model.chunks (table.concat model.chunks)) model.text ""))
+  (local code (tool-code model))
+  (or (and code code.text) (and model.chunks (table.concat model.chunks)) model.text ""))
 
 {:setup (fn [context]
           (local enabled (not= (. (or (. (or context.config {}) :messages) {})
@@ -27,7 +34,7 @@
             (var result nil)
             (when (and model.id
                        (or (= model.kind :assistant) (= model.kind :thinking)
-                           (= model.kind :user) (= model.kind :harness)))
+                           (= model.kind :user) (= model.kind :harness) (tool-code model)))
               (local key (key-for model))
               (local source (source-for model))
               (local old (. state.documents key))
@@ -35,7 +42,10 @@
                 (var next-id state.next_id)
                 (local pending {})
                 (local effects [])
-                (local parsed (misa.markdown.parse source (and old old.document)))
+                (local code (tool-code model))
+                (local parsed (if code {:blocks [{:kind :code_block :text source :language code.language
+                                                 :source_start 0 :content_start 0 :source_end (length source)}]}
+                                  (misa.markdown.parse source (and old old.document))))
                 (local next {: source
                              :document parsed
                              :revision (+ (or (and old old.revision) 0) 1)

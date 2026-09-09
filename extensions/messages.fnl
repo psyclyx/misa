@@ -147,12 +147,13 @@
 (fn message-update [db fx]
   {:patch {:messages (misa.replace db.messages)} : fx})
 
-(fn append-response [db id role cofx status]
+(fn append-response [db id role cofx status timing]
   (local state (assert db.messages "message state is not initialized"))
   (assert (not (. state.by_response id)) (.. "duplicate transcript response: " (tostring id)))
   (local (wall mono) (clock cofx))
   (local owner {:block_count 0 :block_start (+ (length state.blocks) 1) : id : role
-                :started_monotonic_ms mono :started_wall_ms wall :status (or status :streaming)})
+                :started_monotonic_ms (or (and timing timing.started_monotonic_ms) mono)
+                :started_wall_ms (or (and timing timing.started_wall_ms) wall) :status (or status :streaming)})
   (values (misa.patch db {:messages {:responses (misa.replace (appended state.responses owner))
                                     :by_response {id (+ (length state.responses) 1)} :scroll 0}})
           owner))
@@ -176,6 +177,25 @@
               (table.insert result block))))
         result)))
 
+;; A visible response includes the executions caused by its generated calls.
+;; Use the latest completion, not a sum: tools may run concurrently. Throughput
+;; remains the provider request measurement, independent of execution latency.
+(fn response-group [db owner]
+  (var completed owner.completed_monotonic_ms)
+  (var pending false)
+  (each [_ block (ipairs (transcript-blocks db owner.id))]
+    (when (= block.kind :tool_call)
+      (when (or (= block.status :pending) (= block.status :running))
+        (set pending true))
+      (when block.execution_completed_monotonic_ms
+        (set completed (math.max (or completed block.execution_completed_monotonic_ms)
+                                  block.execution_completed_monotonic_ms)))))
+  (local status (if (and (= owner.status :complete) pending) :running owner.status))
+  {:started_wall_ms owner.started_wall_ms : status
+   :elapsed_ms (when (and completed (not= status :streaming) (not= status :running))
+                 (math.max 0 (- completed owner.started_monotonic_ms)))
+   :tokens_per_second owner.tokens_per_second})
+
 (fn append-block [db response-model block]
   (local owner (assert (response db response-model.id) "unknown transcript response"))
   (local next-block (misa.patch block {:response_id owner.id :role owner.role :started_wall_ms owner.started_wall_ms}))
@@ -198,14 +218,10 @@
 (fn find-tool-section [db call-id]
   (for [index (length db.messages.blocks) 1 (- 1)]
     (local block (. db.messages.blocks index))
-    (when (and (and (= block.kind :tool_call) (= block.call_id call-id))
-               (= block.result nil))
+    (when (and call-id (or (= block.kind :tool_call) (= block.kind :tool_result))
+               (= block.call_id call-id))
       (lua "return block")))
   nil)
-
-(fn tool-description [name]
-  (let [tool (and misa.tool (misa.tool name))]
-    (or (and tool (printable-text tool.description)) nil)))
 
 ;; Structural tool previews have a size budget; conversation text does not.
 (fn append-chunk [chunks text]
@@ -253,11 +269,11 @@
   (local name (when (not= value.name nil) (printable-text (tostring value.name))))
   (local has-arguments (or (not= value.arguments nil) (not= block.arguments nil)))
   (misa.patch block
-              {:text (when block.chunks (table.concat block.chunks))
+              {:description misa.delete
+               :text (when block.chunks (table.concat block.chunks))
                :chunks misa.delete
                :arguments (when (not= value.arguments nil) (misa.replace (copy-structural value.arguments policy 0)))
                :name name
-               :description (when (and name (= block.kind :tool_call)) (misa.replace (tool-description name)))
                :call_id (when (not= value.call_id nil) (printable-text (tostring value.call_id)))
                :argument_text (if has-arguments misa.delete block.argument_chunks (table.concat block.argument_chunks) nil)
                :argument_chunks misa.delete :argument_bytes misa.delete :streaming false}))
@@ -290,14 +306,61 @@
 (fn same-selection [a b]
   (and a b (= a.id b.id) (= a.first b.first) (= a.last b.last)))
 
+;; Anchors identify content rather than its absolute screen row. Keeping these
+;; in state makes speculative projections and resize renders deterministic.
+(fn line-anchors [lines]
+  (var (previous offset) (values nil 0))
+  (icollect [_ line (ipairs lines)]
+    (let [id line.transcript_id
+          part (or line.source_part :body)]
+      (var (source last) nil)
+      (each [_ span (ipairs (or line.spans []))]
+        (when (and (or span.source span.selection_marker) span.source_start span.source_end)
+          (set source (math.min (or source span.source_start) span.source_start))
+          (set last (math.max (or last span.source_end) span.source_end))))
+      (set source (or source line.source_start -1))
+      (set offset (if (and previous (= previous.id id) (= previous.part part) (= previous.source source)) (+ offset 1) 0))
+      (set previous {: id : part : source : last : offset})
+      previous)))
+
+(fn anchored-row [anchors anchor fallback]
+  (var (found distance offset-distance) (values nil math.huge math.huge))
+  (var (exact exact-offset) (values nil math.huge))
+  (when anchor
+    (each [index candidate (ipairs anchors)]
+      (when (and (= candidate.id anchor.id) (or (not anchor.part) (= candidate.part anchor.part)))
+        (local delta (if (and candidate.last (<= candidate.source anchor.source) (< anchor.source candidate.last))
+                         0 (math.abs (- candidate.source anchor.source))))
+        (local offset-delta (math.abs (- candidate.offset anchor.offset)))
+        ;; After displacement, prefer the original source start if it still
+        ;; exists. A containing range is only a fallback for a rewrapped row.
+        (when (and (= candidate.source anchor.source) (< offset-delta exact-offset))
+          (set (exact exact-offset) (values index offset-delta)))
+        (when (or (< delta distance) (and (= delta distance) (< offset-delta offset-distance)))
+          (set (found distance offset-distance) (values index delta offset-delta))))))
+  (or exact found fallback))
+
+(fn same-anchor [a b]
+  (and a b (= a.id b.id) (= a.part b.part) (= a.source b.source)
+       (= a.offset b.offset)))
+
+(fn viewport-top [messages anchors bottom]
+  (if (not messages.top) bottom
+      ;; Scrolling owns a physical row. Only relocate its content when layout
+      ;; changes have actually displaced that row; ordinary renders must not
+      ;; reinterpret an explicit scroll as a request to find the block again.
+      (or (not messages.anchor) (same-anchor (. anchors messages.top) messages.anchor)) messages.top
+      (anchored-row anchors messages.anchor messages.top)))
+
 (fn transcript-viewport [db context available-lines]
   (local room (math.max 0 (math.floor (or available-lines 0))))
   (if (= room 0) {:first 1 :room 0 :total 0 :lines []}
       (let [lines (misa.transcript_projection db context)
             selected (and misa.selection_projection (misa.selection_projection db))
             key (selection-key selected)
-            bottom (math.max 1 (+ (- (length lines) room) 1))]
-        (var first (math.max 1 (math.min (or db.messages.top bottom) bottom)))
+            bottom (math.max 1 (+ (- (length lines) room) 1))
+            anchors (line-anchors lines)]
+        (var first (math.max 1 (math.min (viewport-top db.messages anchors bottom) bottom)))
         (when (and selected (not (same-selection db.messages.scroll_selection key)))
           (each [index line (ipairs lines)]
             (when (and (or line.selected line.selection_anchor)
@@ -305,7 +368,7 @@
               (set first (math.max 1 (math.min first index)))
               (when (>= index (+ first room)) (set first (+ (- index room) 1)))
               (lua :break))))
-        {: first : room :total (length lines) :selection key
+        {: first : room :total (length lines) :selection key : anchors
          :lines (icollect [index (ipairs lines) &until (>= index (+ first room))]
                   (when (>= index first) (. lines index)))})))
 
@@ -314,23 +377,20 @@
         :assistant (fn [] {:role :transcript.assistant :model {:rail :rail.assistant}})
         :thinking (fn [model state selected]
                     {:role (if (or state.verbose model.streaming selected) :transcript.thinking :transcript.thinking_collapsed)
-                     :model {:rail :rail.thinking :summary (if model.streaming :streaming :summary)}})
+                     :model {:rail :rail.thinking}})
         :tool_call (fn [model state selected]
-                     (local result-selected (and selected (not= model.result nil)))
+                     (local result-selected (and selected (if selected.source_part (= selected.source_part :result)
+                                                            (not= model.result nil))))
                      {:role :transcript.tool_call
                       :model {:rail (if model.is_error :rail.error :rail.tool)
-                              :detail (if (and selected (not result-selected)) selected.text
-                                          (or state.verbose selected)
-                                          (if model.arguments (describe model.arguments 0)
-                                              (printable-text (or model.argument_text (table.concat (or model.argument_chunks [])))))
-                                          :summary)
-                              :result_detail (if result-selected selected.text
-                                                 (and state.verbose model.result) model.result
-                                                 (not= model.result nil) :summary nil)
+                              :collapsed (not (or state.verbose selected))
+                              :selection_text (when selected selected.text)
                               :selection_source (when selected (if result-selected :result :args))}})
         :tool_result (fn [model state selected]
                        {:role :transcript.tool_result
-                        :model {:rail (if model.is_error :rail.error :rail.tool) :collapsed (not (or state.verbose selected))}})
+                        :model {:rail (if model.is_error :rail.error :rail.tool) :collapsed (not (or state.verbose selected))
+                                :selection_source (when selected :result)
+                                :selection_text (when selected selected.text)}})
         :harness (fn [model]
                    {:role :transcript.harness :model {:rail (if (= model.level :error) :rail.error :rail.harness)}})})
 
@@ -429,6 +489,7 @@
                                         (let [bottom (math.max 1 (+ (- viewport.total viewport.room) 1))
                                               first (math.max 1 (math.min bottom (- viewport.first event.delta)))]
                                           {:patch {:messages {:top (if (< first bottom) first misa.delete)
+                                                               :anchor (if (< first bottom) (misa.replace (. viewport.anchors first)) misa.delete)
                                                                :scroll_selection (misa.replace viewport.selection)
                                                                :scroll (math.max 0 (- bottom first))}}
                                            :fx [{:type :terminal/read}]})))})
@@ -470,6 +531,11 @@
             (table.insert setup-fx
                           {:type :register/selection-source
                            :id :transcript
+                           :layout (fn [db document terminal]
+                                     (icollect [_ line (ipairs (misa.transcript_projection db
+                                                                {:columns terminal.columns :images terminal.images
+                                                                 :interactive true :document_id document.id}))]
+                                       (when (= line.transcript_id document.id) line)))
                            :value (fn [db]
                                     (local result {})
                                     (each [_ block (ipairs (or (. (or db.messages
@@ -477,16 +543,15 @@
                                                                   :blocks)
                                                                {}))]
                                       (var text
-                                           (or (or (or block.text
-                                                       (and block.chunks
-                                                            (table.concat block.chunks)))
-                                                   block.result)
-                                               block.argument_text))
-                                      (when (and (not text) block.arguments)
+                                           (if (= block.kind :tool_call)
+                                               (or block.result block.argument_text
+                                                   (and block.argument_chunks (table.concat block.argument_chunks)))
+                                               (or block.text (and block.chunks (table.concat block.chunks))
+                                                   block.result block.argument_text)))
+                                      (when (and (or (not text) (= text "")) block.arguments)
                                         (set text (describe block.arguments 0)))
                                       (when (and text (not= text ""))
-                                        (tset result (+ (length result) 1)
-                                              (misa.selection_document (selection-id block)
+                                        (local document (misa.selection_document (selection-id block)
                                                                        (.. block.kind
                                                                            " · "
                                                                            (table.concat
@@ -499,7 +564,11 @@
 ]+")
                                                                                                  "")
                                                                                              40))
-                                                                       text))))
+                                                                       text))
+                                        (set document.source_part (if (= block.kind :tool_result) :result
+                                                                      (= block.kind :tool_call) (if (not= block.result nil) :result :args)
+                                                                      :body))
+                                        (table.insert result document)))
                                     result)}))
           (table.insert setup-fx
                         {:type :register/service
@@ -515,13 +584,62 @@
                                   (each [key value (pairs (or render-context {}))]
                                     (tset context-copy key value))
                                   (set context-copy.markdown markdown)
+                                  (local document-id context-copy.document_id)
+                                  (set context-copy.document_id nil)
                                   (local syntax-projections (and misa.syntax_projections
                                                                  (misa.syntax_projections db)))
                                   (local (items state)
                                          (values []
                                                  (assert db.messages
                                                          "message state is not initialized")))
-                                  (each [_ source (ipairs state.blocks)]
+                                  (local blocks (if document-id
+                                                    (icollect [_ block (ipairs state.blocks)]
+                                                      (when (= (selection-id block) document-id) block))
+                                                    state.blocks))
+                                  (var previous-owner nil)
+                                  (local group-models {})
+                                  (local turn-owners {})
+                                  (var turn nil)
+                                  (each [_ owner (ipairs state.responses)]
+                                    (if (not= owner.role :assistant) (set turn nil)
+                                        (do
+                                          (local part (response-group db owner))
+                                          (local project (or misa.group_cost_projection misa.response_cost_projection))
+                                          (local cost (and project (project db owner.id)))
+                                          (when (not turn)
+                                            (set turn owner)
+                                            (tset group-models turn.id {:label :Assistant
+                                                                       :started_wall_ms owner.started_wall_ms}))
+                                          (tset turn-owners owner.id turn)
+                                          (local model (. group-models turn.id))
+                                          (when part.elapsed_ms
+                                            (set model.elapsed_ms (math.max (or model.elapsed_ms 0)
+                                              (+ (- owner.started_monotonic_ms turn.started_monotonic_ms) part.elapsed_ms))))
+                                          (when (not (or (= model.status :running) (= model.status :streaming)))
+                                            (set model.status part.status))
+                                          ;; A per-request rate would misrepresent a multi-request turn.
+                                          (set model.tokens_per_second (when (= owner turn) part.tokens_per_second))
+                                          (when cost
+                                            (local total model.cost)
+                                            (set model.cost (if (not total) cost {:type :money :currency :USD
+                                                             :amount (when (not (or total.pending cost.pending))
+                                                                       (+ (or total.amount 0) (or cost.amount 0)))
+                                                             :pending (or total.pending cost.pending false)
+                                                             :unknown (or total.unknown cost.unknown false)
+                                                             :estimated (or total.estimated cost.estimated false)}))))))
+                                  (fn group-item [owner part]
+                                    (when (and owner (= owner.role :assistant) (not document-id))
+                                      (when (not (. group-models owner.id))
+                                        (local model (response-group db owner))
+                                        (set model.label :Assistant)
+                                        (local project (or misa.group_cost_projection misa.response_cost_projection))
+                                        (when project (set model.cost (project db owner.id)))
+                                        (tset group-models owner.id model))
+                                      (table.insert items
+                                                    {:id (.. "response:" owner.id ":" part)
+                                                     :role (.. :transcript.group_ part) :chrome true
+                                                     :model (. group-models owner.id)})))
+                                  (each [_ source (ipairs blocks)]
                                     (local model {})
                                     (each [key value (pairs source)]
                                       (tset model key value))
@@ -546,20 +664,11 @@
                                       (when syntax
                                         (set model.syntax syntax)))
                                     (local owner
-                                           (response db model.response_id))
-                                    (when (and owner
-                                               (= owner.metadata_block_id
-                                                  model.id))
-                                      (set model.tokens_per_second
-                                           owner.tokens_per_second))
-                                    (when (and (and owner
-                                                    (= owner.metadata_block_id
-                                                       model.id))
-                                               misa.response_cost_projection)
-                                      (local cost
-                                             (misa.response_cost_projection db
-                                                                            model.response_id))
-                                      (set model.cost cost))
+                                           (or (. turn-owners model.response_id) (response db model.response_id)))
+                                    (when (not= previous-owner owner)
+                                      (group-item previous-owner :footer)
+                                      (group-item owner :header)
+                                      (set previous-owner owner))
                                     (local projector (. projectors model.kind))
                                     (local presentation (and projector (projector model state (and selecting selected))))
                                     (local role (and presentation presentation.role))
@@ -567,24 +676,31 @@
                                       (tset model key value))
                                     (when role
                                       (table.insert items {:id (selection-id model) : role : model})))
-                                  (local projection (misa.project_components db :transcript items context-copy))
+                                  (group-item previous-owner :footer)
+                                  (local projection (misa.project_components db (if document-id :selection_geometry :transcript) items context-copy))
                                   (local result [])
                                   (each [index item (ipairs items)]
                                       (local model item.model)
                                       (local rendered (. projection.views index))
-                                      (local lines (if misa.selection_decorate
+                                      (local lines (if (and misa.selection_decorate (not document-id) (not item.chrome))
                                                        (misa.selection_decorate db (selection-id model)
                                                                                   (or model.text model.result model.argument_text "")
                                                                                   (or rendered.lines []))
                                                        (or rendered.lines [])))
-                                      (each [_ line (ipairs lines)] (table.insert result line))
+                                      (when (and (> (length result) 0) (> (length lines) 0) (not document-id))
+                                        (table.insert result {:spans [] :transcript_id item.id :source_part :spacing}))
+                                      (each [_ line (ipairs lines)]
+                                        (table.insert result (misa.patch line {:transcript_id item.id :source_part (when item.chrome :chrome)})))
+                                      (when (and (= item.role :transcript.group_footer) (= index (length items))
+                                                 (> (length lines) 0) (not document-id))
+                                        (table.insert result {:spans [] :transcript_id item.id :source_part :spacing}))
                                       (when (and misa.attachment_lines
                                                  model.attachments)
                                         (each [_ line (ipairs (misa.attachment_lines db
                                                                                      model.attachments
                                                                                      context-copy))]
                                           (tset result (+ (length result) 1)
-                                                line))))
+                                                (misa.patch line {:transcript_id item.id :source_part :attachments})))))
                                   result)})
           (table.insert setup-fx {:type :register/service :name :transcript_viewport :value transcript-viewport})
           (table.insert setup-fx {:type :register/service :name :transcript_blocks :value transcript-blocks})
@@ -597,7 +713,7 @@
                          :handler (fn [db]
                                     {:patch {:messages {:responses (misa.replace []) :blocks (misa.replace [])
                                                          :by_response (misa.replace {})
-                                                         :scroll 0 :top misa.delete :scroll_selection misa.delete}}})})
+                                                         :scroll 0 :top misa.delete :anchor misa.delete :scroll_selection misa.delete}}})})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/response-start
@@ -607,7 +723,7 @@
                                                  (not= event.response_id ""))
                                             "response ID must be nonempty")
                                     (message-update (append-response db event.response_id
-                                                                      (or event.role :assistant) cofx :streaming) nil))})
+                                                                      (or event.role :assistant) cofx :streaming event) nil))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :transcript/block-start
@@ -642,8 +758,6 @@
                                           (set block.name
                                                (printable-text (tostring (or event.name
                                                                              :tool))))
-                                          (set block.description
-                                               (tool-description block.name))
                                           (set block.call_id event.call_id)
                                           (set block.status :pending)
                                           (set block.argument_chunks {})
@@ -697,14 +811,10 @@
                                     (local fx [])
                                     (when (= owner.role :assistant)
                                       (local text [])
-                                      (var last-text nil)
                                       (for [index owner.block_start (- (+ owner.block_start owner.block_count) 1)]
                                         (local block (. blocks index))
                                         (when (= block.kind :assistant)
-                                          (table.insert text (or block.text ""))
-                                          (set last-text block)))
-                                      (when last-text
-                                        (set owner (misa.patch owner {:metadata_block_id last-text.id})))
+                                          (table.insert text (or block.text ""))))
                                       (when (> (length text) 0)
                                         (local committed {:text (table.concat text "") :started_wall_ms owner.started_wall_ms
                                                           :tokens_per_second owner.tokens_per_second})
@@ -728,9 +838,7 @@
             (append-block next owner
                           (misa.patch {:id (.. id :/1) :is_error (and event (= event.is_error true))
                                        : kind :level (and event event.level) :streaming false
-                                       :text (if (or (= kind :tool_call) (= kind :tool_result))
-                                                 (copy-structural (tostring (or text "")) policy 0)
-                                                 (printable-text (tostring (or text ""))))}
+                                       :text (printable-text (tostring (or text "")))}
                                       (or extra {}))))
 
           (each [_ kind (ipairs [:user :harness])]
@@ -743,24 +851,44 @@
                                                       (updated-fx (noninteractive-commit next (.. :transcript. kind) model cofx markdown)
                                                                   model.response_id model.id)))}))
           (table.insert setup-fx
+                        {:type :register/event :name :transcript/tool-start
+                         :handler (fn [db event cofx]
+                                    (local section (find-tool-section db event.id))
+                                    (when (and section (= section.result nil) (not section.execution_started_monotonic_ms))
+                                      (local (wall mono) (clock cofx))
+                                      (replace-transcript-block db section
+                                                                {:execution_started_wall_ms wall
+                                                                 :execution_started_monotonic_ms mono :status :running})))})
+          (table.insert setup-fx
                         {:type :register/event :name :transcript/tool-result
                          :handler (fn [db event cofx]
                                     (local section (find-tool-section db event.id))
+                                    (local (_ now) (clock cofx))
                                     (local status (if (= event.cancelled true) :cancelled event.is_error :error :success))
                                     (if section
                                         (let [result (replace-transcript-block db section
-                                                                              {:result (misa.replace (copy-structural (tostring (or event.text "")) policy 0))
-                                                                               :is_error (= event.is_error true) : status :streaming false})]
+                                                                              {:result (misa.replace (printable-text (tostring (or event.text ""))))
+                                                                               :text (when (= section.kind :tool_result) (printable-text (tostring (or event.text ""))))
+                                                                               :is_error (= event.is_error true) : status :streaming false
+                                                                               :execution_completed_monotonic_ms (when section.execution_started_monotonic_ms (or section.execution_completed_monotonic_ms now))
+                                                                               :elapsed_ms (when section.execution_started_monotonic_ms
+                                                                                             (or section.elapsed_ms (math.max 0 (- now section.execution_started_monotonic_ms))))})]
                                           (tset result.patch.messages :scroll 0)
                                           result)
-                                        (let [(next block) (standalone db :tool_result event.text event cofx {: status})]
+                                        (let [(next block) (standalone db :tool_result event.text event cofx {: status :call_id event.id})]
                                           (message-update next (updated-fx nil block.response_id block.id)))))})
+          (table.insert setup-fx
+                        {:type :register/event :name :transcript/tool-summary
+                         :handler (fn [db event]
+                                    (local section (find-tool-section db event.id))
+                                    (when (and section (= (type event.text) :string))
+                                      (replace-transcript-block db section {:summary event.text})))})
           (table.insert setup-fx
                         {:type :register/event :name :transcript/tool-call
                          :handler (fn [db event cofx]
                                     (local name (printable-text (tostring (or event.name :tool))))
                                     (local (next block) (standalone db :tool_call "" event cofx
-                                                                {:call_id event.id : name :description (tool-description name)
+                                                                {:call_id event.id : name
                                                                  :status :pending
                                                                  :arguments (misa.replace (copy-structural (or event.arguments event.arguments_json {}) policy 0))}))
                                     (message-update next (updated-fx nil block.response_id block.id)))})
@@ -798,9 +926,7 @@
                                               :text (and source.text
                                                          (printable-text source.text))})
                                       (when (= kind :tool_call)
-                                        (set block.status :pending)
-                                        (set block.description
-                                             (tool-description block.name)))
+                                        (set block.status :pending))
                                       (set next (append-block next owner block))
                                       (when (= kind :assistant)
                                         (tset output (+ (length output) 1)

@@ -104,7 +104,7 @@ return 42
                                         (set saw.table true)
                                         (set narrow-top
                                              (misa.layout.width line-text)))
-                                      (when (line-text:find :bogus 1 true)
+                                      (when (line-text:find "return 42" 1 true)
                                         (set saw.code true)))
                                     (each [_ line (ipairs wide)]
                                       (var line-text "")

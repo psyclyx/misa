@@ -16,8 +16,8 @@
                        :layout
                        :markdown
                        :component/markdown
-                       :values :component/tool
-                       :component/message
+                       :values :component/content :component/truncation :tool_presentations :component/tool
+                       :component/group :component/message
                        :messages])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 
@@ -120,7 +120,7 @@
 (assert (has-strong (. (misa.markdown_view.project many-blocks {:columns 80}) :lines) :BLOCK-TAIL)
         "block count hid or flattened Markdown")
 
-;; Tool previews keep their independent limit and structural redaction.
+;; Tool arguments keep their independent budget and structural redaction.
 (dispatch {:type :transcript/tool-call
            :id :tool
            :name :demo
@@ -130,5 +130,20 @@
 (assert (: tool.arguments.command :find "[truncated" 1 true))
 (assert (= tool.arguments.token "[redacted]"))
 (dispatch {:type :transcript/tool-result :id :tool :text first})
-(assert (: (. db.messages.blocks 4 :result) :find "[truncated" 1 true))
+(assert (= (. db.messages.blocks 4 :result) first))
+(local result-text (.. (string.rep (.. (string.rep :x 60) "\n") 100) "RESULT-END"))
+(dispatch {:type :transcript/tool-result :id :tool :text result-text})
+(assert (= (. db.messages.blocks 4 :result) result-text))
+(when db.messages.verbose (dispatch {:type :messages/toggle-verbose}))
+(local collapsed-text (text-of (misa.transcript_projection db terminal)))
+(assert (collapsed-text:find "98 lines hidden" 1 true) "result truncation did not count all retained rows")
+(assert (not (collapsed-text:find "RESULT-END" 1 true)))
+(dispatch {:type :messages/toggle-verbose})
+(visible "RESULT-END")
+;; Standalone results obey the same retention and sanitization contract.
+(dispatch {:type :transcript/tool-result :id :standalone :text (.. "\27[31m" result-text "\27[0m")})
+(assert (= (. db.messages.blocks 5 :text) result-text))
+(dispatch {:type :transcript/tool-result :id :standalone :text (.. "\27[31m" result-text "\27[0m")})
+(assert (= (. db.messages.blocks 5 :text) result-text))
+(assert (= (. db.messages.blocks 5 :result) result-text))
 (output "long message regressions passed\n")

@@ -61,6 +61,16 @@
                       (each [_ part (ipairs (misa.render_value item context))] (table.insert result part)))
                     result)
         :tokens (fn [fact] (text-value (compact fact.value)))
+        :duration (fn [fact]
+                    (local milliseconds (finite fact.value))
+                    (assert (>= milliseconds 0) "duration must be nonnegative")
+                    (text-value (if (< milliseconds 1000) (.. (math.floor milliseconds) "ms")
+                                    (< milliseconds 60000) (string.format "%.1fs" (/ milliseconds 1000))
+                                    (.. (math.floor (/ milliseconds 60000)) "m "
+                                        (math.floor (/ (% milliseconds 60000) 1000)) "s"))))
+        :rate (fn [fact]
+                (assert (= (type fact.unit) :string) "rate requires a unit")
+                (text-value (.. (string.format "%.1f" (finite fact.value)) " " fact.unit "/s")))
         :ratio (fn [fact]
                  (local format (if (= fact.unit :tokens) compact (fn [v] (tostring (finite v)))))
                  (text-value (.. (if (= fact.used nil) "?" (format fact.used)) "/"

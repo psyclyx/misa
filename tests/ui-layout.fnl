@@ -60,10 +60,11 @@
       (set layers
            [{kind true
              :lines (lines count :layer)
-             :cursor (when (> count 0) {:row count :byte 0})}])
+             :cursor (when (> count 0) {:row count :byte 0 :shape :block})}])
       (let [frame (view {} {:terminal {:lines height :columns 80}})]
         (assert (<= (length frame.lines) height) "layer exceeds viewport")
         (when frame.cursor
+          (assert (= frame.cursor.shape :block) "composition lost cursor shape")
           (assert (<= 1 frame.cursor.row (length frame.lines))
                   "layer cursor exceeds frame"))))))
 
@@ -81,5 +82,12 @@
           "root clipping retained frames wider than their fallback")
   (assert (= (. source 1 :spans 1 :animation) animation)
           "root clipping mutated the source animation"))
+
+(each [_ effect (ipairs (. ((. (fennel.dofile :extensions/component/editor.fnl) :setup)) :fx))]
+  (when (= effect.id :default.editor.input)
+    (each [_ mode (ipairs [:insert :normal :visual])]
+      (local input (effect.value.render {:text "hello" :cursor 2 : mode} {:columns 20}))
+      (assert (= input.cursor.shape (if (= mode :insert) :bar :block))
+              "editor mode must choose the native cursor shape"))))
 
 (print "layout contracts passed")

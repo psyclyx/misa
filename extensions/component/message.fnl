@@ -2,40 +2,6 @@
 
 ;; the reusable markdown and component.markdown services.
 
-(fn span [text style link] {: link : style : text})
-
-(fn composed [base modifier]
-  (if (not modifier) base (not= (type base) :table) [base modifier]
-      (let [result []]
-        (each [_ token (ipairs base)] (table.insert result token))
-        (table.insert result modifier)
-        result)))
-
-(fn metadata [parts fact context prefix]
-  (table.insert parts (span (or prefix "  ") :dim))
-  (each [_ value (ipairs (misa.render_value fact context))]
-    (local rendered (misa.snapshot value))
-    (set rendered.style (or rendered.style :dim))
-    (table.insert parts rendered)))
-
-(fn title [model label style context]
-  (let [parts [(span label (composed (or style :plain) :bold))]]
-    (when (not= model.started_wall_ms nil)
-      (metadata parts {:type :timestamp :value model.started_wall_ms} context))
-    (when model.streaming
-      (tset parts (+ (length parts) 1) (span "  streaming" :pending)))
-    (when model.interrupted
-      (tset parts (+ (length parts) 1) (span "  interrupted" :error)))
-    (when (= (type model.tokens_per_second) :number)
-      (tset parts (+ (length parts) 1)
-            (span (.. "  " (string.format "%.1f" model.tokens_per_second)
-                      " tok/s") :dim)))
-    (when model.cost
-      (metadata parts model.cost context
-                (when (or model.cost.pending (and model.cost.unknown (= model.cost.amount 0)))
-                  "  cost ")))
-    {:spans parts}))
-
 (fn rail [model]
   (assert model.rail "message model requires a semantic rail token"))
 
@@ -45,7 +11,8 @@
          (misa.markdown_view.project model.text
                             {:base style
                              :document (and syntax syntax.document)
-                             :captures (and syntax syntax.captures)
+                            :captures (and syntax syntax.captures)
+                             :outer_inset (misa.layout.width prefix)
                              :columns (math.max 1
                                                 (- columns
                                                    (misa.layout.width prefix)))}
@@ -66,64 +33,58 @@
                               columns [{:style (rail model) :text prefix}])
       (markdown-lines model style columns prefix previous)))
 
-(fn interactive-message [model context style label previous]
+(fn interactive-message [model context style previous limit]
   (local columns (math.max 1 (or (tonumber context.columns) 80)))
   (local prefix (misa.layout.clip "┃ " (math.max 0 (- columns 2))))
-  ;; Titles and surfaces belong to this message wrapper; body spans stay cached.
+  ;; The rail and its surface are one continuous block, including its chrome.
   (local rendered [])
   (local (lines cache) (body-lines model context style columns prefix previous))
-  (each [_ line (ipairs lines)]
+  (local visible (if limit
+                    (. (context.render_child :content.truncated
+                                             {: lines : limit
+                                              :notice_prefix [{:text prefix :style (rail model) :source false}]}
+                                             context) :lines)
+                    lines))
+  (each [_ line (ipairs visible)]
     (local wrapped {})
     (each [key value (pairs line)] (tset wrapped key value))
+    (set wrapped.surface (.. :surface. (: (rail model) :gsub "^rail%." "")))
     (table.insert rendered wrapped))
-  (when label
-    (local titles (misa.layout.wrap_spans [(title model label style context)] columns))
-    (for [index (length titles) 1 (- 1)]
-      (table.insert rendered 1 (. titles index))))
-  ;; Title lines are newly allocated too, so assigning their surface is local.
-  (each [_ line (ipairs rendered)]
-    (set line.surface (.. :surface. (: (rail model) :gsub "^rail%." ""))))
   (values rendered cache))
 
-(fn message [model context style label previous]
+(fn message [model context style previous]
   (if context.interactive
-      (interactive-message model context style label previous)
+      (interactive-message model context style previous)
       (misa.markdown_view.plain model.text style)))
-
-(fn titled [model label text style context]
-  {:lines [(title model label style context)
-           {:spans [(span "┃ " (rail model)) (span text style)]}]
-   :surface (.. :surface. (: (rail model) :gsub "^rail%." ""))})
 
 {:setup (fn []
           (local setup-fx [])
           (assert misa.layout "component.message requires layout")
-          (assert misa.render_value "component.message requires values")
           (assert (and misa.markdown_view misa.markdown)
                   "component.message requires markdown and component.markdown")
-          (fn reg [role render]
+          (fn reg [role render compose]
             (table.insert setup-fx
                           {:type :register/component
                            :id (.. :default. role)
-                           :value {: render}}))
+                           :value {: render : compose}}))
 
           (local roles
-                 [{:id :user :interactive_only true :label :You :style :user}
-                  {:id :assistant :label :Assistant :style :assistant}
-                  {:id :thinking :label :Thinking :style :thinking}])
+                 [{:id :user :interactive_only true :style :user}
+                  {:id :assistant :style :assistant}
+                  {:id :thinking :style :thinking}])
           (each [_ role (ipairs roles)]
             (reg (.. :transcript. role.id)
                  (fn [model context previous]
                    (local (lines cache) (when (or (not role.interactive_only) context.interactive)
-                                         (message model context role.style role.label previous)))
+                                         (message model context role.style previous)))
                    (values {:lines (or lines [])} cache))))
           (reg :transcript.thinking_collapsed
-               (fn [model context]
-                 (titled model :Thinking (tostring (or model.summary :summary))
-                         :thinking context)))
+               (fn [model context previous]
+                 (local (lines cache) (interactive-message model context :thinking previous 3))
+                 (values {: lines} cache)) true)
           (reg :transcript.harness
                (fn [model context previous]
                  (local (lines cache) (message model context (if (= model.level :error) :error :plain)
-                                              nil previous))
+                                              previous))
                  (values {: lines} cache)))
           {:fx setup-fx})}

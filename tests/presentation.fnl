@@ -242,7 +242,7 @@ local x = 1
                                                                                       :end_byte 18
                                                                                       :capture :string}]}}))
                                     (local code-pieces {})
-                                    (for [index 2 (- (length code-lines) 1)]
+                                    (for [index 1 (length code-lines)]
                                       (local pieces {})
                                       (each [_ item (ipairs (. code-lines index
                                                                :spans))]
@@ -255,7 +255,7 @@ local x = 1
                                     (assert (= (table.concat code-pieces "\n")
                                                code-source)
                                             "highlighted code lost a line or trailing newline")
-                                    (assert (= (. code-lines 2 :spans 2 :style
+                                    (assert (= (. code-lines 1 :spans 3 :style
                                                   3)
                                                :syntax.keyword)
                                             "highlighted code lost capture styling")
@@ -268,12 +268,12 @@ local x = 1
                                                                                  :source_start 0
                                                                                  :source_end 13}]}
                                                                       {:columns 32}))
-                                    (assert (= (. long-language-lines 2 :spans
-                                                  2 :text)
+                                    (assert (= (. long-language-lines 1 :spans
+                                                  3 :text)
                                                "retained body")
                                             "unsupported language identifier discarded code")
-                                    (assert (= (. long-language-lines 2 :spans
-                                                  2 :style 2)
+                                    (assert (= (. long-language-lines 1 :spans
+                                                  3 :style 2)
                                                :code)
                                             "unsupported language identifier lost code styling")
                                     (local table-source
@@ -320,9 +320,9 @@ local x = 1
                                                     :G))
                                             "Vim hints collapse case-sensitive motions")
                                     (assert (and (= (misa.keybinding_text :alt+g)
-                                                    "⌥G")
+                                                    "⌥g")
                                                  (= (misa.keybinding_text :f1)
-                                                    :F1))
+                                                    :f1))
                                             "chord/function hints lost display convention")
                                     (local model
                                            {:id :presentation :correlation :current

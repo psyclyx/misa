@@ -1,10 +1,12 @@
 (local fennel (require :fennel))
 (local output io.write)
 (local runtime-debug debug)
+(local runtime-os os)
 (local G (require :tests.generators))
 
 (fn fixture [reverse]
   (set _G.debug runtime-debug)
+  (set _G.os runtime-os)
   (fennel.dofile :src/lua_runtime/framework.fnl)
   (local app _G.misa)
   (local context {:argv [] :config {}})
@@ -28,7 +30,7 @@
   (var observed nil)
   (var state nil)
   (each [_ name (ipairs [:terminal/input :actions/open :dialog/input :picker/input
-                         :omnipicker/open :custom :history/previous :history/next
+                         :choices/dispatch :choices/ignored :omnipicker/open :custom :history/previous :history/next
                          :history/search :editing/action :editing/interrupt :selection/action
                          :selection/open :messages/scroll :messages/toggle-verbose :model/picker-open])]
     (app._setup_effects
@@ -95,6 +97,17 @@
 (check {:editor {:text "draft" :cursor 0 :mode :normal}} (input :ctrl_d) :editing/interrupt)
 (check {:editor {:text "draft" :cursor 0 :mode :normal}} (input :eof) :editing/interrupt)
 
+(local pending {:editor {:text "/model " :cursor 7 :mode :insert :choice {:combo "alt+;"}}})
+(each [_ event (ipairs [(input :alt :m) (input :alt :f) (input :text ":")
+                       (input :escape) (input :backspace) (input :ctrl_c)
+                       {:type :terminal/input :kind :key :key :f1}])]
+  (check pending event :terminal/input)
+  (check {:editor initial.editor :picker {:session {:combo "alt+;"}}} event :picker/input))
+
+(check picker {:type :ui/action :action :choices.option_1_10} :choices/dispatch)
+(check {:editor initial.editor :picker {:session {:combo "alt+o"}}}
+       {:type :ui/action :action :choices.option_1_10} :choices/ignored)
+
 (local failure
        (G.for_all (G.tuple [(G.elements [initial dialog picker selected])
                             (G.elements [:text :alt :key :arrow_up :arrow_down :escape :wheel_up])
@@ -109,6 +122,7 @@
 
 ;; The route primitive is event-scoped, not terminal-specific middleware.
 (set _G.debug runtime-debug)
+  (set _G.os runtime-os)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app _G.misa)
 (app._setup (fennel.dofile :extensions/json.fnl) {})

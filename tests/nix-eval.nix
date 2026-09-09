@@ -61,6 +61,7 @@ assert
     selectionDocument = "selection_document";
     componentSelection = "component.selection";
     agent = "agent";
+    toolSummary = "tool_summary";
     animations = "animations";
     animationDefault = "animation.default";
     auth = "auth";
@@ -78,6 +79,10 @@ assert
     syntax = "syntax";
     componentMarkdown = "component.markdown";
     componentTool = "component.tool";
+    componentContent = "component.content";
+    componentTruncation = "component.truncation";
+    toolPresentations = "tool_presentations";
+    componentGroup = "component.group";
     componentMessage = "component.message";
     componentEditor = "component.editor";
     componentPicker = "component.picker";

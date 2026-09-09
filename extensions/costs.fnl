@@ -101,6 +101,36 @@
                                  :compute (fn [inputs query]
                                             (local entry (. (. inputs 1) (. query 2)))
                                             (and entry entry.value))}})
+          ;; Child requests retain independent accounting and aggregate only here.
+          ;; A single fold serves every visible group, avoiding per-block scans.
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :costs/groups :inputs [[:db/path :costs :responses]]
+                                 :compute (fn [inputs _ previous]
+                                            (local groups {})
+                                            (each [id response (pairs (or (. inputs 1) {}))]
+                                              (local owner (or response.parent_response_id id))
+                                              (local group (or (. groups owner)
+                                                               {:type :money :currency :USD :amount 0
+                                                                :estimated false :unknown false :pending true}))
+                                              (local cost response.cost)
+                                              (when cost
+                                                (set group.pending false)
+                                                (set group.amount (+ group.amount cost.usd))
+                                                (set group.estimated (or group.estimated cost.estimated false))
+                                                (set group.unknown (or group.unknown cost.unknown false)))
+                                              (tset groups owner group))
+                                            (each [id group (pairs groups)]
+                                              (when group.pending (set group.amount nil))
+                                              (local old (and previous (. previous id)))
+                                              (when (and old (= old.amount group.amount)
+                                                         (= old.estimated group.estimated) (= old.unknown group.unknown)
+                                                         (= old.pending group.pending))
+                                                (tset groups id old)))
+                                            groups)}})
+          (table.insert setup-fx
+                        {:type :register/service :name :group_cost_projection
+                         :value (fn [db id] (. (misa.sub db [:costs/groups]) id))})
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :costs/total
@@ -158,7 +188,8 @@
                                       {:cost_usd event.cost_usd}))
               (response-patch event.response_id
                               (misa.patch response
-                                          {:cost (misa.replace
+                                          {:parent_response_id event.parent_response_id :call_id event.call_id
+                                           :cost (misa.replace
                                                    (estimate response.pricing usage))}))))
           (local transitions
                  {:app/start reset
@@ -170,6 +201,8 @@
                                       {:model event.model
                                        :pricing (model-rates db event.model)})))
                   :transcript/response-end
+                  (fn [db event] (when db.costs (complete db event)))
+                  :tool-summary/usage
                   (fn [db event] (when db.costs (complete db event)))
                   :transcript/response-interrupted
                   (fn [db event]

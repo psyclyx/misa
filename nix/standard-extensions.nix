@@ -14,6 +14,7 @@
   componentSelection = "component.selection";
   editing = "editing";
   agent = "agent";
+  toolSummary = "tool_summary";
   animations = "animations";
   animationDefault = "animation.default";
   auth = "auth";
@@ -35,6 +36,10 @@
   syntax = "syntax";
   componentMarkdown = "component.markdown";
   componentTool = "component.tool";
+  componentContent = "component.content";
+  componentTruncation = "component.truncation";
+  toolPresentations = "tool_presentations";
+  componentGroup = "component.group";
   componentMessage = "component.message";
   componentEditor = "component.editor";
   componentPicker = "component.picker";

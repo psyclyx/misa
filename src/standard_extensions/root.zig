@@ -41,6 +41,10 @@ pub const entries = [_]Entry{
     .{ .id = "syntax", .path = "syntax.fnl" },
     .{ .id = "component.markdown", .path = "component/markdown.fnl" },
     .{ .id = "component.tool", .path = "component/tool.fnl" },
+    .{ .id = "component.content", .path = "component/content.fnl" },
+    .{ .id = "component.truncation", .path = "component/truncation.fnl" },
+    .{ .id = "tool_presentations", .path = "tool_presentations.fnl" },
+    .{ .id = "component.group", .path = "component/group.fnl" },
     .{ .id = "component.message", .path = "component/message.fnl" },
     .{ .id = "component.editor", .path = "component/editor.fnl" },
     .{ .id = "component.picker", .path = "component/picker.fnl" },
@@ -76,6 +80,7 @@ pub const entries = [_]Entry{
     .{ .id = "provider.openrouter", .path = "provider/openrouter.fnl" },
     .{ .id = "tool.files", .path = "tool/files.fnl" },
     .{ .id = "tool.shell", .path = "tool/shell.fnl" },
+    .{ .id = "tool_summary", .path = "tool_summary.fnl" },
     .{ .id = "ui", .path = "ui.fnl" },
 };
 
@@ -156,6 +161,10 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("syntax.fnl", catalogPath("syntax").?);
     try std.testing.expectEqualStrings("component/markdown.fnl", catalogPath("component.markdown").?);
     try std.testing.expectEqualStrings("component/tool.fnl", catalogPath("component.tool").?);
+    try std.testing.expectEqualStrings("component/content.fnl", catalogPath("component.content").?);
+    try std.testing.expectEqualStrings("component/truncation.fnl", catalogPath("component.truncation").?);
+    try std.testing.expectEqualStrings("tool_presentations.fnl", catalogPath("tool_presentations").?);
+    try std.testing.expectEqualStrings("component/group.fnl", catalogPath("component.group").?);
     try std.testing.expectEqualStrings("component/message.fnl", catalogPath("component.message").?);
     try std.testing.expectEqualStrings("component/editor.fnl", catalogPath("component.editor").?);
     try std.testing.expectEqualStrings("component/picker.fnl", catalogPath("component.picker").?);

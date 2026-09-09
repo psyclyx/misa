@@ -32,7 +32,7 @@
   (table.insert next value)
   next)
 
-(fn request [db agent]
+(fn request [db agent cofx]
   (local selected (assert (selected-model db) "selected model became unavailable"))
   (var (options problem) (values {} nil))
   (when misa.prepare_request_options
@@ -41,7 +41,9 @@
       (let [sequence (+ agent.request_seq 1)
             id (.. :agent- sequence)]
         (values (misa.patch agent {:request_seq sequence :active_request_id id :status :working
-                                   :cancel_requested false :request_model selected.id})
+                                   :cancel_requested false :request_model selected.id
+                                   :request_started_wall_ms (and cofx cofx.clock cofx.clock.wall_ms)
+                                   :request_started_monotonic_ms (and cofx cofx.clock cofx.clock.monotonic_ms)})
                 {: id :messages agent.messages :model selected.model :request_options options
                  :system_prompt agent.system_prompt :tools (misa.tools)
                  :type (.. :provider. selected.provider)}))))
@@ -101,7 +103,7 @@
                  (misa.patch block {:arguments (misa.replace arguments) :arguments_json misa.delete})))))
   (values normalized failures))
 
-(fn complete-response [db previous id raw-blocks usage stop-reason]
+(fn complete-response [db previous id raw-blocks usage stop-reason cofx]
   (local (blocks argument-failures) (normalize-tool-arguments raw-blocks))
   (content blocks :assistant)
   (let [stream previous.stream]
@@ -126,6 +128,8 @@
         (do
           (tset effects (+ (length effects) 1)
                 {:event {:model agent.request_model
+                         :started_wall_ms agent.request_started_wall_ms
+                         :started_monotonic_ms agent.request_started_monotonic_ms
                          :response_id id
                          :role :assistant
                          :type :transcript/response-start}
@@ -179,12 +183,14 @@
                                            "Provider did not report a tool result"
                                            true)))
               (set agent (misa.patch agent {:messages (misa.replace (appended agent.messages result))}))
-              (tset effects (+ (length effects) 1)
-                    {:event {:id block.id
-                             :is_error result.is_error
-                             :text (. result.content 1 :text)
-                             :type :transcript/tool-result}
-                     :type :dispatch}))
+              ;; Stream observations already completed the visible call.
+              (when (not (and stream stream.tool_results (. stream.tool_results block.id)))
+                (tset effects (+ (length effects) 1)
+                      {:event {:id block.id
+                               :is_error result.is_error
+                               :text (. result.content 1 :text)
+                               :type :transcript/tool-result}
+                       :type :dispatch})))
             (do
               (set saw-tool true)
               (when (not agent.tool_batch)
@@ -199,6 +205,8 @@
                             "duplicate tool call id")
                     (set agent (misa.patch agent {:pending_tools {block.id {:name block.name :request_id id}}
                                                   :pending_tool_count (+ agent.pending_tool_count 1)}))
+                    (table.insert effects {:type :dispatch
+                                           :event {:type :transcript/tool-start :id block.id}})
                     (if (. argument-failures block.id)
                         (tset effects (+ (length effects) 1)
                               {:event {:is_error true
@@ -228,7 +236,7 @@
         saw-tool
         (do
           (set agent (flush-tool-results agent))
-          (local (next provider problem) (request db agent))
+          (local (next provider problem) (request db agent cofx))
           (set agent next)
           (if problem
               (let [(ready blocked-fx) (blocked agent problem)]
@@ -470,7 +478,7 @@
                                      : fx})})
           (table.insert setup-fx
                         {:type :register/event :name :agent/submit
-                         :handler (fn [db event]
+                         :handler (fn [db event cofx]
                                     (assert (and (= (type event.prompt) :string)
                                                  (or (not= event.prompt "") (> (length (or event.attachments [])) 0)))
                                             "agent prompt must be nonempty")
@@ -495,7 +503,7 @@
                                             (table.insert blocks image))
                                           (local history (misa.patch agent {:messages (misa.replace (appended agent.messages
                                                                                                              {:content blocks :role :user}))}))
-                                          (local (next provider problem) (request db history))
+                                          (local (next provider problem) (request db history cofx))
                                           (if problem
                                               (let [(ready fx) (blocked agent problem)]
                                                 {:patch {:agent (misa.replace ready)} : fx})
@@ -514,7 +522,9 @@
                                       {:patch {:agent {:stream (misa.replace {:id event.id :block_seq 0
                                                                              :blocks [] :tools {} :tool_results {}})}}
                                        :fx [(transcript-event event.id :transcript/response-start
-                                                              {:model agent.request_model :role :assistant})]}))})
+                                                              {:model agent.request_model :role :assistant
+                                                               :started_wall_ms agent.request_started_wall_ms
+                                                               :started_monotonic_ms agent.request_started_monotonic_ms})]}))})
           (table.insert setup-fx
                         {:type :register/event :name :agent/stream-delta
                          :handler (fn [db event]
@@ -565,7 +575,7 @@
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/stream-end
-                         :handler (fn [db event]
+                         :handler (fn [db event cofx]
                                     (local agent db.agent)
                                     (local stream (and agent agent.stream))
                                     (if (or (or (not stream)
@@ -592,13 +602,13 @@
                                                                          (or event.usage
                                                                              stream.usage)
                                                                          (or event.stop_reason
-                                                                             stream.stop_reason))))))))})
+                                                                             stream.stop_reason) cofx)))))))})
           ;; Compatibility input is immediately normalized; built-in providers never
           ;; use this legacy event.
           (table.insert setup-fx
                         {:type :register/event
                          :name :agent/result
-                         :handler (fn [db event]
+                         :handler (fn [db event cofx]
                                     (local agent db.agent)
                                     (if (or (not agent)
                                             (not= event.id
@@ -613,10 +623,10 @@
                                                                    event.id
                                                                    event.content
                                                                    event.usage
-                                                                   event.stop_reason)))))})
+                                                                   event.stop_reason cofx)))))})
           (table.insert setup-fx
                         {:type :register/event :name :tool/result
-                         :handler (fn [db event]
+                         :handler (fn [db event cofx]
                                     (local previous db.agent)
                                     (when (and previous (. previous.pending_tools event.tool_call_id))
                                       (var agent (misa.patch previous
@@ -643,7 +653,7 @@
                                             (local fx [update])
                                             (when (= agent.pending_tool_count 0)
                                               (set agent (flush-tool-results agent))
-                                              (local (next provider problem) (request db agent))
+                                              (local (next provider problem) (request db agent cofx))
                                               (set agent next)
                                               (if problem
                                                   (let [(ready blocked-fx) (blocked agent problem)]

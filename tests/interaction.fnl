@@ -227,13 +227,13 @@ A paragraph.
                 (fn [db]
                   (assert (= (length db.selection.documents) 1))
                   nil))
-          (step (input :text :l))
+          (step (input :text :J))
           ;; message -> section
-          (step (input :text :l))
+          (step (input :text :J))
           ;; section -> heading
           (step (input :text :j))
           ;; content
-          (step (input :text :l))
+          (step (input :text :J))
           ;; paragraph
           (step (input :text :y) (fn [db]
                                    (assert (= db.clipboard.text "A paragraph.")
@@ -241,13 +241,13 @@ A paragraph.
                                    nil))
           (step (input :text :j))
           ;; table
-          (step (input :text :l))
+          (step (input :text :J))
           ;; header row
           (step (input :text :j))
           ;; data row
-          (step (input :text :l))
+          (step (input :text :J))
           ;; name cell
-          (step (input :text :j))
+          (step (input :text :l))
           ;; value cell
           (step (input :text :y) (fn [db]
                                    (assert (= db.clipboard.text "界")

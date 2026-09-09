@@ -26,6 +26,11 @@
 (assert (= started.db.costs.responses.current.cost nil) "completion mutated response")
 (assert (= finished.db.costs.responses.current.cost.usd 2))
 (assert (= finished.db.costs.responses.earlier original.costs.responses.earlier))
+(local summarized (account {:db finished.db
+                            :event {:type :tool-summary/usage :response_id :summary :model :test
+                                    :usage {:output_tokens 1000000}}}))
+(assert (= summarized.db.costs.responses.summary.cost.usd 4))
+(assert (= summarized.db.costs.responses.current finished.db.costs.responses.current))
 (local interrupted (account {:db finished.db
                              :event {:type :transcript/response-interrupted
                                      :response_id :current}}))
@@ -123,4 +128,23 @@
            (consumer.close))
          {:cases 200 :size 20}))
 (assert (not failure) (and failure (fennel.view failure)))
+
+;; Group accounting includes its background work, while provider facts stay exact.
+(local attached (account {:db finished.db
+                         :event {:type :tool-summary/usage :response_id :summary :parent_response_id :current
+                                 :call_id :call :model :test :usage {:output_tokens 1000000}}}))
+(local group-scope (misa.subscription_scope))
+(local groups (group-scope.query attached.db [:costs/groups]))
+(assert (= (. groups :current :amount) 6))
+(assert (= (. groups :earlier :amount) 7))
+(assert (= (. groups :summary) nil))
+(assert (= (. (group-scope.query attached.db [:costs/response :current]) :amount) 2))
+(assert (= (. (group-scope.query attached.db [:costs/total]) :usd) 13))
+(assert (= attached.db.costs.responses.summary.call_id :call))
+(local duplicate (account {:db attached.db
+                          :event {:type :tool-summary/usage :response_id :summary :parent_response_id :current
+                                  :call_id :call :model :test :usage {:output_tokens 1000000}}}))
+(assert (= (. (group-scope.query duplicate.db [:costs/groups]) :current) (. groups :current)))
+(assert (= (. (group-scope.query started.db [:costs/groups]) :current :pending) true))
+(group-scope.close)
 (output "cost state contracts passed\n")

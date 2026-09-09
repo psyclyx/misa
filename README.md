@@ -124,9 +124,13 @@ runner supports the Fennel benchmark scripts and uses the bundled compiler.
 
 Build the fixture executable with `zig build fixture-app`. Optional
 terminal-protocol regressions run with `python3 tests/ghostty-input.py
-zig-out/bin/misa-fixture`, `python3 tests/settled-frames.py zig-out/bin/misa-fixture`, and
-`python3 tests/threaded-terminal.py zig-out/bin/misa-fixture`. They
+zig-out/bin/misa-fixture`, `python3 tests/settled-frames.py zig-out/bin/misa-fixture`,
+`python3 tests/threaded-terminal.py zig-out/bin/misa-fixture`, and
+`python3 tests/terminal-failure.py zig-out/bin/misa-fixture`. They
 use a PTY and local provider fixtures, with no account or network dependency.
+`python3 tests/http-cancellation.py zig-out/bin/misa` exercises cancellation,
+idle timeouts, and compressed responses through the real HTTP transport using
+a local server; build the production executable with `zig build` first.
 Pass `--installed` to `tests/ghostty-input.py` to verify the executable's installed
 catalog rather than loading extensions from the worktree. This mode uses the
 catalog installed alongside `misa-fixture` by `zig build fixture-app`.
@@ -379,8 +383,12 @@ and tool status styles are data tables interpreted by their component owners:
 ```fennel
 {:lines [{:spans [{:text "working"
                    :style {:foreground :default :dim true}}]}]
- :cursor {:row 1 :byte 0}} ; or nil cursor
+ :cursor {:row 1 :byte 0 :shape :bar}} ; or nil cursor
 ```
+
+Cursor shapes are `bar` (the default, used for insert mode) or `block` (normal
+and visual modes). Both are steady native cursors, so redraws and activity
+animations cannot restart a blink phase. Terminal exit restores the default shape.
 
 At the native boundary, `style` is a validated record with optional
 `foreground`, `background`, `bold`, `italic`, `dim`, `strikethrough`, and `underline` fields.
@@ -421,6 +429,8 @@ remain ordered. Mouse actions retain the hit map displayed when their batch was
 decoded. Clipboard, committed output, input discard, and generation-checked
 handoff use acknowledged commands. Shutdown joins the driver before restoring
 terminal modes; blocked stdout can delay that join until its write completes.
+Panics restore terminal modes and leave the alternate screen before printing
+diagnostics; fatal-signal cleanup also handles SIGABRT.
 
 Potentially blocking HTTP, process, authentication, file, credential, and
 persistent-state work runs in cancellable native workers and reports completion
@@ -441,7 +451,10 @@ disabled; plain committed output may wrap naturally. The presenter encloses
 text, image placement, row clearing, and cursor changes in synchronized-output
 sequences. It presents only settled synchronous dispatch chains, at a 16 ms
 coalescing cadence, and skips identical frames. Components need no refresh or
-synchronization logic. Unsupported terminals retain the buffered-write fallback.
+synchronization logic. Managed input uses a steady native bar cursor in insert
+mode and a steady block in normal/visual mode, avoiding blink resets during
+redraw. Terminal handoff and exit restore the default cursor shape. Unsupported
+terminals retain the buffered-write fallback.
 The installed default sets `config.ui.plain_prompt = true`, causing the standard
 UI to commit one plain startup prompt before reading stdin when interactive mode is
 unavailable; other profiles can opt into the same fallback behavior.
@@ -470,7 +483,8 @@ termination signals. Bracketed-paste mode is enabled while the managed screen is
 
 The application UI is split at semantic boundaries. `components` resolves
 visual roles to registered implementations. The independently loadable
-`component.message`, `component.tool`, `component.markdown`, `component.editor`, `component.picker`, `component.status`,
+`component.message`, `component.group`, `component.tool`, `component.content`,
+`component.truncation`, `component.markdown`, `component.editor`, `component.picker`, `component.status`,
 `component.chrome`, and `component.dialog` plugins provide the default roles; none owns behavior or
 depends on a theme. `layout` provides pure terminal-cell width, fitting,
 semantic-span wrapping, and responsive-column primitives. Theme resolution is
@@ -490,6 +504,11 @@ Components may return an immutable incremental hint as a second result, received
 as `previous` on the next semantic computation. Rendering must remain correct
 without a hint. The framework's subscription scope owns these values and rolls
 them back with rejected transactions. Direct `render_component` is uncached.
+Components registered with `compose=true` receive `context.render_child(role,
+model, child_context?)` for nested semantic views. Children use the same role
+selections; swapping a child invalidates its composing parent's cached output.
+Theme resolution happens once after composition. Leaf components receive the
+original context directly.
 Prepare subscription-derived model data before calling the collection; retained
 component callbacks consume model/context and cannot recursively query subscriptions.
 Configure individual roles with
@@ -560,16 +579,38 @@ Interruption marks
 visible partial blocks without promoting them to provider history. The `:transcript.detail` action
 or the configurable global `alt+t` binding reprojects the transcript with
 details. Page Up / Page Down (also `alt+k` / `alt+j`) scroll while input and a
-responsive semantic indicator row remain visible below it. Default message roles
-and timestamps occupy a title line above the heavier `┃` message rail instead of prefixing
-content. Markdown quotes use the thinner `▏` rail. Completed assistant responses show tok/s exactly once, on their final assistant
-block, and only from provider-reported output tokens and positive native monotonic elapsed time. The focused `markdown`
+responsive semantic indicator row remain visible below it. Consecutive assistant
+responses and their tools share one turn footer, with a blank line between blocks.
+The footer shows the turn's start time, duration, and combined cost. A single-request
+turn also shows its provider throughput; multi-request turns omit that per-request
+rate. Duration spans request dispatch through the latest tool completion; parallel
+tool durations are not summed. Tool headings show execution durations and primary
+paths; shell commands appear in highlighted code blocks. Completed tools use their
+background colors without redundant success/error labels. Compact errors show a
+short explanation; verbose mode reveals the full diagnostics. Core file errors
+include actionable messages, with their native error codes in the details.
+Every row with the `┃` left rail shares its block background, including headings,
+borders, spacing, and dim omitted-line notices. Group dividers have blank lines
+around them and stay outside those backgrounds. User and thinking blocks rely on
+their distinct styling rather than redundant labels. Collapsed thinking shows a
+short excerpt of its actual text and a hidden-line count. Markdown
+quotes use the thinner `▏` rail. The focused `markdown`
 extension performs a pure parse into semantic blocks and inlines; `component.markdown` turns that data into
-terminal flow, while `component.message` supplies only message titles and the outer message rail. The reusable `component.tool`
-owns tool name/description, arguments, pending state, result, and lifecycle colors. Rendering includes visibly graded
+terminal flow, while `component.message` supplies the outer rail, block surface, and collapsed previews.
+`component.tool` composes compact lifecycle headings and reusable content views;
+tool descriptions remain API documentation and are not displayed in the transcript.
+`tool_presentations` binds tools to generic field, text, code, numbered-line, and
+diff components, with a generic fallback for unconfigured tools. These bindings
+live outside tool definitions; content components know nothing about tool names
+or execution. `content.truncated` bounds rendered rows and shows a dim exact count
+of hidden lines. Selecting content exposes its canonical source, without copying
+headings, margins, or truncation notices. Rendering includes visibly graded
 streaming headings, composable emphasis, Unicode task checkboxes, nested lists and continuations, thematic rules,
-quotes, responsive bordered tables, inline/fenced code, and OSC 8-capable links. Fenced languages are labeled and use
-the `syntax` extension's asynchronous captures when their grammar is installed.
+quotes, responsive bordered tables, inline/fenced code, and OSC 8-capable links.
+Fenced code has no frame or language-label rows. Line numbers, code, and trailing
+padding share `surface.code`; three columns on each side keep the parent block's
+background. Narrow layouts reduce the margins and gutter to preserve readable code.
+Languages still select the `syntax` extension's asynchronous captures when their grammar is installed.
 Code renders plainly while highlighting is pending; stale streaming results are
 discarded and the latest source is requested. Rendering consumes capture data
 without loading grammars or calling a native parser. The pure `layout`
@@ -583,10 +624,26 @@ terminals and across explicit newlines. Message spans and picker options likewis
 wrap on grapheme/UTF-8 boundaries using terminal cells rather than bytes or scalar count.
 Set `config.messages.markdown` to `false` (or `plain` to `true`) for literal text.
 Markdown has no source-byte, block-count, inline-count, depth, or link-length
-cutoff, and long messages retain their formatting. Assistant and user text is
-retained in full, including streaming chunks. `config.messages` controls initial `verbose`
-and the tool-preview `redact_keys`, `max_string`, `max_items`, and `max_depth`
-limits. Headless output remains plain.
+cutoff, and long messages retain their formatting. Assistant, user, and tool-result
+text is retained in full, including streaming chunks. `config.messages` controls
+initial `verbose` and the structured tool-argument `redact_keys`, `max_string`,
+`max_items`, and `max_depth` limits. Headless output remains plain.
+
+Load `component.content`, `component.truncation`, and `tool_presentations` before
+`component.tool`; load `component.truncation` and `component.group` alongside `component.message`.
+Presentation extensions can register a tool binding without modifying its definition:
+
+```fennel
+{:type :register/tool-presentation :name :query
+ :value {:subject :database :fields [:database :sql] :code :sql :language :sql :numbered false}}
+```
+
+A binding may instead be a pure function returning
+`{:arguments [{:role :content.fields :model {...}}] :result {:role :content.text :model {...}}}`.
+The generic roles accept ordinary content: `content.fields` takes labeled values,
+`content.lines` takes numbered rows with optional source offsets, and
+`content.truncated` takes rendered lines and a visible-line limit. Applications
+choose the bindings; renderers never inspect tool definitions or execute tools.
 For streaming, `misa.markdown.new_document():update(text)` retains completed
 blocks and reparses the final two blocks, where appended syntax can change the
 interpretation. Replacements rebuild the document; unchanged normalized source
@@ -765,6 +822,9 @@ Inline and overlay sessions resolve the same `keybindings.choices` actions and
 positional banks. `choice_layout` is the single projection for responsive
 preferred/min/max overlay bounds, preview and panel allocation, shared hints,
 and positional targets. The picker component only renders that projection.
+Load `keybindings` before choice layout and the editor, picker, and status
+components. All key hints use its shared token renderer, preserving input case;
+equivalent encodings such as `ctrl_n` and `ctrl+n` produce identical spans.
 Load `choice_preview` before `choice_layout`. It renders typed preview data to
 semantic lines before geometry is calculated; compact and overlay input handling
 use the same resulting line heights and targets. Extensions register
@@ -781,8 +841,22 @@ The picker receives both `preview.model` and rendered `preview.lines` records;
 custom previews retain their action, link, and animation span metadata.
 Overlays remain bounded, nonexclusive regions of the managed root: query input
 comes first, then semantic preview, panels, and the shared key reference below
-the panels. All key hints use structured tokens and render Alt as `⌥`. `open_overlay` (default `alt+space`) promotes the current inline
-session without resetting its query, highlight, or narrowing context. `replace_view`
+the panels. All key hints use structured tokens and render Alt as `⌥`.
+Visible choices start with right-hand home keys `Alt-J/K/L/H/;`. Further
+choices use right–left sequences such as `Alt-U F`, `Alt-I D`, and `Alt-O S`,
+then right–left–right sequences such as `Alt-U R J`. Home keys finish a
+sequence; nearby keys continue it. This distributes shortcuts across multiple
+starting keys, alternating hands after the initial Alt chord. The primary panel
+gets the five single-key shortcuts; remaining positions interleave across panels.
+There are 25 two-key and 125 three-key combinations before another key is needed.
+Every visible row gets a stable, prefix-free shortcut. The entered prefix is
+highlighted without changing the row text or wrapping. A pending shortcut is
+bound to its original visible item; a resize or catalogue update cannot silently
+retarget it. While waiting, other bindings and clickable hints are disabled;
+Escape, Backspace, or an unmatched key aborts without editing the query.
+Tab extends the common candidate path; when it cannot extend further, it completes
+the highlighted choice. Tab never submits.
+`open_overlay` remains configurable but has no default binding. `replace_view`
 (default `alt+/`) opens the nested `picker-picker`; replacing the active view is
 kept only for that choice session and never changes purpose defaults.
 
@@ -960,6 +1034,20 @@ starts. Selectors always display canonical `provider/model-id`; friendly model
 names remain searchable. Enter and Space after `/model` enter the same inline
 argument choices, and accepting a model executes the command.
 
+`config.models.catalogue_filter` controls provider-neutral browse curation:
+`max_age_days` defaults to 365, `popular_limit` to 30, and `enabled=false`
+shows everything. Providers can supply `created` (Unix seconds), `recommended`,
+and `popularity_rank`; unknown ages remain visible. Selected models, favorites,
+recently used models, and provider recommendations remain visible regardless of age.
+Search and the All view retain the full available catalogue. No popularity score
+is inferred from a model name or price.
+
+Assign models with `/role default provider/model` and
+`/role summarizer provider/model`; `/role summarizer off` removes the latter.
+Assignments persist and can be overridden by `config.models.roles`.
+Extensions resolve full available models through `misa.model_for_role(db, role)`;
+an unassigned or unavailable background role resolves to nil.
+
 The default theme inherits terminal body text and base background. Choose
 `config.themes.appearance = "light"` for light terminal backgrounds (default
 `"dark"`); `themes.palette` overrides named colors using `#rrggbb`, terminal
@@ -1041,8 +1129,9 @@ commands operate on the session: model/effort selection, authentication, and
 conversation reset. `/` stays discoverable through command and argument
 completion; selecting a nonterminal command narrows directly to its arguments.
 
-Alt-S enters structural transcript selection. `j`/`k` select siblings, `l`
-narrows, and `h` widens. A message can narrow to sections, a section's heading
+Alt-S enters structural transcript selection. `h`/`l` move along the rendered
+row; `j`/`k` move between rows while preserving the nearest column at the
+same structural depth. `J` narrows and `K` widens. A message can narrow to sections, a section's heading
 or content, paragraphs, code blocks, tables, rows, cells, lines, words, and
 individual graphemes. The selected range is highlighted in the existing rich
 transcript; titles, rails, and layout padding keep their resting appearance.
@@ -1052,7 +1141,10 @@ source, including Markdown syntax; Escape returns to the editor. The selected
 source is frozen so streaming cannot move the range during navigation. F1 remains
 available. The `selection` component role renders the dock independently of
 transcript decoration. Page Up/Down, Alt-K/J, and the mouse wheel scroll the
-transcript; its viewport stays anchored while new content arrives.
+transcript. While browsing, updates below the viewport leave its row position
+unchanged; updates above it relocate the top visible content only if displaced.
+Scrolling applies its row movement once after that adjustment. At the bottom,
+the viewport follows new output until you scroll away.
 
 `clipboard` separates copying from selection. Its default `clipboard/write`
 native effect sends OSC 52 to an interactive terminal (up to 1 MiB); terminal
@@ -1073,7 +1165,12 @@ source documents with `{id,label,text,kind,first,last,children}` and unique stri
 IDs across all sources. Ranges are
 zero-based, half-open byte offsets. `selection_document` derives semantic
 ranges from Markdown and lazily supplies finer ranges; selection policy and
-rendering can both be replaced independently.
+rendering can both be replaced independently. A source may also supply
+`layout(db, document, terminal)`, returning its existing rendered rows with
+`source_start`/`source_end` byte ranges on content spans. Directional selection
+uses those painted coordinates; the transcript supplies this hook through its
+normal component renderer. Nonliteral markers retain their original source
+range even when their rendered glyph length differs.
 Lists expose sibling items and nested lists; an item's range includes its nested
 content and continuation lines. Range offsets refer to the original source bytes,
 including CRLF line endings.
@@ -1196,3 +1293,48 @@ Claude CLI records expose `register/claude-record` and
 fx=<array>, finish=<boolean>}`; omitted state is unchanged. Terminal handlers set
 `result=true` and request `finish=true`. Tools retain one identity across partial
 and final assistant records; visible text fallback is tracked per message/block.
+
+File reads return a `snapshot TAG` header and `LINE#HASH|text` rows. Anchored
+reads return at most 2000 lines; `start_line` and `max_lines` select a page while
+retaining absolute line anchors and the full-file snapshot. Anchored
+`edit_file` calls copy that snapshot plus a `start` anchor and optional inclusive
+`end`, with plain replacement lines in `new_text`. Set `position` to `before` or
+`after` for insertion at one anchor; the default is `replace`, and empty
+replacement text deletes the range. Every edit checks the full snapshot as well
+as the line hashes, so changes inside a range cannot silently slip through.
+Replacement line endings follow the file's LF or CRLF convention. Source and
+replacement text are validated before writing, and the response is prepared
+before the atomic replacement. Successful edits return a unified diff with two
+lines of surrounding context, followed by fresh snapshot anchors. The transcript
+shows the diff through the markdown code-block renderer, with one line-number
+gutter: removed lines use old-file numbers; other lines use new-file numbers.
+File reads, writes, edit diffs, and shell commands/output share that renderer's
+surface, spacing, and wrapping. Collapsed shell output shows its last three
+rendered rows, with the omitted-row count above; expanding shows the full output.
+Shell previews retain that output tail even when a background summary exists.
+Snapshot hashes remain in the
+tool result but are hidden in the normal view. Pending replacement snippets are
+unnumbered; completed edits show the actual diff instead of repeating the snippet.
+Re-read after a successful edit or a stale-snapshot error. An empty file exposes
+one empty-line anchor. `edit_file` requires `snapshot`, `start`, and `new_text`;
+the legacy `old_text` argument is no longer advertised or accepted. The same native implementation serves direct
+file tools and the Claude MCP bridge. This adapts the snapshot validation idea
+from [oh-my-pi's hashline editor](https://github.com/can1357/oh-my-pi/blob/main/docs/tools/edit.md),
+with a smaller explicit-range contract.
+
+Claude's CLI requires `mcp__misa__` names for its MCP transport and allowlist.
+Misa removes that private bridge prefix from observed tool names in canonical
+history and the transcript; names belonging to other MCP servers remain intact.
+
+The optional `tool_summary` extension (included in the default profile) uses the
+`summarizer` model role for tool-free background summaries of successful tool
+results longer than 240 bytes. Requests run one at a time; short results and
+errors keep their direct previews. Summaries affect collapsed presentation only;
+canonical tool results remain unchanged, and provider failures retain the direct
+preview. Summary usage is included in both its originating response group's cost
+and the session total, while provider throughput remains independent. Resetting the conversation
+cancels pending summaries. No summary requests run until a model is assigned to
+the role, for example `config.models.roles.summarizer = "provider/model"`.
+Turning the role off or losing model availability cancels active summaries and
+clears the queue; changing the role model restarts unfinished work on the new
+model. Late completions from cancelled requests cannot change the transcript.

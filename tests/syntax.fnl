@@ -14,9 +14,10 @@
                        :components
                        :layout
                        :markdown
+                       :tool_presentations
                        :syntax
                        :component/markdown
-                       :values :component/message
+                       :values :component/truncation :component/group :component/message :component/content :component/tool
                        :messages])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 
@@ -281,4 +282,14 @@
 (misa.syntax_projection snapshot (. db.messages.blocks 1))
 (set misa.sub saved-sub)
 (set misa.syntax_projections snapshot-service)
+(set terminal.interactive true)
+(local before-shell (length requests))
+(dispatch {:type :transcript/response-start :response_id :shell-reply})
+(dispatch {:type :transcript/block-start :response_id :shell-reply :block_id :shell
+           :kind :tool_call :name :shell :call_id :shell-call})
+(dispatch {:type :transcript/block-delta :response_id :shell-reply :block_id :shell
+           :arguments {:command "echo hello"}})
+(assert (= (length requests) (+ before-shell 1)) "shell command did not request syntax highlighting")
+(assert (= (. requests (length requests) :language) :sh))
+(assert (= (. requests (length requests) :source) "echo hello"))
 (output "async syntax regressions passed\n")

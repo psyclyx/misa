@@ -78,7 +78,7 @@
                                       (assert (and (and (and (= first.call_id
                                                                 :first)
                                                              (= first.status
-                                                                :pending))
+                                                                :running))
                                                         (= second.call_id
                                                            :second))
                                                    (= second.status :success))

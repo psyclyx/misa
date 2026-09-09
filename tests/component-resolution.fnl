@@ -15,7 +15,7 @@
                        :layout
                        :markdown
                        :component/markdown
-                       :values :component/message :component/tool])]
+                       :values :component/group :component/message :component/content :component/truncation :tool_presentations :component/tool])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 
 (local cached
@@ -62,6 +62,8 @@
                :name :test/read
                :handler (fn [state] (set db state))})
 
+(table.insert effects {:type :register/service :name :choice_pending
+                       :value (fn [db] (and db.editor db.editor.choice db.editor.choice.combo))})
 (misa._setup_effects {:fx effects})
 (misa._seal context)
 (misa._dispatch {:type :app/start} {:columns 80 :lines 24 :interactive true}
@@ -118,7 +120,7 @@
 (assert (= (misa.json.encode cached) semantic)
         "repeat resolution changed cached semantics")
 
-;; Message chrome adds titles/surfaces without copying or mutating cached spans.
+;; Message surfaces wrap cached body spans; response metadata stays in the group.
 (local message {:id :body
                 :response_id :response
                 :text :**body**
@@ -127,26 +129,23 @@
 (local message-context {:columns 40 :interactive true})
 (local render (. (misa.component db :transcript.assistant) :render))
 (local (raw-first first-cache) (render message message-context))
-(local first-body (. raw-first.lines 2))
-(assert (= (length raw-first.lines) 2))
+(local first-body (. raw-first.lines 1))
+(assert (= (length raw-first.lines) 1))
 (set message.started_wall_ms 3723000)
 (local (raw-second second-cache) (render message message-context first-cache))
-(assert (= (length raw-second.lines) 2)
+(assert (= (length raw-second.lines) 1)
         "message title accumulated in body cache")
-(assert (= (. raw-second.lines 1 :spans 3 :text) "01:02:03"))
-(assert (not= (. raw-second.lines 2) first-body)
+(assert (not= (. raw-second.lines 1) first-body)
         "message wrapper reused mutable line")
-(assert (= (. raw-second.lines 2 :spans) first-body.spans)
+(assert (= (. raw-second.lines 1 :spans) first-body.spans)
         "message wrapper deep-copied cached spans")
-(assert (= (length (. raw-first.lines 1 :spans)) 1)
-        "new title changed previous title")
 (local before (misa.json.encode raw-second))
 (misa.render_component db :transcript.assistant message message-context)
 (assert (= (misa.json.encode raw-second) before)
         "theme resolution changed previous message output")
 (local raw-third (render message message-context second-cache))
-(assert (= (length raw-third.lines) 2))
-(assert (= (. raw-third.lines 2 :spans) first-body.spans)
+(assert (= (length raw-third.lines) 1))
+(assert (= (. raw-third.lines 1 :spans) first-body.spans)
         "resolved render invalidated cached body")
 ;; Transcript metadata works without status and receives semantic money/time.
 (fn title-text [view]
@@ -158,7 +157,8 @@
   (local fact (. example 1))
   (local source (misa.patch message {:cost (misa.replace fact)}))
   (local before (misa.json.encode source))
-  (assert (: (title-text (render source {:columns 100 :interactive true})) :find (. example 2) 1 true))
+  (assert (: (title-text (misa.render_component db :transcript.group_footer source {:columns 100 :interactive true}))
+             :find (. example 2) 1 true))
   (assert (= before (misa.json.encode source))))
 (assert (= (. (misa.render_value {:type :timestamp :value 0}) 1 :text) "00:00:00"))
 (local original-value-render misa.render_value)
@@ -167,11 +167,67 @@
                         (if (= fact.type :timestamp)
                             (do (assert (= fact.value 3723000)) shared-metadata)
                             (original-value-render fact context))))
-(assert (: (title-text (render message message-context)) :find :custom-time 1 true))
-(local tool-render (. (misa.component db :transcript.tool_call) :render))
-(assert (: (title-text (tool-render {:name :test :started_wall_ms 3723000} message-context)) :find :custom-time 1 true))
+(assert (= (length (. (misa.render_component db :transcript.group_header message message-context) :lines)) 0))
+(assert (: (title-text (misa.render_component db :transcript.group_footer message message-context)) :find :custom-time 1 true))
+(assert (not (: (title-text (misa.render_component db :transcript.tool_call
+                                                 {:name :test :started_wall_ms 3723000} message-context))
+                :find :custom-time 1 true)))
 (assert (= (. shared-metadata 1 :style) nil) "metadata renderer mutated shared spans")
 (set misa.render_value original-value-render)
+;; Every railed row is part of the continuous message surface, including borders.
+(local decorated-message (misa.render_component
+                          (misa.swap_theme db :default) :transcript.assistant
+                          {:rail :rail.assistant :text "```zig\nconst value = 1;\n```\n\n| name | value |\n| --- | --- |\n| x | 1 |"}
+                          {:columns 60 :interactive true}))
+(var (chrome body) (values 0 0))
+(each [_ line (ipairs decorated-message.lines)]
+  (if (= line.content false)
+      (do
+        (set chrome (+ chrome 1))
+        (each [_ part (ipairs line.spans)]
+          (assert part.style.background "railed Markdown chrome lost its background")))
+      (do
+        (set body (+ body 1))
+        (assert (. line.spans 1 :style :background) "Markdown content lost its background"))))
+(assert (and (> chrome 2) (> body 1)))
+;; Code fills the middle of each row, including its gutter, while the three
+;; outer columns on both sides retain the enclosing message background.
+(local code-db (misa.swap_theme db :default))
+(local code-view (misa.render_component code-db :transcript.assistant
+                                      {:rail :rail.assistant :text "```zig\none\ntwo\n```"}
+                                      {:columns 40 :interactive true}))
+(assert (= (length code-view.lines) 2))
+(local parent-background (. (misa.theme_style code-db :surface.assistant) :background))
+(local code-background (. (misa.theme_style code-db :surface.code) :background))
+(assert (not= (misa.json.encode parent-background) (misa.json.encode code-background)))
+(each [_ line (ipairs code-view.lines)]
+  (var column 0)
+  (each [_ part (ipairs line.spans)]
+    (for [_ 1 (misa.layout.width part.text)]
+      (set column (+ column 1))
+      (assert (= (misa.json.encode part.style.background)
+                 (misa.json.encode (if (or (<= column 3) (> column 37)) parent-background code-background)))
+              "code surface crossed its gutter or outer margins")))
+  (assert (= column 40)))
+;; Collapsed thinking displays actual source rather than a placeholder label.
+(local thought "- Check the parser.\n- Compare both paths.\n- Keep the source intact.\n- Run the tests.\n- Inspect the output.")
+(local compact-thought (misa.render_component (misa.swap_theme db :default)
+                                             :transcript.thinking_collapsed
+                                             {:rail :rail.thinking :text thought}
+                                             {:columns 60 :interactive true}))
+(local thought-text (table.concat (icollect [_ line (ipairs compact-thought.lines)]
+                                    (table.concat (icollect [_ part (ipairs line.spans)] part.text))) "\n"))
+(assert (thought-text:find "Check the parser." 1 true))
+(assert (thought-text:find "2 lines hidden" 1 true))
+(assert (not (thought-text:find "Thinking" 1 true)))
+(assert (not (thought-text:find "summary" 1 true)))
+(each [_ line (ipairs compact-thought.lines)]
+  (assert (= (. line.spans 1 :text) "┃ "))
+  (each [_ part (ipairs line.spans)] (assert part.style.background)))
+(local user-view (misa.render_component (misa.swap_theme db :default) :transcript.user
+                                       {:rail :rail.user :text :hello} {:columns 60 :interactive true}))
+(assert (= (length user-view.lines) 1))
+(assert (= (. user-view.lines 1 :spans 1 :text) "┃ "))
 ;; Hover changes only the resolved background and clears when the pointer leaves.
 ;; Reused semantic component output must remain untouched.
 (fn hover [action link]
@@ -206,4 +262,34 @@
 (assert (= (misa.json.encode (. resting.lines 1 :spans 2 :style))
            (misa.json.encode (. link-departed.lines 1 :spans 2 :style))))
 (assert (= (misa.json.encode cached) semantic))
+(local pending-db (misa.patch db {:editor {:choice {:combo "alt+;"}}}))
+(local disabled (misa.render_component pending-db :cached model render-context))
+(assert (= (. disabled.lines 1 :spans 1 :action) nil) "pending combo left a button actionable")
+(local restored (misa.render_component db :cached model render-context))
+(assert (= (. restored.lines 1 :spans 1 :action) :fixture) "aborted combo did not restore buttons")
+;; Resting hints are already dim: pending needs a distinct color, and stale
+;; hover/animation styles must not make a disabled hint look active again.
+(local default-db (misa.swap_theme db :default))
+(local hint-component {:lines [{:spans [{:text "Alt-A" :style :keybinding :action :fixture
+                                        :animation {:frames [{:style :accent}]}}
+                                       {:text "Alt-O" :style :bold :action :fixture
+                                        :sequence_progress true}]}]})
+(local enabled-hint (misa.resolve_component default-db hint-component render-context))
+(local waiting-db (misa.patch default-db {:hover_action :fixture :editor {:choice {:combo "alt+o"}}}))
+(local waiting-hint (misa.resolve_component waiting-db hint-component render-context))
+(local hint-style (. waiting-hint.lines 1 :spans 1 :style))
+(assert hint-style.dim)
+(assert (not= (misa.json.encode (. enabled-hint.lines 1 :spans 1 :style :foreground))
+              (misa.json.encode hint-style.foreground)))
+(assert (= hint-style.background nil) "disabled hint retained hover background")
+(assert (= (misa.json.encode hint-style)
+           (misa.json.encode (. waiting-hint.lines 1 :spans 1 :animation :frames 1 :style)))
+        "animation restored enabled hint styling")
+(assert (. waiting-hint.lines 1 :spans 2 :style :bold) "pending style hid combo progress")
+(local collection [{:id :button :role :cached : model}])
+(local normal-view (misa.project_components db :combo-test collection render-context))
+(local pending-view (misa.project_components pending-db :combo-test collection render-context))
+(assert (= (. pending-view.views 1 :lines 1 :spans 1 :action) nil) "component cache retained enabled hints")
+(local resumed-view (misa.project_components db :combo-test collection render-context))
+(assert (= (. resumed-view.views 1 :lines 1 :spans 1 :action) :fixture))
 (output "component resolution regressions passed\n")
