@@ -20,7 +20,7 @@
                          :name :terminal/input
                          :handler (fn [db event]
                                     (when (and (and (= event.kind :alt)
-                                                    (= event.text :1))
+                                                    (= event.text :j))
                                                db.editor.choice)
                                       (assert (and (= db.editor.text "/model ")
                                                    (= (length (. db.editor.choice.panels

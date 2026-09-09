@@ -4,13 +4,46 @@
 
 (local key-context :choices)
 
-(local banks [[:1 :2 :3 :4 :5 :6 :7 :8 :9]
-              [:q :w :e :r :t :y :u :i :o]
-              [:a :s :d :f :g :h :j :k :l]])
+(local right-home [:j :k :l :h ";"])
+(local left-home [:f :d :s :a :g])
+(local right-branch [:u :i :o :m :n])
+(local left-branch [:r :e :w :t :q])
+(local banks [right-home left-home right-home])
+(local starters {})
+(local continuations {})
+(each [_ key (ipairs right-home)] (tset starters key true))
+(each [_ key (ipairs right-branch)]
+  (tset starters key true)
+  (tset continuations key true))
+
+;; Breadth-first leaves of an alternating-hand tree. Home keys terminate;
+;; nearby keys continue. Leaves never prefix another leaf, and adding rows
+;; cannot change an existing shortcut. Five short keys, 25 pairs, 125 triples.
+(fn shortcut [rank]
+  (var (depth count offset) (values 1 5 (- rank 1)))
+  (while (>= offset count)
+    (set offset (- offset count))
+    (set count (* count 5))
+    (set depth (+ depth 1)))
+  (local keys [])
+  (for [level 1 depth]
+    (local divisor (^ 5 (- depth level)))
+    (local digit (+ 1 (math.floor (/ offset divisor))))
+    (set offset (% offset divisor))
+    (local right (= (% level 2) 1))
+    (local alphabet (if (= level depth) (if right right-home left-home)
+                       (if right right-branch left-branch)))
+    (table.insert keys (. alphabet digit)))
+  (.. "alt+" (table.concat keys " ")))
+
+(fn position-rank [bank slot]
+  ;; Reserve the easiest single keys for the primary panel, then interleave
+  ;; panels so secondary choices get short sequences too.
+  (if (and (= bank 1) (<= slot 5)) slot
+      (+ 6 (* 3 (- slot (if (= bank 1) 6 1))) (- bank 1))))
 
 (local fallback {:alt+/ :replace_view
                  :alt+p :cycle_previous
-                 :alt+space :open_overlay
                  :alt+v :favorite
                  :arrow_down :next
                  :arrow_left :cycle_previous
@@ -21,7 +54,7 @@
                  :enter :accept
                  :eof :cancel
                  :escape :cancel
-                 :tab :accept})
+                 :tab :complete})
 
 (fn scalar [v]
   (or (or (= (type v) :string) (= (type v) :number)) (= (type v) :boolean)))
@@ -50,7 +83,8 @@
   (var path (or source.path id))
   (when (= (type path) :table) (set path (table.concat path "/")))
   (assert (= (type path) :string) "choice path must be a string or array")
-  {: description
+  {:browse_visible source.browse_visible
+   : description
    : id
    :invocation source.invocation
    : label
@@ -123,20 +157,31 @@
       (tset result (+ (length result) 1) id))
     result))
 
+(fn project-items [view session db]
+  (if view.project (view.project session matches db)
+      (let [source {}]
+        (each [_ value (ipairs session.items)]
+          (when (or (not view.include) (view.include value session db))
+            (table.insert source value)))
+        (when view.order (table.sort source (fn [a b] (view.order a b session db))))
+        (matches source session.query))))
+
+(local builtin-views {:all true :favorites true :frecency true :browse true})
+
 (fn project [session slot db]
   (let [id (. session.view_ids slot)
         definition (and session.custom_views (. session.custom_views slot))
         view (or definition (assert (. views id)))]
-    (var source {})
-    (if definition (set source (matches definition.items session.query))
-        view.project (set source (view.project session matches db))
-        (do
-          (each [_ value (ipairs session.items)]
-            (when (or (not view.include) (view.include value session db))
-              (tset source (+ (length source) 1) value)))
-          (when view.order
-            (table.sort source (fn [a b] (view.order a b session db))))
-          (set source (matches source session.query))))
+    (local source
+           (if definition (matches definition.items session.query)
+               (. builtin-views id)
+               (misa.sub {:items session.items :query session.query :scope session.preference_scope
+                          :preferences (and db.preferences db.preferences.scopes
+                                            (. db.preferences.scopes session.preference_scope))
+                          :prior (and session.panels (. session.panels slot) (. session.panels slot :items))
+                          :view id :config misa.choice_config}
+                         [:choices/builtin-items id slot])
+               (project-items view session db)))
     (local state (or (. session.view_state id) {:highlight 0}))
     (local previous (and (and (= state.query session.query) state.items)
                          (. state.items state.highlight)))
@@ -153,13 +198,36 @@
      :items source
      :title (or view.title id)}))
 
+;; Projection equality is about preserving immutable output identity, not
+;; validating state. Native transaction patches remain the validation boundary.
+(fn same-projection [left right]
+  (if (= left right) true
+      (or (not= (type left) :table) (not= (type right) :table)) false
+      (do
+        (each [key value (pairs left)]
+          (when (not (same-projection value (. right key))) (lua "return false")))
+        (each [key _ (pairs right)]
+          (when (= (. left key) nil) (lua "return false")))
+        true)))
+
 (fn refresh [session db]
   (local (panels states) (values {} {}))
+  (each [id state (pairs session.view_state)] (tset states id state))
   (for [slot 1 (length session.view_ids)]
-    (local panel (project session slot db))
+    (local projected (project session slot db))
+    (local previous (and session.panels (. session.panels slot)))
+    (local panel (if (same-projection previous projected) previous projected))
     (tset panels slot panel)
-    (tset states panel.id (misa.replace {:query session.query :items panel.items :highlight panel.highlight})))
-  (misa.patch session {:panels (misa.replace panels) :view_state states}))
+    (local state {:query session.query :items panel.items :highlight panel.highlight})
+    (tset states panel.id (if (same-projection (. states panel.id) state)
+                             (. states panel.id) state)))
+  (if (and (same-projection session.panels panels) (same-projection session.view_state states))
+      session
+      (let [result {}]
+        (each [key value (pairs session)] (tset result key value))
+        (set result.panels panels)
+        (set result.view_state states)
+        result)))
 
 (fn pop-utf8 [value]
   (var at (length value))
@@ -170,28 +238,79 @@
 (local positional-actions {})
 (each [bank keys (ipairs banks)]
   (each [slot key (ipairs keys)]
-    (tset positional-actions (.. :alt+ key) (.. :option_ bank "_" slot))))
+    (when (= bank 1)
+      (tset positional-actions (.. :alt+ key) (.. :option_ bank "_" slot)))))
+
+(fn alt-text [event]
+  (local text (if (= event.kind :alt) event.text
+                  (and (= event.kind :key) (= (type event.key) :string))
+                  (event.key:match "^alt%+(.+)$")))
+  (when (= (type text) :string) (text:lower)))
 
 (fn action [event]
-  (if (= (type event.action) :string) event.action misa.keybinding_action
+  (local alt (alt-text event))
+  (if (= (type event.action) :string) event.action
+      (. continuations alt) :sequence
+      misa.keybinding_action
       (misa.keybinding_action key-context event)
       (let [key (or (and (= event.kind :key) event.key)
                     (and (= event.kind :alt) (.. :alt+ (event.text:lower)))
                     event.kind)]
         (or (. fallback key) (. positional-actions key)))))
 
+(fn needs-targets [session event]
+  (local name (action event))
+  (or (not= session.combo nil) (= name :sequence)
+      (and (= (type name) :string) (not= (name:match "^option_%d+_%d+$") nil))))
+
 (fn hint [name]
-  (if misa.keybinding_hint (misa.keybinding_hint key-context name)
-      (let [(bank-text slot-text) (name:match "^option_(%d+)_(%d+)$")
-            bank (tonumber bank-text)
-            slot (tonumber slot-text)]
-        (if (and bank (. banks bank) (. banks bank slot))
-            (.. :alt+ (. banks bank slot))
-            (do
-              (var result nil)
-              (each [key value (pairs fallback) &until result]
-                (when (= value name) (set result key)))
-              result)))))
+  (local configured (and misa.keybinding_hint (misa.keybinding_hint key-context name)))
+  (local (b n) (name:match "^option_(%d+)_(%d+)$"))
+  (local (bank slot) (values (tonumber b) (tonumber n)))
+  (if configured configured
+      (and bank slot (> slot 0) (. banks bank))
+      (if (and (= bank 1) (<= slot 5) misa.keybinding_hint) nil
+          (shortcut (position-rank bank slot)))
+      (not misa.keybinding_hint)
+      (let [keys (icollect [key value (pairs fallback)] (when (= value name) key))]
+        (table.sort keys)
+        (. keys 1))))
+
+(fn key-text [event]
+  (local alt (alt-text event))
+  (or (and alt (.. "alt+" alt))
+      (and (= event.kind :key) event.key)
+      (and (= event.kind :text) event.text)))
+
+(fn sequence-targets [targets]
+  (local result {})
+  (each [name item (pairs (or targets {}))]
+    (local key (hint name))
+    (when key
+      (assert (not (. result key)) "visible choice shortcuts must be unique")
+      (tset result key item)))
+  result)
+
+(fn sequence-input [session event]
+  (local key (if session.combo (or (alt-text event) (key-text event)) (key-text event)))
+  (local pending session.combo)
+  (local cleared (if pending (misa.patch session {:combo misa.delete :combo_targets misa.delete}) session))
+  (local sequence (and key (if pending (.. pending " " key) key)))
+  (local targets (sequence-targets event.targets))
+  (local target (and sequence (. targets sequence)))
+  (local captured session.combo_targets)
+  (if (and target (or (not pending) (= (. captured sequence) target.id)))
+      {:session cleared :accepted target :consumed true :positional true}
+      (let [remaining {}]
+        (when sequence
+          (each [shortcut item (pairs targets)]
+            (when (and (= (shortcut:sub 1 (+ (length sequence) 1)) (.. sequence " "))
+                       (or (not pending) (= (. captured shortcut) item.id)))
+              (tset remaining shortcut item.id))))
+        (if (next remaining)
+            {:session (misa.patch session {:combo sequence :combo_targets (misa.replace remaining)}) :consumed true}
+            pending {:session cleared :consumed true}
+            nil))))
 
 (fn first [panel room]
   (if (or (<= room 0) (<= (length panel.items) room))
@@ -277,13 +396,27 @@
 (fn changed [session patch db]
   {:session (refresh (misa.patch session patch) db) :consumed true})
 
-(fn move [session direction db]
+(fn move [session direction _db]
+  ;; Moving only changes focus. Build immutable projection records here; the
+  ;; owning transaction validates the changed state once at the commit boundary.
   (local panel (. session.panels 1))
   (local count (length panel.items))
   (if (= count 0) {: session :consumed false}
-      (changed session
-               {:view_state {panel.id {:highlight (+ (% (+ (- panel.highlight 1) direction) count) 1)}}}
-               db)))
+      (= count 1) {: session :consumed true}
+      (let [highlight (+ (% (+ (- panel.highlight 1) direction) count) 1)
+            focused {} panels {} states {} next-state {} next-session {}]
+        (each [key value (pairs panel)] (tset focused key value))
+        (set focused.highlight highlight)
+        (each [bank value (ipairs session.panels)]
+          (tset panels bank (if (= bank 1) focused value)))
+        (each [key value (pairs (. session.view_state panel.id))] (tset next-state key value))
+        (set next-state.highlight highlight)
+        (each [key value (pairs session.view_state)] (tset states key value))
+        (tset states panel.id next-state)
+        (each [key value (pairs session)] (tset next-session key value))
+        (set next-session.panels panels)
+        (set next-session.view_state states)
+        {:session next-session :consumed true})))
 
 (fn cycle [session direction db]
   (local (ids custom) (values {} {}))
@@ -326,11 +459,49 @@
                   (if (> panel.highlight 0) (accept session (. panel.items panel.highlight) db)
                       {: session :consumed false}))})
 
+(fn complete [session db]
+  (local panel (. session.panels 1))
+  (var common nil)
+  (each [_ value (ipairs panel.items)]
+    (local prefix (or session.input_prefix ""))
+    (local path (if (and (not= prefix "") (= (value.path:sub 1 (length prefix)) prefix))
+                    (value.path:sub (+ (length prefix) 1)) value.path))
+    (if (= common nil) (set common path)
+        (do
+          (var n 0)
+          (while (and (< n (math.min (length common) (length path)))
+                      (= (common:sub (+ n 1) (+ n 1)) (path:sub (+ n 1) (+ n 1))))
+            (set n (+ n 1)))
+          ;; Do not leave a partial UTF-8 character at a bytewise branch point.
+          (while (and (> n 0) (< n (length path))
+                      (>= (path:byte (+ n 1)) 128) (< (path:byte (+ n 1)) 192))
+            (set n (- n 1)))
+          (set common (common:sub 1 n)))))
+  ;; Extend the common prefix first; another Tab completes the focused choice.
+  ;; Completion only edits the query. Enter owns acceptance and execution.
+  (if (and common (> (length common) (length session.query)))
+      (changed session {:query common} db)
+      (let [value (. panel.items panel.highlight)
+            prefix (or session.input_prefix "")
+            path (and value (if (and (not= prefix "") (= (value.path:sub 1 (length prefix)) prefix))
+                                (value.path:sub (+ (length prefix) 1)) value.path))]
+        (if (and path (not= path session.query))
+            (changed session {:query path} db)
+            {: session :consumed true}))))
+
 (fn input [previous event db]
   (local session (refresh previous db))
-  (local name (if (or (= event.kind :text) (= event.kind :backspace)) event.kind event.action))
-  (local handler (. inputs name))
-  (if handler (handler session event db) {: session :consumed false}))
+  (local sequence (sequence-input session event))
+  (if sequence
+      (if sequence.accepted
+          (misa.patch (accept sequence.session sequence.accepted db) {:positional true}) sequence)
+      (let [target (and event.targets (. event.targets event.action))
+            name (if (or (= event.kind :text) (= event.kind :backspace)) event.kind event.action)
+            handler (. inputs name)]
+        (if target (misa.patch (accept session target db) {:positional true})
+            (= name :complete) (complete session db)
+            handler (handler session event db)
+            {: session :consumed false}))))
 
 (fn row [value focused selected hotkey]
   (var description value.description)
@@ -359,14 +530,66 @@
                                                  :table))
                                          context.config.choices)
                                     {})})
+          ;; Only built-in views have this closed dependency contract. Extension
+          ;; views keep receiving the complete current session/database each call.
+          ;; Including prior items lets the cache adopt canonical committed arrays
+          ;; after native validation, then reuse them while only focus changes.
+          (table.insert setup-fx
+                        {:type :register/sub
+                         :value {:id :choices/builtin-items
+                                 :inputs [[:db/path :items] [:db/path :query] [:db/path :scope]
+                                          [:db/path :preferences] [:db/path :prior]
+                                          [:db/path :view] [:db/path :config]]
+                                 :compute (fn [inputs]
+                                            (local scope (. inputs 3))
+                                            (local session {:items (. inputs 1) :query (. inputs 2)
+                                                            :preference_scope scope})
+                                            (local db {:preferences {:scopes {}}})
+                                            (when scope (tset db.preferences.scopes scope (. inputs 4)))
+                                            (local result (project-items (. views (. inputs 6)) session db))
+                                            (local prior (. inputs 5))
+                                            (if (same-projection prior result) prior result))}})
+          (table.insert setup-fx
+                        {:type :register/service :name :choice_pending
+                         :value (fn [db]
+                                  (local session (or (and db.picker db.picker.session)
+                                                     (and db.editor db.editor.choice)))
+                                  (and session session.combo))})
+          (table.insert setup-fx
+                        {:type :register/service :name :choice_needs_targets :value needs-targets})
+          (table.insert setup-fx
+                        {:type :register/event-route
+                         :value {:id :choices/sequence :event :terminal/input :priority 950
+                                 :context [:db/path]
+                                 :resolve (fn [db event]
+                                            (local session (or (and db.picker db.picker.session)
+                                                               (and db.editor db.editor.choice)))
+                                            (when (and session
+                                                       (or session.combo
+                                                           (and (alt-text event)
+                                                                (. starters (alt-text event)))))
+                                              (misa.patch event {:type (if db.picker :picker/input :terminal/input)})))}})
+          (table.insert setup-fx
+                        {:type :register/event-route
+                         :value {:id :choices/visible-action :event :ui/action :priority 800
+                                 :context [:db/path]
+                                 :resolve (fn [db event]
+                                            (when (and (or db.picker (and db.editor db.editor.choice))
+                                                       (= (type event.action) :string)
+                                                       (event.action:match "^choices%.option_%d+_%d+$"))
+                                              (if (misa.choice_pending db) {:type :choices/ignored}
+                                                  {:type :choices/dispatch :action (event.action:sub 9)})))}})
+          (table.insert setup-fx {:type :register/event :name :choices/ignored
+                                  :handler (fn [] {:fx [{:type :terminal/read}]})})
           (local declarations
-                 {:accept [:enter :tab]
+                 {:accept [:enter]
+                  :complete [:tab]
                   :cancel [:escape :ctrl_c :ctrl_d :eof]
                   :cycle [:arrow_right]
                   :cycle_previous [:arrow_left :alt+p]
                   :favorite [:alt+v]
                   :next [:arrow_down]
-                  :open_overlay [:alt+space]
+                  :open_overlay []
                   :previous [:arrow_up]
                   :replace_view [:alt+/]})
           (each [name keys (pairs declarations)]
@@ -376,14 +599,16 @@
                                    :context key-context
                                    :default keys}}))
           (each [bank keys (ipairs banks)]
-            (each [slot key (ipairs keys)]
+            (for [slot 1 9]
               (table.insert setup-fx
                             {:type :register/keybinding
                              :value {:action (.. :option_ bank "_" slot)
                                      :context key-context
-                                     :default [(.. :alt+ key)]}})))
+                                     :default (if (and (= bank 1) (. keys slot))
+                                                  [(.. :alt+ (. keys slot))] [])}})))
           (local labels
                  {:accept "Accept choice"
+                  :complete "Complete to branch"
                   :cancel "Cancel choices / back"
                   :cycle "Next choice view"
                   :cycle_previous "Previous choice view"
@@ -418,7 +643,7 @@
           ;; Positional targets use the same geometry resolver for keyboard and pointer.
           ;; A stale or hidden button therefore cannot choose a different hidden row.
           (each [bank keys (ipairs banks)]
-            (for [slot 1 (length keys)]
+            (for [slot 1 9]
               (local name (.. :option_ bank "_" slot))
               (table.insert setup-fx
                             {:type :register/action
@@ -539,6 +764,8 @@
                                                                 session.query))
                                             (if (not= session.query "") all
                                                 (do
+                                                  (local curated (accumulate [hidden false _ value (ipairs all)]
+                                                                   (or hidden (= value.browse_visible false))))
                                                   (local recent {})
                                                   (each [_ value (ipairs all)]
                                                     (local p
@@ -587,8 +814,8 @@
                                                           value)
                                                     (tset seen value.id true))
                                                   (each [_ value (ipairs all)]
-                                                    (when (not (. seen value.id))
-                                                      (table.insert result (misa.patch value {:section :All}))))
+                                                    (when (and (not (. seen value.id)) (not= value.browse_visible false))
+                                                      (table.insert result (misa.patch value {:section (if curated :Suggested :All)}))))
                                                   result)))
                                  :title :Browse}})
           (table.insert setup-fx {:type :register/service
@@ -649,9 +876,8 @@
                          :value accept})
           (table.insert setup-fx
                         {:type :register/service
-                         :name :choice_rows
-                         :value (fn [previous db hotkeys]
-                                  (local session (refresh previous db))
+                         :name :choice_projected_rows
+                         :value (fn [session hotkeys]
                                   (local result {})
                                   (each [bank panel (ipairs session.panels)]
                                     (local rows {})
@@ -672,6 +898,11 @@
                                   result)})
           (table.insert setup-fx
                         {:type :register/service
+                         :name :choice_rows
+                         :value (fn [previous db hotkeys]
+                                  (misa.choice_projected_rows (refresh previous db) hotkeys))})
+          (table.insert setup-fx
+                        {:type :register/service
                          :name :choice_hotkeys
                          :value (fn [session visible room]
                                   (local result {})
@@ -681,7 +912,7 @@
                                     (tset result bank {})
                                     (local panel (. session.panels bank))
                                     (local start (first panel room))
-                                    (for [slot 1 (math.min room 9)]
+                                    (for [slot 1 room]
                                       (when (. panel.items (- (+ start slot) 1))
                                         (tset (. result bank)
                                               (- (+ start slot) 1)
@@ -696,7 +927,7 @@
                                                          (length session.panels)
                                                          (length banks))
                                         &until result]
-                                    (for [slot 1 (math.min (or room 0) 9)
+                                    (for [slot 1 (or room 0)
                                           &until result]
                                       (when (= name (.. :option_ bank "_" slot))
                                         (set result

@@ -1,0 +1,233 @@
+--- a/choices.fnl
++++ b/choices.fnl
+@@ -124,31 +124,20 @@
+       (tset result (+ (length result) 1) id))
+     result))
+ 
+-(fn project-items [view session db]
+-  (if view.project (view.project session matches db)
+-      (let [source {}]
+-        (each [_ value (ipairs session.items)]
+-          (when (or (not view.include) (view.include value session db))
+-            (table.insert source value)))
+-        (when view.order (table.sort source (fn [a b] (view.order a b session db))))
+-        (matches source session.query))))
+-
+-(local builtin-views {:all true :favorites true :frecency true :browse true})
+-
+ (fn project [session slot db]
+   (let [id (. session.view_ids slot)
+         definition (and session.custom_views (. session.custom_views slot))
+         view (or definition (assert (. views id)))]
+-    (local source
+-           (if definition (matches definition.items session.query)
+-               (. builtin-views id)
+-               (misa.sub {:items session.items :query session.query :scope session.preference_scope
+-                          :preferences (and db.preferences db.preferences.scopes
+-                                            (. db.preferences.scopes session.preference_scope))
+-                          :prior (and session.panels (. session.panels slot) (. session.panels slot :items))
+-                          :view id :config misa.choice_config}
+-                         [:choices/builtin-items id slot])
+-               (project-items view session db)))
++    (var source {})
++    (if definition (set source (matches definition.items session.query))
++        view.project (set source (view.project session matches db))
++        (do
++          (each [_ value (ipairs session.items)]
++            (when (or (not view.include) (view.include value session db))
++              (tset source (+ (length source) 1) value)))
++          (when view.order
++            (table.sort source (fn [a b] (view.order a b session db))))
++          (set source (matches source session.query))))
+     (local state (or (. session.view_state id) {:highlight 0}))
+     (local previous (and (and (= state.query session.query) state.items)
+                          (. state.items state.highlight)))
+@@ -165,36 +154,13 @@
+      :items source
+      :title (or view.title id)}))
+ 
+-;; Projection equality is about preserving immutable output identity, not
+-;; validating state. Native transaction patches remain the validation boundary.
+-(fn same-projection [left right]
+-  (if (= left right) true
+-      (or (not= (type left) :table) (not= (type right) :table)) false
+-      (do
+-        (each [key value (pairs left)]
+-          (when (not (same-projection value (. right key))) (lua "return false")))
+-        (each [key _ (pairs right)]
+-          (when (= (. left key) nil) (lua "return false")))
+-        true)))
+-
+ (fn refresh [session db]
+   (local (panels states) (values {} {}))
+-  (each [id state (pairs session.view_state)] (tset states id state))
+   (for [slot 1 (length session.view_ids)]
+-    (local projected (project session slot db))
+-    (local previous (and session.panels (. session.panels slot)))
+-    (local panel (if (same-projection previous projected) previous projected))
++    (local panel (project session slot db))
+     (tset panels slot panel)
+-    (local state {:query session.query :items panel.items :highlight panel.highlight})
+-    (tset states panel.id (if (same-projection (. states panel.id) state)
+-                             (. states panel.id) state)))
+-  (if (and (same-projection session.panels panels) (same-projection session.view_state states))
+-      session
+-      (let [result {}]
+-        (each [key value (pairs session)] (tset result key value))
+-        (set result.panels panels)
+-        (set result.view_state states)
+-        result)))
++    (tset states panel.id (misa.replace {:query session.query :items panel.items :highlight panel.highlight})))
++  (misa.patch session {:panels (misa.replace panels) :view_state states}))
+ 
+ (fn pop-utf8 [value]
+   (var at (length value))
+@@ -371,26 +337,17 @@
+   {:session (refresh (misa.patch session patch) db) :consumed true})
+ 
+ (fn move [session direction _db]
+-  ;; Moving only changes focus. Build immutable projection records here; the
+-  ;; owning transaction validates the changed state once at the commit boundary.
++  ;; input already projected the current query and preferences. Moving its
++  ;; highlight cannot change membership or order, so retain those item arrays.
+   (local panel (. session.panels 1))
+   (local count (length panel.items))
+   (if (= count 0) {: session :consumed false}
+-      (= count 1) {: session :consumed true}
+       (let [highlight (+ (% (+ (- panel.highlight 1) direction) count) 1)
+-            focused {} panels {} states {} next-state {} next-session {}]
+-        (each [key value (pairs panel)] (tset focused key value))
+-        (set focused.highlight highlight)
+-        (each [bank value (ipairs session.panels)]
+-          (tset panels bank (if (= bank 1) focused value)))
+-        (each [key value (pairs (. session.view_state panel.id))] (tset next-state key value))
+-        (set next-state.highlight highlight)
+-        (each [key value (pairs session.view_state)] (tset states key value))
+-        (tset states panel.id next-state)
+-        (each [key value (pairs session)] (tset next-session key value))
+-        (set next-session.panels panels)
+-        (set next-session.view_state states)
+-        {:session next-session :consumed true})))
++            panels (icollect [bank source (ipairs session.panels)]
++                     (if (= bank 1) (misa.patch source {: highlight}) source))]
++        {:session (misa.patch session {:panels (misa.replace panels)
++                                       :view_state {panel.id {: highlight}}})
++         :consumed true})))
+ 
+ (fn cycle [session direction db]
+   (local (ids custom) (values {} {}))
+@@ -497,25 +454,6 @@
+                                                  :table))
+                                          context.config.choices)
+                                     {})})
+-          ;; Only built-in views have this closed dependency contract. Extension
+-          ;; views keep receiving the complete current session/database each call.
+-          ;; Including prior items lets the cache adopt canonical committed arrays
+-          ;; after native validation, then reuse them while only focus changes.
+-          (table.insert setup-fx
+-                        {:type :register/sub
+-                         :value {:id :choices/builtin-items
+-                                 :inputs [[:db/path :items] [:db/path :query] [:db/path :scope]
+-                                          [:db/path :preferences] [:db/path :prior]
+-                                          [:db/path :view] [:db/path :config]]
+-                                 :compute (fn [inputs]
+-                                            (local scope (. inputs 3))
+-                                            (local session {:items (. inputs 1) :query (. inputs 2)
+-                                                            :preference_scope scope})
+-                                            (local db {:preferences {:scopes {}}})
+-                                            (when scope (tset db.preferences.scopes scope (. inputs 4)))
+-                                            (local result (project-items (. views (. inputs 6)) session db))
+-                                            (local prior (. inputs 5))
+-                                            (if (same-projection prior result) prior result))}})
+           (table.insert setup-fx
+                         {:type :register/service :name :choice_pending
+                          :value (fn [db]
+--- a/picker.fnl
++++ b/picker.fnl
+@@ -81,30 +81,6 @@
+ (fn updated [picker fx]
+   {:patch {:picker (misa.replace picker)} :fx (or fx [{:type :terminal/read}])})
+ 
+-;; Sessions carry projected catalogues as well as tiny navigation fields.
+-;; Replacing the whole picker revalidates every unchanged catalogue branch.
+-;; Emit the fields the session owner actually changed; normal patch validation
+-;; still checks every incoming field before the native transaction commits.
+-(fn fields-changed [previous current]
+-  (local patch {})
+-  (each [key value (pairs current)]
+-    (when (not= value (. previous key)) (tset patch key (misa.replace value))))
+-  (each [key _ (pairs previous)]
+-    (when (= (. current key) nil) (tset patch key misa.delete)))
+-  patch)
+-
+-(fn updated-session [state session fx]
+-  (local patch (fields-changed state.session session))
+-  (when (not= state.session.view_state session.view_state)
+-    (local states {})
+-    (each [id value (pairs session.view_state)]
+-      (when (not= value (. state.session.view_state id))
+-        (tset states id (fields-changed (or (. state.session.view_state id) {}) value))))
+-    (each [id _ (pairs state.session.view_state)]
+-      (when (= (. session.view_state id) nil) (tset states id misa.delete)))
+-    (set patch.view_state states))
+-  {:patch {:picker {:session patch}} :fx (or fx [{:type :terminal/read}])})
+-
+ {:setup (fn []
+           (local setup-fx [])
+           (assert (and (and misa.choice_session misa.choice_action)
+@@ -177,16 +153,16 @@
+                                     (local state (assert db.picker))
+                                     (local action (misa.choice_action event))
+                                     (local geometry
+-                                           (when (misa.choice_needs_targets state.session event)
+-                                             (misa.choice_picker_layout state.session db cofx.terminal)))
++                                           (misa.choice_picker_layout state.session
++                                                                      db
++                                                                      cofx.terminal))
+                                     (local result
+                                            (misa.choice_input state.session
+                                                               {: action :kind event.kind :text event.text :key event.key
+-                                                               :targets (and geometry geometry.targets)} db))
+-                                    (fn next-state []
+-                                      (misa.patch state {:session (misa.replace result.session)}))
++                                                               :targets geometry.targets} db))
++                                    (local next-state (misa.patch state {:session (misa.replace result.session)}))
+                                     (if result.replace_view
+-                                        (updated (view-picker (next-state) db))
++                                        (updated (view-picker next-state db))
+                                         (and (= state.id :picker-picker) state.parent result.accepted)
+                                         (updated (misa.patch state.parent
+                                                              {:session (misa.replace (misa.choice_replace_view state.parent.session
+@@ -194,15 +170,15 @@
+                                         (and (= state.id :picker-picker) state.parent result.cancelled)
+                                         (updated state.parent)
+                                         result.accepted
+-                                        (updated state.parent (finish (next-state) result.accepted false))
++                                        (updated state.parent (finish next-state result.accepted false))
+                                         result.cancelled
+-                                        (updated state.parent (finish (next-state) nil true))
++                                        (updated state.parent (finish next-state nil true))
+                                         result.favorite
+-                                        (updated-session state result.session
+-                                                 [{:event {:scope result.session.preference_scope
++                                        (updated next-state
++                                                 [{:event {:scope next-state.session.preference_scope
+                                                            :type :preferences/toggle
+                                                            :value result.favorite}
+                                                    :type :dispatch}
+                                                   {:type :terminal/read}])
+-                                        (updated-session state result.session)))})
++                                        (updated next-state)))})
+           {:fx setup-fx})}
+--- a/editor.fnl
++++ b/editor.fnl
+@@ -192,8 +192,7 @@
+                                      {:columns cofx.terminal.columns}))
+   (local room (if misa.inline_choice_room
+                   (misa.inline_choice_room db cofx.terminal (length input.lines)) 5))
+-  (local (_ targets) (when (misa.choice_needs_targets editor.choice event)
+-                       (completion-layout editor db room (or cofx.terminal.columns 80))))
++  (local (_ targets) (completion-layout editor db room (or cofx.terminal.columns 80)))
+   (local result (misa.choice_input editor.choice {: action :kind event.kind :text event.text :key event.key : targets} db))
+   (local next (misa.patch editor {:choice (misa.replace result.session)}))
+   (local reason (if (or (= event.kind :text) (= event.kind :backspace)) :insert :preserve))

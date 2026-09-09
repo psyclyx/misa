@@ -1,11 +1,14 @@
 (local fennel (require :fennel))
 (local output io.write)
 (local runtime-debug debug)
+(local runtime-os os)
 
 ;; Real transactions and FIFO dispatch effects; native I/O is captured, never run.
 ;; Stop the simulated event loop at app/quit, as native does with no active worker.
 (fn fixture [order interactive]
+  ;; A fresh trusted runtime must recapture the host libraries hidden by the previous instance.
   (set _G.debug runtime-debug)
+  (set _G.os runtime-os)
   (fennel.dofile :src/lua_runtime/framework.fnl)
   (local app _G.misa)
   (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})

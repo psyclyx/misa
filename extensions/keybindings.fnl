@@ -75,10 +75,6 @@
                           :arrow_right "→"
                           :arrow_up "↑"
                           :ctrl "⌃"
-                          :ctrl_n "⌃N"
-                          :ctrl_p "⌃P"
-                          :ctrl_r "⌃R"
-                          :ctrl_v "⌃V"
                           :enter "↵"
                           :escape :esc
                           :shift "⇧"
@@ -90,15 +86,12 @@
                          :name :keybinding_tokens
                          :value (fn [key]
                                   (local result {})
-                                  (var alt false)
-                                  (each [part (: (tostring (or key "")) :gmatch
+                                  (local normalized (: (tostring (or key "")) :gsub "^ctrl_" "ctrl+"))
+                                  (each [part (: normalized :gmatch
                                                  "[^+]+")]
-                                    (var text (or (. symbols part) part))
-                                    (when (= part :alt) (set alt true))
-                                    (when (or (and (and alt (= (length text) 1))
-                                                   (text:match "%l"))
-                                              (text:match "^f%d+$"))
-                                      (set text (text:upper)))
+                                    (local text (or (. symbols part) part))
+                                    ;; Preserve the input spelling in every context, including
+                                    ;; case-sensitive motions. Modifiers do not change case.
                                     (tset result (+ (length result) 1)
                                           {:kind (or (and (. modifiers part)
                                                           :modifier)

@@ -16,6 +16,7 @@
                            :background :default
                            :cancelled "#78828A"
                            :constant "#8866A4"
+                           :code_surface "#E2E8EF"
                            :dialog_surface "#EEF2F4"
                            :error "#B24E59"
                            :error_surface "#FAEEF0"
@@ -42,6 +43,7 @@
                       :background :default
                       :cancelled "#84919C"
                       :constant "#B4A4DA"
+                      :code_surface "#151B23"
                       :dialog_surface "#242B33"
                       :error "#DE9397"
                       :error_surface "#322329"
@@ -85,6 +87,7 @@
                                           :choice.view.active {:bold true
                                                                :foreground :accent}
                                           :code {:foreground :accent}
+                                          :surface.code {:background :code_surface}
                                           :dialog.code {:bold true
                                                         :foreground :accent}
                                           :dialog.hint {:dim true
@@ -99,6 +102,8 @@
                                                          :foreground :accent}
                                           :dialog.value {:foreground :text}
                                           :dim {:dim true}
+                                          :disabled {:dim true :foreground :muted
+                                                     :bold false :underline false}
                                           :editor.normal {:bold true
                                                           :foreground :accent}
                                           :editor.visual {:bold true
@@ -114,6 +119,8 @@
                                                  :underline true}
                                           :markdown.code.border {:dim true}
                                           :markdown.code.label {:bold true}
+                                          :diff.added {:foreground :success}
+                                          :diff.removed {:foreground :error}
                                           :markdown.heading.1 {:bold true
                                                                :underline true}
                                           :markdown.heading.2 {:bold true}

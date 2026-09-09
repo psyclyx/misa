@@ -59,7 +59,7 @@
                                              (.. hotkey-text item.text))))
                                     (assert (and (and (= labels 1)
                                                       (= ___values___ 1))
-                                                 (= hotkey-text "⌥X"))
+                                                 (= hotkey-text "⌥x"))
                                             "indicator semantic classes or structured hotkey are missing")
                                     (local narrow
                                            (. (misa.indicators_projection db

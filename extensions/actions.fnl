@@ -16,7 +16,7 @@
                  :name :ui/action
                  :handler (fn [db event]
                             (local action (misa.action event.action))
-                            (if (and action
+                            (if (and (not (and misa.choice_pending (misa.choice_pending db))) action
                                      (or (not action.available)
                                          (action.available db)))
                                 {:fx [{:event (misa.snapshot action.event)

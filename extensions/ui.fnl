@@ -61,7 +61,7 @@
       (set bounded-cursor {:byte (math.min (misa.layout.boundary_at_or_before full
                                                                               cursor.byte)
                                            visible-end)
-                           :row cursor.row}))
+                           :row cursor.row :shape cursor.shape}))
     {:cursor bounded-cursor :lines result}))
 
 ;; Shared layout policy for rendering and positional-key resolution.
@@ -121,6 +121,7 @@
     (when region.cursor
       (set cursor
            {:byte region.cursor.byte
+            :shape region.cursor.shape
             :row (math.max 1
                            (math.min terminal.lines
                                      (+ offset region.cursor.row)))})))
@@ -182,6 +183,7 @@
                     {:count budgets.dock :lines dock}
                     {:cursor (when (not disabled)
                                {:byte editor.byte
+                                :shape editor.shape
                                 :row (+ (- editor.row first) 1)})
                      :lines (slice editor.input first budgets.editor)}
                     {:count completion-count :lines editor.completions}

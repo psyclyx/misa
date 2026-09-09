@@ -1,0 +1,58 @@
+(local fennel (require :fennel))
+(local output io.write)
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(local feature (fennel.dofile :extensions/provider/openai-codex.fnl))
+(fn handlers [config]
+  (local result {})
+  (each [_ effect (ipairs (. (feature.setup {:config {:providers {:openai_codex (or config {})}}}) :fx))]
+    (when (= effect.type :register/event) (tset result effect.name effect.handler)))
+  result)
+(local events (handlers))
+(assert (= ((. events :models/discover) {} {:provider :other}) nil))
+(local request (. ((. events :models/discover) {} {:provider :openai-codex}) :fx 1))
+(assert (= request.method :GET))
+(assert (= request.url "https://chatgpt.com/backend-api/codex/models?client_version=0.153.4"))
+(assert (= request.credential.id :openai-codex))
+(assert (= request.credential.metadata_header :chatgpt-account-id))
+(assert (= request.completion :provider/codex-models))
+(local payload {:ok true :data {:models [{:slug :latest :display_name "Latest" :visibility :list
+                                        :priority 1 :context_window 200000 :created 1800000000
+                                        :recommended true :default_reasoning_level :high
+                                        :supported_reasoning_levels [{:effort :medium} {:effort :high}]}
+                                       {:slug :hidden :visibility :hide :priority 2}
+                                       {:slug :subscription-only :visibility :list :priority 4
+                                        :supported_in_api false}]}})
+(local before (misa.json.encode payload))
+(local completion ((. events :provider/codex-models) {} payload))
+(assert (= before (misa.json.encode payload)))
+(local replacement (. completion.fx 1 :event))
+(assert (= replacement.type :models/replace-provider))
+(assert replacement.authoritative)
+(assert (= (length replacement.models) 2))
+(local latest (. replacement.models 1))
+(assert (= latest.id :openai-codex/latest))
+(assert (= latest.api.request_options.reasoning_effort.default :high))
+(assert (= (. latest.api.request_options.reasoning_effort.choices 1) :medium))
+(assert (= latest.recommendation_rank 1))
+(assert (= latest.popularity_rank nil))
+(assert latest.recommended)
+(assert (= latest.created 1800000000))
+(assert (= (. replacement.models 2 :model) :subscription-only))
+(assert (= (. completion.fx 2 :event :type) :models/discovery-complete))
+(each [_ failure (ipairs [{:ok false} {:ok true :data {}} {:ok true :data {:models []}}])]
+  (local result ((. events :provider/codex-models) {} failure))
+  (assert (= (length result.fx) 1))
+  (assert (= (. result.fx 1 :event :type) :models/discovery-complete)))
+(assert (= (. (handlers {:models []}) :models/discover) nil)
+        "explicit provider model catalogue triggered discovery")
+(output "Codex model discovery contracts passed\n")
+
+(fn auth-declaration [config]
+  (accumulate [found nil _ effect (ipairs (. (feature.setup {:config {:providers {:openai_codex config}}}) :fx))]
+    (or found (when (= effect.type :register/auth-provider) effect.value))))
+(assert (. (auth-declaration {}) :discover_models)
+        "authenticated startup did not schedule Codex discovery")
+(assert (not (. (auth-declaration {:models []}) :discover_models))
+        "static catalogue left startup waiting for undispatched discovery")

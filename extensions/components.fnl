@@ -101,15 +101,22 @@
                                       (each [_ span (ipairs (or line.spans []))]
                                         (local resolved-span (shallow span))
                                         (local style (shallow base))
+                                        (local disabled (and span.action misa.choice_pending (misa.choice_pending db)))
                                         (each [key value (pairs (misa.theme_style db
                                                                                   (or span.style
                                                                                       :plain)))]
                                           (tset style key value))
-                                        (when (or (and span.action (= span.action db.hover_action))
-                                                  (and (not span.action) span.link (= span.link db.hover_link)))
+                                        (when (and (not disabled)
+                                                   (or (and span.action (= span.action db.hover_action))
+                                                       (and (not span.action) span.link (= span.link db.hover_link))))
                                           (each [key value (pairs (misa.theme_style db
                                                                                     :hover))]
                                             (tset style key value)))
+                                        (when disabled
+                                          (when (not span.sequence_progress)
+                                            (each [key value (pairs (misa.theme_style db :disabled))]
+                                              (tset style key value)))
+                                          (set resolved-span.action nil))
                                         (set resolved-span.style style)
                                         (when span.animation
                                           (var animation nil)
@@ -130,6 +137,9 @@
                                               (each [key value (pairs (misa.theme_style db
                                                                                         frame.style))]
                                                 (tset frame-style key value))
+                                              (when (and disabled (not span.sequence_progress))
+                                                (each [key value (pairs (misa.theme_style db :disabled))]
+                                                  (tset frame-style key value)))
                                               (set resolved-frame.style
                                                    frame-style)
                                               (tset animation.frames index
@@ -151,10 +161,22 @@
                                                          :text (string.rep " "
                                                                            padding)})))))
                                   result)})
+          ;; Child views share role selections and retain semantic styles.
+          (fn child-context [db context]
+            (local next (shallow (or context {})))
+            (set next.render_child
+                 (fn [role model child]
+                   (local component (misa.component db role))
+                   (local context (or child next))
+                   (component.render model (if component.compose (child-context db context) context))))
+            next)
           (table.insert setup-fx
                         {:type :register/service :name :render_component
                          :value (fn [db role model render-context]
-                                  (local rendered ((. (misa.component db role) :render) model (or render-context {})))
+                                  (local component (misa.component db role))
+                                  (local rendered (component.render model
+                                                    (if component.compose (child-context db render-context)
+                                                        (or render-context {}))))
                                   (misa.resolve_component db rendered render-context))})
           (table.insert setup-fx
                         {:type :register/sub
@@ -173,12 +195,12 @@
                                                       "component collection requires unique nonempty ids")
                                               (local old (and previous (. previous.entries item.id)))
                                               (local component (misa.component db item.role))
-                                              (local same (and old (= component old.component)
+                                              (local same (and old (or (not component.compose) (= db.components old.components)) (= component old.component)
                                                                (same-fields item.model old.model)
                                                                (same-fields render-context old.context)))
                                               (local (source cache)
                                                      (if same (values old.source old.cache)
-                                                         (component.render item.model render-context
+                                                         (component.render item.model (if component.compose (child-context db render-context) render-context)
                                                                            (and old (= component old.component) old.cache))))
                                               (local (actions links) (if same (values old.actions old.links)
                                                                         (hover-targets source)))
@@ -186,11 +208,13 @@
                                               (local hover-link (and db.hover_link (. links db.hover_link) db.hover_link))
                                               (local entry
                                                      (if (and same (= theme old.theme)
-                                                              (= hover-action old.hover_action) (= hover-link old.hover_link))
+                                                              (= hover-action old.hover_action) (= hover-link old.hover_link)
+                                                              (= (and misa.choice_pending (misa.choice_pending db)) old.choice_pending))
                                                          old
-                                                         {: component :model item.model :context render-context
+                                                         {: component :components db.components :model item.model :context render-context
                                                           : source : cache : actions : links : theme
                                                           :hover_action hover-action :hover_link hover-link
+                                                          :choice_pending (and misa.choice_pending (misa.choice_pending db))
                                                           :view (misa.resolve_component db source render-context)}))
                                               (tset entries item.id entry)
                                               (table.insert views entry.view))

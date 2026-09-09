@@ -81,7 +81,7 @@
                                         (var text "")
                                         (each [_ span (ipairs line.spans)]
                                           (set text (.. text span.text)))
-                                        (when (text:find "⌥Z" 1 true)
+                                        (when (text:find "⌥z" 1 true)
                                           (set hinted true)))
                                       (assert hinted
                                               "inline configured positional hint disappeared"))

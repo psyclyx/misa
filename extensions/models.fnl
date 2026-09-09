@@ -8,6 +8,9 @@
    :id model.id
    :label model.label
    :model model.model
+   :created model.created
+   :recommended model.recommended
+   :popularity_rank model.popularity_rank
    :pricing model.pricing
    :provider model.provider})
 
@@ -15,8 +18,22 @@
   (each [_ model (ipairs entries)] (when (= model.id id) (lua "return model")))
   nil)
 
+(fn browse-visible [model db]
+  (local config (or db.models.catalogue_filter {}))
+  (local usage (and db.preferences db.preferences.scopes.models
+                    (. db.preferences.scopes.models model.id)))
+  (or (= config.enabled false) (= db.models.selected model.id)
+      (and usage (or usage.favorite (> (or usage.uses 0) 0)))
+      (= model.recommended true)
+      (and model.popularity_rank (<= model.popularity_rank (or config.popular_limit 30)))
+      (and (not= model.recommended false)
+           (or (not model.created)
+               (>= model.created (- (or db.models.catalogue_now 0)
+                                    (* (or config.max_age_days 365) 86400)))))))
+
 (fn rebuild [state preferred]
-  (let [entries {}]
+  (let [entries {}
+        preferred (or (and state.roles state.roles.default) preferred)]
     (each [_ model (ipairs state.catalogue)]
       (when (not= (. state.available model.provider) false)
         (tset entries (+ (length entries) 1) model)))
@@ -86,7 +103,8 @@
                                                  (set metadata.cost cost))
                                                (tset result
                                                      (+ (length result) 1)
-                                                     {:display {:label (.. model.provider
+                                                     {:browse_visible (browse-visible model db)
+                                                      :display {:label (.. model.provider
                                                                            "/"
                                                                            model.model)}
                                                       :id model.id
@@ -141,8 +159,20 @@
           (local configured (or (and (= (type context.config) :table)
                                      context.config.models)
                                 nil))
+          (when (and configured configured.roles)
+            (assert (= (type configured.roles) :table) "config.models.roles must be an object")
+            (each [role id (pairs configured.roles)]
+              (assert (and (= (type role) :string) (= (type id) :string) (not= id ""))
+                      "model roles must map names to nonempty model IDs")))
+          (when (and configured configured.catalogue_filter)
+            (local filter configured.catalogue_filter)
+            (assert (= (type filter) :table) "config.models.catalogue_filter must be an object")
+            (each [_ key (ipairs [:max_age_days :popular_limit])]
+              (local value (. filter key))
+              (assert (or (= value nil) (and (= (type value) :number) (>= value 0)))
+                      "model catalogue limits must be nonnegative numbers")))
           (local default (or (and (= (type configured) :table)
-                                  configured.default)
+                                  (or (and configured.roles configured.roles.default) configured.default))
                              nil))
           (when (not= default nil)
             (assert (and (= (type default) :string) (not= default ""))
@@ -150,16 +180,22 @@
           (table.insert setup-fx
                         {:type :register/event
                          :name :app/start
-                         :handler (fn [db]
+                         :handler (fn [db _ cofx]
                                     (when (not db.models)
-                                      (updated
+                                      (local result (updated
                                         (rebuild
                                           {:available (or db.provider_availability {})
                                            :catalogue (icollect [_ model (ipairs (misa.models))]
                                                         (copy-model model))
                                            :configured_default default
+                                           :roles (or (and configured configured.roles) {})
+                                           :catalogue_filter (or (and configured configured.catalogue_filter) {})
+                                           :catalogue_now (/ (or (and cofx cofx.clock cofx.clock.wall_ms) 0) 1000)
                                            :entries {} :selected default}
-                                          default))))})
+                                          default)))
+                                      (set result.fx [{:type :state/load :namespace :model-roles
+                                                       :completion :model/roles-loaded}])
+                                      result))})
           (table.insert setup-fx
                         {:type :register/event
                          :name :model/picker-open
@@ -298,6 +334,9 @@
                                             {:api model.api
                                              :context_window model.context_window
                                              :id model.id
+                                             :created model.created
+                                             :recommended model.recommended
+                                             :popularity_rank model.popularity_rank
                                              :label (or (and (= (type model.label)
                                                                 :string)
                                                              model.label)
@@ -316,4 +355,49 @@
                                                        event.id))
                                             "unknown or unavailable model")
                                     {:patch {:models {:selected event.id}}})})
+          (table.insert setup-fx
+                        {:type :register/service :name :model_for_role
+                         :value (fn [db role]
+                                  (local state db.models)
+                                  (when state
+                                    (find state.entries
+                                          (if (= role :default) state.selected
+                                              (and state.roles (. state.roles role))))))})
+          (table.insert setup-fx
+                        {:type :register/command
+                         :value {:name :/role :description "Assign a model to a role (default or summarizer)"
+                                 :event :model/role
+                                 :complete (fn [_ db]
+                                             (local items [])
+                                             (each [_ role (ipairs [:default :summarizer])]
+                                               (each [_ model (ipairs (or (and db.models db.models.entries) []))]
+                                                 (table.insert items {:value (.. role " " model.id)})))
+                                             (table.insert items {:value "summarizer off"})
+                                             items)}})
+          (table.insert setup-fx
+                        {:type :register/event :name :model/role
+                         :handler (fn [db event]
+                                    (local (role id) (: (or event.arguments "") :match "^(%S+)%s+(%S+)$"))
+                                    (assert (and role id (or (= role :default) (= role :summarizer))
+                                                 (or (and (= role :summarizer) (= id :off))
+                                                     (find db.models.entries id)))
+                                            "use /role default|summarizer provider/model (or summarizer off)")
+                                    (local roles (misa.patch (or db.models.roles {})
+                                                            {role (if (= id :off) misa.delete id)}))
+                                    {:patch {:models {:roles (misa.replace roles)
+                                                      :selected (when (= role :default) id)}}
+                                     :fx [{:type :state/save :namespace :model-roles :data roles}
+                                          {:type :terminal/read}]} )})
+          (table.insert setup-fx
+                        {:type :register/event :name :model/roles-loaded
+                         :handler (fn [db event]
+                                    (when (and (not= event.found false) (= (type event.data) :table))
+                                      (local roles {})
+                                      (each [role id (pairs event.data)]
+                                        (when (and (= (type role) :string) (= (type id) :string))
+                                          (tset roles role id)))
+                                      (each [role id (pairs (or (and configured configured.roles) {}))]
+                                        (tset roles role id))
+                                      {:patch {:models {:roles (misa.replace roles)
+                                                        :selected (when roles.default roles.default)}}}))})
           {:fx setup-fx})}

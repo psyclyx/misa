@@ -5,7 +5,7 @@
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}
                                   :animations {:persist false}
                                   :status {:indicators [:zero :false :hidden :custom :activity]}}})
-(each [_ name (ipairs [:json :layout :themes :theme/default :components :values :component/status
+(each [_ name (ipairs [:json :keybindings :layout :themes :theme/default :components :values :component/status
                        :animations :animation/default :indicators])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 (local calls {})
@@ -79,4 +79,13 @@
 (assert (= (. still 2 :animation) nil))
 (assert (= (length (misa.render_value {:type :activity :state :ready}
                                      {:activity_animation (misa.animation_presentation db :status)})) 1))
+(local button-model {:indicators [{:label "Model" :fact {:type :text :value "Example"}
+                                   :action :models.open :hotkey :alt+m}]})
+(local button (misa.render_component (misa.patch db {:hover_action :models.open})
+                                     :status.indicators button-model {:columns 100}))
+(local hover-background (. (misa.theme_style db :hover) :background))
+(each [_ item (ipairs (. button.lines 1 :spans))]
+  (assert (= item.action :models.open) "button separator lost its hit target")
+  (assert (= (misa.json.encode item.style.background) (misa.json.encode hover-background))
+          "button highlight must include its internal spaces"))
 (output "indicator value contracts passed\n")

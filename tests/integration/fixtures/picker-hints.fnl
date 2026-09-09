@@ -26,7 +26,7 @@
                                       (var text "")
                                       (each [_ item (ipairs line.spans)]
                                         (set text (.. text item.text)))
-                                      (when (text:find "⌥Z" 1 true)
+                                      (when (text:find "⌥z" 1 true)
                                         (set found true)))
                                     (assert found
                                             "configured picker hint disappeared")

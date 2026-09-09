@@ -25,7 +25,7 @@
   (local result [])
   (when (not= (or item.representation :label) :value)
     (table.insert result (span (or item.label "") :label item.action))
-    (table.insert result (span " " :plain)))
+    (table.insert result (span " " :plain item.action)))
   (each [_ value (ipairs (misa.render_value item.fact context))]
     (local rendered (misa.snapshot value))
     (assert (= (type rendered.text) :string) "value renderer must return text spans")
@@ -33,9 +33,8 @@
     (set rendered.action (or rendered.action item.action))
     (table.insert result rendered))
   (when (and item.hotkey (not= item.hotkey ""))
-    (table.insert result (span " " :plain))
-    (each [_ key-span (ipairs (or (and misa.render_keybinding (misa.render_keybinding item.hotkey))
-                                  [(span (tostring item.hotkey) :keybinding)]))]
+    (table.insert result (span " " :plain item.action))
+    (each [_ key-span (ipairs (misa.render_keybinding item.hotkey))]
       (local next (misa.snapshot key-span))
       (set next.action item.action)
       (table.insert result next)))

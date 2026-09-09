@@ -1,6 +1,7 @@
 (local fennel (require :fennel))
 (local output io.write)
 (local runtime-debug debug)
+(local runtime-os os)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (misa._setup (fennel.dofile :extensions/json.fnl) {})
@@ -62,8 +63,9 @@
 ;; Real queued dispatch must observe all app/start owners regardless of order.
 ;; Native auth effects are captured only; no provider or auth process is run.
 (fn startup-case [order with-providers early-discovery argv]
-  ;; The trusted runtime removes this global after capturing its traceback.
+  ;; A fresh trusted runtime must recapture the host libraries hidden by the previous instance.
   (set _G.debug runtime-debug)
+  (set _G.os runtime-os)
   (fennel.dofile :src/lua_runtime/framework.fnl)
   (local app _G.misa)
   (local context {:argv argv :config {}})

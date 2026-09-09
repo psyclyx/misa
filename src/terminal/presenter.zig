@@ -227,12 +227,17 @@ pub fn appendView(out: *std.ArrayList(u8), allocator: std.mem.Allocator, view: s
     if (row_count > max_lines) return error.InvalidView;
     if (ansi and row_count < max_lines) try out.print(allocator, "\x1b[{d};1H\x1b[J", .{row_count + 1});
     if (try resolveCursor(allocator, object.get("cursor"), lines, row_count, columns, max_lines)) |cursor| {
-        if (ansi and row_count != 0) try out.print(allocator, "\x1b[{d};{d}H\x1b[?25h", .{ cursor.row, cursor.column });
+        // A steady native cursor has no blink phase to reset when an animation
+        // patch restores its position or a complete frame is redrawn.
+        if (ansi and row_count != 0) {
+            try out.print(allocator, "\x1b[{d} q", .{cursor.shape});
+            try out.print(allocator, "\x1b[{d};{d}H\x1b[?25h", .{ cursor.row, cursor.column });
+        }
     }
     return row_count;
 }
 
-const Cursor = struct { row: usize, column: usize };
+const Cursor = struct { row: usize, column: usize, shape: u8 };
 
 /// A cursor uses a one-based semantic row and a zero-based UTF-8 byte offset
 /// into that row's concatenated spans. Zig alone converts bytes to cells.
@@ -243,10 +248,16 @@ fn resolveCursor(allocator: std.mem.Allocator, value: ?std.json.Value, lines_val
         .object => |object| object,
         else => return error.InvalidView,
     };
+    const shape: u8 = if (position.get("shape")) |value_shape| blk: {
+        if (value_shape != .string) return error.InvalidView;
+        if (std.mem.eql(u8, value_shape.string, "bar")) break :blk 6;
+        if (std.mem.eql(u8, value_shape.string, "block")) break :blk 2;
+        return error.InvalidView;
+    } else 6;
     const row = try coordinate(position.get("row"));
     if (row > row_count or row > max_lines or position.get("column") != null) return error.InvalidView;
     const width = try widthAtByteOffset(allocator, lines_value, row, try byteOffset(position.get("byte")));
-    return .{ .row = row, .column = @min(width +| 1, @max(@as(usize, 1), usableColumns(columns))) };
+    return .{ .row = row, .column = @min(width +| 1, @max(@as(usize, 1), usableColumns(columns))), .shape = shape };
 }
 
 fn widthAtByteOffset(allocator: std.mem.Allocator, lines_value: std.json.Value, row: usize, target: usize) !usize {
@@ -499,4 +510,22 @@ test "semantic validation does not allocate rendered text or action maps" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     try validateView(failing.allocator(), parsed.value, 3, 2);
     try validateLines(parsed.value.object.get("lines").?);
+}
+
+test "semantic cursors use steady bar or block shapes and reject unknown modes" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "bar", "block", "unknown" }) |shape| {
+        const source = try std.fmt.allocPrint(allocator, "{{\"lines\":[{{\"spans\":[{{\"text\":\"x\"}}]}}],\"cursor\":{{\"row\":1,\"byte\":0,\"shape\":\"{s}\"}}}}", .{shape});
+        defer allocator.free(source);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, source, .{});
+        defer parsed.deinit();
+        if (std.mem.eql(u8, shape, "unknown")) {
+            try std.testing.expectError(error.InvalidView, validateView(allocator, parsed.value, 80, 24));
+        } else {
+            const frame = try renderForTest(allocator, parsed.value, false);
+            defer allocator.free(frame);
+            const expected = if (std.mem.eql(u8, shape, "bar")) "\x1b[6 q" else "\x1b[2 q";
+            try std.testing.expect(std.mem.indexOf(u8, frame, expected) != null);
+        }
+    }
 }

@@ -231,6 +231,9 @@
                                                                                                                :table)
                                                                                                             {:request_options item.request_options})
                                                                                                        nil)))
+                                                                               :created (when (= (type item.created) :number) item.created)
+                                                                               :recommended (when spec.model_recommended (spec.model_recommended item))
+                                                                               :popularity_rank (when (= (type item.popularity_rank) :number) item.popularity_rank)
                                                                                :context_window (or item.context_length
                                                                                                    item.context_window)
                                                                                :id (.. spec.id

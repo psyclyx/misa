@@ -163,7 +163,8 @@
                                     {:patch {:request_options
                                              (misa.replace {: configured :values {}})}
                                      :fx [{:type :dispatch :event {:type :request-options/reconcile}}]})})
-          (each [_ event-type (ipairs [:model/open
+          (each [_ event-type (ipairs [:model/role :model/roles-loaded
+                                       :model/open
                                        :model/select
                                        :models/provider-availability
                                        :models/update

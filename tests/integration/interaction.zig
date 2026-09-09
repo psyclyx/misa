@@ -42,6 +42,20 @@ test "command completion 2" {
     try h.expect(.{ .args = &.{}, .input = "\x04" }, "");
 }
 
+test "Enter accepts and invokes a partial command without Tab" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/command-completion.json"));
+    try h.expect(.{ .args = &.{}, .input = "/p\n" }, "pong\n");
+}
+
+test "Enter honors highlighted completion over an exact typed command" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/command-completion.json"));
+    try h.expect(.{ .input = "/ping\x1b[B\n" }, "pongpong\n");
+}
+
 test "inline choices" {
     var h = try Harness.init();
     defer h.deinit();
@@ -67,7 +81,16 @@ test "command narrowing" {
     var h = try Harness.init();
     defer h.deinit();
     try h.config(@embedFile("configs/command-narrowing.json"));
-    try h.expect(.{ .args = &.{}, .input = "/mod\x1b1\x1b1" }, "narrowed model\n");
+    try h.expect(.{ .args = &.{}, .input = "/mod\x1bj\x1bj" }, "narrowed model\n");
+}
+
+test "Enter completes a command then accepts its argument" {
+    for ([_][]const u8{ "/mod\n\n", "/model\n\n" }) |input| {
+        var h = try Harness.init();
+        defer h.deinit();
+        try h.config(@embedFile("configs/command-narrowing.json"));
+        try h.expect(.{ .input = input }, "narrowed model\n");
+    }
 }
 
 test "command history" {
@@ -89,7 +112,7 @@ test "generic picker 2" {
     defer h.deinit();
     try h.config(@embedFile("configs/generic-picker.json"));
     try h.environ.put("COLUMNS", "120");
-    try h.expect(.{ .args = &.{}, .input = "/panels\n\x1bq" }, "beta/path\n");
+    try h.expect(.{ .args = &.{}, .input = "/panels\n\x1bud" }, "beta/path\n");
 }
 
 test "generic picker 3" {
@@ -97,7 +120,8 @@ test "generic picker 3" {
     defer h.deinit();
     try h.config(@embedFile("configs/generic-picker.json"));
     try h.environ.put("COLUMNS", "40");
-    try h.expect(.{ .args = &.{}, .input = "/panels\n\x1bq\n" }, "alpha\n");
+    // A prefix with no visible targets does not enter a pending sequence.
+    try h.expect(.{ .args = &.{}, .input = "/panels\n\x1bu\n" }, "alpha\n");
 }
 
 test "generic command choice" {
@@ -141,7 +165,7 @@ test "generic picker cancellation returns its correlation" {
 }
 
 test "command choices accept interactive direct and narrowed invocation" {
-    for ([_][]const u8{ "/model\nvendor/one\n", "/model vendor/one\n", "/mod\x1b1vendor/one\n" }) |input| {
+    for ([_][]const u8{ "/model\nvendor/one\n", "/model vendor/one\n", "/mod\x1bjvendor/one\n" }) |input| {
         var h = try Harness.init();
         defer h.deinit();
         try h.config(@embedFile("configs/command-choice.json"));

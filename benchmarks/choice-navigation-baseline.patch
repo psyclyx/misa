@@ -1,0 +1,60 @@
+--- a/choices.fnl
++++ b/choices.fnl
+@@ -282,18 +282,13 @@
+ (fn changed [session patch db]
+   {:session (refresh (misa.patch session patch) db) :consumed true})
+ 
+-(fn move [session direction _db]
+-  ;; input already projected the current query and preferences. Moving its
+-  ;; highlight cannot change membership or order, so retain those item arrays.
++(fn move [session direction db]
+   (local panel (. session.panels 1))
+   (local count (length panel.items))
+   (if (= count 0) {: session :consumed false}
+-      (let [highlight (+ (% (+ (- panel.highlight 1) direction) count) 1)
+-            panels (icollect [bank source (ipairs session.panels)]
+-                     (if (= bank 1) (misa.patch source {: highlight}) source))]
+-        {:session (misa.patch session {:panels (misa.replace panels)
+-                                       :view_state {panel.id {: highlight}}})
+-         :consumed true})))
++      (changed session
++               {:view_state {panel.id {:highlight (+ (% (+ (- panel.highlight 1) direction) count) 1)}}}
++               db)))
+ 
+ (fn cycle [session direction db]
+   (local (ids custom) (values {} {}))
+@@ -712,8 +707,9 @@
+                          :value accept})
+           (table.insert setup-fx
+                         {:type :register/service
+-                         :name :choice_projected_rows
+-                         :value (fn [session hotkeys]
++                         :name :choice_rows
++                         :value (fn [previous db hotkeys]
++                                  (local session (refresh previous db))
+                                   (local result {})
+                                   (each [bank panel (ipairs session.panels)]
+                                     (local rows {})
+@@ -734,11 +730,6 @@
+                                   result)})
+           (table.insert setup-fx
+                         {:type :register/service
+-                         :name :choice_rows
+-                         :value (fn [previous db hotkeys]
+-                                  (misa.choice_projected_rows (refresh previous db) hotkeys))})
+-          (table.insert setup-fx
+-                        {:type :register/service
+                          :name :choice_hotkeys
+                          :value (fn [session visible room]
+                                   (local result {})
+--- a/choice_layout.fnl
++++ b/choice_layout.fnl
+@@ -342,7 +342,7 @@
+                                             hint-height))
+                                   (local panel-budget
+                                          (math.max 0 (- height fixed)))
+-                                  (local all (misa.choice_projected_rows session))
++                                  (local all (misa.choice_rows session db))
+                                   (local (columns targets) (values {} {}))
+                                   (var column-x 0)
+                                   (each [bank panel-width (ipairs widths)]

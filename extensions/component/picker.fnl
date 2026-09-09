@@ -91,9 +91,7 @@
                                              (local hint-spans
                                                     [(span pad :plain)])
                                              (append hint-spans
-                                                     (or (and misa.render_keybinding_reference
-                                                              (misa.render_keybinding_reference model.hints))
-                                                         {}))
+                                                     (misa.render_keybinding_reference model.hints))
                                              (tset result (+ (length result) 1)
                                                    {:spans hint-spans}))
                                            (while (> (length result)

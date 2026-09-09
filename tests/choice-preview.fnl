@@ -3,7 +3,7 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local context {:argv [] :config {:choices {:preview_renderers {:custom :test.preview}}}})
-(each [_ name (ipairs [:json :layout :values :choices :choice_preview :choice_layout])]
+(each [_ name (ipairs [:json :keybindings :layout :values :choices :choice_preview :choice_layout])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 (local shared [{:spans [{:text "CUSTOM" :action :custom.action :link "https://example.test"
                         :animation {:id :preview :interval_ms 100 :frames [{:text "CUSTOM"} {:text "custom"}]}}]}])

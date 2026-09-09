@@ -6,7 +6,7 @@
 
 {:setup (fn [context]
           (local setup-fx [])
-          (assert (and misa.layout misa.choice_rows misa.choice_preview)
+          (assert (and misa.layout misa.choice_projected_rows misa.choice_preview)
                   "choice_layout requires layout, choices, and choice_preview")
           (var configured (or (and (and (= (type context.config) :table)
                                         (= (type context.config.choices) :table))
@@ -45,16 +45,20 @@
                                          [{: style
                                            :text (.. (or row.marker " ") " ")}])
                                   (when row.hotkey
-                                    (each [_ part (ipairs (or (and misa.render_keybinding
-                                                                   (misa.render_keybinding row.hotkey))
-                                                              [{:style :keybinding
-                                                                :text row.hotkey}]))]
-                                      (tset spans (+ (length spans) 1)
-                                            {:style (or (and (or row.selected
-                                                                 row.active)
-                                                             style)
-                                                        part.style)
-                                             :text part.text}))
+                                    (var entered "")
+                                    (var index 0)
+                                    (each [key (row.hotkey:gmatch "%S+")]
+                                      (set index (+ index 1))
+                                      (set entered (if (= index 1) key (.. entered " " key)))
+                                      (local progress (and row.combo
+                                                            (= (row.hotkey:sub 1 (+ (length row.combo) 1)) (.. row.combo " "))
+                                                            (= (row.combo:sub 1 (length entered)) entered)))
+                                      (when (> index 1)
+                                        (table.insert spans {: style :text " " :sequence_progress progress}))
+                                      (each [_ part (ipairs (misa.render_keybinding key))]
+                                        (table.insert spans {:style (if progress :choice.row.active
+                                                                        (or (and (or row.selected row.active) style) part.style))
+                                                             :sequence_progress progress :text part.text})))
                                     (tset spans (+ (length spans) 1)
                                           {: style :text " "}))
                                   (tset spans (+ (length spans) 1)
@@ -88,8 +92,9 @@
           (table.insert setup-fx
                         {:type :register/service
                          :name :choice_viewport
-                         :value (fn [panel models width height bank compact]
-                                  (local row-limit (math.max 1 (- height 1)))
+                         :value (fn [panel models width height bank compact combo]
+                                  (var content-height height)
+                                  (local row-limit (math.max 1 height))
 
                                   (fn window [start]
                                     (var (rows lines targets section)
@@ -105,36 +110,12 @@
                                                                    row-limit -1))]
                                       (tset indices (+ (length indices) 1)
                                             index))
-                                    ;; In a compact grouped list, spend the scarce rows on both groups.
-                                    ;; Keyboard navigation still reaches every item; retain a focused item
-                                    ;; from the leading group when it advances beyond the first entry.
-                                    (when (and (and compact section)
-                                               (>= height 4))
-                                      (var boundary nil)
-                                      (for [index (+ start 1) (length models)
-                                            &until boundary]
-                                        (when (not= (. models index :section)
-                                                    section)
-                                          (set boundary index)))
-                                      (when (and boundary
-                                                 (> boundary (+ start 1)))
-                                        (set indices
-                                             [(math.max start
-                                                        (math.min panel.highlight
-                                                                  (- boundary 1)))])
-                                        (for [index boundary (math.min (length panel.items)
-                                                                       (+ boundary
-                                                                          row-limit
-                                                                          -2))]
-                                          (tset indices (+ (length indices) 1)
-                                                index))))
                                     (var full false)
                                     (each [_ index (ipairs indices) &until full]
                                       (local row (. models index))
                                       (local shortcut
-                                             (when (< (length rows) 9)
-                                               (.. :option_ bank "_"
-                                                   (+ (length rows) 1))))
+                                             (.. :option_ bank "_" (+ (length rows) 1)))
+                                      (set row.combo combo)
                                       (set row.hotkey
                                            (and shortcut
                                                 (misa.choice_hint shortcut)))
@@ -150,7 +131,7 @@
                                                       row.section)
                                                  nil))
                                       (local capacity
-                                             (- (- (math.max 0 (- height 1))
+                                             (- (- (math.max 0 content-height)
                                                    (length lines))
                                                 (or (and heading 1) 0)))
                                       (set full
@@ -207,6 +188,17 @@
                                               (not (focused)))
                                     (set start (+ start 1))
                                     (set (rows lines targets) (window start)))
+                                  ;; Charge for overflow only when there are hidden choices.
+                                  (when (and (> height 1)
+                                             (or (> start 1)
+                                                 (< (or (and (. rows (length rows))
+                                                             (. rows (length rows) :source_index)) 0)
+                                                    (length panel.items))))
+                                    (set content-height (- height 1))
+                                    (set (rows lines targets) (window start))
+                                    (while (and (< start panel.highlight) (not (focused)))
+                                      (set start (+ start 1))
+                                      (set (rows lines targets) (window start))))
                                   (local last
                                          (or (and (. rows (length rows))
                                                   (. rows (length rows)
@@ -229,18 +221,6 @@
                                                     " / " (length panel.items)
                                                     "  ↑↓ more"))
                                            nil))
-                                  (when overflow
-                                    (local shown {})
-                                    (each [_ row (ipairs rows)]
-                                      (when row.section
-                                        (tset shown row.section true)))
-                                    (for [index (+ last 1) (length models)]
-                                      (local section (. models index :section))
-                                      (when (and section
-                                                 (not (. shown section)))
-                                        (set overflow
-                                             (.. overflow " · " section))
-                                        (tset shown section true))))
                                   {: lines : overflow : rows : targets})})
           (table.insert setup-fx
                         {:type :register/service
@@ -322,7 +302,8 @@
                                                                  (math.floor (/ height
                                                                                 3))))))
                                   (var hint-actions
-                                       [[:previous :previous]
+                                       [[:complete :complete]
+                                        [:previous :previous]
                                         [:next :next]
                                         [:accept :accept]
                                         [:cancel :cancel]
@@ -335,7 +316,7 @@
                                   (when compact
                                     (set hint-actions
                                          (or (and (>= height 8)
-                                                  [[:open_overlay :expand]
+                                                  [[:complete :complete]
                                                    [:cycle :views]
                                                    [:favorite :favorite]])
                                              {})))
@@ -347,9 +328,7 @@
                                             {:action (.. :choices. (. entry 1))
                                              : key
                                              :label (. entry 2)
-                                             :tokens (or (and misa.keybinding_tokens
-                                                              (misa.keybinding_tokens key))
-                                                         nil)})))
+                                             :tokens (misa.keybinding_tokens key)})))
                                   (local input-height (or (and compact 0) 1))
                                   (local hint-height
                                          (or (and (> (length hints) 0) 1) 0))
@@ -358,7 +337,7 @@
                                             hint-height))
                                   (local panel-budget
                                          (math.max 0 (- height fixed)))
-                                  (local all (misa.choice_rows session db))
+                                  (local all (misa.choice_projected_rows session))
                                   (local (columns targets) (values {} {}))
                                   (var column-x 0)
                                   (each [bank panel-width (ipairs widths)]
@@ -371,7 +350,7 @@
                                                                  (math.max 0
                                                                            (- panel-budget
                                                                               1))
-                                                                 bank compact))
+                                                                 bank compact session.combo))
                                     (each [action item (pairs viewport.targets)]
                                       (tset targets action item))
                                     (tset columns bank
@@ -389,6 +368,10 @@
                                            :width panel-width
                                            :x column-x
                                            :y (+ input-height preview-height)})
+                                    (when (and session.combo (= bank 1))
+                                      (tset columns bank :title
+                                            (.. (. columns bank :title) " ["
+                                                (misa.keybinding_text session.combo) " …]")))
                                     (set column-x (+ column-x panel-width 2)))
                                   (local query
                                          (.. (or session.input_prefix "")
@@ -400,6 +383,7 @@
                                    :hint_y (+ input-height preview-height
                                               panel-budget)
                                    : hints
+                                   :combo session.combo
                                    :input {:cursor (length query)
                                            :hidden compact
                                            :text query

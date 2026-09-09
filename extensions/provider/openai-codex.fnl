@@ -211,16 +211,6 @@
 
 {:setup (fn [context]
           (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/auth-provider
-                         :value {:description "ChatGPT subscription OAuth"
-                                 :id :openai-codex
-                                 :label "OpenAI Codex"
-                                 :model_provider :openai-codex
-                                 :profile {:authorization_url "https://auth.openai.com/api/accounts/deviceauth/usercode"
-                                           :id :default
-                                           :token_url "https://auth.openai.com/oauth/token"}
-                                 :strategy :device_oauth}})
           (local providers (or (and (= (type context.config) :table)
                                     context.config.providers)
                                nil))
@@ -228,6 +218,17 @@
                                providers.openai_codex)
                           nil))
           (set config (or (and (= (type config) :table) config) {}))
+          (table.insert setup-fx
+                        {:type :register/auth-provider
+                         :value {:description "ChatGPT subscription OAuth"
+                                 :id :openai-codex
+                                 :label "OpenAI Codex"
+                                 :model_provider :openai-codex
+                                 :discover_models (not config.models)
+                                 :profile {:authorization_url "https://auth.openai.com/api/accounts/deviceauth/usercode"
+                                           :id :default
+                                           :token_url "https://auth.openai.com/oauth/token"}
+                                 :strategy :device_oauth}})
           (table.insert setup-fx
                         {:type :register/event :name :usage/refresh
                          :handler (fn [db event]
@@ -356,6 +357,56 @@
                                                                  :xhigh]
                                                        :default :medium}}
                   :request_options_serializer serializer-id})
+          ;; ChatGPT's catalogue uses Codex slugs and reasoning metadata, rather
+          ;; than the public API's /v1/models shape. Explicit catalogues stay static.
+          (when (not config.models)
+            (table.insert setup-fx
+                          {:type :register/event :name :models/discover
+                           :handler (fn [_ event]
+                                      (when (or (not event.provider) (= event.provider :openai-codex))
+                                        {:fx [{:type :http/request :id :models-openai-codex :method :GET
+                                               :url (or config.models_url
+                                                        (.. "https://chatgpt.com/backend-api/codex/models?client_version="
+                                                            (or config.client_version "0.153.4")))
+                                               :credential {:id :openai-codex :header :authorization :prefix "Bearer "
+                                                            :metadata_field :account_id :metadata_header :chatgpt-account-id}
+                                               :response_format :json :completion :provider/codex-models
+                                               :timeouts config.timeouts}]}))})
+            (table.insert setup-fx
+                          {:type :register/event :name :provider/codex-models
+                           :handler (fn [_ event]
+                                      (local fx [])
+                                      (when (and event.ok (= (type event.data) :table)
+                                                 (= (type event.data.models) :table))
+                                        (local models [])
+                                        (each [_ item (ipairs event.data.models)]
+                                          (when (and (= (type item) :table) (= (type item.slug) :string)
+                                                     (not= item.slug "") (= item.visibility :list))
+                                            (local choices (icollect [_ level (ipairs (or item.supported_reasoning_levels []))]
+                                                             (when (and (= (type level) :table)
+                                                                        (= (type level.effort) :string)) level.effort)))
+                                            (local default (or item.default_reasoning_level (. choices 1)))
+                                            (local api (when (> (length choices) 0)
+                                                         {:request_options {:reasoning_effort {: choices : default}}
+                                                          :request_options_serializer serializer-id}))
+                                            (table.insert models {:id (.. :openai-codex/ item.slug) :model item.slug
+                                                                  :label (or item.display_name item.slug)
+                                                                  :context_window item.context_window : api
+                                                                  :created (when (= (type item.created) :number) item.created)
+                                                                  :recommended (not= item.recommended false)
+                                                                  :recommendation_rank item.priority
+                                                                  :popularity_rank (when (= (type item.popularity_rank) :number) item.popularity_rank)})))
+                                        ;; Invalid or entirely hidden responses should not erase the
+                                        ;; usable fallback catalogue (nor a prior successful discovery).
+                                        (when (> (length models) 0)
+                                          (table.sort models (fn [a b] (< (or a.recommendation_rank math.huge)
+                                                                        (or b.recommendation_rank math.huge))))
+                                          (table.insert fx {:type :dispatch :event {:type :models/replace-provider
+                                                                                    :provider :openai-codex
+                                                                                    :authoritative true : models}})))
+                                      (table.insert fx {:type :dispatch :event {:type :models/discovery-complete
+                                                                                :provider :openai-codex}})
+                                      {: fx})}))
           (each [_ model (ipairs (or config.models
                                      [{:api reasoning-api
                                        :context_window 1000000

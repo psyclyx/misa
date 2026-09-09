@@ -1,0 +1,64 @@
+(local fennel (require :fennel))
+(local output io.write)
+(fennel.dofile :src/lua_runtime/framework.fnl)
+(local misa _G.misa)
+(local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
+(each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices :fuzzy :models :omnipicker
+                       :themes :theme/default :components :component/editor
+                       :component/picker :values :choice_preview :choice_layout])]
+  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
+(local specs ((. (fennel.dofile :extensions/editor.fnl) :setup) context))
+(local handlers {})
+(each [_ spec (ipairs specs.fx)]
+  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(misa._setup_effects specs)
+(local cofx {:argv [] :terminal {:columns 80 :lines 24 :interactive true}})
+(fn transition [db event]
+  (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
+  (local result ((. handlers event.type) db event cofx))
+  (assert (= before (misa.json.encode db)) "editor handler mutated state")
+  (assert (= input (misa.json.encode event)) "editor handler mutated event")
+  (assert (not (and result result.db)))
+  (values (misa.patch db (or (and result result.patch) {})) (and result result.fx)))
+(local initial (transition {:components {:roles {}} :themes {:active :default}} {:type :app/start}))
+(local model-handlers {})
+(each [_ spec (ipairs (. ((. (fennel.dofile :extensions/models.fnl) :setup) context) :fx))]
+  (when (= spec.type :register/event) (tset model-handlers spec.name spec.handler)))
+(local catalogue (misa.patch initial {:models {:selected :test/main
+                                              :entries [{:id :test/main :model :main :provider :test}
+                                                        {:id :test/alpha :model :alpha :provider :test}
+                                                        {:id :test/alpine :model :alpine :provider :test}]}}))
+(fn type-command [text]
+  (var db catalogue)
+  (each [char (text:gmatch ".")]
+    (set db (transition db {:type :terminal/input :kind :text :text char})))
+  db)
+(fn assign [db expected]
+  (local (edited fx) (transition db {:type :terminal/input :kind :enter}))
+  (local invocation (. fx 1 :event))
+  (assert (= invocation.command :/role))
+  (assert (= invocation.arguments (.. "summarizer " expected)))
+  (local result ((. model-handlers :model/role) edited invocation))
+  (local assigned (misa.patch edited result.patch))
+  (assert (= assigned.models.selected :test/main) "summarizer assignment changed the main model")
+  (assert (= assigned.models.roles.summarizer expected))
+  (assert (= (. result.fx 1 :data :summarizer) expected))
+  (local loaded ((. model-handlers :model/roles-loaded) catalogue
+                 {:found true :data (. result.fx 1 :data)}))
+  (local restored (misa.patch catalogue loaded.patch))
+  (assert (= restored.models.selected :test/main))
+  (assert (= restored.models.roles.summarizer expected))
+  (local disabled ((. model-handlers :model/role) assigned {:arguments "summarizer off"}))
+  (local cleared (misa.patch assigned disabled.patch))
+  (assert (= cleared.models.selected :test/main))
+  (assert (= cleared.models.roles.summarizer nil)))
+(local typed (type-command "/role summarizer test/alp"))
+(assign typed :test/alpha)
+(local moved (transition typed {:type :terminal/input :kind :arrow_down}))
+(assign moved :test/alpine)
+(local (completed fx) (transition moved {:type :terminal/input :kind :tab}))
+(assert (= completed.editor.text "/role summarizer test/alpine"))
+(each [_ effect (ipairs (or fx []))]
+  (assert (not= effect.type :dispatch) "Tab executed the role command"))
+(assign completed :test/alpine)
+(output "model role input contracts passed\n")

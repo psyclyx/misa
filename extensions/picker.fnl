@@ -81,6 +81,30 @@
 (fn updated [picker fx]
   {:patch {:picker (misa.replace picker)} :fx (or fx [{:type :terminal/read}])})
 
+;; Sessions carry projected catalogues as well as tiny navigation fields.
+;; Replacing the whole picker revalidates every unchanged catalogue branch.
+;; Emit the fields the session owner actually changed; normal patch validation
+;; still checks every incoming field before the native transaction commits.
+(fn fields-changed [previous current]
+  (local patch {})
+  (each [key value (pairs current)]
+    (when (not= value (. previous key)) (tset patch key (misa.replace value))))
+  (each [key _ (pairs previous)]
+    (when (= (. current key) nil) (tset patch key misa.delete)))
+  patch)
+
+(fn updated-session [state session fx]
+  (local patch (fields-changed state.session session))
+  (when (not= state.session.view_state session.view_state)
+    (local states {})
+    (each [id value (pairs session.view_state)]
+      (when (not= value (. state.session.view_state id))
+        (tset states id (fields-changed (or (. state.session.view_state id) {}) value))))
+    (each [id _ (pairs state.session.view_state)]
+      (when (= (. session.view_state id) nil) (tset states id misa.delete)))
+    (set patch.view_state states))
+  {:patch {:picker {:session patch}} :fx (or fx [{:type :terminal/read}])})
+
 {:setup (fn []
           (local setup-fx [])
           (assert (and (and misa.choice_session misa.choice_action)
@@ -153,22 +177,16 @@
                                     (local state (assert db.picker))
                                     (local action (misa.choice_action event))
                                     (local geometry
-                                           (misa.choice_picker_layout state.session
-                                                                      db
-                                                                      cofx.terminal))
-                                    (local item (. geometry.targets action))
+                                           (when (misa.choice_needs_targets state.session event)
+                                             (misa.choice_picker_layout state.session db cofx.terminal)))
                                     (local result
-                                           (or (and item
-                                                    (misa.choice_accept state.session
-                                                                        item db))
-                                               (misa.choice_input state.session
-                                                                  {: action
-                                                                   :kind event.kind
-                                                                   :text event.text}
-                                                                  db)))
-                                    (local next-state (misa.patch state {:session (misa.replace result.session)}))
+                                           (misa.choice_input state.session
+                                                              {: action :kind event.kind :text event.text :key event.key
+                                                               :targets (and geometry geometry.targets)} db))
+                                    (fn next-state []
+                                      (misa.patch state {:session (misa.replace result.session)}))
                                     (if result.replace_view
-                                        (updated (view-picker next-state db))
+                                        (updated (view-picker (next-state) db))
                                         (and (= state.id :picker-picker) state.parent result.accepted)
                                         (updated (misa.patch state.parent
                                                              {:session (misa.replace (misa.choice_replace_view state.parent.session
@@ -176,15 +194,15 @@
                                         (and (= state.id :picker-picker) state.parent result.cancelled)
                                         (updated state.parent)
                                         result.accepted
-                                        (updated state.parent (finish next-state result.accepted false))
+                                        (updated state.parent (finish (next-state) result.accepted false))
                                         result.cancelled
-                                        (updated state.parent (finish next-state nil true))
+                                        (updated state.parent (finish (next-state) nil true))
                                         result.favorite
-                                        (updated next-state
-                                                 [{:event {:scope next-state.session.preference_scope
+                                        (updated-session state result.session
+                                                 [{:event {:scope result.session.preference_scope
                                                            :type :preferences/toggle
                                                            :value result.favorite}
                                                    :type :dispatch}
                                                   {:type :terminal/read}])
-                                        (updated next-state)))})
+                                        (updated-session state result.session)))})
           {:fx setup-fx})}

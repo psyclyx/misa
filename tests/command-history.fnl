@@ -120,7 +120,7 @@
                                                    :type :picker/open}
                                            :type :dispatch}
                                           {:event {:kind :alt
-                                                   :text :1
+                                                   :text :j
                                                    :type :picker/input}
                                            :type :dispatch}]})})
           nil

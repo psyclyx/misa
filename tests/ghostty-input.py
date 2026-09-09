@@ -68,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     config['extensions'] = [str(work/'fixture.fnl')] + [name for name in config['extensions'] if not name.startswith(('provider.', 'protocol.')) and name != 'auth']
     settings = config['config']
     settings['models']['default'] = 'smoke/model'
+    settings.setdefault('preferences', {}).setdefault('favorites', {})['models'] = ['smoke/model']
     settings['images'] = {'clipboard_command': ['cat', str(work/'image.png')]}
     settings['smoke'] = {'directory': directory, 'python': sys.executable}
     for name in ('history', 'themes', 'components', 'preferences'):
@@ -111,6 +112,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         until(lambda: b'smoke/model' in output)
         until(lambda: b'\x1b[?2026l' in output)
         assert all(glyph.encode() not in output for glyph in ('┌', '└')), 'default chrome retained ornamental corners'
+        assert b'\x1b[6 q' in output, 'insert mode did not request a steady bar cursor'
         assert b'\x1b[?1003h' in output, 'all-motion mouse reporting was not enabled'
         # The empty default UI puts its model button on row 4, column 20.
         # Wait for presentation as well as state: an inspection can complete
@@ -135,7 +137,18 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         assert not snapshot().get('picker'), 'model picker did not cancel'
         send(b'\x1bm')
         assert snapshot().get('picker') == clicked_picker, 'Alt-M did not open the same model picker'
-        send(b'\x03')
+        send(b'\x1bu')
+        assert snapshot()['picker'].get('combo') == 'alt+u', 'two-key prefix was not entered'
+        send(b'\x1bOP')  # F1 must abort the prefix, not open the action palette.
+        state = snapshot()['picker']
+        assert state['id'] == clicked_picker['id'] and not state.get('combo'), 'F1 escaped modal combo capture'
+        send(b'\x1bu\x7f')
+        assert not snapshot()['picker'].get('combo'), 'Backspace failed to abort the prefix'
+        send(b'\x1bud')
+        assert not snapshot().get('picker'), 'alternating-hand favorite shortcut did not select'
+        send(b'\x1bm')
+        send(b'\x1bj')
+        assert not snapshot().get('picker'), 'right-hand single-key shortcut did not select'
         assert not snapshot().get('picker'), 'keyboard-opened model picker did not cancel'
         send(b'\x16')
         until(lambda: b'\x1b_Ga=t' in output)

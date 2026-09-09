@@ -1,0 +1,2 @@
+# Stored benchmark diffs contain significant context-line whitespace.
+benchmarks/*.patch -whitespace

@@ -39,6 +39,7 @@
           (local standard-tokens
                  [:plain
                   :dim
+                  :disabled
                   :bold
                   :italic
                   :strikethrough
@@ -59,6 +60,8 @@
                   :markdown.table.border
                   :markdown.table.header
                   :markdown.code.label
+                  :diff.added
+                  :diff.removed
                   :markdown.code.border
                   :syntax.comment
                   :syntax.string
@@ -270,6 +273,10 @@
                     (set fallback.bold true)
                     (. dim-fallback required)
                     (set fallback.dim true))
+                (when (= required :disabled)
+                  (set fallback.dim true)
+                  (set fallback.bold false)
+                  (set fallback.underline false))
                 (tset styles required fallback)))
             {: palette : styles})
 

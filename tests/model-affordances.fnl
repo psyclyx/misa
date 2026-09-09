@@ -5,7 +5,7 @@
 (default-file:close)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(each [_ name (ipairs [:json :layout :values])]
+(each [_ name (ipairs [:json :keybindings :layout :values])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {}))
 (misa._setup (fennel.dofile :extensions/indicators.fnl) {:config {}})
 (local specs ((. (fennel.dofile :extensions/models.fnl) :setup) {:config {}}))
@@ -107,3 +107,19 @@
 (local multiline (input-render {:text "one\ntwo" :mode :insert} {:columns 80}))
 (each [_ line (ipairs multiline.lines)] (assert (= (. line.spans 1 :text) "│ ")))
 (output "model affordance contracts passed\n")
+
+(local catalogue {:models {:selected :current :catalogue_now 2000000000
+                           :entries [{:id :old :model :old :provider :any :created 1000000000}
+                                     {:id :current :model :current :provider :any :created 1999999999}
+                                     {:id :popular :model :popular :provider :any :created 1000000000 :recommended true}]}})
+(local filtered (complete "" catalogue))
+(assert (= (. filtered 1 :browse_visible) false))
+(assert (= (. filtered 2 :browse_visible) true))
+(assert (= (. filtered 3 :browse_visible) true))
+(local assigned ((. handlers :model/role) catalogue {:arguments "summarizer current"}))
+(local role-db (misa.patch catalogue assigned.patch))
+(assert (= (. (misa.model_for_role role-db :summarizer) :id) :current))
+(assert (= (. assigned.fx 1 :type) :state/save))
+(assert (= (misa.model_for_role catalogue :summarizer) nil))
+(local restored ((. handlers :model/roles-loaded) catalogue {:found true :data {:summarizer :current}}))
+(assert (= (. (misa.model_for_role (misa.patch catalogue restored.patch) :summarizer) :id) :current))

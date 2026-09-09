@@ -146,9 +146,9 @@
                                                             :rows))]
                                       (when (= row.value :two) (set found true)))
                                     (assert (and found
-                                                 (. measured.columns 1
-                                                    :overflow))
-                                            (.. "wrapped focus or overflow indicator was lost: "
+                                                 (= (length (. measured.columns 1 :rows)) 3)
+                                                 (not (. measured.columns 1 :overflow)))
+                                            (.. "fitting choices should retain focus without overflow: "
                                                 (length (. measured.columns 1
                                                            :rows))
                                                 " " (tostring found) " "

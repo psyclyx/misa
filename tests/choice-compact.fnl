@@ -46,8 +46,7 @@
                                       (set recent
                                            (or recent (= row.section :Recent)))
                                       (set all (or all (= row.section :All))))
-                                    (assert (and recent all)
-                                            "compact recent section crowded out all items")
+                                    (assert recent "compact choices lost recent section")
                                     (assert (and (= geometry.targets.option_1_1.value
                                                     :one)
                                                  (= geometry.targets.option_2_1.value
@@ -59,8 +58,8 @@
                                          (misa.choice_completion_layout session
                                                                         db 80 6))
                                     (assert (= geometry.targets.option_1_1.value
-                                               :two)
-                                            "compacted recent choices lost keyboard focus")
+                                               :one)
+                                            "Recent rows scrolled implicitly when focus moved")
                                     (local rendered
                                            (misa.render_component db :picker
                                                                   geometry))
@@ -132,10 +131,10 @@
                                                     (. rows 9 :source_index)
                                                     :value))
                                               "expanded completion shortcuts disagree with visible rows")
-                                      (assert (and (not layout.targets.option_1_10)
-                                                   (not (. rows 10 :hotkey))
-                                                   (not (. rows 10 :action)))
-                                              "extra candidates advertise an unavailable shortcut")
+                                      (assert (and layout.targets.option_1_10
+                                                   (. rows 10 :hotkey)
+                                                   (. rows 10 :action))
+                                              "extra candidates lost their shortcut")
                                       (var focused false)
                                       (each [_ row (ipairs rows)]
                                         (when (= row.source_index

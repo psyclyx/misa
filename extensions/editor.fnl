@@ -98,7 +98,8 @@
   (local highlighted (and panel (. panel.items panel.highlight)))
   (if (= editor.choice_kind :command)
       (let [command (misa.command editor.text)]
-        (and command (not (or command.completion command.complete))))
+        (and command highlighted (= highlighted.value editor.text)
+             (not (or command.completion command.complete))))
       (= editor.choice_kind :argument)
       (and (not= editor.choice.query "") highlighted (= highlighted.value editor.choice.query))
       false))
@@ -163,8 +164,7 @@
                                           (- (+ first room) 1))]
                 (local row (. columns 1 :rows index))
                 (local shortcut
-                       (when (< (length rows) 9)
-                         (.. :option_1_ (+ (length rows) 1))))
+                       (.. :option_1_ (+ (length rows) 1)))
                 (set row.hotkey (and shortcut (misa.choice_hint shortcut)))
                 (tset rows (+ (length rows) 1) row)
                 (when shortcut
@@ -172,7 +172,7 @@
               (values {: rows} targets))))))
 
 
-(fn accept-input [editor item positional db cofx reason]
+(fn accept-input [editor item db cofx reason]
   (if (and item.invocation misa.command_invocation)
       (dispatch-input (clear-choice (with-text editor "" 0))
                       (assert (misa.command_invocation item.invocation)) cofx)
@@ -180,7 +180,7 @@
         (if (and command (or command.completion command.complete))
             (updated (sync-choice (with-text editor (.. command.name " ")) db) nil reason)
             (let [next (accept-choice editor item)
-                  invocation (and positional misa.command_invocation (misa.command_invocation next.text))]
+                  invocation (and misa.command_invocation (misa.command_invocation next.text))]
               (if invocation (dispatch-input (with-text next "" 0) invocation cofx)
                   (updated next nil reason)))))))
 
@@ -193,13 +193,12 @@
                                      {:columns cofx.terminal.columns}))
   (local room (if misa.inline_choice_room
                   (misa.inline_choice_room db cofx.terminal (length input.lines)) 5))
-  (local (_ targets) (completion-layout editor db room (or cofx.terminal.columns 80)))
-  (local item (. targets action))
-  (local result (if item (misa.choice_accept editor.choice item db)
-                    (misa.choice_input editor.choice {: action :kind event.kind :text event.text} db)))
+  (local (_ targets) (when (misa.choice_needs_targets editor.choice event)
+                       (completion-layout editor db room (or cofx.terminal.columns 80))))
+  (local result (misa.choice_input editor.choice {: action :kind event.kind :text event.text :key event.key : targets} db))
   (local next (misa.patch editor {:choice (misa.replace result.session)}))
   (local reason (if (or (= event.kind :text) (= event.kind :backspace)) :insert :preserve))
-  (if result.accepted (accept-input next result.accepted item db cofx reason)
+  (if result.accepted (accept-input next result.accepted db cofx reason)
       (or result.open_overlay result.replace_view) (when misa.picker (overlay next result.replace_view))
       result.cancelled (updated (clear-choice (misa.patch next {:dismissed_choice next.text})))
       result.favorite (updated next [{:event {:scope next.choice.preference_scope
@@ -261,17 +260,17 @@
   (local editor (if (= input.kind :shift_enter) (clear-choice previous) previous))
   (local command (and (= event.kind :enter) (= editor.cursor (length editor.text))
                       (misa.command editor.text)))
-  (if (and editor.busy (= event.kind :ctrl_c))
+  (if (and (not (and editor.choice editor.choice.combo)) editor.busy (= event.kind :ctrl_c))
       (updated editor [{:event {:type :agent/cancel-active} :type :dispatch} {:type :terminal/read}])
-      (and command (or command.completion command.complete))
+      (and (not editor.choice) command (or command.completion command.complete))
       (updated (sync-choice (with-text editor (.. command.name " ")) db))
-      (and editor.choice (= editor.choice_kind :command)
+      (and editor.choice (not editor.choice.combo) (= editor.choice_kind :command)
            (= event.kind :text) (event.text:find "%s"))
       (raw-input editor event db cofx)
       (let [action (when (not (and (= event.kind :enter) (submit-exact-choice editor)))
                      (misa.choice_action event))]
         (local (result reason)
-               (when (and editor.choice (or action (= event.kind :text) (= event.kind :backspace)))
+               (when (and editor.choice (or editor.choice.combo action (= event.kind :alt) (= event.kind :text) (= event.kind :backspace)))
                  (choice-input editor event action db cofx)))
         (if result (values result reason) (raw-input editor event db cofx)))))
 
@@ -377,6 +376,7 @@
                                                                 80))))
                                   {:busy false
                                    :byte input.cursor.byte
+                                   :shape input.cursor.shape
                                    :completions (. (misa.render_component db
                                                                           (or (and completions.columns
                                                                                    :picker)

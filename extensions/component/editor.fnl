@@ -28,6 +28,8 @@
                                                                           marker
                                                                           :user
                                                                           prompt-style))
+                                           (when rendered.cursor
+                                             (set rendered.cursor.shape (if (= mode :insert) :bar :block)))
                                            (var source-at 0)
                                            (each [index line (ipairs rendered.lines)]
                                              (local previous
@@ -110,10 +112,7 @@
                                                                      " ")
                                                                  style)])
                                                    (when row.hotkey
-                                                     (each [_ key-span (ipairs (or (and misa.render_keybinding
-                                                                                        (misa.render_keybinding row.hotkey))
-                                                                                   [(span row.hotkey
-                                                                                          :keybinding)]))]
+                                                     (each [_ key-span (ipairs (misa.render_keybinding row.hotkey))]
                                                        (tset spans
                                                              (+ (length spans)
                                                                 1)

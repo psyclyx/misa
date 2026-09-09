@@ -122,8 +122,7 @@
       },
       "choices": {
         "accept": [
-          "enter",
-          "tab"
+          "enter"
         ],
         "cancel": [
           "escape",
@@ -150,8 +149,9 @@
         "replace_view": [
           "alt+/"
         ],
-        "open_overlay": [
-          "alt+space"
+        "open_overlay": [],
+        "complete": [
+          "tab"
         ]
       }
     },

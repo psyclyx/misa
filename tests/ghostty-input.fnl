@@ -30,7 +30,7 @@
                                                           db.queue.pending)
                                             :picker (and db.picker
                                                          {:count (length db.picker.session.items)
-                                                          :id db.picker.id})
+                                                          :id db.picker.id :combo db.picker.session.combo})
                                             :requests (or db.requests {})
                                             :selection (not= db.selection nil)
                                             :selection_visual (and db.selection (= db.selection.visual true))
