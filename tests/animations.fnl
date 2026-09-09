@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Exercise the real transaction pipeline while intercepting native timers so
 
@@ -188,4 +188,4 @@
                                                    :type :test/animation-step}
                                            :type :dispatch}]})}})
           nil
-          (definitions.build :tests.animations declarations {}))
+          (definitions.collect :tests.animations declarations {}))

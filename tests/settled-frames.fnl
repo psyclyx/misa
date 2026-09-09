@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn [context]
           (local declarations [])
@@ -53,4 +53,4 @@
                                                                           " DONE")
                                                                      ""))}]}]})})
           nil
-          (definitions.build :tests.settled-frames declarations {}))
+          (definitions.collect :tests.settled-frames declarations {}))

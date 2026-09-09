@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn same-data [a b]
   (if (= a b) true
@@ -73,4 +73,4 @@
                                               "inline configured positional hint disappeared"))
                                     nil)}})
           nil
-          (definitions.build :tests.integration.fixtures.inline-choices declarations {}))
+          (definitions.collect :tests.integration.fixtures.inline-choices declarations {}))

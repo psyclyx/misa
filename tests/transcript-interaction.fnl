@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Integration coverage over the real message, Markdown, selection, and choice
 
@@ -276,4 +276,4 @@ Second paragraph with useful words."
                                                    :type :test/transcript-step}
                                            :type :dispatch}]})}})
           nil
-          (definitions.build :tests.transcript-interaction declarations {}))
+          (definitions.collect :tests.transcript-interaction declarations {}))

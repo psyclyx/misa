@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Transcript chrome delegates document parsing and terminal flow to Markdown.
 
 (fn rail [model]
@@ -66,39 +64,22 @@
       (interactive-message model context style previous)
       (misa.markdown.view.plain model.text style)))
 
-(fn build []
-  "Declare transcript message renderers."
-  (let [declarations []]
-    (fn reg [role render compose]
-      (table.insert declarations
-                    {:catalog :components
-                     :id (.. :default. role)
-                     :value {: render : compose}}))
+(fn render-message [style interactive-only? model context previous]
+  "Render a message with its semantic style and visibility policy."
+  (let [(lines cache) (when (or (not interactive-only?) context.interactive)
+                        (message model context style previous))]
+    (values {:lines (or lines [])} cache)))
 
-    (let [roles [{:id :user :interactive_only true :style :user}
-                 {:id :assistant :style :assistant}
-                 {:id :thinking :style :thinking}]]
-      (each [_ role (ipairs roles)]
-        (reg (.. :transcript. role.id)
-             (fn [model context previous]
-               (let [(lines cache) (when (or (not role.interactive_only)
-                                             context.interactive)
-                                     (message model context role.style previous))]
-                 (values {:lines (or lines [])} cache)))))
-      (reg :transcript.thinking_collapsed
-           (fn [model context previous]
-             (let [(lines cache) (interactive-message model context :thinking
-                                                      previous 3)]
-               (values {: lines} cache))) true)
-      (reg :transcript.harness
-           (fn [model context previous]
-             (let [(lines cache) (message model context
-                                          (if (= model.level :error) :error
-                                              :plain)
-                                          previous)]
-               (values {: lines} cache))))
-      (definitions.build :component.message
-        declarations
-        {:requirements {:component.message [:layout :markdown :markdown.view]}}))))
+(fn collapsed [model context previous]
+  "Render a bounded preview of a thinking message."
+  (let [(lines cache) (interactive-message model context :thinking previous 3)]
+    (values {:lines lines} cache)))
 
-{:build build}
+(fn harness [model context previous]
+  "Render a harness message using its severity."
+  (let [(lines cache) (message model context
+                               (if (= model.level :error) :error :plain)
+                               previous)]
+    (values {:lines lines} cache)))
+
+{: collapsed : harness : render-message}

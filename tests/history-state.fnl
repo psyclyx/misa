@@ -2,50 +2,68 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
 (local handlers {})
-(local setup ((. (fennel.dofile :extensions/misa/editor/history.fnl) :build)
-              {:config {:history {:max_entries 3 :persist false}}}))
+(local context {:config {:history {:max_entries 3 :persist false}}})
+(local setup (. (require :tests.stock) :misa.editor.history))
 (each [_ spec (pairs (. setup :events))]
   (tset handlers spec.event spec.handler))
+
 (set misa.choices {:session (fn [spec] spec)})
 (fn transition [db event]
   (local before (fennel.view db))
-  (local result ((. handlers event.type) db event))
+  (local result ((. handlers event.type) db event context))
   (assert (= before (fennel.view db)) (.. event.type " mutated its input"))
   (assert (not result.db))
   (values (misa.patch db (or result.patch {})) result.fx))
+
 (local editor {:text :draft :cursor 2 :attachments [{:path :image.png}]})
 (local original {: editor})
 (var db (transition original {:type :app/start}))
 (each [_ prompt (ipairs [:one :two :two :three :four])]
   (set db (transition db {:type :agent/submitted : prompt})))
+
 (assert (= (fennel.view db.history.entries) (fennel.view [:two :three :four])))
 (local submitted db)
 (local (previous fx) (transition db {:type :history/previous}))
-(assert (= (fennel.view previous.history.draft.attachments) (fennel.view editor.attachments)))
+(assert (= (fennel.view previous.history.draft.attachments)
+           (fennel.view editor.attachments)))
 (assert (= (. fx 1 :event :text) :four))
 (assert (= submitted.history.index 0))
-(local browsing (misa.patch previous {:editor {:text :four :attachments (misa.replace {})}}))
+(local browsing
+       (misa.patch previous
+                   {:editor {:text :four :attachments (misa.replace {})}}))
 (local (restored restore-fx) (transition browsing {:type :history/next}))
 (assert (= restored.history.index 0))
 (assert (= restored.history.current nil))
-(assert (= (. restore-fx 1 :event :attachments) browsing.history.draft.attachments))
+(assert (= (. restore-fx 1 :event :attachments)
+           browsing.history.draft.attachments))
 (assert (= (. restore-fx 1 :event :cursor) 2))
 (local cleared (transition previous {:type :agent/submitted :prompt :four}))
 (assert (= cleared.history.entries previous.history.entries))
 (assert (= cleared.history.draft nil))
 (assert (= cleared.history.current nil))
-(local loaded (transition previous {:type :history/loaded :namespace :history :found true
-                                    :data {:version 1 :entries [:old :new]}}))
-(assert (= (fennel.view loaded.history.entries) (fennel.view previous.history.entries)))
+(local loaded
+       (transition previous
+                   {:type :history/loaded
+                    :namespace :history
+                    :found true
+                    :data {:version 1 :entries [:old :new]}}))
+
+(assert (= (fennel.view loaded.history.entries)
+           (fennel.view previous.history.entries)))
 (local (searched search-fx) (transition restored {:type :history/search}))
 (assert (= searched.history.sequence 1))
 (assert (= (. search-fx 1 :event :token) "1"))
-(local selected (transition searched {:type :history/selected :picker :input-history
-                                      :picker_token "1" :value :two}))
+(local selected (transition searched
+                            {:type :history/selected
+                             :picker :input-history
+                             :picker_token "1"
+                             :value :two}))
+
 (assert (= selected.history.draft nil))
-(assert (= selected.editor searched.editor) "history changed editor without a restore event")
+(assert (= selected.editor searched.editor)
+        "history changed editor without a restore event")
 (assert (= original.history nil))
 (output "history state contracts passed\n")

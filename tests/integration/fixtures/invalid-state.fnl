@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -13,4 +13,4 @@
                                                  (= event.message :InvalidState)))
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.invalid-state declarations {}))
+          (definitions.collect :tests.integration.fixtures.invalid-state declarations {}))

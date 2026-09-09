@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn [context]
           (local declarations [])
@@ -90,4 +90,4 @@
                                                                :output_tokens 20}}
                                                :type :dispatch}]}))}})
           nil
-          (definitions.build :tests.ghostty-input declarations {}))
+          (definitions.collect :tests.ghostty-input declarations {}))

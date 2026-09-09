@@ -1,8 +1,7 @@
-(local definitions (require :misa.definitions))
-
 ;; Optional pending-prompt presentation, separate from submission scheduling.
 
 (fn on-pending-prompt [db cofx]
+  "Project the pending input layer."
   (let [queue db.queue]
     (if (or (not queue)
             (and (= queue.pending "") (= (length (or queue.attachments {})) 0)))
@@ -15,6 +14,7 @@
           {:dock :input :lines rendered.lines}))))
 
 (fn render-pending [model context]
+  "Render queued input previews."
   (let [text (.. (: model.pending :gsub "\n" " ↵ ")
                  (if (> model.attachment_count 0)
                      (.. "  [" model.attachment_count " image(s)]")
@@ -28,15 +28,4 @@
              {:spans [{:style :dim
                        :text (misa.layout.clip text context.columns)}]}]}))
 
-(fn build []
-  "Build the declarations for queue view."
-  (definitions.build :queue_view
-    [{:catalog :components
-      :id :default.pending-prompt
-      :value {:render render-pending}}
-     {:catalog :view-layers
-      :id :pending-prompt
-      :value {:handler on-pending-prompt}}]
-    {}))
-
-{: build}
+{:on-pending-prompt on-pending-prompt :render-pending render-pending}

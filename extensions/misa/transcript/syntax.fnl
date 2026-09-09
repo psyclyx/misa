@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Highlighting is requested by transcript changes, never by rendering.
 
 (fn key-for [model]
@@ -21,6 +19,7 @@
         model.text "")))
 
 (fn request [sequence key index slot]
+  "Plan a syntax request for an unfinished source slot."
   (if (or slot.request slot.done) {:next_id sequence : slot}
       (let [next-id (+ sequence 1)
             id (.. :syntax/ next-id)]
@@ -89,6 +88,7 @@
   result)
 
 (fn update-models [state models]
+  "Plan syntax changes for the supplied transcript models."
   (var current state)
   (let [patch {:documents {} :pending {}}
         fx []]
@@ -105,6 +105,7 @@
     (when (not= current state) {:patch {:syntax patch} : fx})))
 
 (fn syntax-projections-value [inputs _ previous]
+  "Project syntax documents while retaining unchanged entries."
   (let [result {}]
     (each [key entry (pairs (or (. inputs 1) {}))]
       (let [old (and previous (. previous key))]
@@ -132,15 +133,18 @@
       projection)))
 
 (fn initialize [db]
+  "Create initial domain state."
   {:patch {:syntax (misa.replace {:next_id 0 :pending {} :documents {}})}})
 
 (fn transcript-updated [enabled update-models db event cofx]
+  "Plan highlighting for changed interactive transcript content."
   (when (and enabled cofx.terminal.interactive db.syntax misa.transcript
              misa.transcript.blocks)
     (update-models db.syntax
                    (misa.transcript.blocks db event.response_id event.block_id))))
 
 (fn syntax-completed [request db event]
+  "Apply a syntax response or reschedule a stale source request."
   (let [pending (. db.syntax.pending event.id)]
     (when pending
       (let [patch {:pending {event.id misa.delete}}
@@ -176,41 +180,15 @@
                  {pending.key {:slots (misa.replace slots) : revision}})))
         {:patch {:syntax patch} : fx}))))
 
-(fn build [context]
-  "Declare transcript syntax highlighting."
-  (let [enabled (not= (. (or (. (or context.config {}) :messages) {}) :markdown)
-                      false)]
-    (definitions.build :syntax
-      [(let [definition {:id :syntax/projections
-                         :inputs [[:db/path :syntax :documents]]
-                         :compute syntax-projections-value}]
-         {:catalog :subscriptions :id (. definition :id) :value definition})
-       (let [definition {:id :syntax/projection
-                         :inputs [[:syntax/projections]]
-                         :compute (fn [inputs query]
-                                    (let [entry (. (. inputs 1) (. query 2))]
-                                      (and entry entry.value)))}]
-         {:catalog :subscriptions :id (. definition :id) :value definition})
-       {:catalog :services
-        :id :syntax.all
-        :value (fn [db]
-                 "Return available syntax captures indexed by source identity."
-                 (misa.sub db [:syntax/projections]))}
-       {:catalog :services :id :syntax.for-model :value syntax-for-model}
-       {:catalog :events :value {:event :app/start :handler initialize}}
-       {:catalog :events
-        :value {:event :transcript/reset
-                :handler (fn [db]
-                           {:patch {:syntax {:pending (misa.replace {})
-                                             :documents (misa.replace {})}}})}}
-       {:catalog :events
-        :value {:event :transcript/updated
-                :handler (fn [db event cofx]
-                           (transcript-updated enabled update-models db event
-                                               cofx))}}
-       {:catalog :events
-        :value {:event :syntax/completed
-                :handler (fn [db event] (syntax-completed request db event))}}]
-      {})))
+(fn reset [db]
+  "Clear requested and completed syntax documents."
+  {:patch {:syntax {:pending (misa.replace {}) :documents (misa.replace {})}}})
 
-{:build build}
+{: initialize
+ : request
+ : reset
+ : syntax-completed
+ : syntax-for-model
+ : syntax-projections-value
+ : transcript-updated
+ : update-models}

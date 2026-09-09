@@ -1,9 +1,8 @@
-(local definitions (require :misa.definitions))
-
 ;; Command palette composed from registered commands and canonical recent
 ;; invocations. Argument completion is an ordinary narrowing source.
 
 (fn command-items [db]
+  "List registered commands and recent invocations."
   (let [result {}
         seen {}]
     (each [_ command (ipairs (misa.commands.all))]
@@ -41,6 +40,7 @@
     (misa.choices.session spec db)))
 
 (fn open-picker [db]
+  "Open the command palette with a fresh correlation token."
   (let [sequence (+ (or db.omnipicker_sequence 0) 1)
         token (.. "omnipicker:" sequence)]
     {:patch {:omnipicker_sequence sequence}
@@ -54,6 +54,7 @@
            :type :dispatch}]}))
 
 (fn select-command [db event]
+  "Dispatch the invocation selected from the command palette."
   (if (not= event.picker :omnipicker) nil
       (if event.cancelled
           {:fx [{:type :terminal/read}]}
@@ -62,37 +63,7 @@
                                    "invalid command palette invocation")]
             {:fx [{:event invocation :type :dispatch}]}))))
 
-(fn build []
-  "Build the declarations for the command palette."
-  (definitions.build :omnipicker
-    [{:catalog :choice-sources
-      :id :omnipicker
-      :value {:items (fn [_ db]
-                       {:input_prefix "/"
-                        :items (command-items db)
-                        :preference_scope :commands
-                        :purpose :command-completion
-                        :title :Commands})}}
-     {:catalog :choice-sources
-      :id :command-arguments
-      :value {:items (fn [context db]
-                       (misa.commands.choice-spec (assert (misa.commands.lookup context.command))
-                                                  "" db))}}
-     {:catalog :services :id :picker.session :value session}
-     (let [definition {:action :open_omnipicker
-                       :context :global
-                       :default [:alt+/]}]
-       {:catalog :keybindings
-        :id (.. definition.context "/" definition.action)
-        :value definition})
-     (let [definition {:binding {:action :open_omnipicker :context :global}
-                       :event {:type :omnipicker/open}
-                       :id :commands.open
-                       :label "Open session commands"}]
-       {:catalog :actions :id definition.id :value definition})
-     {:catalog :events :value {:event :omnipicker/open :handler open-picker}}
-     {:catalog :events
-      :value {:event :omnipicker/selected :handler select-command}}]
-    {:requirements {:omnipicker [:commands.invocation]}}))
-
-{: build}
+{:command-items command-items
+ :open-picker open-picker
+ :select-command select-command
+ :session session}

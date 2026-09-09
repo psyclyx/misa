@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -53,4 +53,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.generic-picker declarations {}))
+          (definitions.collect :tests.integration.fixtures.generic-picker declarations {}))

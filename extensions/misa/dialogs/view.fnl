@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Compose replaceable data and dialog components without storing rendered UI.
 (fn projection [db cofx]
   "Build the dialog component model and constrained layout."
@@ -33,11 +31,4 @@
           (set rendered.priority 30)
           rendered)))))
 
-(fn build []
-  "Build the declarations for dialog view."
-  (definitions.build :dialog_view
-    [{:catalog :services :id :dialogs.layout :value projection}
-     {:catalog :view-layers :id :dialog :value {:handler projection}}]
-    {:requirements {:dialog_view [:dialogs.enabled?]}}))
-
-{: build}
+{:projection projection}

@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Default editor visuals.
 
 (fn span [text style] {: style : text})
@@ -7,6 +5,7 @@
 (local markers {:insert "│ " :normal "◆ " :visual "◇ "})
 
 (fn render-input [model context]
+  "Render input content."
   (let [mode (or model.mode :insert)
         marker (or (. markers mode) markers.insert)
         prompt-style (or (and (= mode :insert) :accent) (.. :editor. mode))
@@ -47,6 +46,7 @@
     rendered))
 
 (fn render-completions [model]
+  "Render completions content."
   (if model.lines
       (let [lines {}]
         (each [_ line (ipairs model.lines)]
@@ -75,15 +75,4 @@
                 {:spans [(span model.overflow :choice.hint)]}))
         {:lines rendered})))
 
-(fn build []
-  "Declare editor input and completion renderers."
-  (definitions.build :component.editor
-    [{:catalog :components
-      :id :default.editor.input
-      :value {:render render-input}}
-     {:catalog :components
-      :id :default.editor.completions
-      :value {:render render-completions}}]
-    {:requirements {:component.editor [:layout :layout.wrap-input]}}))
-
-{: build}
+{:render-completions render-completions :render-input render-input}

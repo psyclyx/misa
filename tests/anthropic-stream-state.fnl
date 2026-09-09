@@ -3,17 +3,18 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local protocol (require :misa.protocols.anthropic))
-(local specs (protocol.configure {:id :test :url "https://example.invalid/messages" :models []}))
-(local application (misa.compose
- [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
-  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
-  (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
-  {:definitions (definitions.build :test [{:catalog :anthropic-block-deltas :id :custom :value (fn [_ record] {:patch {:custom record.delta.value}})}
+(local specs {:events {:test/stream {:event :provider/test-complete :handler (fn [db event] (protocol.stream :test db event))}}})
+(local app ((require :tests.application) {:argv [] :config {}}))
+(app.define (. (require :tests.stock) :misa.json))
+(app.define (. (require :tests.stock) :misa.agent.stream))
+(app.define (require :misa.standard.protocols.anthropic))
+(app.define specs)
+(app.define (definitions.collect :test [{:catalog :anthropic-block-deltas :id :custom :value (fn [_ record] {:patch {:custom record.delta.value}})}
                          {:catalog :anthropic-block-starts :id :custom :value (fn [] {:patch {:custom_started true}})}
-                         {:catalog :anthropic-records :id :custom :value (fn [] {:patch {:custom_record true}})}])}]))
-(misa._install application.definitions {:argv [] :config {}})
+                         {:catalog :anthropic-records :id :custom :value (fn [] {:patch {:custom_record true}})}]))
+(app.install)
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local handler (. handlers :provider/test-complete))
 (fn transition [db event]

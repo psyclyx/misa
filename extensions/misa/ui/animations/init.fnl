@@ -1,11 +1,11 @@
 (local animation-state (require :misa.ui.animations.state))
-(local definitions (require :misa.definitions))
 
 ;; Animation registry with clock-driven spans and optional explicit timer events.
 ;; Registrations are immutable once
 ;; app/start begins; selections, role ticks, and running timers are transactional.
 
 (fn animations-presentation-value [enabled interval-ms inputs query]
+  "Describe an animation selection and its presentation clock."
   (let [id (or (. inputs 2) (. inputs 1))]
     (when id
       (let [animation (assert (. (misa.catalog :animations) id)
@@ -80,6 +80,7 @@
                                   {:active id})}))
 
 (fn app-start [config configured configured-roles db]
+  "Initialize selected presentation state and request persisted choices."
   (let [initial (when (not db.animations)
                   {:active configured
                    :running {}
@@ -102,6 +103,7 @@
              :type :state/load}])}))
 
 (fn animations-loaded [options db event]
+  "Restore available animation choices and reconcile timers."
   (if (or (= event.found false) (= event.data misa.json-null))
       nil
       (do
@@ -123,6 +125,7 @@
                                                                          event.data.active)}}))))))
 
 (fn animations-swap-handler [config options db event]
+  "Select an animation and plan persistence and timer effects."
   (let [next (misa.animations.swap db event.animation event.role)
         result (animation-state.reconcile (misa.catalog :animations) options
                                           next)
@@ -137,6 +140,7 @@
     result))
 
 (fn validate-animation [_ animation]
+  "Require textual animation frames and a valid still frame."
   (assert (and (= (type animation) :table) (= (type animation.frames) :table)
                (> (length animation.frames) 0))
           "animation requires frames")
@@ -145,105 +149,13 @@
   (assert (or (= animation.still nil) (= (type animation.still) :string))
           "invalid still frame"))
 
-(fn build [context]
-  "Build the declarations for animations."
-  (let [declarations []
-        config (let [value (. (or context.config {}) :animations)]
-                 (if (= (type value) :table) value {}))
-        configured (or (and (= (type config.default) :string) config.default)
-                       :default)
-        configured-roles (or (and (= (type config.roles) :table) config.roles)
-                             {})
-        interval-ms (or config.interval_ms 160)]
-    (assert (or (= config.enabled nil) (= (type config.enabled) :boolean))
-            "animations.enabled must be a boolean")
-    (let [enabled (not= config.enabled false)]
-      (assert (and (= (type interval-ms) :number) (>= interval-ms 10)
-                   (<= interval-ms 60000) (= (% interval-ms 1) 0))
-              "animations.interval_ms must be an integer from 10 through 60000")
-      (table.insert declarations
-                    (let [definition {:id :animations/presentation
-                                      :inputs (fn [query]
-                                                [[:db/path :animations :active]
-                                                 [:db/path
-                                                  :animations
-                                                  :roles
-                                                  (. query 2)]])
-                                      :compute (fn [inputs query]
-                                                 (animations-presentation-value enabled
-                                                                                interval-ms
-                                                                                inputs
-                                                                                query))}]
-                      {:catalog :subscriptions
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    {:catalog :services
-                     :id :animations.state
-                     :value animations-state})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :animations.lookup
-                     :value (fn [db role]
-                              (animations-lookup db role))})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :animations.frame
-                     :value (fn [db role tick]
-                              (animations-frame enabled db role tick))})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :animations.span
-                     :value (fn [db role options]
-                              (animations-span enabled interval-ms db role
-                                               options))})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :animations.swap
-                     :value animations-swap})
-      (let [options {:enabled enabled :interval_ms interval-ms}]
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :app/start
-                               :handler (fn [db]
-                                          (app-start config configured
-                                                     configured-roles db))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :animations/loaded
-                               :handler (fn [db event]
-                                          (animations-loaded options db event))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :animations/swap
-                               :handler (fn [db event]
-                                          (animations-swap-handler config
-                                                                   options db
-                                                                   event))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :animations/start
-                               :handler (fn [db event]
-                                          (animation-state.start (misa.catalog :animations)
-                                                                 options db
-                                                                 (assert event.role
-                                                                         "animation role is required")))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :animations/stop
-                               :handler (fn [db event]
-                                          (animation-state.stop (misa.catalog :animations)
-                                                                options db
-                                                                (assert event.role
-                                                                        "animation role is required")))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :animations/tick
-                               :handler (fn [db event]
-                                          (animation-state.tick (misa.catalog :animations)
-                                                                options db event))}})
-        (definitions.build :animations
-          declarations
-          {:validators {:animations validate-animation}})))))
-
-{:build build}
+{: animations-frame
+ : animations-loaded
+ : animations-lookup
+ : animations-presentation-value
+ : animations-span
+ : animations-state
+ : animations-swap
+ : animations-swap-handler
+ : app-start
+ : validate-animation}

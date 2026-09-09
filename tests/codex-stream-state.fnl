@@ -3,14 +3,14 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local definitions (require :misa.definitions))
-(local specs ((. (fennel.dofile :extensions/misa/providers/openai-codex.fnl) :build) {:config {}}))
-(local application (misa.compose
- [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
-  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
-  (misa.compose [{:definitions specs}])
-  {:definitions (definitions.build :test [{:catalog :codex-records :id :test.metadata :value (fn [_ record] {:patch {:metadata record.value}})}])}]))
-(misa._install application.definitions {:argv [] :config {}})
+(local definitions (require :tests.declarations))
+(local specs (. (require :tests.stock) :misa.providers.openai-codex))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(app.define (. (require :tests.stock) :misa.json))
+(app.define (. (require :tests.stock) :misa.agent.stream))
+(app.define specs)
+(app.define (definitions.collect :test [{:catalog :codex-records :id :test.metadata :value (fn [_ record] {:patch {:metadata record.value}})}]))
+(app.install)
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local handler (. handlers :provider/openai-codex-complete))
 (fn transition [db event]

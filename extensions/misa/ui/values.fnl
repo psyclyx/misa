@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Open pure formatting of semantic values, independent of any component role.
 (fn span [text style action] {: text : style : action})
 (fn finite [value]
@@ -65,18 +63,22 @@
 
 (fn text-value [text] [(span text)])
 (fn format-text [fact]
+  "Render a text fact as semantic text spans."
   (assert (= (type fact.value) :string) "text fact requires a string")
   (text-value fact.value))
 
 (fn format-boolean [fact]
+  "Render a boolean fact as semantic text spans."
   (assert (= (type fact.value) :boolean) "boolean fact requires a boolean")
   (text-value (tostring fact.value)))
 
 (fn format-number [fact]
+  "Render a number fact as semantic text spans."
   (text-value (if fact.compact (compact fact.value)
                   (tostring (finite fact.value)))))
 
 (fn format-datetime [fact]
+  "Render a datetime fact as semantic text spans."
   (let [instant (timestamp-seconds fact.value)
         formatted (and instant (misa.time.local-datetime instant))]
     (text-value (if formatted
@@ -88,15 +90,19 @@
                     (or fact.fallback "Time unavailable")))))
 
 (fn format-sequence [fact context]
+  "Render a sequence fact as semantic text spans."
   (let [result []]
     (each [_ item (ipairs fact.values)]
       (each [_ part (ipairs (misa.values.render item context))]
         (table.insert result part)))
     result))
 
-(fn format-tokens [fact] (text-value (compact fact.value)))
+(fn format-tokens [fact]
+  "Render a tokens fact as semantic text spans."
+  (text-value (compact fact.value)))
 
 (fn format-duration [fact]
+  "Render a duration fact as semantic text spans."
   (let [milliseconds (finite fact.value)]
     (assert (>= milliseconds 0) "duration must be nonnegative")
     (text-value (if (< milliseconds 1000)
@@ -107,29 +113,36 @@
                         (math.floor (/ (% milliseconds 60000) 1000)) "s")))))
 
 (fn format-rate [fact]
+  "Render a rate fact as semantic text spans."
   (assert (= (type fact.unit) :string) "rate requires a unit")
   (text-value (.. (string.format "%.1f" (finite fact.value)) " " fact.unit "/s")))
 
 (fn format-ratio [fact]
+  "Render a ratio fact as semantic text spans."
   (let [format (if (= fact.unit :tokens) compact (fn [v] (tostring (finite v))))]
     (text-value (.. (if (= fact.used nil) "?" (format fact.used)) "/"
                     (if (= fact.limit nil) "?" (format fact.limit))))))
 
 (fn format-percent [fact]
+  "Render a percent fact as semantic text spans."
   (let [value (finite fact.value)]
     (assert (and (>= value 0) (<= value 100))
             "percentage must be within 0..100")
     (text-value (.. (string.format "%.0f%%" value)
                     (if (= fact.basis :remaining) " left" "")))))
 
-(fn format-unavailable [] (text-value "unavailable"))
+(fn format-unavailable []
+  "Render a unavailable fact as semantic text spans."
+  (text-value "unavailable"))
 
 (fn format-timestamp [fact]
+  "Render a timestamp fact as semantic text spans."
   (let [seconds (% (math.floor (/ (finite fact.value) 1000)) 86400)]
     (text-value (string.format "%02d:%02d:%02d" (math.floor (/ seconds 3600))
                                (% (math.floor (/ seconds 60)) 60) (% seconds 60)))))
 
 (fn format-money [fact]
+  "Render a money fact as semantic text spans."
   (assert (= (type fact.currency) :string) "money requires a currency")
   (each [_ key (ipairs [:pending :estimated :unknown])]
     (assert (or (= (. fact key) nil) (= (type (. fact key)) :boolean))
@@ -164,31 +177,15 @@
                  :timestamp format-timestamp
                  :money format-money})
 
-(fn values-render [roles fact context]
+(fn values-render [fact context]
   "Render a typed fact using its configured implementation."
   (assert (and (= (type fact) :table) (= (type fact.type) :string))
           "value renderer requires a typed fact")
-  ((assert (. (misa.catalog :value-renderers)
-              (or (. roles fact.type) fact.type))
+  ((assert (. (misa.catalog :value-renderers) fact.type)
            (.. "unknown value renderer for: " fact.type)) fact (or context {})))
 
-(fn build [context]
-  "Build the declarations for values."
-  (let [roles (or (. (or (. (or context.config {}) :values) {}) :roles) {})
-        declarations [{:catalog :services
-                       :id :values.timestamp->seconds
-                       :value timestamp-seconds}
-                      {:catalog :services
-                       :id :values.render
-                       :value (fn [fact context]
-                                (values-render roles fact context))}]]
-    (each [id render (pairs builtins)]
-      (table.insert declarations
-                    {:catalog :value-renderers :id id :value render}))
-    (definitions.build :values
-      declarations
-      {:validators {:value-renderers (fn [_ render]
-                                       (assert (= (type render) :function)
-                                               "value renderer must be a function"))}})))
+(fn validate-renderer [_ render]
+  "Require a callable typed-value renderer."
+  (assert (= (type render) :function) "value renderer must be a function"))
 
-{:build build}
+{: builtins : timestamp-seconds : validate-renderer : values-render}

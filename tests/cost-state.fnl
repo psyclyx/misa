@@ -2,46 +2,64 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
-(local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local configuration {:costs {:models {:test {:input 2 :output 4}}}})
+(local app ((require :tests.application) {:argv [] :config configuration}))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
-(local specs ((. (fennel.dofile :extensions/misa/costs.fnl) :build)
-              {:config {:costs {:models {:test {:input 2 :output 4}}}}}))
+(local specs (. (require :tests.stock) :misa.costs))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
+
 (fn account [tx]
   (local before (fennel.view tx))
-  (local result ((assert (. handlers tx.event.type)) tx.db tx.event))
+  (local result
+         ((assert (. handlers tx.event.type)) tx.db tx.event
+                                              {:config configuration}))
   (assert (= before (fennel.view tx)) "cost accounting mutated its input")
-  (assert (not (and result result.db)) "accounting returned legacy mutable state")
+  (assert (not (and result result.db))
+          "accounting returned legacy mutable state")
   {:db (misa.patch tx.db (or (and result result.patch) {}))})
+
 (local original {:costs {:responses {:earlier {:model :test :cost {:usd 7}}}}})
 (local started (account {:db original
                          :event {:type :transcript/response-start
-                                 :response_id :current :model :test}}))
+                                 :response_id :current
+                                 :model :test}}))
+
 (assert (= original.costs.responses.current nil) "start mutated prior state")
-(local finished (account {:db started.db
-                          :event {:type :transcript/response-end
-                                  :response_id :current :usage {:input_tokens 1000000}}}))
-(assert (= started.db.costs.responses.current.cost nil) "completion mutated response")
+(local finished
+       (account {:db started.db
+                 :event {:type :transcript/response-end
+                         :response_id :current
+                         :usage {:input_tokens 1000000}}}))
+
+(assert (= started.db.costs.responses.current.cost nil)
+        "completion mutated response")
 (assert (= finished.db.costs.responses.current.cost.usd 2))
 (assert (= finished.db.costs.responses.earlier original.costs.responses.earlier))
-(local summarized (account {:db finished.db
-                            :event {:type :tool-summary/usage :response_id :summary :model :test
-                                    :usage {:output_tokens 1000000}}}))
+(local summarized
+       (account {:db finished.db
+                 :event {:type :tool-summary/usage
+                         :response_id :summary
+                         :model :test
+                         :usage {:output_tokens 1000000}}}))
+
 (assert (= summarized.db.costs.responses.summary.cost.usd 4))
-(assert (= summarized.db.costs.responses.current finished.db.costs.responses.current))
-(local interrupted (account {:db finished.db
-                             :event {:type :transcript/response-interrupted
-                                     :response_id :current}}))
+(assert (= summarized.db.costs.responses.current
+           finished.db.costs.responses.current))
+(local interrupted
+       (account {:db finished.db
+                 :event {:type :transcript/response-interrupted
+                         :response_id :current}}))
+
 (assert (= finished.db.costs.responses.current.cost.usd 2))
 (assert interrupted.db.costs.responses.current.cost.unknown)
 (local cleared (account {:db interrupted.db :event {:type :transcript/reset}}))
 (assert (= (next cleared.db.costs.responses) nil))
 (assert interrupted.db.costs.responses.current)
 (app.define specs)
-(app.define ((. (fennel.dofile :extensions/misa/ui/values.fnl) :build) {}))
+(app.define (. (require :tests.stock) :misa.ui.values))
 (app.install)
 (local scope (misa.subscriptions.scope))
 (local pending-cost (scope.query started.db [:costs/response :current]))
@@ -65,18 +83,31 @@
 (assert (= earlier.text nil))
 (assert (not earlier.pending))
 (fn formatted [fact]
-  (table.concat (icollect [_ span (ipairs (misa.values.render fact))] span.text)))
+  (table.concat (icollect [_ span (ipairs (misa.values.render fact))]
+                  span.text)))
+
 (assert (= (formatted pending-cost) :pending))
-(assert (= (formatted (scope.query finished.db [:costs/response :current])) "~$2.00"))
-(assert (= (formatted (scope.query interrupted.db [:costs/response :current])) "?"))
+(assert (= (formatted (scope.query finished.db [:costs/response :current]))
+           "~$2.00"))
+(assert (= (formatted (scope.query interrupted.db [:costs/response :current]))
+           "?"))
 (assert pending-cost.pending "later cost update mutated pending fact")
-(local mixed-db {:costs {:responses {:mixed {:cost {:usd 1 :estimated true :unknown true}}
-                                    :reported {:cost {:usd 0.0123 :estimated false :unknown false}}}}})
+(local mixed-db
+       {:costs {:responses {:mixed {:cost {:usd 1
+                                           :estimated true
+                                           :unknown true}}
+                            :reported {:cost {:usd 0.0123
+                                              :estimated false
+                                              :unknown false}}}}})
+
 (local hovered (misa.patch finished.db {:hover_action :button}))
-(assert (= total (scope.query hovered [:costs/total])) "hover recomputed cost total")
-(assert (= display (scope.query hovered [:costs/indicator])) "hover recomputed cost fact")
+(assert (= total (scope.query hovered [:costs/total]))
+        "hover recomputed cost total")
+(assert (= display (scope.query hovered [:costs/indicator]))
+        "hover recomputed cost fact")
 (assert (= earlier (scope.query interrupted.db [:costs/response :earlier]))
         "another response invalidated untouched response projection")
+
 (local changed (scope.query interrupted.db [:costs/total]))
 (assert (and (= changed.usd 7) changed.unknown))
 (local partial-cost (scope.query interrupted.db [:costs/indicator]))
@@ -89,64 +120,97 @@
 (fork.close)
 (assert (= changed (scope.query interrupted.db [:costs/total]))
         "discarded speculative query replaced committed projection")
+
 (assert (= (scope.query cleared.db [:costs/response :earlier]) nil))
 (assert (= (scope.query {} [:costs/response :missing]) nil))
 (assert (= (. (scope.query {} [:costs/total]) :responses) 0))
 (assert (= (. (scope.query {} [:costs/indicator]) :amount) 0))
-(assert (= (formatted (scope.query mixed-db [:costs/response :mixed])) "~$1.00 + ?"))
-(assert (= (formatted (scope.query mixed-db [:costs/response :reported])) "$0.0123"))
+(assert (= (formatted (scope.query mixed-db [:costs/response :mixed]))
+           "~$1.00 + ?"))
+(assert (= (formatted (scope.query mixed-db [:costs/response :reported]))
+           "$0.0123"))
 (scope.close)
-(local failure
-       (G.for_all
-         (G.vector (G.tuple [(G.integer 0 10000) G.boolean G.boolean]))
-         (fn [items]
-(local consumer (misa.subscriptions.scope))
-           (var state {:costs {:responses {}}})
-           (var sum 0)
-           (var estimated false)
-           (var unknown false)
-           (local retained [])
-           (each [index item (ipairs items)]
-             (local before (consumer.query state [:costs/total]))
-             (table.insert retained {:projection before :usd sum :responses (- index 1)})
-             (set sum (+ sum (. item 1)))
-             (set estimated (or estimated (. item 2)))
-             (set unknown (or unknown (. item 3)))
-             (set state (misa.patch state {:costs {:responses
-                                                   {(tostring index)
-                                                    {:cost {:usd (. item 1)
-                                                            :estimated (. item 2)
-                                                            :unknown (. item 3)}}}}}))
-             (local total (consumer.query state [:costs/total]))
-             (assert (and (= total.usd sum) (= total.responses index)
-                          (= total.estimated estimated) (= total.unknown unknown))
-                     "cost fold disagrees with independent accumulator")
-             (assert (= total (consumer.query (misa.patch state {:hover_link :url}) [:costs/total]))
-                     "unrelated patch invalidated cost facts")
-             (each [_ saved (ipairs retained)]
-               (assert (and (= saved.projection.usd saved.usd)
-                            (= saved.projection.responses saved.responses))
-                       "cost fold mutated a retained result")))
-           (consumer.close))
-         {:cases 200 :size 20}))
+(local failure (G.for_all (G.vector (G.tuple [(G.integer 0 10000)
+                                              G.boolean
+                                              G.boolean]))
+                          (fn [items]
+                            (local consumer (misa.subscriptions.scope))
+                            (var state {:costs {:responses {}}})
+                            (var sum 0)
+                            (var estimated false)
+                            (var unknown false)
+                            (local retained [])
+                            (each [index item (ipairs items)]
+                              (local before
+                                     (consumer.query state [:costs/total]))
+                              (table.insert retained
+                                            {:projection before
+                                             :usd sum
+                                             :responses (- index 1)})
+                              (set sum (+ sum (. item 1)))
+                              (set estimated (or estimated (. item 2)))
+                              (set unknown (or unknown (. item 3)))
+                              (set state
+                                   (misa.patch state
+                                               {:costs {:responses {(tostring index) {:cost {:usd (. item
+                                                                                                     1)
+                                                                                             :estimated (. item
+                                                                                                           2)
+                                                                                             :unknown (. item
+                                                                                                         3)}}}}}))
+                              (local total
+                                     (consumer.query state [:costs/total]))
+                              (assert (and (= total.usd sum)
+                                           (= total.responses index)
+                                           (= total.estimated estimated)
+                                           (= total.unknown unknown))
+                                      "cost fold disagrees with independent accumulator")
+                              (assert (= total
+                                         (consumer.query (misa.patch state
+                                                                     {:hover_link :url})
+                                                         [:costs/total]))
+                                      "unrelated patch invalidated cost facts")
+                              (each [_ saved (ipairs retained)]
+                                (assert (and (= saved.projection.usd saved.usd)
+                                             (= saved.projection.responses
+                                                saved.responses))
+                                        "cost fold mutated a retained result")))
+                            (consumer.close))
+                          {:cases 200 :size 20}))
+
 (assert (not failure) (and failure (fennel.view failure)))
 
 ;; Group accounting includes its background work, while provider facts stay exact.
-(local attached (account {:db finished.db
-                         :event {:type :tool-summary/usage :response_id :summary :parent_response_id :current
-                                 :call_id :call :model :test :usage {:output_tokens 1000000}}}))
+(local attached
+       (account {:db finished.db
+                 :event {:type :tool-summary/usage
+                         :response_id :summary
+                         :parent_response_id :current
+                         :call_id :call
+                         :model :test
+                         :usage {:output_tokens 1000000}}}))
+
 (local group-scope (misa.subscriptions.scope))
 (local groups (group-scope.query attached.db [:costs/groups]))
 (assert (= (. groups :current :amount) 6))
 (assert (= (. groups :earlier :amount) 7))
 (assert (= (. groups :summary) nil))
-(assert (= (. (group-scope.query attached.db [:costs/response :current]) :amount) 2))
+(assert (= (. (group-scope.query attached.db [:costs/response :current])
+              :amount) 2))
 (assert (= (. (group-scope.query attached.db [:costs/total]) :usd) 13))
 (assert (= attached.db.costs.responses.summary.call_id :call))
-(local duplicate (account {:db attached.db
-                          :event {:type :tool-summary/usage :response_id :summary :parent_response_id :current
-                                  :call_id :call :model :test :usage {:output_tokens 1000000}}}))
-(assert (= (. (group-scope.query duplicate.db [:costs/groups]) :current) (. groups :current)))
-(assert (= (. (group-scope.query started.db [:costs/groups]) :current :pending) true))
+(local duplicate
+       (account {:db attached.db
+                 :event {:type :tool-summary/usage
+                         :response_id :summary
+                         :parent_response_id :current
+                         :call_id :call
+                         :model :test
+                         :usage {:output_tokens 1000000}}}))
+
+(assert (= (. (group-scope.query duplicate.db [:costs/groups]) :current)
+           (. groups :current)))
+(assert (= (. (group-scope.query started.db [:costs/groups]) :current :pending)
+           true))
 (group-scope.close)
 (output "cost state contracts passed\n")

@@ -1,9 +1,9 @@
-(local definitions (require :misa.definitions))
-
 (fn header [model context]
+  "Render the beginning of a transcript group."
   {:lines []})
 
 (fn footer [model context]
+  "Render timing and usage facts at the end of a transcript group."
   (let [facts []]
     (when model.started_wall_ms
       (table.insert facts {:type :timestamp :value model.started_wall_ms}))
@@ -27,15 +27,4 @@
                               model.cost)))
     (context.render_child :group.boundary {: facts} context)))
 
-(fn build []
-  "Declare transcript turn boundaries and metadata."
-  (definitions.build :transcript.groups
-    [{:catalog :components
-      :id :default.transcript.group_header
-      :value {:render header :compose true}}
-     {:catalog :components
-      :id :default.transcript.group_footer
-      :value {:render footer :compose true}}]
-    {}))
-
-{:build build}
+{: footer : header}

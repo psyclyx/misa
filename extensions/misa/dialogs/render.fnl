@@ -1,11 +1,10 @@
-(local definitions (require :misa.definitions))
-
 ;; Dialog chrome composes content, inputs, and shared buttons.
 (fn span [text style link] {: text :style (or style :dialog.message) : link})
 (fn append [target source]
   (each [_ value (ipairs source)] (table.insert target value)))
 
 (fn render [model context]
+  "Render the dialog content and controls."
   (let [width (math.max 1 (- (or context.columns 80) 2))
         room (math.max 0 (or context.available_lines 24))
         body []]
@@ -104,10 +103,4 @@
            :overlay true
            :surface :surface.dialog})))))
 
-(fn build []
-  "Declare dialog rendering."
-  (definitions.build :component.dialog
-    [{:catalog :components :id :default.dialog :value {:compose true : render}}]
-    {:requirements {:component.dialog [:layout :components.buttons]}}))
-
-{: build}
+{:render render}

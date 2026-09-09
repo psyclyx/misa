@@ -11,13 +11,13 @@
 ;; Register the consumer first: startup and subsequent selections must use the
 ;; committed model, not depend on the ordering of extension registrations.
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local declarations (require :misa.definitions))
+(local declarations (require :tests.declarations))
 (each [_ name (ipairs [:misa.json :misa.models.options :misa.models])]
-  (local specs ((. (require name) :build) context))
+  (local specs (. (require :tests.stock) name))
 
   (app.define specs))
 (var observed nil)
-(app.define (declarations.build :model-startup-1 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
+(app.define (declarations.collect :model-startup-1 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
 (app.install context)
 (fn dispatch [event]
   (local pending [event])

@@ -1,10 +1,11 @@
-"""Build explicit Fennel applications for executable tests and benchmarks."""
+"""Write explicit application data for executable tests and benchmarks."""
 
 import json
+from pathlib import Path
 
 
 def fennel(value):
-    """Encode JSON-shaped data as a Fennel expression."""
+    """Encode JSON-shaped fixture data as a Fennel expression."""
     if value is None:
         return "misa.json-null"
     if isinstance(value, bool):
@@ -19,24 +20,46 @@ def fennel(value):
 
 
 def application(settings, *, default=False, omit=()):
-    """Compose a test application from explicit modules and settings."""
-    modules = []
+    """Assemble fixture catalogs with explicit replacement and event order."""
+    root = Path(__file__).resolve().parents[1]
+    search_path = f"{root}/?.fnl;{root}/?/init.fnl;"
+    base = "(misa.snapshot (require :misa.standard))" if default else "{:config {} :definitions {}}"
+    lines = [
+        '(local fennel (require :fennel))',
+        f'(set fennel.path (.. {fennel(search_path)} fennel.path))',
+        f'(local application {base})',
+        f'(set application.config (misa.patch application.config {fennel(settings.get("config", {}))}))',
+        '(local context {:config application.config :argv []})',
+    ]
+    if omit or any("/" not in name and not name.endswith((".fnl", ".lua"))
+                   for name in settings.get("extensions", [])):
+        lines.append('(local stock (require :tests.stock))')
+    if omit:
+        matches = " ".join(
+            f'(= (name:sub 1 {len(prefix)}) {fennel(prefix)})' for prefix in omit
+        )
+        lines.append(
+            '(each [name catalogs (pairs stock)] '
+            f'(when (or {matches}) '
+            '(each [kind entries (pairs catalogs)] '
+            '(when (. application.definitions kind) '
+            '(each [id (pairs entries)] (tset (. application.definitions kind) id nil))))))'
+        )
     for index, name in enumerate(settings.get("extensions", [])):
         path = "/" in name or name.endswith((".fnl", ".lua"))
-        source = f"(fennel.dofile {fennel(name)})" if path else f"(require {fennel(name)})"
-        modules.append(f'"test.{index}" {{:build {source} :priority {-100000 + index * 1000}}}')
-    base = "standard.default" if default else "{}"
-    module_expression = "{" + " ".join(modules) + "}"
-    if omit:
-        tests = " ".join(f'(= (id:sub 1 {len(prefix)}) {fennel(prefix)})' for prefix in omit)
-        module_expression = (
-            f'(let [modules {module_expression}] '
-            f'(each [id (pairs standard.default.modules)] '
-            f'(when (or {tests}) (tset modules id misa.delete))) modules)'
+        if path:
+            loader = "fennel.dofile" if name.endswith(".fnl") else "dofile"
+            source = f'(({loader} {fennel(name)}) context)'
+        else:
+            source = f'(assert (. stock {fennel(name)}) "unknown fixture catalog")'
+        lines.append(
+            f'(let [catalogs {source}] '
+            '(each [kind entries (pairs catalogs)] '
+            '(when (not (. application.definitions kind)) (tset application.definitions kind {})) '
+            '(each [id value (pairs entries)] '
+            '(let [entry (misa.snapshot value)] '
+            f'(when (= kind :events) (set entry.priority {index * 1000 - 100000})) '
+            '(tset (. application.definitions kind) id entry)))))'
         )
-    return (
-        '(local standard (require :misa.standard))\n'
-        '(local fennel (require :fennel))\n'
-        f'(standard.application (misa.compose [{base}\n'
-        f'{{:config {fennel(settings.get("config", {}))} :modules {module_expression}}}]))\n'
-    )
+    lines.append('application')
+    return "\n".join(lines) + "\n"

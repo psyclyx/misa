@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Tool lifecycle chrome composes ordinary content views. Bindings to actual
 ;; tools live in tool.presentations; this wrapper does not inspect definitions.
 (fn span [text style] {: text : style :source false})
@@ -30,6 +28,7 @@
     {: spans}))
 
 (fn render [model context]
+  "Render the supplied semantic model within the available dimensions."
   (assert context.render_child "component.tool requires component composition")
   (let [columns (math.max 1 (or context.columns 80))
         prefix (misa.layout.clip "┃ " (math.max 0 (- columns 2)))
@@ -130,17 +129,4 @@
         (table.insert lines {:spans [(span prefix rail)] : surface}))
       {: lines})))
 
-(fn build []
-  "Declare transcript tool-call rendering."
-  (definitions.build :component.tool
-    [{:catalog :components
-      :id :default.transcript.tool_call
-      :value {: render :compose true}}
-     {:catalog :components
-      :id :default.transcript.tool_result
-      :value {: render :compose true}}]
-    {:requirements {:component.tool [:layout
-                                     :values.render
-                                     :tools.presentation]}}))
-
-{:build build}
+{: render}

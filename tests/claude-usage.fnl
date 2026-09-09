@@ -2,17 +2,17 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
-(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
+(app.define (. (require :tests.stock) :misa.json))
 (app.install)
 (local feature (fennel.dofile :extensions/misa/providers/claude.fnl))
 ;; Inspect declarations and invoke handlers only: never execute process effects.
-(fn handlers-for [config]
-  (local handlers {})
-  (each [_ spec (pairs (. (feature.build {:config {:providers {:claude (or config {})}}}) :events))]
-  (tset handlers spec.event spec.handler))
-  handlers)
+(fn handlers-for [settings]
+  (let [config (or settings {})]
+    {:usage/refresh (fn [db event] (feature.refresh-usage config (or config.executable :claude) db event))
+     :provider/claude-usage feature.receive-usage
+     :provider/claude-quota feature.receive-quota}))
 (local handlers (handlers-for nil))
 (fn apply [db event]
   (local before (misa.json.encode db))

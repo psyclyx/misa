@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn transcript [messages]
   (let [out ["Continue this conversation. Preserve the roles and treat tool results as authoritative."]]
     (each [_ message (ipairs messages)]
@@ -420,6 +418,7 @@
    :fx (misa.stream.effects fx)})
 
 (fn stream [db event]
+  "Translate streamed transport records into agent events."
   (let [state (or (and db.providers db.providers.claude_streams
                        (. db.providers.claude_streams event.id))
                   (fresh))]
@@ -464,6 +463,7 @@
             (stream-update event.id next fx))))))
 
 (fn refresh-usage [config executable db event]
+  "Describe a quota refresh request."
   (when (or (not event.provider) (= event.provider :claude))
     (let [provider (and db.providers db.providers.claude)]
       (if (and provider provider.usage_request)
@@ -500,6 +500,7 @@
                                   :overall_ms 30000})}]})))))
 
 (fn receive-usage [db event]
+  "Apply a completed quota request."
   (let [provider (and db.providers db.providers.claude)]
     (when (and provider provider.usage_request
                (= provider.usage_request event.id))
@@ -522,6 +523,7 @@
                  [updated])}))))
 
 (fn provider-availability [configured-models db event]
+  "Update model limits from account availability."
   (if (or (not= event.provider :claude) (= event.subscription_type nil)
           (= event.subscription_type misa.json-null))
       nil
@@ -540,6 +542,15 @@
 
 (fn request [config serializer-id executable effect cofx]
   "Build a Claude CLI request with explicit host and provider settings."
+  (assert (and (= (type executable) :string) (not= executable ""))
+          "Claude executable must be nonempty")
+  (assert (or (= config.mcp_command nil)
+              (and (= (type config.mcp_command) :string)
+                   (not= config.mcp_command "")))
+          "Claude MCP command must be nonempty")
+  (assert (or (= config.mcp_arguments nil)
+              (= (type config.mcp_arguments) :table))
+          "Claude MCP arguments must be an array")
   (let [argv [executable
               :--print
               :--input-format
@@ -588,147 +599,19 @@
      :type :provider/process}))
 
 (fn receive-quota [db event]
+  "Apply quota observations from the provider."
   (let [previous (and db.providers db.providers.claude
                       db.providers.claude.usage)]
     {:patch {:providers {:claude {:usage (misa.replace (merge-quota previous
                                                                     event.usage))}}}
      :fx [{:type :dispatch :event {:type :usage/updated}}]}))
 
-(fn build [context]
-  "Build the claude provider catalogs from application settings."
-  (let [declarations []]
-    (table.insert declarations
-                  (let [definition {:description "Claude Pro/Max via Claude Code"
-                                    :id :claude
-                                    :label :Claude
-                                    :model_provider :claude
-                                    :strategy :cli_handoff}]
-                    {:catalog :auth-providers
-                     :id (. definition :id)
-                     :value definition}))
-    (let [providers (or (and (= (type context.config) :table)
-                             context.config.providers)
-                        nil)
-          raw-config (or (and (= (type providers) :table) providers.claude) nil)
-          config (or (and (= (type raw-config) :table) raw-config) {})
-          executable (or config.executable :claude)]
-      (assert (and (= (type executable) :string) (not= executable ""))
-              "config.providers.claude.executable must be nonempty")
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :usage/refresh
-                             :handler (fn [db event]
-                                        (refresh-usage config executable db
-                                                       event))}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :provider/claude-usage
-                             :handler receive-usage}})
-      (assert (or (= config.mcp_command nil)
-                  (and (= (type config.mcp_command) :string)
-                       (not= config.mcp_command "")))
-              "config.providers.claude.mcp_command must be nonempty")
-      (assert (or (= config.mcp_arguments nil)
-                  (= (type config.mcp_arguments) :table))
-              "config.providers.claude.mcp_arguments must be an array")
-      (assert (or (= config.max_plan nil) (= (type config.max_plan) :boolean))
-              "config.providers.claude.max_plan must be boolean")
-      (let [max-plan (= config.max_plan true)
-            serializer-id :claude.cli]
-        (table.insert declarations
-                      {:catalog :serializers
-                       :id serializer-id
-                       :value {:accepts (fn [name]
-                                          (= name :reasoning_effort))
-                               :serialize (fn [name value]
-                                            "Return command arguments for a supported option."
-                                            (when (= name :reasoning_effort)
-                                              [:--effort value]))}})
-        (let [reasoning-api {:request_options {:reasoning_effort {:choices [:low
-                                                                            :medium
-                                                                            :high
-                                                                            :max]
-                                                                  :default :high}}
-                             :request_options_serializer serializer-id}
-              configured-models (or config.models
-                                    [{:context_window 1000000
-                                      :id :claude/claude-fable-5-1
-                                      :label "Claude Fable 5.1"
-                                      :model :claude-fable-5-1}
-                                     {:context_window (or (and max-plan 1000000)
-                                                          200000)
-                                      :id :claude/claude-opus-5
-                                      :label "Claude Opus 5"
-                                      :model :claude-opus-5}
-                                     {:context_window 1000000
-                                      :id :claude/claude-sonnet-5
-                                      :label "Claude Sonnet 5"
-                                      :model :claude-sonnet-5}
-                                     {:context_window 200000
-                                      :id :claude/claude-haiku-4-5-20251001
-                                      :label "Claude Haiku 4.5"
-                                      :model :claude-haiku-4-5-20251001}])]
-          (assert (and (= (type configured-models) :table)
-                       (> (length configured-models) 0))
-                  "config.providers.claude.models must be nonempty")
-          (each [_ model (ipairs configured-models)]
-            (assert (and (= (type model) :table) (= (type model.id) :string)
-                         (= (type model.model) :string))
-                    "invalid Claude model")
-            (let [source (or model.api reasoning-api)
-                  api (if (and (= (type source) :table)
-                               (= (type source.request_options) :table))
-                          (misa.patch source
-                                      {:request_options_serializer serializer-id})
-                          source)]
-              (table.insert declarations
-                            (let [definition {: api
-                                              :context_window model.context_window
-                                              :id model.id
-                                              :label (or model.label model.id)
-                                              :model model.model
-                                              :provider :claude}]
-                              {:catalog :models
-                               :id (. definition :id)
-                               :value definition}))))
-          (when (= config.max_plan nil)
-            (table.insert declarations
-                          {:catalog :events
-                           :value {:event :models/provider-availability
-                                   :handler (fn [db event]
-                                              (provider-availability configured-models
-                                                                     db event))}}))
-          (table.insert declarations
-                        {:catalog :effects
-                         :id :provider.claude
-                         :value (fn [effect cofx]
-                                  (request config serializer-id executable
-                                           effect cofx))})
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event :provider/claude-complete
-                                 :handler stream}})
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event :provider/claude-quota
-                                 :handler receive-quota}})
-          (each [id value (pairs records)]
-            (table.insert declarations {:catalog :claude-records : id : value}))
-          (table.insert declarations
-                        {:catalog :validators
-                         :id :claude-records
-                         :value (fn [_ value]
-                                  (assert (= (type value) :function)
-                                          "claude-records requires function definitions"))})
-          (each [id value (pairs partials)]
-            (table.insert declarations
-                          {:catalog :claude-stream-events : id : value}))
-          (table.insert declarations
-                        {:catalog :validators
-                         :id :claude-stream-events
-                         :value (fn [_ value]
-                                  (assert (= (type value) :function)
-                                          "claude-stream-events requires function definitions"))})
-          (definitions.build :provider.claude declarations {}))))))
-
-{:build build :request request :quota-snapshot quota-snapshot}
+{:partials partials
+ :records records
+ :stream stream
+ :refresh-usage refresh-usage
+ :receive-usage receive-usage
+ :provider-availability provider-availability
+ :request request
+ :receive-quota receive-quota
+ :quota-snapshot quota-snapshot}

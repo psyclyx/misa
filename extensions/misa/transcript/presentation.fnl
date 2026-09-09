@@ -105,7 +105,7 @@
   "Return the transcript state without performing layout."
   {:verbose (= (. (or db.messages {}) :verbose) true)})
 
-(fn project [markdown config db render-context]
+(fn project [markdown presenters db render-context]
   "Render transcript blocks while reusing unchanged component geometry."
   (let [context-copy {}]
     (each [key value (pairs (or render-context {}))]
@@ -211,14 +211,7 @@
                     (group-item previous-owner :footer)
                     (group-item owner :header)
                     (set previous-owner owner))
-                  (let [implementation (. (or config.presentations {})
-                                          model.kind)
-                        projector (. (misa.catalog :transcript-presentations)
-                                     (or implementation model.kind))]
-                    (when implementation
-                      (assert projector
-                              (.. "unknown transcript presentation: "
-                                  implementation)))
+                  (let [projector (. presenters model.kind)]
                     (let [presentation (and projector
                                             (projector model state
                                                        (and selecting selected)))

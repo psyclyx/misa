@@ -2,9 +2,9 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local tool-effect {:type :fixture/run :name :fixture :tool_call_id :call :arguments {}})
-(local policy (definitions.build :test [(let [definition {:name :fixture :description :Fixture
+(local policy (definitions.collect :test [(let [definition {:name :fixture :description :Fixture
                                     :input_schema {:type :object} :effect :fixture/run}] {:catalog :tools :id (. definition :name) :value definition})
        {:catalog :coeffects :id :fixture :value (fn [cofx] (assert (= cofx.clock.wall_ms 123)) :injected)}
        {:catalog :events  :value {:event :fixture/run :handler (fn [] {:fx [tool-effect]})}}
@@ -15,7 +15,10 @@
                    {:type :dispatch :event {:type :tool/result :tool_call_id effect.tool_call_id :text :done}})}
        {:catalog :serializers :id :fixture :value {:accepts (fn [name] (= name :effort))
                      :serialize (fn [_ value] {:reasoning {:effort value}})}}]))
-(misa._install (. (misa.compose [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})} {:definitions policy}]) :definitions) {:argv [] :config {}})
+(local app ((require :tests.application) {:argv [] :config {}}))
+(app.include (. (require :tests.stock) :misa.json))
+(app.include policy)
+(app.install)
 (local terminal {:interactive false :columns 80 :lines 24})
 (local clock {:wall_ms 123 :monotonic_ms 456})
 (local fx (misa._dispatch {:type :fixture/run} terminal clock))

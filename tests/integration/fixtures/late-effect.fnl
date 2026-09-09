@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -7,4 +7,4 @@
                                     {:fx [{:type :app/quit}
                                           {:type :not/native}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.late-effect declarations {}))
+          (definitions.collect :tests.integration.fixtures.late-effect declarations {}))

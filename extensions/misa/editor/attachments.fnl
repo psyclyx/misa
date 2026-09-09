@@ -1,8 +1,7 @@
-(local definitions (require :misa.definitions))
-
 ;; Attachment composition is independent of acquisition and submission policy.
 
 (fn on-draft-attachments [db cofx]
+  "Project controls for the current draft attachments."
   (let [items (or (. (or db.editor {}) :attachments) {})
         pending (and db.images (not= (next db.images.pending) nil))]
     (if (and (= (length items) 0) (not pending))
@@ -30,6 +29,7 @@
     lines))
 
 (fn render-controls [model]
+  "Render attachment controls."
   {:lines (icollect [_ line (ipairs [{:visible model.pending
                                       :spans [{:style :pending
                                                :text "Loading image…"}]}
@@ -39,16 +39,6 @@
                                                :text "Remove last attachment"}]}])]
             (when line.visible {:spans line.spans}))})
 
-(fn build []
-  "Build the declarations for attachments."
-  (definitions.build :attachments
-    [{:catalog :components
-      :id :default.attachment-controls
-      :value {:render render-controls}}
-     {:catalog :services :id :attachments.lines :value attachments-lines}
-     {:catalog :view-layers
-      :id :draft-attachments
-      :value {:handler on-draft-attachments}}]
-    {}))
-
-{: build}
+{:attachments-lines attachments-lines
+ :on-draft-attachments on-draft-attachments
+ :render-controls render-controls}

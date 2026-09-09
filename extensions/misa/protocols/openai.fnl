@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn text-delta [kind value]
   (if (and (= (type value) :string) (not= value ""))
       [{:type kind :text value}]
@@ -34,6 +32,7 @@
    :fx (misa.stream.effects fx)})
 
 (fn stream [db event]
+  "Translate transport stream records into agent events."
   (let [previous (and db.providers db.providers.openai_streams
                       (. db.providers.openai_streams event.id))]
     (if (= event.phase :start)
@@ -98,6 +97,7 @@
           (stream-update event.id (= event.terminal true) fx)))))
 
 (fn model-api [serializer-id source]
+  "Associate request options with their serializer."
   (if (and (= (type source) :table) (= (type source.request_options) :table))
       (misa.patch source {:request_options_serializer serializer-id})
       source))
@@ -178,6 +178,7 @@
     result))
 
 (fn request [spec serializer-id effect]
+  "Describe a protocol operation."
   (let [converted (messages effect.messages)]
     (when effect.system_prompt
       (table.insert converted 1 {:content effect.system_prompt :role :system}))
@@ -217,11 +218,13 @@
         {:reasoning_effort value})))
 
 (fn discover-models [spec _ event]
+  "Describe model discovery for the configured provider."
   (if (and event.provider (not= event.provider spec.id))
       nil
       (discover spec)))
 
 (fn models-complete [spec serializer-id _ event]
+  "Normalize a completed model discovery response."
   (if (or (not event.ok) (not= (type event.data) :table)
           (not= (type event.data.data) :table))
       {:fx [{:event {:provider spec.id :type :models/discovery-complete}
@@ -262,73 +265,11 @@
               {:event {:provider spec.id :type :models/discovery-complete}
                :type :dispatch}]})))
 
-(fn configure [spec]
-  "Describe this transport for a provider configuration."
-  (let [declarations []]
-    (assert (and (= (type spec.id) :string) (= (type spec.url) :string)
-                 (= (type spec.models) :table)))
-    (let [serializer-id (.. :openai.chat. spec.id)]
-      (table.insert declarations
-                    {:catalog :serializers
-                     :id serializer-id
-                     :value {:accepts (fn [name]
-                                        (= name :reasoning_effort))
-                             :serialize (fn [name value]
-                                          (serialize spec name value))}})
-      (each [_ model (ipairs spec.models)]
-        (table.insert declarations
-                      (let [definition {:api (model-api serializer-id model.api)
-                                        :context_window model.context_window
-                                        :id model.id
-                                        :label (or model.label model.id)
-                                        :model model.model
-                                        :pricing model.pricing
-                                        :provider spec.id}]
-                        {:catalog :models
-                         :id (. definition :id)
-                         :value definition})))
-      (when spec.models_url
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :models/discover
-                               :handler (fn [_ event]
-                                          (discover-models spec _ event))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event (.. :provider/ spec.id :-models)
-                               :handler (fn [_ event]
-                                          (models-complete spec serializer-id _
-                                                           event))}}))
-      (table.insert declarations
-                    {:catalog :effects
-                     :id (.. :provider. spec.id)
-                     :value (fn [effect] (request spec serializer-id effect))})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event (.. :provider/ spec.id :-complete)
-                             :handler stream}})
-      (definitions.build (.. :protocol.openai/ spec.id)
-        declarations
-        {}))))
-
-(fn build []
-  "Build the protocol catalogs."
-  (let [declarations []]
-    ;; OpenAI-compatible Chat Completions protocol adapter.
-    (table.insert declarations {:catalog :services
-                                :id :protocols.openai-messages
-                                :value messages})
-    (each [_ projection (ipairs delta-projections)]
-      (table.insert declarations
-                    {:catalog :openai-deltas
-                     :id projection.id
-                     :value projection.project}))
-    (table.insert declarations
-                  {:catalog :validators
-                   :id :openai-deltas
-                   :value (fn [_ value]
-                            (assert (= (type value) :function)
-                                    "OpenAI deltas require functions"))})
-    (definitions.build :protocol.openai declarations {})))
-
-{:configure configure :messages messages :definitions (build)}
+{:messages messages
+ :request request
+ :serialize serialize
+ :discover-models discover-models
+ :stream stream
+ :model-api model-api
+ :models-complete models-complete
+ :delta-projections delta-projections}

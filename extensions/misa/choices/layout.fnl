@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Single geometry projection for every choice overlay. Input handling and the
 ;; component consume the same rows and positional targets from this projection.
 
@@ -148,15 +146,10 @@
   (misa.choices.picker-layout session db
                               {:available_lines lines : columns :compact true}))
 
-(fn build [context]
-  "Build the declarations for choice layout."
-  (let [declarations []
-        supplied-configured (or (and (= (type context.config) :table)
-                                     (= (type context.config.choices) :table)
-                                     context.config.choices.overlay)
-                                nil)
-        configured (or (and (= (type supplied-configured) :table)
-                            supplied-configured) {})]
+(fn overlay-options [config]
+  "Validate and return choice overlay dimensions."
+  (let [value (. (or config.choices {}) :overlay)
+        configured (if (= (type value) :table) value {})]
     (each [_ name (ipairs [:preferred_width
                            :min_width
                            :max_width
@@ -174,160 +167,136 @@
             "choice overlay min_width exceeds max_width")
     (assert (<= (or configured.min_height 4) (or configured.max_height 18))
             "choice overlay min_height exceeds max_height")
-    (table.insert declarations
-                  {:catalog :services
-                   :id :choices.row-lines
-                   :value choices-row-lines})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :choices.viewport
-                   :value choices-viewport})
+    configured))
 
-    (fn choices-picker-layout [previous db terminal]
-      "Lay out choice panels within the available terminal dimensions."
-      (let [session (misa.choices.refresh previous db)
-            compact (= terminal.compact true)
-            screen-width (math.max 1 (math.floor (or terminal.columns 1)))]
-        (var available terminal.available_lines)
-        (when (= available nil)
-          (set available (or (and misa.ui misa.ui.picker-room
-                                  (misa.ui.picker-room db terminal))
-                             terminal.lines 0)))
-        (set available (math.max 0 (math.floor available)))
-        (var min-width (math.min screen-width (or configured.min_width 28)))
-        (var max-width
-             (math.min screen-width (or configured.max_width screen-width)))
-        (let [padding (math.min (math.floor (/ (- screen-width 1) 2))
-                                (or configured.padding 2))]
-          (set max-width
-               (math.max 1 (math.min max-width (- screen-width (* padding 2)))))
-          (set min-width (math.min min-width max-width))
-          (let [width (clamp (or configured.preferred_width max-width)
-                             min-width max-width)
-                x padding
-                min-height (math.min available (or configured.min_height 4))
-                max-height (math.min available (or configured.max_height 18))
-                height (or (and compact available)
-                           (clamp (or configured.preferred_height 14)
-                                  min-height max-height))
-                widths (misa.layout.columns width
-                                            (or configured.panel_min_width 28)
-                                            (math.min (length session.panels) 3)
-                                            2)
-                highlighted (and (. session.panels 1)
-                                 (. session.panels 1 :items
-                                    (. session.panels 1 :highlight)))
-                info (and highlighted highlighted.preview)
-                preview (misa.choices.preview info {:columns width : compact})
-                preview-height (math.min (length preview)
-                                         (or (and compact
-                                                  (or (and (>= height 2) 1) 0))
-                                             (math.max 0
-                                                       (math.floor (/ height 3)))))]
-            (var hint-actions
-                 [[:complete :complete]
-                  [:previous :previous]
-                  [:next :next]
-                  [:accept :accept]
-                  [:cancel :cancel]
-                  [:cycle "cycle views"]
-                  [:replace_view :views]])
-            (when session.preference_scope
-              (tset hint-actions (+ (length hint-actions) 1)
-                    [:favorite :favorite]))
-            (when compact
-              (set hint-actions (or (and (>= height 8)
-                                         [[:complete :complete]
-                                          [:cycle :views]
-                                          [:favorite :favorite]])
-                                    {})))
-            (let [hints {}]
-              (each [_ entry (ipairs hint-actions)]
-                (let [key (misa.choices.hint (. entry 1))]
-                  (when key
-                    (tset hints (+ (length hints) 1)
-                          {:action (.. :choices. (. entry 1))
-                           : key
-                           :label (. entry 2)
-                           :tokens (misa.keybindings.tokens key)}))))
-              (let [input-height (or (and compact 0) 1)
-                    hint-height (or (and (> (length hints) 0) 1) 0)
-                    fixed (+ input-height preview-height hint-height)
-                    panel-budget (math.max 0 (- height fixed))
-                    all (misa.choices.projected-rows session)
-                    columns {}
-                    targets {}]
-                (var column-x 0)
-                (each [bank panel-width (ipairs widths)]
-                  (let [panel (. session.panels bank)
-                        viewport (misa.choices.viewport panel
-                                                        (. all bank :rows)
-                                                        panel-width
-                                                        (math.max 0
-                                                                  (- panel-budget
-                                                                     1))
-                                                        bank compact
-                                                        session.combo)]
-                    (each [action item (pairs viewport.targets)]
-                      (tset targets action item))
-                    (tset columns bank
-                          {:active (= bank 1)
-                           :id panel.id
-                           :lines viewport.lines
-                           :overflow viewport.overflow
-                           :rows viewport.rows
-                           :title (or (and compact (. viewport.rows 1)
-                                           (. viewport.rows 1 :section))
-                                      panel.title)
-                           :width panel-width
-                           :x column-x
-                           :y (+ input-height preview-height)})
-                    (when (and session.combo (= bank 1))
-                      (tset columns bank :title
-                            (.. (. columns bank :title) " ["
-                                (misa.keybindings.text session.combo) " …]")))
-                    (set column-x (+ column-x panel-width 2))))
-                (let [query (.. (or session.input_prefix "") session.query)]
-                  {:available_lines available
-                   : columns
-                   : height
-                   :hint_height hint-height
-                   :hint_y (+ input-height preview-height panel-budget)
-                   : hints
-                   :combo session.combo
-                   :input {:cursor (length query)
-                           :hidden compact
-                           :text query
-                           :title session.title
-                           : width
-                           : x
-                           :y 0}
-                   :panel_count (length columns)
-                   :panel_height panel-budget
-                   :panel_y (+ input-height preview-height)
-                   :preview {:height preview-height
-                             :model info
-                             :lines preview
-                             : width
-                             : x
-                             :y input-height}
-                   : targets
-                   : width
-                   : x
-                   :y 0})))))))
+(fn choices-picker-layout [configured previous db terminal]
+  "Lay out choice panels within the available terminal dimensions."
+  (let [session (misa.choices.refresh previous db)
+        compact (= terminal.compact true)
+        screen-width (math.max 1 (math.floor (or terminal.columns 1)))]
+    (var available terminal.available_lines)
+    (when (= available nil)
+      (set available (or (and misa.ui misa.ui.picker-room
+                              (misa.ui.picker-room db terminal))
+                         terminal.lines 0)))
+    (set available (math.max 0 (math.floor available)))
+    (var min-width (math.min screen-width (or configured.min_width 28)))
+    (var max-width
+         (math.min screen-width (or configured.max_width screen-width)))
+    (let [padding (math.min (math.floor (/ (- screen-width 1) 2))
+                            (or configured.padding 2))]
+      (set max-width
+           (math.max 1 (math.min max-width (- screen-width (* padding 2)))))
+      (set min-width (math.min min-width max-width))
+      (let [width (clamp (or configured.preferred_width max-width) min-width
+                         max-width)
+            x padding
+            min-height (math.min available (or configured.min_height 4))
+            max-height (math.min available (or configured.max_height 18))
+            height (or (and compact available)
+                       (clamp (or configured.preferred_height 14) min-height
+                              max-height))
+            widths (misa.layout.columns width
+                                        (or configured.panel_min_width 28)
+                                        (math.min (length session.panels) 3) 2)
+            highlighted (and (. session.panels 1)
+                             (. session.panels 1 :items
+                                (. session.panels 1 :highlight)))
+            info (and highlighted highlighted.preview)
+            preview (misa.choices.preview info {:columns width : compact})
+            preview-height (math.min (length preview)
+                                     (or (and compact
+                                              (or (and (>= height 2) 1) 0))
+                                         (math.max 0 (math.floor (/ height 3)))))]
+        (var hint-actions [[:complete :complete]
+                           [:previous :previous]
+                           [:next :next]
+                           [:accept :accept]
+                           [:cancel :cancel]
+                           [:cycle "cycle views"]
+                           [:replace_view :views]])
+        (when session.preference_scope
+          (tset hint-actions (+ (length hint-actions) 1) [:favorite :favorite]))
+        (when compact
+          (set hint-actions (or (and (>= height 8)
+                                     [[:complete :complete]
+                                      [:cycle :views]
+                                      [:favorite :favorite]])
+                                {})))
+        (let [hints {}]
+          (each [_ entry (ipairs hint-actions)]
+            (let [key (misa.choices.hint (. entry 1))]
+              (when key
+                (tset hints (+ (length hints) 1)
+                      {:action (.. :choices. (. entry 1))
+                       : key
+                       :label (. entry 2)
+                       :tokens (misa.keybindings.tokens key)}))))
+          (let [input-height (or (and compact 0) 1)
+                hint-height (or (and (> (length hints) 0) 1) 0)
+                fixed (+ input-height preview-height hint-height)
+                panel-budget (math.max 0 (- height fixed))
+                all (misa.choices.projected-rows session)
+                columns {}
+                targets {}]
+            (var column-x 0)
+            (each [bank panel-width (ipairs widths)]
+              (let [panel (. session.panels bank)
+                    viewport (misa.choices.viewport panel (. all bank :rows)
+                                                    panel-width
+                                                    (math.max 0
+                                                              (- panel-budget 1))
+                                                    bank compact session.combo)]
+                (each [action item (pairs viewport.targets)]
+                  (tset targets action item))
+                (tset columns bank
+                      {:active (= bank 1)
+                       :id panel.id
+                       :lines viewport.lines
+                       :overflow viewport.overflow
+                       :rows viewport.rows
+                       :title (or (and compact (. viewport.rows 1)
+                                       (. viewport.rows 1 :section))
+                                  panel.title)
+                       :width panel-width
+                       :x column-x
+                       :y (+ input-height preview-height)})
+                (when (and session.combo (= bank 1))
+                  (tset columns bank :title
+                        (.. (. columns bank :title) " ["
+                            (misa.keybindings.text session.combo) " …]")))
+                (set column-x (+ column-x panel-width 2))))
+            (let [query (.. (or session.input_prefix "") session.query)]
+              {:available_lines available
+               : columns
+               : height
+               :hint_height hint-height
+               :hint_y (+ input-height preview-height panel-budget)
+               : hints
+               :combo session.combo
+               :input {:cursor (length query)
+                       :hidden compact
+                       :text query
+                       :title session.title
+                       : width
+                       : x
+                       :y 0}
+               :panel_count (length columns)
+               :panel_height panel-budget
+               :panel_y (+ input-height preview-height)
+               :preview {:height preview-height
+                         :model info
+                         :lines preview
+                         : width
+                         : x
+                         :y input-height}
+               : targets
+               : width
+               : x
+               :y 0})))))))
 
-    (table.insert declarations
-                  {:catalog :services
-                   :id :choices.picker-layout
-                   :value choices-picker-layout})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :choices.completion-layout
-                   :value choices-completion-layout})
-    (definitions.build :choice_layout
-      declarations
-      {:requirements {:choice_layout [:choices.preview
-                                      :choices.projected-rows
-                                      :layout]}})))
-
-{: build}
+{:choices-completion-layout choices-completion-layout
+ :choices-picker-layout choices-picker-layout
+ :choices-row-lines choices-row-lines
+ :choices-viewport choices-viewport
+ :overlay-options overlay-options}

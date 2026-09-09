@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Generic structural navigation over source documents supplied by features.
 ;; Selection state contains a frozen snapshot: streaming cannot move the range
 ;; between a user's navigation keystroke and copy.
@@ -226,13 +224,6 @@
                       (if vertical state
                           (misa.patch state {:preferred_column misa.delete}))))))))))
 
-(local motions {:previous (fn [frame] (- frame.index 1))
-                :next (fn [frame] (+ frame.index 1))
-                :extend_previous (fn [frame] (- frame.index 1))
-                :extend_next (fn [frame] (+ frame.index 1))
-                :first (fn [] 1)
-                :last (fn [frame] (length frame.nodes))})
-
 (fn selection-geometry [db terminal]
   "Project complete source geometry for the focused frozen document."
   (let [state db.selection
@@ -368,12 +359,14 @@
             decorated)))))
 
 (fn route-terminal-input [db event]
+  "Route terminal input to structural selection."
   (when (and db.selection (not db.picker) (not db.dialog)
              (not (. scrolling-inputs event.kind)))
     {:type :selection/action
      :action (or (misa.keybindings.action :selection event) :ignore)}))
 
 (fn on-selection-open [db]
+  "Capture source documents and open structural selection."
   (let [documents {}
         origins {}
         ids {}]
@@ -402,6 +395,7 @@
        :fx [{:type :terminal/read}]})))
 
 (fn on-selection-action [db event cofx]
+  "Apply the requested structural selection action."
   (let [state db.selection
         handler (. (misa.catalog :selection-actions) event.action)
         result (and state handler (handler state db event cofx))
@@ -418,6 +412,7 @@
        :fx fx})))
 
 (fn on-selection [db cofx]
+  "Project the selection layer for the accepted document."
   (let [state db.selection]
     (when cofx.projecting
       (misa.projections.publish :selection/geometry
@@ -466,6 +461,7 @@
                               rendered))))))
 
 (fn copy [state db]
+  "Copy the selected source text."
   (let [slices (misa.selection.ranges db)]
     (when (> (length slices) 0)
       {:state (misa.patch state {:copied true})
@@ -478,168 +474,66 @@
                                          "\n\n")}}]})))
 
 (fn visual [state]
+  "Toggle structural range selection."
   (let [(_ frame) (focus state)]
     {:state (misa.patch (move state frame.index false)
                         {:visual (not state.visual)})}))
 
 (fn parent [state]
+  "Move selection to its parent node."
   {:state (ascend (misa.patch state {:preferred_column misa.delete}))})
 
 (fn child [state]
+  "Descend into the focused selection node."
   {:state (descend (misa.patch state {:preferred_column misa.delete}))})
 
 (fn selection-open? [db]
+  "Return whether structural selection is active."
   (and (not= db.selection nil) (not db.picker)))
 
 (fn selection-sources [_ source]
+  "Validate a source of selectable documents."
   (assert (and (= (type source) :table) (= (type source.documents) :function)
                (or (= source.layout nil) (= (type source.layout) :function)))
           "selection source requires documents and optional layout"))
 
 (fn selection-actions [_ handler]
+  "Validate a structural selection action."
   (assert (= (type handler) :function) "selection action must be a function"))
 
-(fn build []
-  "Build the declarations for selection."
-  (let [declarations []
-        actions {:close (fn [] {:state nil :close true})
-                 :child child
-                 :parent parent
-                 :visual visual
-                 :copy copy}]
-    (each [_ direction (ipairs [:left :right :up :down])]
-      (tset actions direction
-            (fn [state db _ cofx]
-              (let [document (. state.documents (. state.frames 1 :index))
-                    accepted (and cofx cofx.presentation
-                                  (. cofx.presentation :selection/geometry))
-                    geometry (and accepted document (= accepted.id document.id)
-                                  (= accepted.text document.text)
-                                  (= accepted.source_part document.source_part)
-                                  accepted.segments)]
-                {:state (directional state direction
-                                     (when geometry
-                                       (fn [node] (geometry-at geometry node))))}))))
-    (each [name motion (pairs motions)]
-      (tset actions name
-            (fn [state]
-              (let [(_ frame) (focus state)]
-                {:state (move state (motion frame)
-                              (or state.visual (= name :extend_next)
-                                  (= name :extend_previous)))}))))
-    (table.insert declarations
-                  {:catalog :services
-                   :id :selection.geometry
-                   :value selection-geometry})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :transcript/reset
-                           :handler (fn [_] {:patch {:selection misa.delete}})}})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :selection.state
-                   :value selection-state})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :selection.ranges
-                   :value selection-ranges})
-    ;; Decorate the existing rich transcript. Source-marked spans come from the
-    ;; document renderer; chrome and table padding are never mistaken for content.
-    (table.insert declarations
-                  {:catalog :services
-                   :id :selection.decorate
-                   :value selection-decorate})
-    (table.insert declarations
-                  (let [definition {:action :select_transcript
-                                    :context :global
-                                    :default [:alt+s]}]
-                    {:catalog :keybindings
-                     :id (.. (. definition :context) "/" (. definition :action))
-                     :value definition}))
-    (table.insert declarations
-                  (let [definition {:available (fn [db] (not db.picker))
-                                    :binding {:action :select_transcript
-                                              :context :global}
-                                    :event {:type :selection/open}
-                                    :id :selection.open
-                                    :label "Navigate transcript"}]
-                    {:catalog :actions
-                     :id (. definition :id)
-                     :value definition}))
-    (let [keys {:child [:J :shift+j :enter]
-                :close [:escape :ctrl_c :q]
-                :copy [:y]
-                :extend_next [:shift+arrow_down]
-                :extend_previous [:shift+arrow_up]
-                :first [:g]
-                :last [:G]
-                :next []
-                :left [:h :arrow_left]
-                :right [:l :arrow_right]
-                :up [:k :arrow_up]
-                :down [:j :arrow_down]
-                :parent [:K :shift+k :backspace]
-                :previous []
-                :visual [:v]}]
-      (each [_ action (ipairs [:left
-                               :right
-                               :up
-                               :down
-                               :previous
-                               :next
-                               :parent
-                               :child
-                               :copy
-                               :extend_next
-                               :extend_previous
-                               :visual
-                               :first
-                               :last
-                               :close])]
-        (let [default (. keys action)]
-          (table.insert declarations
-                        (let [definition {: action
-                                          :context :selection
-                                          : default}]
-                          {:catalog :keybindings
-                           :id (.. (. definition :context) "/"
-                                   (. definition :action))
-                           :value definition}))
-          (table.insert declarations
-                        (let [definition {:available selection-open?
-                                          :binding {: action
-                                                    :context :selection}
-                                          :event {: action
-                                                  :type :selection/action}
-                                          :id (.. :selection. action)
-                                          :label (.. "Selection: " action)}]
-                          {:catalog :actions
-                           :id (. definition :id)
-                           :value definition}))))
-      (table.insert declarations
-                    (let [definition {:id :selection/input
-                                      :event :terminal/input
-                                      :priority 500
-                                      :context [:db/path]
-                                      :resolve route-terminal-input}]
-                      {:catalog :routes
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :selection/open :handler on-selection-open}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :selection/action
-                             :handler on-selection-action}})
-      (table.insert declarations
-                    {:catalog :view-layers
-                     :id :selection
-                     :value {:handler on-selection}})
-      (definitions.build :selection
-        declarations
-        {:selection-actions actions
-         :validators {:selection-actions selection-actions
-                      :selection-sources selection-sources}}))))
+(fn move-direction [direction state db _ cofx]
+  "Move selection using geometry from the accepted frame when available."
+  (let [document (. state.documents (. state.frames 1 :index))
+        accepted (and cofx cofx.presentation
+                      (. cofx.presentation :selection/geometry))
+        geometry (and accepted document (= accepted.id document.id)
+                      (= accepted.text document.text)
+                      (= accepted.source_part document.source_part)
+                      accepted.segments)]
+    {:state (directional state direction
+                         (when geometry (fn [node] (geometry-at geometry node))))}))
 
-{: build}
+(fn apply-motion [name motion state]
+  "Apply a structural motion while preserving visual selection mode."
+  (let [(_ frame) (focus state)]
+    {:state (move state (motion frame)
+                  (or state.visual (= name :extend_next)
+                      (= name :extend_previous)))}))
+
+{:apply-motion apply-motion
+ :child child
+ :copy copy
+ :move-direction move-direction
+ :on-selection on-selection
+ :on-selection-action on-selection-action
+ :on-selection-open on-selection-open
+ :parent parent
+ :route-terminal-input route-terminal-input
+ :selection-actions selection-actions
+ :selection-decorate selection-decorate
+ :selection-geometry selection-geometry
+ :selection-open? selection-open?
+ :selection-ranges selection-ranges
+ :selection-sources selection-sources
+ :selection-state selection-state
+ :visual visual}

@@ -3,17 +3,20 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local protocol (require :misa.protocols.openai))
-(local specs (protocol.configure {:id :test :url "https://example.invalid/chat"
+(local transport {:id :test :url "https://example.invalid/chat"
                                    :models [] :models_url "https://example.invalid/models"
-                                   :models_credential false :credential :test}))
-(local application (misa.compose
- [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
-  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
-  (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
-  {:definitions (definitions.build :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}])}]))
-(misa._install application.definitions {:argv [] :config {}})
+                                   :models_credential false :credential :test})
+(local specs {:events {:test/stream {:event :provider/test-complete :handler protocol.stream}
+ :test/discover {:event :models/discover :handler (fn [db event] (protocol.discover-models transport db event))}}})
+(local app ((require :tests.application) {:argv [] :config {}}))
+(app.define (. (require :tests.stock) :misa.json))
+(app.define (. (require :tests.stock) :misa.agent.stream))
+(app.define (require :misa.standard.protocols.openai))
+(app.define specs)
+(app.define (definitions.collect :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}]))
+(app.install)
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local discovery ((. handlers :models/discover) {} {:provider :test}))
 (assert (= (. discovery.fx 1 :credential) nil) "disabled discovery credentials were still attached")

@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -49,4 +49,4 @@
                                                :type :operation/cancel}]}
                                         {:fx [{:type :terminal/read}]}))}})
           nil
-          (definitions.build :tests.integration.fixtures.pty declarations {}))
+          (definitions.collect :tests.integration.fixtures.pty declarations {}))

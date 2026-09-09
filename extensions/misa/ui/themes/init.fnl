@@ -1,5 +1,4 @@
 (local styles (require :misa.ui.themes.styles))
-(local definitions (require :misa.definitions))
 
 ;; Semantic theme data and style composition. Components name roles; this service
 ;; alone resolves those names to the closed native style record.
@@ -24,12 +23,14 @@
   (misa.patch db {:themes {:active id}}))
 
 (fn app-start [config configured db]
+  "Initialize selected presentation state and request persisted choices."
   {:patch (when (not db.themes)
             {:themes {:active configured}})
    :fx (when (not= config.persist false)
          [{:completion :themes/loaded :namespace :ui.theme :type :state/load}])})
 
 (fn themes-loaded [db event]
+  "Restore a persisted theme when its implementation is available."
   (if (or (= event.found false) (= event.data misa.json-null))
       nil
       (do
@@ -40,6 +41,7 @@
           {:patch {:themes {:active event.data.active}}}))))
 
 (fn themes-swap-handler [config db event]
+  "Select a theme and plan persistence and redraw effects."
   (let [next (misa.themes.swap db event.theme)
         fx {}]
     (when (not= config.persist false)
@@ -48,27 +50,9 @@
     (tset fx (+ (length fx) 1) {:event {:type :ui/redraw} :type :dispatch})
     {:patch {:themes (misa.replace next.themes)} : fx}))
 
-(fn build [context]
-  "Build the module declarations."
-  (let [config (let [value (. (or context.config {}) :themes)]
-                 (if (= (type value) :table) value {}))
-        normalized (setmetatable {} {:__mode :k})
-        configured (if (= (type config.default) :string) config.default
-                       :default)]
-    (definitions.build :themes
-      [{:catalog :services
-        :id :themes.lookup
-        :value (fn [db] (themes-lookup config normalized db))}
-       {:catalog :services :id :themes.style :value themes-style}
-       {:catalog :services :id :themes.swap :value themes-swap}
-       {:catalog :events
-        :value {:event :app/start
-                :handler (fn [db] (app-start config configured db))}}
-       {:catalog :events :value {:event :themes/loaded :handler themes-loaded}}
-       {:catalog :events
-        :value {:event :themes/swap
-                :handler (fn [db event]
-                           (themes-swap-handler config db event))}}]
-      {:validators {:themes (fn [_ theme] (styles.normalize theme config) nil)}})))
-
-{:build build}
+{: app-start
+ : themes-loaded
+ : themes-lookup
+ : themes-style
+ : themes-swap
+ : themes-swap-handler}

@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Semantic terminal flow for documents produced by the markdown extension.
 ;; It owns layout, but only emits theme tokens; theme resolution remains at the
 ;; component registry boundary.
@@ -575,12 +573,4 @@
                 :source_start first
                 :source_end (- offset 1)}]})))
 
-(fn build []
-  "Build the module declarations."
-  (definitions.build :component.markdown
-    [{:catalog :services
-      :id :markdown.view
-      :value {: project : plain : render}}]
-    {:requirements {:component.markdown [:layout :markdown :markdown.parse]}}))
-
-{:build build}
+{: plain : project : render}

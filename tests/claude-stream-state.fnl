@@ -3,15 +3,15 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local definitions (require :misa.definitions))
-(local specs ((. (fennel.dofile :extensions/misa/providers/claude.fnl) :build) {:config {}}))
-(local application (misa.compose
- [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
-  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
-  (misa.compose [{:definitions specs}])
-  {:definitions (definitions.build :test [{:catalog :claude-records :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}
-                         {:catalog :claude-stream-events :id :custom :value (fn [state] {:state (misa.patch state {:custom_partial true})})}])}]))
-(misa._install application.definitions {:argv [] :config {}})
+(local definitions (require :tests.declarations))
+(local specs (. (require :tests.stock) :misa.providers.claude))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(app.define (. (require :tests.stock) :misa.json))
+(app.define (. (require :tests.stock) :misa.agent.stream))
+(app.define specs)
+(app.define (definitions.collect :test [{:catalog :claude-records :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}
+                         {:catalog :claude-stream-events :id :custom :value (fn [state] {:state (misa.patch state {:custom_partial true})})}]))
+(app.install)
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (fn transition [db records phase]
   (local event {:id :request :phase (or phase :data) : records :ok true})

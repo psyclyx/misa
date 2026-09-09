@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -17,4 +17,4 @@
                                     (error "blocked request reached provider")
                                     nil)})
           nil
-          (definitions.build :tests.integration.fixtures.unserializable declarations {}))
+          (definitions.collect :tests.integration.fixtures.unserializable declarations {}))

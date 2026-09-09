@@ -10,7 +10,7 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) context))
-(local declarations (require :misa.definitions))
+(local declarations (require :tests.declarations))
 (each [_ name (ipairs [:misa.keybindings
                        :misa.ui.themes
                        :misa.ui.themes.default
@@ -21,10 +21,10 @@
                        :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation :misa.transcript.tools :misa.transcript.tools.render
                        :misa.ui.components.group :misa.transcript.groups :misa.transcript.render
                        :misa.transcript])]
-  (app.include (require name) context))
+  (app.include (. (require :tests.stock) name) context))
 
 (var db nil)
-(app.define (declarations.build :long-messages-1 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}}]))
+(app.define (declarations.collect :long-messages-1 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}}]))
 
 (app.install context)
 (local terminal {:interactive true :columns 80 :lines 24})

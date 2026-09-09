@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Shared orderless fuzzy matching for every choice surface.
 (fn words [value]
   (let [result []]
@@ -64,11 +62,4 @@
       (table.insert result value.item))
     result))
 
-(fn build []
-  "Declare fuzzy ranking for choices."
-  (definitions.build :fuzzy
-    [{:catalog :services :id :fuzzy.score :value score}
-     {:catalog :services :id :fuzzy.choices :value fuzzy-choices}]
-    {}))
-
-{: build : score :choices fuzzy-choices}
+{:choices fuzzy-choices :score score}

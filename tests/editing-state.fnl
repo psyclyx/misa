@@ -3,78 +3,135 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
 (local context {:argv [] :config {}})
-(each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices])]
-  (app.define ((. (require name) :build) context)))
+(each [_ name (ipairs [:misa.json
+                       :misa.keybindings
+                       :misa.actions
+                       :misa.ui.layout
+                       :misa.commands
+                       :misa.choices])]
+  (app.define (. (require :tests.stock) name)))
+
 (local handlers {})
 (var policy nil)
 (each [_ name (ipairs [:misa.editor :misa.editor.editing])]
-  (local specs ((. (require name) :build) context))
+  (local specs (. (require :tests.stock) name))
   (each [_ spec (pairs specs.events)]
     (when (not (. handlers spec.event)) (tset handlers spec.event {}))
     (table.insert (. handlers spec.event) spec.handler))
-  (each [_ route (pairs (or specs.routes {}))] (set policy route))
+  (each [_ route (pairs (or specs.routes {}))]
+    (set policy route))
   (app.define specs))
-(app.define (definitions.build :test [{:catalog :editing-motions :id :custom_motion :value (fn [] 2)}
-                          {:catalog :editing-actions :id :custom_action :value (fn [] {:editor {:text :custom :cursor 0}})}]))
+
+(app.define (definitions.collect :test
+              [{:catalog :editing-motions :id :custom_motion :value (fn [] 2)}
+               {:catalog :editing-actions
+                :id :custom_action
+                :value (fn [] {:editor {:text :custom :cursor 0}})}]))
+
 (app.install)
-(local cofx {:argv [] :terminal {:interactive true :columns 80 :lines 24}})
+(local cofx {:config context.config
+             :argv []
+             :terminal {:interactive true :columns 80 :lines 24}})
+
 (fn unchanged [db call]
   (local before (misa.json.encode db))
   (local result (call))
   (assert (= before (misa.json.encode db)) "editing mutated input data")
   result)
+
 (fn transition [db event]
   (local before (misa.json.encode event))
   (local input {: db : event : cofx :fx {}})
-  (local routed (when (= event.type policy.event)
-                  (unchanged input #(policy.resolve db event cofx))))
+  (local routed
+         (when (= event.type policy.event)
+           (unchanged input #(policy.resolve db event cofx))))
   (var tx {: db :event (or routed event) : cofx :fx []})
   (each [_ handler (ipairs (or (. handlers tx.event.type) {}))]
     (local result (unchanged tx.db #(handler tx.db tx.event cofx)))
     (when result
       (assert (not result.db))
       (set tx.db (misa.patch tx.db (or result.patch {})))
-      (each [_ effect (ipairs (or result.fx {}))] (table.insert tx.fx effect))))
+      (each [_ effect (ipairs (or result.fx {}))]
+        (table.insert tx.fx effect))))
   (assert (= before (misa.json.encode event)) "editing mutated the input event")
   (when (= tx.event.type :editing/interrupt)
     (set (tx.db tx.fx) (transition tx.db (. tx.fx 1 :event))))
   (values tx.db tx.fx))
+
 (fn action [db name] (transition db {:type :editing/action :action name}))
-(local initial {:editor {:text "one two\nthree" :cursor 0 :mode :normal :busy false}
+(local initial {:editor {:text "one two\nthree"
+                         :cursor 0
+                         :mode :normal
+                         :busy false}
                 :editing {}})
+
 (local uninitialized {:editor {:text "abc" :cursor 3} :editing {}})
-(local initialized (transition uninitialized {:type :terminal/input :kind :escape}))
+(local initialized
+       (transition uninitialized {:type :terminal/input :kind :escape}))
+
 (assert (= initialized.editor.mode :normal))
-(assert (= initialized.editor.cursor 2) "Escape did not apply the implicit insert-mode cursor rule")
-(local failure
-       (G.for_all (G.vector (G.elements [:left :right :up :down :line_start :line_end
-                                         :word_next :word_previous :word_end :first :last
-                                         :visual :visual_line :delete :change :yank
-                                         :delete_character :paste :undo :redo :normal
-                                         :insert :append :insert_start :append_end
-                                         :open_above :open_below]))
-                  (fn [events]
-                    (var db initial)
-                    (each [_ name (ipairs events)]
-                      (local previous db)
-                      (set db (action db name))
-                      (local editor db.editor)
-                      (assert (and (>= editor.cursor 0) (<= editor.cursor (length editor.text))))
-                      (assert (= editor.cursor (misa.layout.boundary-at-or-before editor.text editor.cursor)))
-                      (assert (<= (length (or db.editing.undo {})) 64))
-                      (assert (<= (length (or db.editing.redo {})) 64))
-                      (when editor.selection_start
-                        (assert (and (<= editor.selection_start editor.selection_end)
-                                     (<= editor.selection_end (length editor.text)))))
-                      (when (and (not= name :undo) (not= name :redo)
-                                 (not= editor.text previous.editor.text))
-                        (local remembered (. db.editing.undo (length db.editing.undo)))
-                        (assert (= remembered.text previous.editor.text))
-                        (assert (= remembered.cursor previous.editor.cursor)))))
-                  {:cases 1000 :size 30}))
+(assert (= initialized.editor.cursor 2)
+        "Escape did not apply the implicit insert-mode cursor rule")
+
+(local failure (G.for_all (G.vector (G.elements [:left
+                                                 :right
+                                                 :up
+                                                 :down
+                                                 :line_start
+                                                 :line_end
+                                                 :word_next
+                                                 :word_previous
+                                                 :word_end
+                                                 :first
+                                                 :last
+                                                 :visual
+                                                 :visual_line
+                                                 :delete
+                                                 :change
+                                                 :yank
+                                                 :delete_character
+                                                 :paste
+                                                 :undo
+                                                 :redo
+                                                 :normal
+                                                 :insert
+                                                 :append
+                                                 :insert_start
+                                                 :append_end
+                                                 :open_above
+                                                 :open_below]))
+                          (fn [events]
+                            (var db initial)
+                            (each [_ name (ipairs events)]
+                              (local previous db)
+                              (set db (action db name))
+                              (local editor db.editor)
+                              (assert (and (>= editor.cursor 0)
+                                           (<= editor.cursor
+                                               (length editor.text))))
+                              (assert (= editor.cursor
+                                         (misa.layout.boundary-at-or-before editor.text
+                                                                            editor.cursor)))
+                              (assert (<= (length (or db.editing.undo {})) 64))
+                              (assert (<= (length (or db.editing.redo {})) 64))
+                              (when editor.selection_start
+                                (assert (and (<= editor.selection_start
+                                                 editor.selection_end)
+                                             (<= editor.selection_end
+                                                 (length editor.text)))))
+                              (when (and (not= name :undo) (not= name :redo)
+                                         (not= editor.text previous.editor.text))
+                                (local remembered
+                                       (. db.editing.undo
+                                          (length db.editing.undo)))
+                                (assert (= remembered.text previous.editor.text))
+                                (assert (= remembered.cursor
+                                           previous.editor.cursor)))))
+                          {:cases 1000 :size 30}))
+
 (assert (not failure) (and failure (fennel.view failure)))
 (local deleted (action initial :delete_character))
 (assert (= deleted.editor.text "ne two\nthree"))
@@ -88,17 +145,25 @@
 (local empty {:editor {:text "" :cursor 0 :mode :insert} :editing {}})
 (local typed (transition empty {:type :terminal/input :kind :text :text :one}))
 (local more (transition typed {:type :terminal/input :kind :text :text :two}))
-(assert (= (length more.editing.undo) 1) "insert group split into per-event undo entries")
+(assert (= (length more.editing.undo) 1)
+        "insert group split into per-event undo entries")
+
 (local normal (transition more {:type :terminal/input :kind :escape}))
 (assert (= (. (action normal :undo) :editor :text) ""))
 (local cleared (transition more {:type :terminal/input :kind :ctrl_c}))
 (assert (= (length cleared.editing.undo) 0))
 (assert (= cleared.editing.insert_group nil))
-(local restored (transition more {:type :editor/restore :replace true :text :restored}))
+(local restored (transition more
+                            {:type :editor/restore
+                             :replace true
+                             :text :restored}))
+
 (assert (= (length restored.editing.undo) 0))
 (local visual (action initial :visual))
 (local busy (misa.patch visual {:editor {:busy true}}))
-(local (escaped escaped-effects) (transition busy {:type :terminal/input :kind :ctrl_c}))
+(local (escaped escaped-effects)
+       (transition busy {:type :terminal/input :kind :ctrl_c}))
+
 (assert (= escaped.editor.text initial.editor.text))
 (assert (= escaped.editor.selection_start nil))
 (assert (= escaped.editing.anchor nil))
@@ -106,7 +171,9 @@
 (assert (= (length escaped-effects) 2))
 (assert (= (. escaped-effects 1 :event :type) :agent/cancel-active))
 (assert (= (. escaped-effects 2 :type) :terminal/read))
-(local (exited exit-effects) (transition visual {:type :terminal/input :kind :eof}))
+(local (exited exit-effects)
+       (transition visual {:type :terminal/input :kind :eof}))
+
 (assert (= exited.editor.mode :insert))
 (assert (= exited.editing.anchor nil))
 (assert (= (length exit-effects) 1))
@@ -125,7 +192,11 @@
 (assert (= (length (or yanked.editing.undo {})) 0))
 (local pasted (action (misa.patch initial {:clipboard {:text "!"}}) :paste))
 (assert (= pasted.editor.text "o!ne two\nthree"))
-(local line-pasted (action (misa.patch initial {:clipboard {:text "pasted\n" :linewise true}}) :paste))
+(local line-pasted (action (misa.patch initial
+                                       {:clipboard {:text "pasted\n"
+                                                    :linewise true}})
+                           :paste))
+
 (assert (= line-pasted.editor.text "one two\npasted\nthree"))
 (local unicode (misa.patch initial {:editor {:text "é🙂 x"}}))
 (assert (= (. (action unicode :right) :editor :cursor) 3))
@@ -133,12 +204,19 @@
 ;; Submission is an explicit policy reason, independent of the input key.
 (local consumed (misa.patch more {:editor {:text "" :cursor 0}}))
 (local accounted (unchanged [more consumed]
-                            #(misa.editor.transition more.editing more.editor consumed.editor :discard true)))
+                            #(misa.editor.transition more.editing more.editor
+                                                     consumed.editor :discard
+                                                     true)))
+
 (assert (= (length accounted.undo) 0))
 (assert (= policy.after nil) "undo policy still uses a global after hook")
 ;; Calling the owner directly must account synchronously, without before hooks.
 (local direct ((. handlers :terminal/input 1) empty
-               {:type :terminal/input :kind :text :text "direct"} cofx))
+                                              {:type :terminal/input
+                                               :kind :text
+                                               :text "direct"}
+                                              cofx))
+
 (local direct-db (misa.patch empty direct.patch))
 (assert (= (. direct-db.editing.undo 1 :text) ""))
 (assert (= direct-db.editing.insert_group true))
@@ -147,7 +225,9 @@
 (local one (transition empty {:type :terminal/input :kind :text :text "x"}))
 (local blank (transition one {:type :terminal/input :kind :backspace}))
 (assert (= blank.editor.text ""))
-(assert (= (length blank.editing.undo) 1) "deleting the last character discarded undo history")
+(assert (= (length blank.editing.undo) 1)
+        "deleting the last character discarded undo history")
+
 (local submitted (transition more {:type :terminal/input :kind :enter}))
 (assert (= submitted.editor.text ""))
 (assert (= (length submitted.editing.undo) 0))
@@ -156,25 +236,40 @@
 (assert (= (length steered.editing.undo) 0))
 (assert (= steered.editing.insert_group nil))
 ;; Enter insert mode explicitly after undo, then invalidate its redo branch.
-(local retyped (transition (action (action normal :undo) :insert)
-                           {:type :terminal/input :kind :text :text "new"}))
+(local retyped
+       (transition (action (action normal :undo) :insert)
+                   {:type :terminal/input :kind :text :text "new"}))
+
 (assert (= (length retyped.editing.redo) 0))
 (local newline (transition typed {:type :terminal/input :kind :shift_enter}))
 (assert (= newline.editor.text "one\n"))
 (assert (= (length newline.editing.undo) 1))
-(local forward-deleted (transition one {:type :terminal/input :kind :arrow_left}))
-(local forward-cleared (transition forward-deleted {:type :terminal/input :kind :ctrl_d}))
+(local forward-deleted
+       (transition one {:type :terminal/input :kind :arrow_left}))
+
+(local forward-cleared
+       (transition forward-deleted {:type :terminal/input :kind :ctrl_d}))
+
 (assert (= forward-cleared.editor.text ""))
 (assert (= (length forward-cleared.editing.undo) 0))
 ;; Policy configuration is orthogonal to the operation's meaning.
-(assert (= (misa.editor.transition empty.editing empty.editor typed.editor :insert false)
-           empty.editing) "noninteractive input acquired modal undo state")
-(local plain-specs ((. (fennel.dofile :extensions/misa/editor/editing.fnl) :build)
-                    {:config {:editing {:mode :plain}}}))
-(local plain-policy (. plain-specs.services :editor.transition))
-(assert (= (plain-policy empty.editing empty.editor typed.editor :insert true) empty.editing))
-(local plain-restored (plain-policy more.editing more.editor restored.editor :restore false))
-(assert (= (length plain-restored.undo) 0) "plain restore retained the old draft history")
+(assert (= (misa.editor.transition empty.editing empty.editor typed.editor
+                                   :insert false) empty.editing)
+        "noninteractive input acquired modal undo state")
+
+(local editing (require :misa.editor.editing))
+(local plain-enabled (editing.enabled? {:editing {:mode :plain}}))
+(local plain-policy editing.editor-transition)
+(assert (= (plain-policy plain-enabled empty.editing empty.editor typed.editor
+                         :insert true) empty.editing))
+
+(local plain-restored
+       (plain-policy plain-enabled more.editing more.editor restored.editor
+                     :restore false))
+
+(assert (= (length plain-restored.undo) 0)
+        "plain restore retained the old draft history")
+
 (var bounded initial)
 (for [_ 1 80] (set bounded (action bounded :open_below)))
 (assert (= (length bounded.editing.undo) 64))

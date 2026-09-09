@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn auth-effect [action provider id completion]
   {: action
    :completion (or completion :auth/complete)
@@ -39,6 +37,7 @@
      :fx effects}))
 
 (fn provider-status [db event]
+  "Track authentication and model availability."
   (let [startup (assert db.auth_startup "auth startup state is missing")]
     (when (. startup.pending_status event.id)
       (let [available (and event.ok (= event.logged_in true))
@@ -60,6 +59,7 @@
                           effects)))))
 
 (fn discovery-complete [db event]
+  "Advance startup after provider discovery."
   (let [startup db.auth_startup]
     (when (and startup (. startup.pending_discovery event.provider))
       (startup-progress startup
@@ -98,6 +98,7 @@
             {:fx effects})))))
 
 (fn interaction [db event]
+  "Present an authentication interaction."
   (let [dialog {:actions event.actions
                 :cancellable event.cancellable
                 :code event.code
@@ -116,6 +117,7 @@
     {:fx [{:event dialog :type :dispatch} {:type :terminal/read}]}))
 
 (fn dialog-action [db event]
+  "Translate an authentication dialog action."
   (if event.cancelled
       {:fx [{:id event.id :type :operation/cancel} {:type :terminal/read}]}
       (if event.protected
@@ -127,6 +129,7 @@
                  :value event.value}]})))
 
 (fn complete [db event]
+  "Finish an authentication interaction."
   (var message event.message)
   (when (and event.subscription_type
              (not= event.subscription_type misa.json-null))
@@ -153,61 +156,10 @@
                        misa.delete)}
      :fx effects}))
 
-(fn build []
-  "Build the declarations for auth."
-  (let [declarations []
-        providers (misa.auth.providers)]
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :app/start
-                           :handler (fn [db]
-                                      (start providers db))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :auth/provider-status
-                           :handler provider-status}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :models/discovery-complete
-                           :handler discovery-complete}})
-    (each [_ item (ipairs [{:action :login
-                            :description "Log in to a provider"
-                            :name :/login}
-                           {:action :logout
-                            :description "Log out of a provider"
-                            :name :/logout}
-                           {:action :status
-                            :description "Show provider login state"
-                            :name :/status}])]
-      (let [event-type (.. :auth/ item.action)]
-        (table.insert declarations
-                      (let [definition {:choice_purpose :auth
-                                        :completion :auth-provider
-                                        :description item.description
-                                        :event event-type
-                                        :name item.name}]
-                        {:catalog :commands
-                         :id (. definition :name)
-                         :value definition}))
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event event-type
-                               :handler (fn [_ event cofx]
-                                          (command item _ event cofx))}})))
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :auth/interaction :handler interaction}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :auth/dialog-action :handler dialog-action}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :auth/complete :handler complete}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :auth/ready
-                           :handler (fn [db]
-                                      {:fx [{:type :terminal/read}]})}})
-    (definitions.build :auth declarations {})))
-
-{:build build :startup start :command command}
+{:startup start
+ :provider-status provider-status
+ :discovery-complete discovery-complete
+ :command command
+ :interaction interaction
+ :dialog-action dialog-action
+ :complete complete}

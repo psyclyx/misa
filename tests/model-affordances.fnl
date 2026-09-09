@@ -3,45 +3,69 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.values :misa.ui.status.indicators])]
-  (app.include (require name) {:config {}}))
-(local specs ((. (fennel.dofile :extensions/misa/models/init.fnl) :build) {:config {}}))
-(local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
+(each [_ name (ipairs [:misa.json
+                       :misa.keybindings
+                       :misa.ui.layout
+                       :misa.ui.values
+                       :misa.ui.status.indicators])]
+  (app.include (. (require :tests.stock) name)))
+
+(local specs (. (require :tests.stock) :misa.models))
+(local handlers (collect [_ entry (pairs specs.events)] entry.event
+                  entry.handler))
 (assert (= specs.routes nil) "model binding should be action data")
 (app.define specs)
-(local component ((. (fennel.dofile :extensions/misa/ui/status/render.fnl) :build)))
+(local component (. (require :tests.stock) :misa.ui.status.render))
 (app.define {:value-renderers component.value-renderers})
 (app.install)
-(local default-config (require :misa.default))
+(local default-config (require :misa.standard))
 (var default-model nil)
 (each [_ item (ipairs default-config.config.status.indicators)]
   (when (= item.id :model) (set default-model item)))
-(assert (and default-model (= default-model.representation :value) default-model.hotkey)
+
+(assert (and default-model (= default-model.representation :value)
+             default-model.hotkey)
         "installed default profile does not show model value and binding")
-(local state {:models {:selected :test :configured_default :test
-                       :entries [{:id :test :provider :provider :model :model :context_window 100}]}})
+
+(local state {:models {:selected :test
+                       :configured_default :test
+                       :entries [{:id :test
+                                  :provider :provider
+                                  :model :model
+                                  :context_window 100}]}})
+
 (local selected (misa.models.selected state))
 (assert (= selected.provider :provider))
 (local projection (misa.models.state state))
-(local unrelated (misa.patch state {:agent {:status :streaming} :models {:available {:other false}}}))
+(local unrelated
+       (misa.patch state
+                   {:agent {:status :streaming}
+                    :models {:available {:other false}}}))
 (assert (= selected (misa.models.selected unrelated)))
 (assert (= projection (misa.models.state unrelated)))
-(local changed-default (misa.patch state {:models {:configured_default :other}}))
+(local changed-default
+       (misa.patch state {:models {:configured_default :other}}))
 (assert (= selected (misa.models.selected changed-default)))
 (assert (= (. (misa.models.state changed-default) :configured_default) :other))
-(assert (= (misa.models.selected (misa.patch state {:models {:selected misa.delete}})) nil))
+(assert (= (misa.models.selected (misa.patch state
+                                             {:models {:selected misa.delete}}))
+           nil))
 (assert (= (. (misa.models.selected state) :id) :test))
-(local shared-cost {:currency :USD :token_unit 1000000 :pricing {:input 2 :output 8}})
+(local shared-cost {:currency :USD
+                    :token_unit 1000000
+                    :pricing {:input 2 :output 8}})
 (set misa.costs {:model (fn [] shared-cost)})
 (local complete (. (misa.commands.lookup :/model) :complete))
 (local first (complete "" state))
 (local second (complete "" state))
-(assert (= shared-cost.pricing.input 2) "model completion mutated shared cost data")
+(assert (= shared-cost.pricing.input 2)
+        "model completion mutated shared cost data")
 (assert (= (misa.json.encode first) (misa.json.encode second)))
 (assert (= (. first 1 :preview :type) :model))
 (assert (= (. first 1 :preview :context_window) 100))
 (assert (= (. first 1 :preview :cost) shared-cost))
-(assert (= (. first 1 :preview :lines) nil) "model owner formatted preview text")
+(assert (= (. first 1 :preview :lines) nil)
+        "model owner formatted preview text")
 (local open ((. handlers :model/picker-open) {}))
 (assert (= open.db nil))
 (assert (= (. open.fx 1 :event :command) :/model))
@@ -50,66 +74,109 @@
 (assert (= (. blocked.fx 1 :type) :terminal/read))
 (set misa.keybindings.hint (fn [] :Alt-M))
 (var semantic nil)
-(set misa.components {:render (fn [_ _ model] (set semantic model) {:lines []})})
-(misa.status.indicators {:models {:selected :test :entries [{:id :test :provider :provider :model :model}]}} {})
+(set misa.components
+     {:render (fn [_ _ model] (set semantic model) {:lines []})})
+(misa.status.indicators {:models {:selected :test
+                                  :entries [{:id :test
+                                             :provider :provider
+                                             :model :model}]}}
+                        {})
 (local model (. semantic.indicators 1))
 (assert (= model.label :model))
 (assert (= model.representation :value))
 (assert (= model.fact.type :text))
 (assert (= model.fact.value :provider/model))
 (assert (= model.hotkey :Alt-M))
-(assert (= (length (icollect [id (pairs component.components)] id)) 1) "parallel status renderer")
+(assert (= (length (icollect [id (pairs component.components)] id)) 1)
+        "parallel status renderer")
 (local render (. component.components :default.status.indicators :render))
 (local key-spans [{:text :Alt-M}])
 (set misa.keybindings.render (fn [] key-spans))
 (fn text [view]
   (table.concat (icollect [_ line (ipairs view.lines)]
-                 (table.concat (icollect [_ span (ipairs line.spans)] span.text)))))
-(local sample {:label :model :fact {:type :text :value :test} :representation :value :hotkey :Alt-M :action :models.open})
+                  (table.concat (icollect [_ span (ipairs line.spans)]
+                                  span.text)))))
+
+(local sample {:label :model
+               :fact {:type :text :value :test}
+               :representation :value
+               :hotkey :Alt-M
+               :action :models.open})
 (local view (render {:indicators [sample]} {:columns 10}))
-(assert (= (text view) "test Alt-M") "value-only width included the hidden label")
-(assert (= (. key-spans 1 :action) nil) "status mutated shared keybinding spans")
-(assert (= (text (render {:indicators [{:label "◆" :fact {:type :text :value :test} :representation :icon}]} {:columns 6})) "◆ test"))
-(assert (= (text (render {:indicators [{:label :model :fact {:type :text :value :test} :representation :label}]} {:columns 10})) "model test"))
+(assert (= (text view) "test Alt-M")
+        "value-only width included the hidden label")
+(assert (= (. key-spans 1 :action) nil)
+        "status mutated shared keybinding spans")
+(assert (= (text (render {:indicators [{:label "◆"
+                                        :fact {:type :text :value :test}
+                                        :representation :icon}]}
+                         {:columns 6})) "◆ test"))
+(assert (= (text (render {:indicators [{:label :model
+                                        :fact {:type :text :value :test}
+                                        :representation :label}]}
+                         {:columns 10})) "model test"))
 ;; The default header and input use no ornamental corner glyphs. Structural
 ;; borders in Markdown tables/code are independent and tested elsewhere.
-(fn renderer [path id]
-  (local description ((. (fennel.dofile path) :build) {}))
-  (. (assert (. description.components id) (.. "missing component " id)) :render))
-(local header ((renderer :extensions/misa/ui/chrome.fnl :default.root.header)))
+(fn renderer [source id]
+  (local description (. (require :tests.stock) source))
+  (. (assert (. description.components id) (.. "missing component " id))
+     :render))
+
+(local header ((renderer :misa.ui.chrome :default.root.header)))
 (assert (= (. header.lines 1 :spans 1 :text) :misa))
-(local input-render (renderer :extensions/misa/editor/render.fnl :default.editor.input))
+(local input-render (renderer :misa.editor.render :default.editor.input))
 (each [_ mode (ipairs [:insert :normal :visual])]
   (each [_ columns (ipairs [1 2 3 8 80])]
     (local text "one\ntwo\n世界")
     (each [_ cursor (ipairs [0 1 (length text)])]
       (local view (input-render {: text : cursor : mode} {: columns}))
       (each [_ line (ipairs view.lines)]
-        (local rendered (table.concat (icollect [_ span (ipairs line.spans)] span.text)))
+        (local rendered (table.concat (icollect [_ span (ipairs line.spans)]
+                                        span.text)))
         (assert (not (rendered:find "┌" 1 true)))
         (assert (not (rendered:find "└" 1 true)))
         ;; The root clips a wide grapheme that cannot fit a tiny viewport;
         ;; this component's marker must itself fit the available columns.
         (assert (<= (misa.layout.width (. line.spans 1 :text)) columns)))
       (local cursor-line (. view.lines view.cursor.row))
-      (local rendered (table.concat (icollect [_ span (ipairs cursor-line.spans)] span.text)))
+      (local rendered (table.concat (icollect [_ span (ipairs cursor-line.spans)]
+                                      span.text)))
       (assert (<= 0 view.cursor.byte (length rendered))))))
+
 (local multiline (input-render {:text "one\ntwo" :mode :insert} {:columns 80}))
-(each [_ line (ipairs multiline.lines)] (assert (= (. line.spans 1 :text) "│ ")))
+(each [_ line (ipairs multiline.lines)]
+  (assert (= (. line.spans 1 :text) "│ ")))
 (output "model affordance contracts passed\n")
 
-(local catalogue {:models {:selected :current :catalogue_now 2000000000
-                           :entries [{:id :old :model :old :provider :any :created 1000000000}
-                                     {:id :current :model :current :provider :any :created 1999999999}
-                                     {:id :popular :model :popular :provider :any :created 1000000000 :recommended true}]}})
+(local catalogue {:models {:selected :current
+                           :catalogue_now 2000000000
+                           :entries [{:id :old
+                                      :model :old
+                                      :provider :any
+                                      :created 1000000000}
+                                     {:id :current
+                                      :model :current
+                                      :provider :any
+                                      :created 1999999999}
+                                     {:id :popular
+                                      :model :popular
+                                      :provider :any
+                                      :created 1000000000
+                                      :recommended true}]}})
+
 (local filtered (complete "" catalogue))
 (assert (= (. filtered 1 :browse_visible) false))
 (assert (= (. filtered 2 :browse_visible) true))
 (assert (= (. filtered 3 :browse_visible) true))
-(local assigned ((. handlers :model/role) catalogue {:arguments "summarizer current"}))
+(local assigned
+       ((. handlers :model/role) catalogue {:arguments "summarizer current"}))
 (local role-db (misa.patch catalogue assigned.patch))
 (assert (= (. (misa.models.for-role role-db :summarizer) :id) :current))
 (assert (= (. assigned.fx 1 :type) :state/save))
 (assert (= (misa.models.for-role catalogue :summarizer) nil))
-(local restored ((. handlers :model/roles-loaded) catalogue {:found true :data {:summarizer :current}}))
-(assert (= (. (misa.models.for-role (misa.patch catalogue restored.patch) :summarizer) :id) :current))
+(local restored ((. handlers :model/roles-loaded) catalogue
+                                                  {:found true
+                                                   :data {:summarizer :current}}
+                                                  {:config {}}))
+(assert (= (. (misa.models.for-role (misa.patch catalogue restored.patch)
+                                    :summarizer) :id) :current))

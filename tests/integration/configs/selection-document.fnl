@@ -1,14 +1,12 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.ui.themes")}
-    "module-2" {:priority 1000 :build (require "misa.ui.themes.default")}
-    "module-3" {:priority 2000 :build (require "misa.ui.components")}
-    "module-4" {:priority 3000 :build (require "misa.ui.layout")}
-    "module-5" {:priority 4000 :build (require "misa.markdown")}
-    "module-6" {:priority 5000 :build (require "misa.keybindings")}
-    "module-7" {:priority 6000 :build (require "misa.selection.document")}
-    "module-8" {:priority 7000 :build (require "misa.selection.render")}
-    "module-9" {:priority 8000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/selection_document.fnl")}}})
+(let [config {}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.ui.themes))
+  (app.include (. (require :tests.stock) :misa.ui.themes.default))
+  (app.include (. (require :tests.stock) :misa.ui.components))
+  (app.include (. (require :tests.stock) :misa.ui.layout))
+  (app.include (. (require :tests.stock) :misa.markdown))
+  (app.include (. (require :tests.stock) :misa.keybindings))
+  (app.include (. (require :tests.stock) :misa.selection.document))
+  (app.include (. (require :tests.stock) :misa.selection.render))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/selection_document.fnl") {:config config}))
+  {:config config :definitions app.definitions})

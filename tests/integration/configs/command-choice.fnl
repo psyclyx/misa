@@ -1,23 +1,21 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {"preferences" {"persist" false}}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.ui.values")}
-    "module-2" {:priority 1000 :build (require "misa.choices.matching")}
-    "module-3" {:priority 2000 :build (require "misa.keybindings")}
-    "module-4" {:priority 3000 :build (require "misa.commands")}
-    "module-5" {:priority 4000 :build (require "misa.choices")}
-    "module-6" {:priority 5000 :build (require "misa.choices.preferences")}
-    "module-7" {:priority 6000 :build (require "misa.ui.themes")}
-    "module-8" {:priority 7000 :build (require "misa.ui.themes.default")}
-    "module-9" {:priority 8000 :build (require "misa.ui.components")}
-    "module-10" {:priority 9000 :build (require "misa.ui.layout")}
-    "module-11" {:priority 10000 :build (require "misa.choices.preview")}
-    "module-12" {:priority 11000 :build (require "misa.choices.layout")}
-    "module-13" {:priority 12000 :build (require "misa.editor.render")}
-    "module-14" {:priority 13000 :build (require "misa.choices.picker.render")}
-    "module-15" {:priority 14000 :build (require "misa.choices.picker")}
-    "module-16" {:priority 15000 :build (require "misa.editor")}
-    "module-17" {:priority 16000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/command-choice.fnl")}
-    :misa.models.preview {:source :misa.models.preview}}})
+(let [config {"preferences" {"persist" false}}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.ui.values))
+  (app.include (. (require :tests.stock) :misa.choices.matching))
+  (app.include (. (require :tests.stock) :misa.keybindings))
+  (app.include (. (require :tests.stock) :misa.commands))
+  (app.include (. (require :tests.stock) :misa.choices))
+  (app.include (. (require :tests.stock) :misa.choices.preferences))
+  (app.include (. (require :tests.stock) :misa.ui.themes))
+  (app.include (. (require :tests.stock) :misa.ui.themes.default))
+  (app.include (. (require :tests.stock) :misa.ui.components))
+  (app.include (. (require :tests.stock) :misa.ui.layout))
+  (app.include (. (require :tests.stock) :misa.choices.preview))
+  (app.include (. (require :tests.stock) :misa.choices.layout))
+  (app.include (. (require :tests.stock) :misa.editor.render))
+  (app.include (. (require :tests.stock) :misa.choices.picker.render))
+  (app.include (. (require :tests.stock) :misa.choices.picker))
+  (app.include (. (require :tests.stock) :misa.editor))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/command-choice.fnl") {:config config}))
+  (app.include (. (require :tests.stock) :misa.models.preview))
+  {:config config :definitions app.definitions})

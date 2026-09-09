@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Generic per-model request-option selection and readiness. Model providers
 ;; declare API capabilities; pure normalization supplies reads and state updates.
 
@@ -99,6 +97,7 @@
                        :model (or (and model model.id) nil)})))))))
 
 (fn compute-request-options-indicator [inputs query]
+  "Project the selected request option indicator."
   (let [db {:models {:entries (. inputs 1) :selected (. inputs 2)}
             :request_options (. inputs 3)}
         value (. (reconcile db) :values (. query 2))]
@@ -130,10 +129,12 @@
     {:model_id state.model_id :values source-values}))
 
 (fn on-request-options-reconcile [db]
+  "Reconcile request options with the selected model."
   (when db.request_options
     {:patch {:request_options (misa.replace (reconcile db))}}))
 
 (fn on-request-options-select [db event]
+  "Validate and update a selected request option."
   (assert (and (= (type event.name) :string) (not= event.name ""))
           "request option name must be nonempty")
   (let [option (. (option-declarations (selected-model db)) event.name)]
@@ -145,76 +146,23 @@
       {:patch {:request_options (misa.replace (misa.patch state
                                                           {:values {event.name event.value}}))}})))
 
-(fn on-handler []
+(fn schedule-reconcile []
+  "Schedule request-option reconciliation after model changes."
   {:fx [{:type :dispatch :event {:type :request-options/reconcile}}]})
 
-(fn build [context]
-  "Build the declarations for request options."
-  (let [declarations []
-        supplied-config (or (and (= (type context.config) :table)
-                                 context.config.request_options)
-                            nil)
-        config (or (and (= (type supplied-config) :table) supplied-config) {})
-        configured (or (and (= (type config.values) :table) config.values)
-                       config)]
-    (table.insert declarations
-                  (let [definition {:id :request-options/indicator
-                                    :inputs [[:db/path :models :entries]
-                                             [:db/path :models :selected]
-                                             [:db/path :request_options]]
-                                    :compute compute-request-options-indicator}]
-                    {:catalog :subscriptions
-                     :id (. definition :id)
-                     :value definition}))
-    (table.insert declarations
-                  {:catalog :services
-                   :id :request-options.choices
-                   :value request-options-choices})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :request-options.value
-                   :value (fn [db name]
-                            "Return the selected value for a request option."
-                            (. (reconcile db) :values name))})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :request-options.state
-                   :value request-options-state})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :request-options.reconcile
-                   :value reconcile})
-    (table.insert declarations {:catalog :services
-                                :id :request-options.prepare
-                                :value prepare})
+(fn on-app-start [config]
+  "Initialize configured request options and reconcile model support."
+  (let [value (or config.request_options {})
+        configured (or (and (= (type value.values) :table) value.values) value)]
+    {:patch {:request_options (misa.replace {: configured :values {}})}
+     :fx [{:type :dispatch :event {:type :request-options/reconcile}}]}))
 
-    (fn on-app-start []
-      {:patch {:request_options (misa.replace {: configured :values {}})}
-       :fx [{:type :dispatch :event {:type :request-options/reconcile}}]})
-
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :app/start :handler on-app-start}})
-    (each [_ event-type (ipairs [:model/role
-                                 :model/roles-loaded
-                                 :model/open
-                                 :model/select
-                                 :models/provider-availability
-                                 :models/update
-                                 :models/replace-provider])]
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event event-type :handler on-handler}}))
-    ;; Reconcile after all owners of the triggering event have committed.
-    ;; Extension registration order must not select the previous model.
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :request-options/reconcile
-                           :handler on-request-options-reconcile}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :request-options/select
-                           :handler on-request-options-select}})
-    (definitions.build :request_options declarations {})))
-
-{: build : reconcile : prepare}
+{:compute-request-options-indicator compute-request-options-indicator
+ :on-app-start on-app-start
+ :schedule-reconcile schedule-reconcile
+ :on-request-options-reconcile on-request-options-reconcile
+ :on-request-options-select on-request-options-select
+ :prepare prepare
+ :reconcile reconcile
+ :request-options-choices request-options-choices
+ :request-options-state request-options-state}

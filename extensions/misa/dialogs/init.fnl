@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Generic correlated interactions own input, buttons, and confirmation lifecycle.
 (fn copy-actions [actions]
   (let [result []
@@ -57,6 +55,7 @@
   (and state (= state.id event.id) (= state.correlation event.correlation)))
 
 (fn open [db event]
+  "Open a dialog with the requested content and controls."
   (assert (not db.dialog) "a dialog is already open")
   (assert (and (= (type event.id) :string) (not= event.id "")
                (= (type event.correlation) :string) (not= event.correlation ""))
@@ -93,6 +92,7 @@
                             [{:type :terminal/read}])))))
 
 (fn update [db event]
+  "Apply content changes to the active dialog."
   (let [state db.dialog]
     (when (correlated? state event)
       (let [patch {}]
@@ -114,12 +114,14 @@
         (updated state patch)))))
 
 (fn close [db event]
+  "Close the active dialog and dispatch its completion."
   (when (and db.dialog (= db.dialog.id event.id)
              (or (not event.correlation)
                  (= db.dialog.correlation event.correlation)))
     {:patch {:dialog misa.delete} :fx [{:type :terminal/read}]}))
 
 (fn protected-input [db event]
+  "Process input while a protected dialog is active."
   (let [state db.dialog]
     (when (and (correlated? state event) state.protected)
       (if (or event.submitted event.cancelled)
@@ -163,11 +165,13 @@
             (completed state selected.id false selected.persistent)))))
 
 (fn cancel [state]
+  "Cancel the current input interaction."
   (if state.confirmation (updated state {:confirmation misa.delete})
       state.cancellable (completed state :cancel true false)
       {:fx [{:type :terminal/read}]}))
 
 (fn enter [state]
+  "Accept the active dialog input."
   (var primary nil)
   (each [_ action (ipairs state.actions)]
     (when (and action.primary (not action.disabled))
@@ -177,6 +181,7 @@
       {:fx [{:type :terminal/read}]}))
 
 (fn backspace [state]
+  "Remove the preceding character from the active input."
   (if state.input_enabled
       (let [text state.input]
         (var at (length text))
@@ -185,18 +190,11 @@
         (updated state {:input (text:sub 1 (math.max 0 (- at 1)))}))
       {:fx [{:type :terminal/read}]}))
 
-(fn text-2 [state event]
+(fn insert-text [state event]
+  "Insert the received text at the active input position."
   (if state.input_enabled
       (updated state {:input (.. state.input (or event.text ""))})
       {:fx [{:type :terminal/read}]}))
-
-(local inputs {:escape cancel
-               :ctrl_c cancel
-               :ctrl_d cancel
-               :eof cancel
-               :text text-2
-               :backspace backspace
-               :enter enter})
 
 (local scroll-keys {:arrow_up -1
                     :arrow_down 1
@@ -227,6 +225,7 @@
     (updated state {:scroll (math.max 0 (math.min maximum target))})))
 
 (fn input [db event cofx]
+  "Apply terminal input to the active dialog."
   (let [state (assert db.dialog)]
     (var bound nil)
     (each [_ action (ipairs state.actions)]
@@ -247,11 +246,13 @@
           (if handler (handler state event) {:fx [{:type :terminal/read}]})))))
 
 (fn on-dialog-action [db event]
+  "Apply an action to the active dialog."
   (if (and (correlated? db.dialog event) (not db.dialog.protected))
       (activate db.dialog event.action)
       {:fx [{:type :terminal/read}]}))
 
 (fn route-ui-action [state event]
+  "Route a UI action to the active dialog."
   ;; While modal, suppress underlying view actions as well.
   (var selected nil)
   (when (not state.protected)
@@ -264,37 +265,20 @@
    :action selected})
 
 (fn dialog-inputs [_ handler]
+  "Validate a dialog input transition."
   (assert (= (type handler) :function) "transition must be a function"))
 
-(fn build []
-  "Build the declarations for dialogs."
-  (let [fx [{:catalog :services :id :dialogs.enabled? :value true}
-            {:catalog :services :id :dialogs.action-token :value token}
-            {:catalog :services :id :dialogs.buttons :value buttons}
-            (let [definition {:id :dialogs/input
-                              :event :terminal/input
-                              :priority 1000
-                              :context [:db/path :dialog]
-                              :resolve (fn [_ event]
-                                         (misa.patch event
-                                                     {:type :dialog/input}))}]
-              {:catalog :routes :id (. definition :id) :value definition})
-            (let [definition {:id :dialogs/action
-                              :event :ui/action
-                              :priority 1000
-                              :context [:db/path :dialog]
-                              :resolve route-ui-action}]
-              {:catalog :routes :id (. definition :id) :value definition})
-            {:catalog :events
-             :value {:event :dialog/action :handler on-dialog-action}}]]
-    (each [name handler (pairs {:dialog/open open
-                                :dialog/update update
-                                :dialog/close close
-                                :dialog/protected-input protected-input
-                                :dialog/input input})]
-      (table.insert fx {:catalog :events :value {:event name :handler handler}}))
-    (definitions.build :dialogs
-      fx
-      {:dialog-inputs inputs :validators {:dialog-inputs dialog-inputs}})))
-
-{: build}
+{:buttons buttons
+ :close close
+ :dialog-inputs dialog-inputs
+ :input input
+ :on-dialog-action on-dialog-action
+ :open open
+ :protected-input protected-input
+ :route-ui-action route-ui-action
+ :token token
+ :update update
+ :cancel cancel
+ :backspace backspace
+ :insert-text insert-text
+ :enter enter}

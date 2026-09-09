@@ -3,8 +3,8 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(app.add :misa.usage)
-(app.add :misa.usage.dialog)
+(app.include (. (require :tests.stock) :misa.usage))
+(app.include (. (require :tests.stock) :misa.usage.dialog))
 (local requests [])
 (var observed nil)
 (app.define {:events {:fixture/select {:event :model/select

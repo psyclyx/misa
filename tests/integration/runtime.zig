@@ -13,7 +13,7 @@ test "a final projected view flushes without keeping an idle session alive" {
     try h.write("final-view.fnl",
         \\(fn [] {:views {:main (fn [] {:lines [{:spans [{:text "final"}]}]})}})
     );
-    try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {}\n   :modules {\n    \"module-1\" {:priority 0 :build ((. (require :fennel) :dofile) \"@WORK@/final-view.fnl\")}}})\n");
+    try h.config("(let [config {}\n      app ((require :tests.application) {:config config})]\n  (app.include (((. (require :fennel) :dofile) \"@WORK@/final-view.fnl\") {:config config}))\n  {:config config :definitions app.definitions})\n");
     try h.expect(.{ .input = "" }, "");
 }
 
@@ -95,8 +95,10 @@ test "explicit Lua extensions remain compatible beside bundled Fennel" {
         \\end
     );
     try h.config(
-        \\(local standard (require :misa.standard))
-        \\(standard.application {:modules {:fixture {:build (dofile "@WORK@/compatibility.lua")}}})
+        \\(let [config {}
+        \\      app ((require :tests.application) {:config config})]
+        \\  (app.include ((dofile "@WORK@/compatibility.lua") {:config config}))
+        \\  {:config config :definitions app.definitions})
     );
     try h.expect(.{}, "Lua compatibility\n");
 }
@@ -140,9 +142,9 @@ test "syntax highlighting completes asynchronously without exposing a synchronou
     );
     const expect_captures = if (h.environ.get("MISA_TREE_SITTER_DIR")) |value| value.len != 0 else false;
     try h.config(if (expect_captures)
-        "(local standard (require :misa.standard))\n\n(standard.application\n  {:config {\"expect_captures\" true}\n   :modules {\n    \"module-1\" {:priority 0 :build (dofile \"@WORK@/syntax-effect.lua\")}}})\n"
+        "(let [config {\"expect_captures\" true}\n      app ((require :tests.application) {:config config})]\n  (app.include ((dofile \"@WORK@/syntax-effect.lua\") {:config config}))\n  {:config config :definitions app.definitions})\n"
     else
-        "(local standard (require :misa.standard))\n\n(standard.application\n  {:config {}\n   :modules {\n    \"module-1\" {:priority 0 :build (dofile \"@WORK@/syntax-effect.lua\")}}})\n");
+        "(let [config {}\n      app ((require :tests.application) {:config config})]\n  (app.include ((dofile \"@WORK@/syntax-effect.lua\") {:config config}))\n  {:config config :definitions app.definitions})\n");
     try h.expect(.{ .timeout_ms = 3000 }, "async syntax\n");
 }
 
@@ -174,7 +176,7 @@ test "syntax highlighting rejects malformed requests before execution" {
             \\end
         , .{mutation});
         try h.write("invalid-syntax.lua", source);
-        try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {}\n   :modules {\n    \"module-1\" {:priority 0 :build (dofile \"@WORK@/invalid-syntax.lua\")}}})\n");
+        try h.config("(let [config {}\n      app ((require :tests.application) {:config config})]\n  (app.include ((dofile \"@WORK@/invalid-syntax.lua\") {:config config}))\n  {:config config :definitions app.definitions})\n");
         const result = try h.run(.{ .timeout_ms = 3000 });
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try support.contains(result.stderr, "InvalidEffect");
@@ -204,6 +206,6 @@ test "component resolution preserves cached semantic spans across themes" {
         \\    end}}}
         \\end
     );
-    try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {\"themes\" {\"persist\" false} \"components\" {\"persist\" false}}\n   :modules {\n    \"module-1\" {:priority 0 :build (require \"misa.ui.themes\")}\n    \"module-2\" {:priority 1000 :build (require \"misa.ui.themes.default\")}\n    \"module-3\" {:priority 2000 :build (require \"misa.ui.components\")}\n    \"module-4\" {:priority 3000 :build (dofile \"@WORK@/cached-component.lua\")}}})\n");
+    try h.config("(let [config {\"themes\" {\"persist\" false} \"components\" {\"persist\" false}}\n      app ((require :tests.application) {:config config})]\n  (app.include (. (require :tests.stock) :misa.ui.themes))\n  (app.include (. (require :tests.stock) :misa.ui.themes.default))\n  (app.include (. (require :tests.stock) :misa.ui.components))\n  (app.include ((dofile \"@WORK@/cached-component.lua\") {:config config}))\n  {:config config :definitions app.definitions})\n");
     try h.expect(.{}, "pure components\n");
 }

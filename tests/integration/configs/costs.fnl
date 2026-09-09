@@ -1,10 +1,12 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {"themes" {"persist" false} "components" {"persist" false} "history" {"persist" false} "clipboard" {} "messages" {"max_string" 20000}}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.commands")}
-    "module-2" {:priority 1000 :build (require "misa.choices")}
-    "module-3" {:priority 2000 :build (require "misa.models")}
-    "module-4" {:priority 3000 :build (require "misa.costs")}
-    "module-5" {:priority 4000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/costs.fnl")}}})
+(let [config {"themes" {"persist" false}
+              "components" {"persist" false}
+              "history" {"persist" false}
+              "clipboard" {}
+              "messages" {"max_string" 20000}}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.commands))
+  (app.include (. (require :tests.stock) :misa.choices))
+  (app.include (. (require :tests.stock) :misa.models))
+  (app.include (. (require :tests.stock) :misa.costs))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/costs.fnl") {:config config}))
+  {:config config :definitions app.definitions})

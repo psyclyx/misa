@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -77,4 +77,4 @@
                                               "parallel transcript sections did not update independently"))
                                     nil)}})
           nil
-          (definitions.build :tests.integration.fixtures.parallel-tools declarations {}))
+          (definitions.collect :tests.integration.fixtures.parallel-tools declarations {}))

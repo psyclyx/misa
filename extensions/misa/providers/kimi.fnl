@@ -1,7 +1,3 @@
-(local protocol (require :misa.protocols.anthropic))
-
-(local definitions (require :misa.definitions))
-
 (fn quota-number [value]
   (let [number (tonumber value)]
     (when (and number (= number number) (>= number 0) (< number math.huge))
@@ -45,6 +41,7 @@
     result))
 
 (fn refresh-usage [profile config db event]
+  "Describe a Kimi account usage request."
   (when (or (not event.provider) (= event.provider :kimi))
     (let [provider (and db.providers db.providers.kimi)]
       (if (and provider provider.usage_request)
@@ -65,6 +62,7 @@
                    :timeouts config.timeouts}]})))))
 
 (fn receive-usage [db event]
+  "Apply completed Kimi account usage."
   (let [provider (and db.providers db.providers.kimi)]
     (when (and provider provider.usage_request
                (= provider.usage_request event.id))
@@ -83,63 +81,33 @@
                    :event {:type :usage/refresh :provider :kimi}}]
                  [updated])}))))
 
-(fn build [context]
-  "Build the kimi provider catalogs from application settings."
-  (let [declarations []
-        providers (or (and (= (type context.config) :table)
-                           context.config.providers) nil)
-        raw-config (or (and (= (type providers) :table) providers.kimi) nil)
-        config (or (and (= (type raw-config) :table) raw-config) {})
-        profiles {:global {:api_base "https://api.kimi.ai/coding/v1"
-                           :authorization_url "https://auth.kimi.ai/api/oauth/device_authorization"
-                           :id :global
-                           :token_url "https://auth.kimi.ai/api/oauth/token"}
-                  :mainland {:api_base "https://api.kimi.com/coding/v1"
-                             :authorization_url "https://auth.kimi.com/api/oauth/device_authorization"
-                             :id :mainland
-                             :token_url "https://auth.kimi.com/api/oauth/token"}}
-        region (or config.region :global)
-        profile (assert (. profiles region)
-                        "providers.kimi.region must be global or mainland")]
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :usage/refresh
-                           :handler (fn [db event]
-                                      (refresh-usage profile config db event))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :provider/kimi-usage :handler receive-usage}})
-    (let [models-url (or config.models_url
-                         (and (not= config.discover_models false)
-                              (= config.models nil)
-                              (.. profile.api_base :/models))
-                         nil)]
-      (table.insert declarations
-                    (let [definition {:description (.. "Kimi coding plan OAuth ("
-                                                       region ")")
-                                      :discover_models (not= models-url nil)
-                                      :id :kimi-coding
-                                      :label "Kimi Coding"
-                                      :model_provider :kimi
-                                      : profile
-                                      :strategy :device_oauth}]
-                      {:catalog :auth-providers
-                       :id (. definition :id)
-                       :value definition}))
-      (let [configured (protocol.configure {:auth_header :authorization
-                                            :auth_prefix "Bearer "
-                                            :catalogue_authoritative true
-                                            :credential :kimi-coding
-                                            :headers [{:name :user-agent
-                                                       :value :misa/0.1}]
-                                            :id :kimi
-                                            :max_tokens config.max_tokens
-                                            :models (or config.models {})
-                                            :models_url models-url
-                                            :timeouts config.timeouts
-                                            :url (or config.url
-                                                     (.. profile.api_base
-                                                         :/messages))})]
-        (definitions.build :provider.kimi declarations configured)))))
+(local profiles
+       {:global {:api_base "https://api.kimi.ai/coding/v1"
+                 :authorization_url "https://auth.kimi.ai/api/oauth/device_authorization"
+                 :id :global
+                 :token_url "https://auth.kimi.ai/api/oauth/token"}
+        :mainland {:api_base "https://api.kimi.com/coding/v1"
+                   :authorization_url "https://auth.kimi.com/api/oauth/device_authorization"
+                   :id :mainland
+                   :token_url "https://auth.kimi.com/api/oauth/token"}})
 
-{:build build :usage-windows usage-windows}
+(fn settings [config supplied-profile]
+  "Describe provider transport settings."
+  (let [profile (or supplied-profile profiles.global)
+        models-url (or config.models_url (.. profile.api_base :/models))]
+    {:auth_header :authorization
+     :auth_prefix "Bearer "
+     :catalogue_authoritative true
+     :credential :kimi-coding
+     :headers [{:name :user-agent :value :misa/0.1}]
+     :id :kimi
+     :max_tokens config.max_tokens
+     :models_url models-url
+     :timeouts config.timeouts
+     :url (or config.url (.. profile.api_base :/messages))}))
+
+{:settings settings
+ :profiles profiles
+ :refresh-usage refresh-usage
+ :receive-usage receive-usage
+ :usage-windows usage-windows}

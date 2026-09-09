@@ -3,11 +3,11 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local declarations (require :misa.definitions))
+(local declarations (require :tests.declarations))
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.actions :misa.ui.layout
                        :misa.markdown :misa.markdown.render :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation :misa.transcript.tools :misa.transcript.tools.render
                        :misa.selection.document :misa.selection])]
-  (app.include (require name) {:config {}}))
+  (app.include (. (require :tests.stock) name) {:config {}}))
 (app.install)
 (fn line-text [line]
   (table.concat (icollect [_ item (ipairs line.spans)] item.text)))

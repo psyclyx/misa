@@ -707,24 +707,10 @@
   (assert installed-catalog-entries "application definitions are not installed")
   (or (. installed-catalog-entries kind) empty-catalog))
 
-(fn misa.compose [applications]
-  "Compose application values; later named definitions replace earlier entries.
-
-Deleted definitions remain explicitly disabled until installation."
-  (local definitions {})
-  (local modules {})
-  (var config {})
-  (each [_ application (ipairs applications)]
-    (assert (= (type application) :table) "application must be a table")
-    (set config (misa.patch config (or application.config {})))
-    (each [id value (pairs (or application.modules {}))]
-      (tset modules id (if (= value misa.delete) nil value)))
-    (each [kind entries (pairs (or application.definitions {}))]
-      (assert (= (type entries) :table) "definition catalog must be a table")
-      (when (not (. definitions kind)) (tset definitions kind {}))
-      (each [id value (pairs entries)]
-        (tset (. definitions kind) id value))))
-  {: config : definitions : modules})
+(fn misa.configuration []
+  "Read the borrowed immutable configuration of the installed application."
+  (assert sealed "application configuration is not installed")
+  (or base-context.config empty-catalog))
 
 (fn ordered-definitions [catalog]
   (local rows (icollect [id value (pairs (or catalog {}))]
@@ -740,22 +726,18 @@ Deleted definitions remain explicitly disabled until installation."
   rows)
 
 (fn misa._install [definitions context]
-  "Validate and install one composed application, then seal its definitions."
+  "Validate and install application data, then seal its definitions."
   (open)
   (assert (= installed-catalogs nil) "application already installed")
   (assert (= (type definitions) :table)
           "application definitions must be a table")
-  (local enabled {})
   (each [kind entries (pairs definitions)]
     (assert (and (= (type kind) :string) (= (type entries) :table))
             "invalid definition catalog")
-    (local catalog {})
-    (each [id value (pairs entries)]
+    (each [id _ (pairs entries)]
       (assert (and (= (type id) :string) (not= id ""))
-              "definition ID must be a nonempty string")
-      (when (not= value misa.delete) (tset catalog id value)))
-    (tset enabled kind catalog))
-  (local catalogs (snapshot enabled))
+              "definition ID must be a nonempty string")))
+  (local catalogs (snapshot definitions))
   (each [kind validate (pairs (or catalogs.validators {}))]
     (assert (= (type validate) :function)
             "catalog validator must be a function")
@@ -828,7 +810,7 @@ Deleted definitions remain explicitly disabled until installation."
       (each [part (path:gmatch "[^.]+")]
         (set value (and (= (type value) :table) (. value part))))
       (assert (not= value nil) (.. owner " requires " path))))
-  (set base-context context)
+  (set base-context (snapshot context))
   (set sealed true)
   nil)
 

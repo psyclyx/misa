@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -146,4 +146,4 @@ z"}
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.unicode-layout declarations {}))
+          (definitions.collect :tests.integration.fixtures.unicode-layout declarations {}))

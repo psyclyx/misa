@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn allowed-keys? [value allowed]
   (accumulate [valid true key (pairs value)]
     (and valid (= (. allowed key) true))))
@@ -44,10 +42,4 @@
     (flush)
     result))
 
-(fn build []
-  "Install the standard stream normalization policy."
-  (definitions.build :stream
-    [{:catalog :services :id :stream.effects :value stream-effects}]
-    {}))
-
-{:build build :effects stream-effects}
+{:effects stream-effects}

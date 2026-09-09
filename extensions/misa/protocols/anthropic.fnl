@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn emit [id kind data]
   {:type :dispatch :event (misa.patch (or data {}) {:id id :type kind})})
 
@@ -131,6 +129,7 @@
   {:patch {:model_discovery {spec.id misa.delete}} :fx effects})
 
 (fn stream [provider db event]
+  "Translate transport stream records into agent events."
   (let [state (or (and db.providers db.providers.anthropic_streams
                        (. db.providers.anthropic_streams event.id))
                   {:blocks {}})]
@@ -183,6 +182,7 @@
             (stream-update event.id next-state fx))))))
 
 (fn model-api [serializer-id source]
+  "Associate request options with their serializer."
   (if (and (= (type source) :table) (= (type source.request_options) :table))
       (misa.patch source {:request_options_serializer serializer-id})
       source))
@@ -226,6 +226,7 @@
    :model item.id})
 
 (fn page [spec serializer-id db event]
+  "Apply a discovered model page and request the next page."
   (if (or (not event.ok) (not= (type event.data) :table)
           (not= (type event.data.data) :table))
       (finished spec [])
@@ -310,6 +311,7 @@
     result))
 
 (fn request [spec serializer-id effect]
+  "Describe a protocol operation."
   (let [body {:max_tokens (or spec.max_tokens 16384)
               :messages (messages effect.messages spec.id)
               :model effect.model
@@ -347,93 +349,17 @@
     {:output_config {:effort value}}))
 
 (fn discover-models [spec db event]
+  "Describe model discovery for the configured provider."
   (when (or (not event.provider) (= event.provider spec.id))
     (discover spec db)))
 
-(fn configure [spec]
-  "Describe this transport for a provider configuration."
-  (let [declarations []]
-    (assert (and (= (type spec.id) :string) (= (type spec.url) :string)
-                 (= (type spec.models) :table)))
-    (let [serializer-id (.. :anthropic.messages. spec.id)]
-      (table.insert declarations
-                    {:catalog :serializers
-                     :id serializer-id
-                     :value {:accepts (fn [name]
-                                        (= name :reasoning_effort))
-                             :serialize serialize}})
-      (each [_ model (ipairs spec.models)]
-        (table.insert declarations
-                      (let [definition {:api (model-api serializer-id model.api)
-                                        :context_window model.context_window
-                                        :id model.id
-                                        :label (or model.label model.id)
-                                        :model model.model
-                                        :pricing model.pricing
-                                        :provider spec.id}]
-                        {:catalog :models
-                         :id (. definition :id)
-                         :value definition})))
-      (when spec.models_url
-        (let [completion (.. :provider/ spec.id :-models)]
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event :models/discover
-                                 :handler (fn [db event]
-                                            (discover-models spec db event))}})
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event completion
-                                 :handler (fn [db event]
-                                            (page spec serializer-id db event))}})))
-      (table.insert declarations
-                    {:catalog :effects
-                     :id (.. :provider. spec.id)
-                     :value (fn [effect] (request spec serializer-id effect))})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event (.. :provider/ spec.id :-complete)
-                             :handler (fn [db event]
-                                        (stream spec.id db event))}})
-      (definitions.build (.. :protocol.anthropic/ spec.id)
-        declarations
-        {}))))
-
-(fn build []
-  "Build the protocol catalogs."
-  (let [declarations []]
-    ;; Anthropic Messages protocol adapter shared by provider declarations.
-    (table.insert declarations {:catalog :services
-                                :id :protocols.anthropic-messages
-                                :value messages})
-    (each [id value (pairs records)]
-      (table.insert declarations {:catalog :anthropic-records : id : value}))
-    (table.insert declarations
-                  {:catalog :validators
-                   :id :anthropic-records
-                   :value (fn [_ value]
-                            (assert (= (type value) :function)
-                                    "anthropic-records requires function definitions"))})
-    (each [id value (pairs starts)]
-      (table.insert declarations {:catalog :anthropic-block-starts
-                                  : id
-                                  : value}))
-    (table.insert declarations
-                  {:catalog :validators
-                   :id :anthropic-block-starts
-                   :value (fn [_ value]
-                            (assert (= (type value) :function)
-                                    "anthropic-block-starts requires function definitions"))})
-    (each [id value (pairs deltas)]
-      (table.insert declarations {:catalog :anthropic-block-deltas
-                                  : id
-                                  : value}))
-    (table.insert declarations
-                  {:catalog :validators
-                   :id :anthropic-block-deltas
-                   :value (fn [_ value]
-                            (assert (= (type value) :function)
-                                    "anthropic-block-deltas requires function definitions"))})
-    (definitions.build :protocol.anthropic declarations {})))
-
-{:configure configure :messages messages :definitions (build)}
+{:messages messages
+ :request request
+ :serialize serialize
+ :discover-models discover-models
+ :stream stream
+ :model-api model-api
+ :page page
+ :records records
+ :starts starts
+ :deltas deltas}

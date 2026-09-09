@@ -16,7 +16,7 @@ test "individual presentation defaults can be replaced through configuration" {
 test "application composition replaces named definitions before one installation" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/application-composition.fnl"} }, "application composition contracts passed\n");
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/application-composition.fnl"} }, "application data contracts passed\n");
 }
 
 test "MCP and event effects share policy and serializers return request data" {

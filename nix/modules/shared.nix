@@ -25,7 +25,7 @@ in
     configuration = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      description = "Fennel or Lua file returning the complete composed application. Keep config data and module composition in this file.";
+      description = "Fennel or Lua file returning application data with config and definitions maps.";
     };
   };
 

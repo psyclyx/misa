@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -31,4 +31,4 @@
           (table.insert declarations
                         {:catalog :events  :value {:event :tick/b :handler (fn [db] (tick db :b))}})
           nil
-          (definitions.build :tests.integration.fixtures.multi-timer declarations {}))
+          (definitions.collect :tests.integration.fixtures.multi-timer declarations {}))

@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -67,4 +67,4 @@
                                             {:type :dispatch
                                              :event {:type :dialog/begin-cancel}}]}))}})
           nil
-          (definitions.build :tests.integration.fixtures.dialog-lifecycle declarations {}))
+          (definitions.collect :tests.integration.fixtures.dialog-lifecycle declarations {}))

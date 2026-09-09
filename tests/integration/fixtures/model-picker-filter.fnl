@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -22,4 +22,4 @@
                                              :type :agent/result}
                                      :type :dispatch})})
           nil
-          (definitions.build :tests.integration.fixtures.model-picker-filter declarations {}))
+          (definitions.collect :tests.integration.fixtures.model-picker-filter declarations {}))

@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn append [items item]
   (local result (icollect [_ value (ipairs (or items []))] value))
@@ -48,4 +48,4 @@
           (table.insert declarations
                         {:catalog :views :id :main :value (fn [] {:cursor nil :lines {}})})
           nil
-          (definitions.build :tests.integration.fixtures.contracts declarations {}))
+          (definitions.collect :tests.integration.fixtures.contracts declarations {}))

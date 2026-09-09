@@ -193,7 +193,7 @@ pub const Runtime = struct {
         while (c.lua_next(self.state, -2) != 0) {
             const key = if (c.lua_type(self.state, -2) == c.LUA_TSTRING) std.mem.span(c.lua_tolstring(self.state, -2, null)) else "";
             if (!std.mem.eql(u8, key, "config") and !std.mem.eql(u8, key, "definitions")) {
-                self.setError("{s}: configuration must return only config and definitions; compile module selections before installation", .{path});
+                self.setError("{s}: configuration must return only config and definitions", .{path});
                 return error.ConfigurationLoadFailed;
             }
             self.pop(1);
@@ -807,22 +807,30 @@ test "Fennel loading reports source location and restores stack after failure" {
     try runtime.installConfiguration();
 }
 
-test "composed application definitions install once without constructor callbacks" {
+test "application data installs once and preserves explicit replacements" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     const source =
-        \\local function producer(value) return {definitions={services={deferred=value}}} end
-        \\local first = producer(7)
-        \\local application = misa.compose({first, producer(8), {definitions={
+        \\local first = {config={label="stock"},definitions={services={deferred=7,removed=true}}}
+        \\local application = misa.snapshot(first)
+        \\application.definitions.services.deferred = 8
+        \\application.definitions.services.removed = nil
+        \\application.config.label = "custom"
+        \\local additions = {
         \\  services={["fixture.value"]=42},
         \\  actions={fixture={label="Fixture", event={type="fixture"}}},
         \\  effects={["fixture/translate"]=function() return {type="register/obsolete"} end},
         \\  events={fixture={event="fixture",handler=function() return {fx={{type="fixture/translate"}}} end}},
         \\  requirements={fixture={"deferred", "fixture.value"}}
-        \\}}})
+        \\}
+        \\for kind, entries in pairs(additions) do
+        \\  application.definitions[kind] = application.definitions[kind] or {}
+        \\  for id, value in pairs(entries) do application.definitions[kind][id] = value end
+        \\end
         \\assert(misa.deferred == nil and first.definitions.services.deferred == 7)
-        \\misa._install(application.definitions, {argv={},config={}})
-        \\assert(misa.deferred == 8 and misa.fixture.value == 42)
+        \\misa._install(application.definitions, {argv={},config=application.config})
+        \\assert(misa.deferred == 8 and misa.fixture.value == 42 and misa.removed == nil)
+        \\assert(misa.configuration().label == "custom" and first.config.label == "stock")
         \\assert(misa.actions.lookup("fixture").binding.action == "fixture")
         \\assert(not pcall(misa._install, application.definitions, {}))
         \\local ok, err = pcall(misa._dispatch, {type="fixture"}, {}, {monotonic_ms=0,wall_ms=0})

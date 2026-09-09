@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -7,4 +7,4 @@
 
           (nested)
           nil
-          (definitions.build :tests.integration.fixtures.constructor-trace declarations {}))
+          (definitions.collect :tests.integration.fixtures.constructor-trace declarations {}))

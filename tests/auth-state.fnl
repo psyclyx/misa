@@ -5,16 +5,16 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local declarations (require :misa.definitions))
-(app.include (fennel.dofile :extensions/misa/json.fnl) {})
+(local declarations (require :tests.declarations))
+(app.include (. (require :tests.stock) :misa.json) {})
 ;; Providers register after the auth extension in supported configurations.
-(local specs ((. (fennel.dofile :extensions/misa/providers/auth.fnl) :build) {:config {}}))
+(local specs (. (require :tests.stock) :misa.providers.auth))
 (local handlers {})
 (each [_ spec (pairs specs.events)]
   (tset handlers spec.event spec.handler)
   nil)
 (app.define specs)
-(app.define (declarations.build :auth-state-2 [(let [definition {:id :first :model_provider :model-first :strategy :api_key :discover_models true}] {:catalog :auth-providers :id (. definition :id) :value definition})
+(app.define (declarations.collect :auth-state-2 [(let [definition {:id :first :model_provider :model-first :strategy :api_key :discover_models true}] {:catalog :auth-providers :id (. definition :id) :value definition})
                          (let [definition {:id :second :model_provider :model-second :strategy :api_key}] {:catalog :auth-providers :id (. definition :id) :value definition})]))
 (app.install)
 (assert (= (misa.auth.provider :first) (misa.auth.for-model :model-first)))
@@ -71,16 +71,16 @@
   (local app _G.misa)
   (local context {:argv argv :config {}})
   (local scenario ((require :tests.application) context))
-  (scenario.include (fennel.dofile :extensions/misa/json.fnl) context)
+  (scenario.include (. (require :tests.stock) :misa.json) context)
   (each [_ name (ipairs order)]
-    (scenario.include (require name) context))
+    (scenario.include (. (require :tests.stock) name) context))
   (when with-providers
-    (scenario.define (declarations.build :auth-case-604 [(let [definition {:id :fixture :model_provider :fixture :strategy :api_key
+    (scenario.define (declarations.collect :auth-case-604 [(let [definition {:id :fixture :model_provider :fixture :strategy :api_key
                                       :discover_models true}] {:catalog :auth-providers :id (. definition :id) :value definition})
                              (let [definition {:id :second :model_provider :second :strategy :api_key}] {:catalog :auth-providers :id (. definition :id) :value definition})])))
   (var observed nil)
   (local requests [])
-  (scenario.define (declarations.build :auth-case-661 [{:catalog :events  :value {:event :app/start :handler (fn [] {:patch {:models {:selected :fixture/model
+  (scenario.define (declarations.collect :auth-case-661 [{:catalog :events  :value {:event :app/start :handler (fn [] {:patch {:models {:selected :fixture/model
                                            :entries [{:id :fixture/model :model :model :provider :fixture}]}}})}}
          {:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db))}}
          {:catalog :effects :id :provider.fixture :value (fn [effect] (table.insert requests effect) [])}]))

@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Pure renderer for the complete geometry produced by choices.layout.
 
 (fn span [text style] {: style : text})
@@ -24,6 +22,7 @@
     spans))
 
 (fn render-picker [model]
+  "Render picker content."
   (let [pad (string.rep " " (or model.x 0))
         result {}]
     (when (not model.input.hidden)
@@ -74,10 +73,4 @@
        :lines result
        :overlay true})))
 
-(fn build []
-  "Declare picker rendering."
-  (definitions.build :component.picker
-    [{:catalog :components :id :default.picker :value {:render render-picker}}]
-    {:requirements {:component.picker [:layout]}}))
-
-{: build}
+{:render-picker render-picker}

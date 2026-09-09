@@ -1,8 +1,8 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Each callback returns promptly; only the synchronous dispatch chain runs away.
 (fn [context]
-          (definitions.build :tests.dispatch-limit [{:catalog :events  :value {:event :app/start :handler (fn [db]
+          (definitions.collect :tests.dispatch-limit [{:catalog :events  :value {:event :app/start :handler (fn [db]
                             {:patch {:count 0 :notices 0 :healthy 0}
                              :fx [{:type (if context.config.headless
                                              :dispatch

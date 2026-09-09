@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -23,4 +23,4 @@
                                                     0)))
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.runtime-regressions-reset declarations {}))
+          (definitions.collect :tests.integration.fixtures.runtime-regressions-reset declarations {}))

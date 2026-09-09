@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -13,4 +13,4 @@
                                  :model :model
                                  :provider :private}] {:catalog :models :id (. definition :id) :value definition}))
           nil
-          (definitions.build :tests.integration.fixtures.unavailable-models declarations {}))
+          (definitions.collect :tests.integration.fixtures.unavailable-models declarations {}))

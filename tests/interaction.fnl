@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Drives real framework transactions, including input routing and rollback
 
@@ -294,4 +294,4 @@ A paragraph.
                                                    :type :interaction/step}
                                            :type :dispatch}]})}})
           nil
-          (definitions.build :tests.interaction declarations {}))
+          (definitions.collect :tests.interaction declarations {}))

@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Root composition only. Feature state and viewport extraction remain owned by
 ;; editor, messages, picker layers, and status.
 
@@ -225,23 +223,18 @@
           (. (input-budgets frame input-count dock-count) :completions)))))
 
 (fn main [db cofx]
+  "Compose the current terminal frame from presentation regions."
   (if (<= cofx.terminal.lines 0) {:lines []}
       (compose (regions db cofx.terminal cofx.projecting) cofx.terminal)))
 
-(fn build []
-  "Build the module declarations."
-  (definitions.build :ui
-    [{:catalog :services :id :ui.regions :value regions}
-     {:catalog :services :id :ui.input-budgets :value input-budgets}
-     {:catalog :services
-      :id :ui.overlay-room
-      :value (fn [db terminal]
-               "Return the number of rows available to an overlay."
-               (. (chrome db terminal) :available))}
-     {:catalog :services :id :ui.bound-frame :value bound-frame}
-     {:catalog :services :id :ui.picker-room :value ui-picker-room}
-     {:catalog :services :id :ui.completion-room :value ui-completion-room}
-     {:catalog :views :id :main :value main}]
-    {}))
+(fn overlay-room [db terminal]
+  "Return the terminal rows available for an overlay."
+  (. (chrome db terminal) :available))
 
-{:build build}
+{: bound-frame
+ : input-budgets
+ : main
+ : overlay-room
+ : regions
+ : ui-completion-room
+ : ui-picker-room}

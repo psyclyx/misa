@@ -4,9 +4,10 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
-(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {:config {}}))
-(app.add :misa.ui.animations.default)
+(local definitions (require :tests.declarations))
+(app.define (. (require :tests.stock) :misa.json))
+(app.include (. (require :tests.stock) :misa.ui.animations.default))
+(app.include (. (require :tests.stock) :misa.ui.themes.default))
 (app.install)
 
 (each [_ persist (ipairs [false true])]
@@ -14,8 +15,7 @@
     (local config {: persist})
     (when (= name :components) (tset config :message :custom.message))
     (when (= name :animations) (tset config :roles {:status :default}))
-    (local specs ((. (require (.. :misa.ui. name)) :build)
-                 {:config {name config}}))
+    (local specs (. (require :tests.stock) (.. :misa.ui. name)))
     (var start nil)
     (assert (= specs.interceptors nil) "startup must not install middleware")
     (each [_ spec (pairs specs.events)]
@@ -25,7 +25,7 @@
     (assert start)
     (local untouched {:value :shared})
     (local db {: untouched})
-    (local result (start db {:type :app/start}))
+    (local result (start db {:type :app/start} {:config {name config}}))
     (assert (= (. db name) nil) "startup mutated input")
     (local next-db (misa.patch db result.patch))
     (assert (= next-db.untouched untouched))
@@ -42,8 +42,9 @@
       (assert (= (. result.fx 1 :type) :state/load))
       (assert (= (. result.fx 1 :completion) (.. name :/loaded))))
     (local before (misa.json.encode next-db))
-    (local repeated (start next-db {:type :app/start}))
+    (local repeated (start next-db {:type :app/start} {:config {name config}}))
     (assert (= repeated.patch nil) "startup replaced existing selections")
     (assert (= before (misa.json.encode next-db)))
     (assert (= (misa.patch next-db (or repeated.patch {})) next-db))))
+
 (output "presentation startup contracts passed\n")

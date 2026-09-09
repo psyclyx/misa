@@ -1,8 +1,7 @@
-(local definitions (require :misa.definitions))
-
 ;; Status presents usage facts and tracks the current activity label.
 
 (fn total [usage]
+  "Return the combined input and output token count."
   (+ (or (and usage usage.input_tokens) 0)
      (or (and usage usage.output_tokens) 0)))
 
@@ -14,6 +13,7 @@
   (and (= (type value) :number) (= value value) (< (math.abs value) math.huge)))
 
 (fn plan-value [usage]
+  "Describe the least remaining allowance across quota windows."
   (when usage
     (var remaining nil)
     (when (and (= (type usage) :table) (not usage.unavailable))
@@ -32,23 +32,6 @@
          :reason (if (and (= (type usage) :table) usage.unavailable)
                      :provider_unavailable
                      :missing_limit)})))
-
-(local indicators [{:id :plan
-                    :label :plan
-                    :action :usage.open
-                    :query [:status/plan]}
-                   {:id :activity
-                    :icon "●"
-                    :label :activity
-                    :query [:status/activity]}
-                   {:id :session
-                    :icon :tok
-                    :label :tokens
-                    :query [:status/session]}
-                   {:id :context
-                    :icon "◫"
-                    :label :ctx
-                    :query [:status/context]}])
 
 (fn projection [db context]
   "Build semantic status facts from the current database and clock."
@@ -70,58 +53,24 @@
       []))
 
 (fn status-context-value [inputs]
+  "Describe the used and available model context."
   (let [used (total (. inputs 1))
         model (selected (. inputs 2) (. inputs 3))]
     (if model
         {:type :ratio : used :limit model.context_window :unit :tokens}
         {:type :tokens :value used})))
 
-(fn build []
-  "Build the declarations for status."
-  (let [fx [(let [definition {:id :status/activity
-                              :inputs [[:db/path :status :mode]]
-                              :compute (fn [inputs]
-                                         {:type :activity
-                                          :state (or (. inputs 1) :ready)})}]
-              {:catalog :subscriptions
-               :id (. definition :id)
-               :value definition})
-            (let [definition {:id :status/session
-                              :inputs [[:usage/session]]
-                              :compute (fn [inputs]
-                                         {:type :tokens
-                                          :value (total (. inputs 1))})}]
-              {:catalog :subscriptions
-               :id (. definition :id)
-               :value definition})
-            (let [definition {:id :status/context
-                              :inputs [[:usage/last-request]
-                                       [:db/path :models :entries]
-                                       [:db/path :models :selected]]
-                              :compute status-context-value}]
-              {:catalog :subscriptions
-               :id (. definition :id)
-               :value definition})
-            (let [definition {:id :status/plan
-                              :inputs [[:usage/selected-quota]]
-                              :compute (fn [inputs] (plan-value (. inputs 1)))}]
-              {:catalog :subscriptions
-               :id (. definition :id)
-               :value definition})
-            {:catalog :events
-             :value {:event :app/start
-                     :handler (fn []
-                                {:patch {:status (misa.replace {:mode :ready})}})}}
-            {:catalog :events
-             :value {:event :agent/status
-                     :handler (fn [_ event]
-                                {:patch {:status {:mode event.status}}})}}
-            {:catalog :services :id :status.model :value projection}]]
-    (each [_ value (ipairs indicators)]
-      (table.insert fx (let [definition value]
-                         {:catalog :indicators
-                          :id (. definition :id)
-                          :value definition})))
-    (definitions.build :status fx {})))
+(fn initialize []
+  "Initialize activity state as ready."
+  {:patch {:status (misa.replace {:mode :ready})}})
 
-{:build build}
+(fn update [_ event]
+  "Record the current activity label."
+  {:patch {:status {:mode event.status}}})
+
+{: initialize
+ : plan-value
+ : projection
+ : status-context-value
+ : total
+ : update}

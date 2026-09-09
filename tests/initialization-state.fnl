@@ -5,10 +5,10 @@
 (local context {:argv [] :config {}})
 (local initializers [])
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local declarations (require :misa.definitions))
+(local declarations (require :tests.declarations))
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.animations
                        :misa.ui.animations.default :misa.providers.auth :misa.models])]
-  (local specs ((. (require name) :build) context))
+  (local specs (. (require :tests.stock) name))
   (each [_ spec (pairs (or specs.events {}))]
 
     (when (and true (= spec.event :app/start))

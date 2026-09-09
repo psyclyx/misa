@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Overlay adapter for shared choice sessions. Geometry is supplied to the
 ;; shared positional resolver; picker-specific code owns only modal lifecycle.
 
@@ -110,6 +108,7 @@
     {:patch {:picker {:session patch}} :fx (or fx [{:type :terminal/read}])}))
 
 (fn on-picker-open [db event]
+  "Open an overlay picker from the requested choice specification."
   (assert (or (not db.picker) (= event.nested true)) "a picker is already open")
   (let [state (open-state event db (or (and event.nested db.picker) nil))]
     (updated (if event.choose_view
@@ -117,6 +116,7 @@
                  state))))
 
 (fn on-picker-update [db event]
+  "Replace the active picker items and preserve its focus."
   (var state db.picker)
   (if (or (not state) (not= event.id state.id) (not= event.token state.token))
       nil
@@ -153,9 +153,11 @@
         (updated state []))))
 
 (fn route-terminal-input [_ event]
+  "Route terminal input to the active picker."
   (misa.patch event {:type :picker/input}))
 
 (fn on-picker-input [db event cofx]
+  "Apply input to the active picker session."
   (let [state (assert db.picker)
         action (misa.choices.action event)
         geometry (when (misa.choices.needs-targets? state.session event)
@@ -192,22 +194,7 @@
                           {:type :terminal/read}])
         (updated-session state result.session))))
 
-(fn build []
-  "Build the declarations for picker."
-  (definitions.build :picker
-    [{:catalog :services :id :picker.enabled? :value true}
-     {:catalog :events :value {:event :picker/open :handler on-picker-open}}
-     {:catalog :events
-      :value {:event :picker/update :handler on-picker-update}}
-     (let [definition {:id :picker/input
-                       :event :terminal/input
-                       :priority 800
-                       :context [:db/path :picker]
-                       :resolve route-terminal-input}]
-       {:catalog :routes :id (. definition :id) :value definition})
-     {:catalog :events :value {:event :picker/input :handler on-picker-input}}]
-    {:requirements {:picker.enabled? [:choices.action
-                                      :choices.picker-layout
-                                      :choices.session]}}))
-
-{: build}
+{:on-picker-input on-picker-input
+ :on-picker-open on-picker-open
+ :on-picker-update on-picker-update
+ :route-terminal-input route-terminal-input}

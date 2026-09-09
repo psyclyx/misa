@@ -3,24 +3,39 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
-(local context {:config {:themes {:persist false} :components {:persist false}}})
-(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components])]
-  (app.define ((. (require name) :build) context)))
+(local definitions (require :tests.declarations))
+(local context
+       {:config {:themes {:persist false} :components {:persist false}}})
+(local app ((require :tests.application) context))
+(each [_ name (ipairs [:misa.json
+                       :misa.ui.themes
+                       :misa.ui.themes.default
+                       :misa.ui.components])]
+  (app.define (. (require :tests.stock) name)))
+
 (var calls 0)
 
-(app.define (definitions.build :fixture [{:catalog :components :id :default.fixture :value {:render (fn [model]
-                          (set calls (+ calls 1))
-                          (if model.throw (error "fixture exploded") model.view))}}
-       {:catalog :components :id :default.parent :value {:compose true :render (fn [model context]
-                                        (local child (context.render_child :fixture model))
-                                        {:lines [{:spans [{:text :before}]}
-                                                 (. child.lines 1)
-                                                 {:spans [{:text :after}]}]})}}]))
-(app.define ((. (fennel.dofile :extensions/misa/ui/layout.fnl) :build) context))
-(app.define (definitions.build :fixture [{:catalog :services :id :components.buttons :value (fn [] [])}]))
-(app.define ((. (fennel.dofile :extensions/misa/dialogs/render.fnl) :build) context))
+(app.define (definitions.collect :fixture
+              [{:catalog :components
+                :id :default.fixture
+                :value {:render (fn [model]
+                                  (set calls (+ calls 1))
+                                  (if model.throw (error "fixture exploded")
+                                      model.view))}}
+               {:catalog :components
+                :id :default.parent
+                :value {:compose true
+                        :render (fn [model context]
+                                  (local child
+                                         (context.render_child :fixture model))
+                                  {:lines [{:spans [{:text :before}]}
+                                           (. child.lines 1)
+                                           {:spans [{:text :after}]}]})}}]))
+
+(app.define (. (require :tests.stock) :misa.ui.layout))
+(app.define (definitions.collect :fixture
+              [{:catalog :services :id :components.buttons :value (fn [] [])}]))
+(app.define (. (require :tests.stock) :misa.dialogs.render))
 (app.install)
 (local db {:themes {:active :default} :components {:roles {}}})
 (local render-context {:columns 32})
@@ -31,44 +46,65 @@
   (assert (= view.component_error.role :fixture))
   (assert (view.component_error.detail:find detail 1 true))
   view)
+
 (broken {:throw true} "fixture exploded")
 (broken {:view false} "return a table")
 (broken {:view {:lines :bad}} "lines must be an array")
 (broken {:view {:lines [{:spans [{:text 4}]}]}} "span text")
 (broken {:view {:lines [{:spans [{:text "bad\nline"}]}]}} "span text")
-(broken {:view {:lines [{:spans [{:text :ok :animation {:frames [false]}}]}]}} "animation frame")
-(broken {:view {:lines [{:spans [{:text :ok}]}] :cursor {:row 2 :byte 0}}} "cursor row")
-(broken {:view {:lines [{:spans [{:text :ok}]}] :cursor {:row 1 :byte 3}}} "cursor byte")
-(broken {:view {:lines [{:spans [{:text "é"}]}] :cursor {:row 1 :byte 1}}} "UTF-8")
-(broken {:view {:lines [{:spans [] :image {:id 1 :width -1}}]}} "image geometry")
+(broken {:view {:lines [{:spans [{:text :ok :animation {:frames [false]}}]}]}}
+        "animation frame")
+(broken {:view {:lines [{:spans [{:text :ok}]}] :cursor {:row 2 :byte 0}}}
+        "cursor row")
+(broken {:view {:lines [{:spans [{:text :ok}]}] :cursor {:row 1 :byte 3}}}
+        "cursor byte")
+(broken {:view {:lines [{:spans [{:text "é"}]}] :cursor {:row 1 :byte 1}}}
+        "UTF-8")
+(broken {:view {:lines [{:spans [] :image {:id 1 :width -1}}]}}
+        "image geometry")
 (local nested (misa.components.render db :parent {:throw true} render-context))
 (assert (= (. nested.lines 1 :spans 1 :text) :before))
 (assert (= (. nested.lines 2 :spans 1 :text) "Component fixture failed"))
 (assert (= (. nested.lines 3 :spans 1 :text) :after))
-(local collection [{:id :bad :role :fixture :model {:throw true}}
-                   {:id :good :role :fixture :model {:view {:lines [{:spans [{:text :healthy}]}]}}}])
+(local collection
+       [{:id :bad :role :fixture :model {:throw true}}
+        {:id :good
+         :role :fixture
+         :model {:view {:lines [{:spans [{:text :healthy}]}]}}}])
+
 (local first (misa.components.project db :failures collection render-context))
 (assert (. first.views 1 :component_error))
 (assert (= (. first.views 2 :lines 1 :spans 1 :text) :healthy))
 (local before calls)
 (local cached (misa.components.project db :failures collection render-context))
-(assert (= calls before) "cached failed component was retried on unchanged projection")
+(assert (= calls before)
+        "cached failed component was retried on unchanged projection")
 (local recovered (misa.components.project db :failures
-                                         [{:id :bad :role :fixture :model {:view {:lines [{:spans [{:text :recovered}]}]}}}]
-                                         render-context))
+                                          [{:id :bad
+                                            :role :fixture
+                                            :model {:view {:lines [{:spans [{:text :recovered}]}]}}}]
+                                          render-context))
+
 (assert (= (. recovered.views 1 :component_error) nil))
 (assert (= (. recovered.views 1 :lines 1 :spans 1 :text) :recovered))
 (local missing (misa.components.project db :missing
-                                       [{:id :missing :role :unregistered :model {}}]
-                                       render-context))
+                                        [{:id :missing
+                                          :role :unregistered
+                                          :model {}}]
+                                        render-context))
+
 (assert (= (. missing.views 1 :component_error :role) :unregistered))
 
+(local dialog
+       (misa.components.render db :dialog
+                               {:title :Dialog
+                                :content {:role :fixture :model {:throw true}}}
+                               {:columns 40 :available_lines 10}))
 
+(assert (= dialog.component_error nil)
+        "child failure replaced the entire dialog")
+(assert (: (table.concat (icollect [_ span (ipairs (. dialog.lines 2 :spans))]
+                           span.text)) :find
+           "Component fixture failed" 1 true))
 
-(local dialog (misa.components.render db :dialog
-                                    {:title :Dialog :content {:role :fixture :model {:throw true}}}
-                                    {:columns 40 :available_lines 10}))
-(assert (= dialog.component_error nil) "child failure replaced the entire dialog")
-(assert (: (table.concat (icollect [_ span (ipairs (. dialog.lines 2 :spans))] span.text))
-           :find "Component fixture failed" 1 true))
 (output "component failure containment passed\n")

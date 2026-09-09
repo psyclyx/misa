@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -16,4 +16,4 @@
                                              :type :tool/result}
                                      :type :dispatch})})
           nil
-          (definitions.build :tests.integration.fixtures.tool declarations {}))
+          (definitions.collect :tests.integration.fixtures.tool declarations {}))

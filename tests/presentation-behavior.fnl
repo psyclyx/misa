@@ -120,11 +120,9 @@
 
 (local indicators (require :misa.ui.status.indicators))
 (local selection-config
-       {:indicators [:activity :model]
-        :indicator_overrides {:activity false
-                              :model {:priority 7}
-                              :zebra {:representation :icon}
-                              :alpha {:hotkey true}}})
+       [{:id :model :priority 7}
+        {:id :alpha :hotkey true}
+        {:id :zebra :representation :icon}])
 
 (local chosen (indicators.selections selection-config))
 (assert (= (length chosen) 3))
@@ -132,8 +130,8 @@
 (assert (= (. chosen 1 :priority) 7))
 (assert (= (. chosen 2 :id) :alpha))
 (assert (= (. chosen 3 :id) :zebra))
-(assert (= (. selection-config.indicators 1) :activity)
+(assert (= (. selection-config 1 :representation) nil)
         "selection normalization mutated configuration")
 
-(assert (not (pcall indicators.selections {:indicators [:model :model]})))
+(assert (not (pcall indicators.selections [:model :model])))
 (output "presentation behavior contracts passed\n")

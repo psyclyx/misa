@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -49,4 +49,4 @@
                                                   "completion rate did not use reported output tokens and monotonic elapsed time")
                                           {:fx [{:type :app/quit}]})))}})
           nil
-          (definitions.build :tests.integration.fixtures.rate-check declarations {}))
+          (definitions.collect :tests.integration.fixtures.rate-check declarations {}))

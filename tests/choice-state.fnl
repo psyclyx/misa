@@ -3,14 +3,14 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
 (local context {:config {} :argv []})
 (local db {})
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.choices :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout])]
-  (app.define ((. (require name) :build) context)))
-(app.define (definitions.build :test [{:catalog :choice-inputs :id :clear :value (fn [session] {:session (misa.choices.set-items session [] db) :consumed true})}]))
-(app.define (definitions.build :test [{:catalog :choice-views :id :custom-db-view :value {:project (fn [session _ current]
+  (app.define (. (require :tests.stock) name)))
+(app.define (definitions.collect :test [{:catalog :choice-inputs :id :clear :value (fn [session] {:session (misa.choices.set-items session [] db) :consumed true})}]))
+(app.define (definitions.collect :test [{:catalog :choice-views :id :custom-db-view :value {:project (fn [session _ current]
                                                [(. session.items (if current.pick_second 2 1))])}}]))
 (app.install)
 (local initial (misa.choices.session {:title :Test :views [:all :favorites]
@@ -61,7 +61,7 @@
 (assert (= (. rotated.panels 1 :id) :second))
 (assert (= (. rotated.panels 1 :items 1 :id) :two))
 (local handlers {})
-(local picker-specs ((. (fennel.dofile :extensions/misa/choices/picker/init.fnl) :build)))
+(local picker-specs (. (require :tests.stock) :misa.choices.picker))
 (each [_ spec (pairs (. picker-specs :events))]
   (tset handlers spec.event spec.handler))
 (fn dispatch [previous event]

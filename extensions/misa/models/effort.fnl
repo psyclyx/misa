@@ -1,14 +1,14 @@
-(local definitions (require :misa.definitions))
-
 ;; Reasoning-effort affordances over the generic request-options policy.
 
 (local option-name :reasoning_effort)
 
 (fn choices [db]
+  "Return reasoning effort choices for the selected model."
   (or (and misa.request-options misa.request-options.choices
            (misa.request-options.choices db option-name)) {}))
 
 (fn unavailable [db]
+  "Report that the selected model does not support reasoning effort."
   (let [model (or (and db.models db.models.selected) "selected model")]
     {:fx [{:event {:level :info
                    :problem {:code :unsupported
@@ -21,9 +21,11 @@
           {:type :terminal/read}]}))
 
 (fn selected-effort-select [db]
+  "Return the currently selected reasoning effort."
   (misa.request-options.value db option-name))
 
 (fn complete-effort-select [_ db]
+  "Return completion items for reasoning effort."
   (let [result {}]
     (each [_ value (ipairs (choices db))]
       (tset result (+ (length result) 1)
@@ -31,6 +33,7 @@
     result))
 
 (fn on-effort-select [db event]
+  "Validate and select the requested reasoning effort."
   (let [available (choices db)]
     (if (= (length available) 0)
         (unavailable db)
@@ -49,6 +52,7 @@
                 {:type :terminal/read}]}))))
 
 (fn on-effort-cycle [db]
+  "Select the next supported reasoning effort."
   (let [available (choices db)]
     (if (= (length available) 0)
         {:fx [{:type :terminal/read}]}
@@ -63,42 +67,10 @@
                  :type :dispatch}
                 {:type :terminal/read}]}))))
 
-(fn build []
-  "Build the declarations for effort."
-  (definitions.build :effort
-    [(let [definition {:action :cycle_effort
-                       :context :global
-                       :default [:alt+f]}]
-       {:catalog :keybindings
-        :id (.. (. definition :context) "/" (. definition :action))
-        :value definition})
-     (let [definition {:hotkey {:action :cycle_effort :context :global}
-                       :icon "◈"
-                       :id :effort
-                       :label :effort
-                       :query [:request-options/indicator option-name]}]
-       {:catalog :indicators :id (. definition :id) :value definition})
-     (let [definition {:choice_purpose :command
-                       :choice_available (fn [db]
-                                           (> (length (choices db)) 0))
-                       :choice_unavailable :effort/unsupported
-                       :complete complete-effort-select
-                       :description "Choose model reasoning effort"
-                       :event :effort/select
-                       :name :/effort
-                       :preference_scope :request-options/effort
-                       :selected selected-effort-select}]
-       {:catalog :commands :id (. definition :name) :value definition})
-     (let [definition {:binding {:action :cycle_effort :context :global}
-                       :event {:type :effort/cycle}
-                       :id :effort.cycle
-                       :label "Cycle reasoning effort"}]
-       {:catalog :actions :id (. definition :id) :value definition})
-     {:catalog :events
-      :value {:event :effort/unsupported :handler (fn [db] (unavailable db))}}
-     {:catalog :events
-      :value {:event :effort/select :handler on-effort-select}}
-     {:catalog :events :value {:event :effort/cycle :handler on-effort-cycle}}]
-    {:requirements {:effort [:request-options.choices]}}))
-
-{: build}
+{:choices choices
+ :complete-effort-select complete-effort-select
+ :on-effort-cycle on-effort-cycle
+ :on-effort-select on-effort-select
+ :option-name option-name
+ :selected-effort-select selected-effort-select
+ :unavailable unavailable}

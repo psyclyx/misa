@@ -3,14 +3,14 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(local definitions (require :misa.definitions))
-(local specs ((. (fennel.dofile :extensions/misa/agent/init.fnl) :build) {:config {}}))
-(local application (misa.compose
- [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
-  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
-  (misa.compose [{:definitions specs}])
-  {:definitions (definitions.build :test [{:catalog :agent-deltas :id :custom :value (fn [_ value] {:patch {:custom value.value}})}])}]))
-(misa._install application.definitions {:argv [] :config {}})
+(local definitions (require :tests.declarations))
+(local specs (. (require :tests.stock) :misa.agent))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(app.define (. (require :tests.stock) :misa.json))
+(app.define (. (require :tests.stock) :misa.agent.stream))
+(app.define specs)
+(app.define (definitions.collect :test [{:catalog :agent-deltas :id :custom :value (fn [_ value] {:patch {:custom value.value}})}]))
+(app.install)
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local fold-stream misa.stream.effects)
 (fn text-effect [kind text id]
@@ -49,7 +49,7 @@
 (fn transition [db event cofx]
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))
-  (local result ((. handlers event.type) db event cofx))
+  (local result ((. handlers event.type) db event (misa.patch {:config {} :argv []} (or cofx {}))))
   (assert (= before (misa.json.encode db)) "stream handler mutated prior state")
   (assert (= input (misa.json.encode event)) "stream handler mutated event")
   (assert (not (and result result.db)))

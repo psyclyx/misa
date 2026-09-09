@@ -2,18 +2,15 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
-(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
+(app.define (. (require :tests.stock) :misa.json))
 (app.install)
-(set misa.protocols {:anthropic (fn [] {:fx []})})
 (local feature (fennel.dofile :extensions/misa/providers/kimi.fnl))
-(fn handlers-for [region]
-  (local result {})
-  (each [_ spec (pairs (. (feature.build {:config {:providers {:kimi {: region}}}}) :events))]
-  (tset result spec.event spec.handler))
-  result)
-(local handlers (handlers-for :global))
+(fn handlers-for [profile]
+ {:usage/refresh (fn [db event] (feature.refresh-usage profile {} db event))
+  :provider/kimi-usage feature.receive-usage})
+(local handlers (handlers-for feature.profiles.global))
 (fn apply [db event]
   (local before (misa.json.encode db))
   (local result ((. handlers event.type) db event))
@@ -30,7 +27,7 @@
 (local untouched {})
 (assert (= (apply untouched {:type :usage/refresh :provider :other}) untouched)
         "unrelated provider refresh changed Kimi state")
-(local mainland ((. (handlers-for :mainland) :usage/refresh) {} {}))
+(local mainland ((. (handlers-for feature.profiles.mainland) :usage/refresh) {} {}))
 (assert (= (. mainland.fx 1 :url) "https://api.kimi.com/coding/v1/usages"))
 (local (queued no-requests) (apply pending {:type :usage/refresh}))
 (assert queued.providers.kimi.usage_again)

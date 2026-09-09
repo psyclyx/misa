@@ -3,12 +3,12 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local context {:argv [] :config {}})
 (var observed nil)
 (var next-value {:width 10})
 (var fail false)
-(app.define (definitions.build :fixture [{:catalog :events  :value {:event :inspect :handler (fn [_ _ cofx] (set observed cofx.presentation))}}
+(app.define (definitions.collect :fixture [{:catalog :events  :value {:event :inspect :handler (fn [_ _ cofx] (set observed cofx.presentation))}}
                           {:catalog :views :id :main :value (fn [_ cofx]
                                                           (assert cofx.projecting)
                                                           (misa.projections.publish :fixture next-value)

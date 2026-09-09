@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Optional monetary accounting. Providers supply prices and normalized usage;
 ;; presentation consumes projections. No UI or provider identity is required.
 
@@ -61,6 +59,7 @@
      :unavailable (= pricing nil)}))
 
 (fn costs-responses [inputs _ previous]
+  "Project response accounting into monetary facts."
   (let [entries {}]
     (each [id response (pairs (or (. inputs 1) {}))]
       (let [old (and previous (. previous id))]
@@ -79,10 +78,12 @@
     entries))
 
 (fn response-value [inputs query]
+  "Select the monetary fact for one response."
   (let [entry (. (. inputs 1) (. query 2))]
     (and entry entry.value)))
 
 (fn costs-groups [inputs _ previous]
+  "Aggregate child request costs by response group."
   (let [groups {}]
     (each [id response (pairs (or (. inputs 1) {}))]
       (let [owner (or response.parent_response_id id)
@@ -115,6 +116,7 @@
   (. (misa.sub db [:costs/groups]) id))
 
 (fn costs-total [inputs]
+  "Aggregate all completed response costs."
   (let [total {:estimated false :unknown false :usd 0}]
     (var count 0)
     (each [_ response (pairs (or (. inputs 1) {}))]
@@ -127,6 +129,7 @@
     total))
 
 (fn costs-indicator [inputs]
+  "Describe the total as a monetary indicator."
   (let [total (. inputs 1)]
     {:type :money
      :amount total.usd
@@ -140,12 +143,14 @@
     (and entry entry.value)))
 
 (fn reset [_ _event]
+  "Initialize empty response accounting."
   {:costs (misa.replace {:responses {}})})
 
 (fn response-patch [id response]
   {:costs {:responses {id (misa.replace response)}}})
 
 (fn complete [overrides db event]
+  "Record the reported or estimated cost of a completed response."
   (let [response (or (. db.costs.responses event.response_id)
                      (when event.model
                        {:model event.model
@@ -160,12 +165,14 @@
                                                                    usage))}))))))
 
 (fn start-response [overrides db event]
+  "Capture pricing when a response starts."
   (when (and db.costs event.model)
     (response-patch event.response_id
                     {:model event.model
                      :pricing (model-rates overrides db event.model)})))
 
 (fn interrupt-response [db event]
+  "Record known usage or an unknown cost for an interrupted response."
   (let [response (and db.costs (. db.costs.responses event.response_id))]
     (when response
       (response-patch event.response_id
@@ -177,92 +184,25 @@
                                                             :unknown true
                                                             :usd 0}))})))))
 
-(fn build [context]
-  "Build the declarations for costs."
-  (let [declarations []
-        raw (and (= (type context.config) :table) context.config.costs)
-        config (if (= (type raw) :table) raw {})
-        overrides {}]
-    (each [id value (pairs (or config.models {}))]
+(fn overrides [config]
+  "Validate model-specific price overrides."
+  (collect [id value (pairs (or config.models {}))]
+    (do
       (assert (= (type id) :string) "cost model ID must be a string")
-      (tset overrides id (rates value)))
-    (table.insert declarations {:catalog :services
-                                :id :costs.estimate
-                                :value estimate})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :costs.model
-                   :value (fn [db id] (costs-model overrides db id))})
-    (table.insert declarations
-                  (let [definition {:id :costs/responses
-                                    :inputs [[:db/path :costs :responses]]
-                                    :compute costs-responses}]
-                    {:catalog :subscriptions
-                     :id definition.id
-                     :value definition}))
-    (table.insert declarations
-                  (let [definition {:id :costs/response
-                                    :inputs [[:costs/responses]]
-                                    :compute response-value}]
-                    {:catalog :subscriptions
-                     :id definition.id
-                     :value definition}))
-    ;; Child requests retain independent accounting and aggregate only here.
-    ;; A single fold serves every visible group, avoiding per-block scans.
-    (table.insert declarations
-                  (let [definition {:id :costs/groups
-                                    :inputs [[:db/path :costs :responses]]
-                                    :compute costs-groups}]
-                    {:catalog :subscriptions
-                     :id definition.id
-                     :value definition}))
-    (table.insert declarations
-                  {:catalog :services :id :costs.group :value costs-group})
-    (table.insert declarations
-                  (let [definition {:id :costs/total
-                                    :inputs [[:db/path :costs :responses]]
-                                    :compute costs-total}]
-                    {:catalog :subscriptions
-                     :id definition.id
-                     :value definition}))
-    (table.insert declarations
-                  (let [definition {:id :costs/indicator
-                                    :inputs [[:costs/total]]
-                                    :compute costs-indicator}]
-                    {:catalog :subscriptions
-                     :id definition.id
-                     :value definition}))
-    (table.insert declarations
-                  {:catalog :services
-                   :id :costs.response
-                   :value costs-response})
-    (table.insert declarations
-                  (let [definition {:icon "$"
-                                    :id :cost
-                                    :label :cost
-                                    :query [:costs/indicator]}]
-                    {:catalog :indicators :id definition.id :value definition}))
-    (let [transitions {:app/start reset
-                       :transcript/reset reset
-                       :transcript/response-start (fn [db event]
-                                                    (start-response overrides
-                                                                    db event))
-                       :transcript/response-end (fn [db event]
-                                                  (when db.costs
-                                                    (complete overrides db
-                                                              event)))
-                       :tool-summary/usage (fn [db event]
-                                             (when db.costs
-                                               (complete overrides db event)))
-                       :transcript/response-interrupted interrupt-response}]
-      (each [name transition (pairs transitions)]
-        (fn name-event [db event]
-          (let [patch (transition db event)]
-            (when patch {: patch})))
+      id)
+    (rates value)))
 
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event name :handler name-event}}))
-      (definitions.build :costs declarations {}))))
-
-{: build : estimate}
+{:estimate estimate
+ :costs-model costs-model
+ :costs-responses costs-responses
+ :response-value response-value
+ :costs-groups costs-groups
+ :costs-group costs-group
+ :costs-total costs-total
+ :costs-indicator costs-indicator
+ :costs-response costs-response
+ :reset reset
+ :complete complete
+ :start-response start-response
+ :interrupt-response interrupt-response
+ :overrides overrides}

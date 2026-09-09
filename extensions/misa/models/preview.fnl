@@ -1,9 +1,8 @@
-(local definitions (require :misa.definitions))
-
 (fn line [text]
   {:spans [{: text :style :choice.preview}]})
 
 (fn model-preview [model context]
+  "Render model capabilities and pricing as preview data."
   (let [cost model.cost
         pricing (and cost cost.pricing)
         currency (or (and cost cost.currency) :USD)
@@ -59,10 +58,4 @@
                               (line "Cost: unavailable; configure costs.models for this model")))
             result)))))
 
-(fn build []
-  "Declare the model preview renderer."
-  (definitions.build :models.preview
-    [{:catalog :choice-previews :id :model :value model-preview}]
-    {:requirements {:models.preview [:values.render]}}))
-
-{: build}
+{:model-preview model-preview}

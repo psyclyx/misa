@@ -1,7 +1,5 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.dialogs")}
-    "module-2" {:priority 1000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/dialog-lifecycle.fnl")}}})
+(let [config {}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.dialogs))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/dialog-lifecycle.fnl") {:config config}))
+  {:config config :definitions app.definitions})

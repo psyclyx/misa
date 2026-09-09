@@ -1,6 +1,3 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {}
-   :modules {
-}})
+(let [config {}
+      app ((require :tests.application) {:config config})]
+  {:config config :definitions app.definitions})

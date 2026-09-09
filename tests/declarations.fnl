@@ -1,4 +1,4 @@
-(fn definitions [owner rows catalogs]
+(fn collect-declarations [owner rows catalogs]
   "Build named catalogs from declaration rows without installing them.
 
 Explicit IDs are preserved; unnamed event handlers receive an owner-local ID."
@@ -22,4 +22,4 @@ Explicit IDs are preserved; unnamed event handlers receive an owner-local ID."
             (tset result kind entries))))
       result)))
 
-{:build definitions}
+{:collect collect-declarations}

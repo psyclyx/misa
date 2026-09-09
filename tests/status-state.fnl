@@ -4,11 +4,11 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
-(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
+(local definitions (require :tests.declarations))
+(app.define (. (require :tests.stock) :misa.json))
 (local feature (fennel.dofile :extensions/misa/ui/status/init.fnl))
-(local specs (feature.build {}))
-(local usage-specs ((. (require :misa.usage) :build)))
+(local specs (. (require :tests.stock) :misa.ui.status))
+(local usage-specs (. (require :tests.stock) :misa.usage))
 (local handlers {})
 (each [_ module (ipairs [specs usage-specs])]
   (each [_ spec (pairs module.events)]
@@ -19,7 +19,7 @@
 ;; Minimal profiles without the indicator registry use the same component model.
 (local requests [])
 (var observed nil)
-(app.define (definitions.build :fixture [{:catalog :events  :value {:event :app/start :handler (fn [] {:patch {:selected {:provider :kimi :id :first}}})}}
+(app.define (definitions.collect :fixture [{:catalog :events  :value {:event :app/start :handler (fn [] {:patch {:selected {:provider :kimi :id :first}}})}}
        {:catalog :events  :value {:event :model/select :handler (fn [_ event] {:patch {:selected (misa.replace event.model)}})}}
        {:catalog :events  :value {:event :usage/refresh :handler (fn [_ event] (table.insert requests event.provider) nil)}}
        {:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
@@ -110,7 +110,7 @@
                                                                         :limit 100 :remaining 75}]}}}}))
 ;; Registration does not depend on indicator availability, and projection resolves
 ;; optional services when called, not from a setup-time snapshot.
-(local configured (feature.build {}))
+(local configured (. (require :tests.stock) :misa.ui.status))
 (assert (= configured.commands nil))
 (assert (= (length (icollect [id (pairs configured.indicators)] id)) 4))
 (local projection (. configured.services :status.model))

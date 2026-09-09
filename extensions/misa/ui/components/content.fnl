@@ -1,7 +1,6 @@
-(local definitions (require :misa.definitions))
-
 ;; Content primitives accept ordinary values; callers choose their application.
 (fn text [model context]
+  "Render plain text with optional source coordinates."
   (let [lines (misa.markdown.view.plain (tostring (or model.text ""))
                                         (or model.style :plain))]
     (when (= model.source false)
@@ -15,6 +14,7 @@
     {:lines (misa.layout.wrap-spans lines (math.max 1 (or context.columns 80)))}))
 
 (fn fields [model context]
+  "Render labeled fields using the shared text layout."
   (let [lines []]
     (each [_ field (ipairs (or model.fields []))]
       (let [rows (. (text {:text field.value :source false :style model.style}
@@ -27,6 +27,7 @@
     {:lines (misa.layout.wrap-spans lines (math.max 1 (or context.columns 80)))}))
 
 (fn code [model context language]
+  "Render source rows using Markdown code-block geometry."
   (let [lines (misa.markdown.view.render {:blocks [{:kind :code_block
                                                     :language (or language
                                                                   model.language)
@@ -55,16 +56,4 @@
           (set part.source_end nil))))
     {:lines (misa.layout.wrap-spans lines (math.max 1 (or context.columns 80)))}))
 
-(fn build []
-  "Build the declarations for component content."
-  (definitions.build :component.content
-    [{:catalog :components :id :default.content.text :value {:render text}}
-     {:catalog :components :id :default.content.fields :value {:render fields}}
-     {:catalog :components :id :default.content.code :value {:render code}}
-     {:catalog :components :id :default.content.lines :value {:render code}}
-     {:catalog :components
-      :id :default.content.diff
-      :value {:render (fn [model context] (code model context :diff))}}]
-    {:requirements {:component.content [:layout :markdown.view]}}))
-
-{:build build}
+{: code : fields : text}

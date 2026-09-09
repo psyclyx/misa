@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Choice preferences are immutable data; persistence is an explicit effect.
 (fn new-state [] {:clock 0 :scopes {}})
 
@@ -66,6 +64,7 @@
    :fx [{:type :state/save :namespace :preferences :data preferences}]})
 
 (fn on-preferences-toggle [db event]
+  "Toggle and persist the selected favorite."
   (when (and (= (type event.scope) :string) (= (type event.value) :string))
     (let [preferences (or db.preferences (new-state))
           previous (entry preferences event.scope event.value)]
@@ -74,36 +73,30 @@
                                                              :favorite (not previous.favorite)}}}})))))
 
 (fn on-choice-used [db event]
+  "Record usage of a choice in its preference scope."
   (when (and (= (type event.scope) :string) (= (type event.value) :string))
     (saved (use db event.scope event.value))))
 
 (fn on-app-start [_]
+  "Request saved choice preferences."
   {:fx [{:type :state/load
          :namespace :preferences
          :completion :preferences/loaded}]})
 
-(fn build [context]
-  "Build the declarations for preferences."
-  (let [config (or (. (or context.config {}) :preferences) {})]
-    (assert (= (type config) :table) "config.preferences must be an object")
+(fn on-preferences-loaded [config _ event]
+  "Restore saved preferences and apply configured favorites."
+  (let [config (or config.preferences {})]
+    (assert (= event.namespace :preferences) "invalid preference namespace")
+    (let [preferences (if (= event.found false)
+                          (new-state)
+                          event.data)]
+      (assert (valid? preferences) "invalid preference data")
+      {:patch {:preferences (misa.replace (configured-favorites preferences
+                                                                config.favorites))}})))
 
-    (fn on-preferences-loaded [_ event]
-      (assert (= event.namespace :preferences) "invalid preference namespace")
-      (let [preferences (if (= event.found false)
-                            (new-state)
-                            event.data)]
-        (assert (valid? preferences) "invalid preference data")
-        {:patch {:preferences (misa.replace (configured-favorites preferences
-                                                                  config.favorites))}}))
-
-    (definitions.build :preferences
-      [{:catalog :services :id :preferences.use :value use}
-       {:catalog :events :value {:event :app/start :handler on-app-start}}
-       {:catalog :events
-        :value {:event :preferences/loaded :handler on-preferences-loaded}}
-       {:catalog :events :value {:event :choice/used :handler on-choice-used}}
-       {:catalog :events
-        :value {:event :preferences/toggle :handler on-preferences-toggle}}]
-      {})))
-
-{: build : valid? : use}
+{:on-app-start on-app-start
+ :on-choice-used on-choice-used
+ :on-preferences-loaded on-preferences-loaded
+ :on-preferences-toggle on-preferences-toggle
+ :use use
+ :valid? valid?}

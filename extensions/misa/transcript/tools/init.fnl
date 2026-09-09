@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Presentation bindings belong here, independently of tool definitions and
 ;; independently of the generic components that display their values.
 (fn display [value]
@@ -90,6 +88,7 @@
                            :style :tool})))))
 
 (fn edit-view [model]
+  "Describe an edit using its diff and argument content."
   (let [diff (edit-result model)
         binding {:subject :path
                  :fields [:path :new_text]
@@ -103,6 +102,7 @@
                  (result model))}))
 
 (fn shell-result [model]
+  "Describe shell output as a code block with trailing-line semantics."
   (let [value (or model.result model.text)]
     (when (not= value nil)
       (descriptor :code
@@ -113,54 +113,29 @@
                    :missing_newline "\\ No newline at end of output"}))))
 
 (fn read-result [model]
+  "Describe file output with consistent source coordinates."
   (if model.is_error (result model)
       (or (file-result model)
           (when (or model.result model.text)
             (descriptor :code {:text (or model.result model.text) :style :tool})))))
 
-(fn tools-presentation [roles model]
-  "Describe a tool call using its configured presentation adapter."
-  (let [name (or model.name "")
-        selected (. roles name)
-        binding (. (misa.catalog :tool-presentations) (or selected name))]
-    (when selected
-      (assert binding (.. "unknown tool presentation: " selected)))
-    (let [heading (when (not= (type binding) :function)
-                    (subject model binding))]
-      (if (= (type binding) :function) (binding model)
-          {:subject heading
-           :arguments (arguments model binding heading)
-           :result (or (and binding binding.result (binding.result model))
-                       (result model))}))))
+(fn tools-presentation [model]
+  "Describe a tool call using its named presentation adapter."
+  (let [binding (. (misa.catalog :tool-presentations) (or model.name ""))
+        heading (when (not= (type binding) :function) (subject model binding))]
+    (if (= (type binding) :function) (binding model)
+        {:subject heading
+         :arguments (arguments model binding heading)
+         :result (or (and binding binding.result (binding.result model))
+                     (result model))})))
 
-(fn build [context]
-  "Build the declarations for tool presentations."
-  (let [roles (or (. (or (. (or context.config {}) :tool_presentations) {})
-                     :roles) {})
-        fx [{:catalog :services
-             :id :tools.presentation
-             :value (fn [model] (tools-presentation roles model))}]]
-    (each [name binding (pairs {:shell {:fields [:command]
-                                        :code :command
-                                        :language :sh
-                                        :numbered false
-                                        :result shell-result}
-                                :read_file {:subject :path
-                                            :fields [:path]
-                                            :result read-result}
-                                :list_directory {:subject :path
-                                                 :fields [:path]}
-                                :write_file {:subject :path
-                                             :fields [:path :content]
-                                             :code :content}
-                                :edit_file edit-view})]
-      (table.insert fx {:catalog :tool-presentations :id name :value binding}))
-    (definitions.build :tool_presentations
-      fx
-      {:validators {:tool-presentations (fn [_ binding]
-                                          (assert (or (= (type binding) :table)
-                                                      (= (type binding)
-                                                         :function))
-                                                  "tool presentation requires an adapter or binding"))}})))
+(fn validate-binding [_ binding]
+  "Require a presentation adapter or declarative tool binding."
+  (assert (or (= (type binding) :table) (= (type binding) :function))
+          "tool presentation requires an adapter or binding"))
 
-{:build build}
+{: edit-view
+ : read-result
+ : shell-result
+ : tools-presentation
+ : validate-binding}

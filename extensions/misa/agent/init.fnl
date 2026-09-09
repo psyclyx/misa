@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn content [value label]
   (assert (= (type value) :table) (.. label " content must be an array"))
   (each [_ block (ipairs value)]
@@ -421,6 +419,7 @@
   (icollect [i previous (ipairs stream.blocks)] (if (= i index) block previous)))
 
 (fn text-delta [previous delta id]
+  "Append streamed text and describe its transcript update."
   (assert (= (type delta.text) :string) "stream text delta must be a string")
   (when (not= delta.text "")
     (var stream previous)
@@ -450,6 +449,7 @@
          : fx}))))
 
 (fn tool-delta [previous delta id]
+  "Accumulate a streamed tool invocation."
   (let [key (tostring (or delta.index delta.id (+ (length previous.blocks) 1)))]
     (var stream previous)
     (var index (. stream.tools key))
@@ -499,6 +499,7 @@
       stream)))
 
 (fn continue-startup [db]
+  "Start the queued initial prompt once authentication is ready."
   (let [agent db.agent]
     (when (and agent agent.startup_prompt
                (or (not db.auth_startup) db.auth_startup.ready))
@@ -510,6 +511,7 @@
                      :attachments agent.startup_attachments}}]})))
 
 (fn stream-error [db event]
+  "Finish a failed request and release pending work."
   (let [agent db.agent]
     (if (or (not agent) (not= event.id agent.active_request_id)
             (and (not= agent.status :working) (not= agent.status :cancelling)))
@@ -545,6 +547,10 @@
                : fx})))))
 
 (fn start [config db _ cofx]
+  "Initialize the conversation from application settings."
+  (assert (or (= config.system_prompt nil)
+              (= (type config.system_prompt) :string))
+          "config.agent.system_prompt must be a string")
   (let [has-prompt (> (length cofx.argv) 0)
         prompt (when has-prompt
                  (table.concat cofx.argv " "))]
@@ -666,6 +672,7 @@
                       provider]}))))))
 
 (fn stream-start [db event]
+  "Initialize correlated response assembly."
   (let [agent db.agent]
     (when (and agent (= agent.status :working)
                (= event.id agent.active_request_id) (not agent.stream))
@@ -681,6 +688,7 @@
                                :started_monotonic_ms agent.request_started_monotonic_ms})]})))
 
 (fn stream-delta [db event]
+  "Apply a correlated response delta."
   (let [stream (active-stream db event)]
     (when (and stream (= (type event.delta) :table))
       (let [handler (assert (. (misa.catalog :agent-deltas) event.delta.type)
@@ -691,6 +699,7 @@
           {:patch {:agent {:stream (or result.patch {})}} :fx result.fx})))))
 
 (fn stream-tool-result [db event]
+  "Record a provider-owned tool result."
   (when (active-stream db event)
     (assert (= (type event.tool_call_id) :string)
             "provider tool result requires a call id")
@@ -705,6 +714,7 @@
                    :text (or event.text "")}}]}))
 
 (fn stream-usage [db event]
+  "Capture token usage for the active response."
   (when (active-stream db event)
     (let [value (if (= (type event.usage) :table)
                     event.usage
@@ -718,6 +728,7 @@
                                         :input_includes_cache value.input_includes_cache}}}}})))
 
 (fn stream-state [db event]
+  "Capture opaque continuation state for the active response."
   (let [stream (active-stream db event)]
     (when stream
       (assert (and (= (type event.provider) :string)
@@ -728,6 +739,7 @@
                                                                          :value event.value}))}}}})))
 
 (fn stream-end [db event cofx]
+  "Complete response assembly and continue the conversation."
   (let [agent db.agent
         stream (and agent agent.stream)]
     (if (or (not stream) (not= event.id agent.active_request_id)
@@ -750,6 +762,7 @@
                                          cofx))))))))
 
 (fn legacy-result [db event cofx]
+  "Normalize a complete provider result into the conversation."
   (let [agent db.agent]
     (if (or (not agent) (not= event.id agent.active_request_id))
         nil
@@ -761,6 +774,7 @@
                                    event.stop_reason cofx))))))
 
 (fn receive-tool-result [db event cofx]
+  "Collect a local tool result and continue when its batch completes."
   (let [previous db.agent]
     (when (and previous (. previous.pending_tools event.tool_call_id))
       (var agent (misa.patch previous
@@ -811,90 +825,19 @@
                           (table.insert fx provider)))))
                 {:patch {:agent (misa.replace agent)} : fx})))))))
 
-(fn build [context]
-  "Build the agent event and stream policy catalogs."
-  (let [declarations []
-        deltas {:text text-delta :thinking text-delta :tool_call tool-delta}]
-    (each [id value (pairs deltas)]
-      (table.insert declarations {:catalog :agent-deltas : id : value}))
-    (table.insert declarations
-                  {:catalog :validators
-                   :id :agent-deltas
-                   :value (fn [_ value]
-                            (assert (= (type value) :function)
-                                    "agent-deltas requires function definitions"))})
-    (table.insert declarations
-                  (let [definition {:description "Reset conversation and token usage"
-                                    :event :agent/reset
-                                    :name :/clear}]
-                    {:catalog :commands
-                     :id (. definition :name)
-                     :value definition}))
-    (let [raw-config (or (and (= (type context.config) :table)
-                              context.config.agent)
-                         nil)
-          config (or (and (= (type raw-config) :table) raw-config) {})]
-      (assert (or (= config.system_prompt nil)
-                  (= (type config.system_prompt) :string))
-              "config.agent.system_prompt must be a string")
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :app/start
-                             :handler (fn [db _ cofx]
-                                        (start config db _ cofx))}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/startup :handler continue-startup}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :auth/startup-ready
-                             :handler continue-startup}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/cancel-active
-                             :handler cancel-active}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/reset :handler reset}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/submit :handler submit}})
-      ;; Correlation is shared policy; delta assembly is an open pure dispatcher.
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-start :handler stream-start}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-delta :handler stream-delta}})
-      ;; Provider-owned tools are observations, never local executions.
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-tool-result
-                             :handler stream-tool-result}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-usage :handler stream-usage}})
-      ;; Opaque continuation state stays separate from visible text.
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-state :handler stream-state}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-end :handler stream-end}})
-      ;; Compatibility input is immediately normalized; built-in providers never
-      ;; use this legacy event.
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/result :handler legacy-result}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :tool/result :handler receive-tool-result}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/stream-error :handler stream-error}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :agent/error :handler stream-error}})
-      (definitions.build :agent declarations {}))))
-
-{:build build :submit submit :cancel cancel-active :reset reset}
+{:cancel cancel-active
+ :start start
+ :continue-startup continue-startup
+ :reset reset
+ :submit submit
+ :stream-start stream-start
+ :stream-delta stream-delta
+ :stream-tool-result stream-tool-result
+ :stream-usage stream-usage
+ :stream-state stream-state
+ :stream-end stream-end
+ :legacy-result legacy-result
+ :receive-tool-result receive-tool-result
+ :stream-error stream-error
+ :text-delta text-delta
+ :tool-delta tool-delta}

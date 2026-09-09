@@ -1,6 +1,7 @@
 (local fennel (require :fennel))
 (local read-file io.open)
 (local output io.write)
+(fennel.dofile :src/lua_runtime/framework.fnl)
 
 (fn source [path]
   (with-open [file (assert (read-file path))]
@@ -34,10 +35,18 @@
 
     (each [_ form (ipairs forms)] (visit form true))
     (let [exports (. forms (length forms))]
-      (assert (and (= (type exports) :table) (not (fennel.list? exports))
-                   (not (fennel.sym? exports)))
-              (.. path ": return a module table"))
-      (each [name value (pairs exports)]
+      (let [name (-> path (: :gsub "^extensions/" "")
+                     (: :gsub "/init%.fnl$" "") (: :gsub "%.fnl$" "")
+                     (: :gsub "/" "."))
+            data (require name)]
+        (assert (= (type data) :table) (.. path ": return module data"))
+        (assert (= data.build nil)
+                (.. path ": declaration builders are not module APIs")))
+      (each [name value (pairs (if (and (= (type exports) :table)
+                                        (not (fennel.list? exports))
+                                        (not (fennel.sym? exports)))
+                                   exports
+                                   {}))]
         (let [implementation (if (function? value) value
                                  (and (fennel.sym? value)
                                       (. functions (tostring value))))]

@@ -4,14 +4,16 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local declarations (require :misa.definitions))
+(local declarations (require :tests.declarations))
 (each [_ name (ipairs [:misa.json :misa.protocols.anthropic])]
-  (app.include (require name) {:config {}}))
+  (app.include (. (require :tests.stock) name) {:config {}}))
 (local protocol (require :misa.protocols.anthropic))
-(local specs (protocol.configure {:id :test :url "https://example.invalid/messages"
+(local transport {:id :test :url "https://example.invalid/messages"
                                       :models_url "https://example.invalid/models?region=test"
                                       :models [] :credential :test :catalogue_authoritative true
-                                      :model_filter (fn [model] (not= model.id :skip))}))
+                                      :model_filter (fn [model] (not= model.id :skip))})
+(local specs {:events {:test/discover {:event :models/discover :handler (fn [db event] (protocol.discover-models transport db event))}
+ :test/models {:event :provider/test-models :handler (fn [db event] (protocol.page transport :anthropic.messages.test db event))}}})
 (local handlers {})
 (each [_ spec (pairs specs.events)]
   (tset handlers spec.event spec.handler))

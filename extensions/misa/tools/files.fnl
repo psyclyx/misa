@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (local errors
        {:IsDir "This path is a directory. Use list_directory to view its contents."
         :NotDir "This path is not a directory. Use read_file to read a file."
@@ -30,6 +28,7 @@
 ;; supplied; filesystem sandboxing belongs to the environment running Misa.
 
 (fn schema [properties required]
+  "Describe a tool input object and its required fields."
   {:additionalProperties false : properties : required :type :object})
 
 (fn argument [effect name]
@@ -58,12 +57,14 @@
      :type :file/read}))
 
 (fn list-effect [effect]
+  "Describe a directory listing effect."
   {:completion :tool/files-complete
    :id effect.tool_call_id
    :path (argument effect :path)
    :type :file/list})
 
 (fn write-effect [effect]
+  "Describe a file replacement effect."
   {:completion :tool/files-complete
    :content (argument effect :content)
    :id effect.tool_call_id
@@ -91,6 +92,7 @@
      :type :file/edit_lines}))
 
 (fn completed [_ event]
+  "Translate file completion into a tool result."
   {:fx [{:event {:is_error (not event.ok)
                  :text (or (and event.ok event.text)
                            (and (. errors event.message)
@@ -101,65 +103,9 @@
                  :type :tool/result}
          :type :dispatch}]})
 
-(fn build []
-  "Build the declarations for tool files."
-  (definitions.build :tool.files
-    [(let [definition {:description "Read a UTF-8 text file as a snapshot header and LINE#HASH|text rows. Copy the snapshot and LINE#HASH anchors into edit_file. Reads return at most 2000 lines; use start_line and max_lines for another page. Paths may be absolute or relative to Misa's working directory."
-                       :effect :tool.files/read
-                       :input_schema (schema {:path {:description "File path"
-                                                     :type :string}
-                                              :start_line {:description "First line to return (1-based, defaults to 1)"
-                                                           :type :integer
-                                                           :minimum 1
-                                                           :maximum 1048576}
-                                              :max_lines {:description "Maximum lines to return (defaults to 2000)"
-                                                          :type :integer
-                                                          :minimum 1
-                                                          :maximum 2000}}
-                                             [:path])
-                       :name :read_file}]
-       {:catalog :tools :id definition.name :value definition})
-     (let [definition {:description "List one directory. Directory names have a trailing slash."
-                       :effect :tool.files/list
-                       :input_schema (schema {:path {:description "Directory path"
-                                                     :type :string}}
-                                             [:path])
-                       :name :list_directory}]
-       {:catalog :tools :id definition.name :value definition})
-     (let [definition {:description "Create or replace a UTF-8 text file with the exact supplied content."
-                       :effect :tool.files/write
-                       :input_schema (schema {:content {:description "Complete new file content"
-                                                        :type :string}
-                                              :path {:description "File path"
-                                                     :type :string}}
-                                             [:path :content])
-                       :name :write_file}]
-       {:catalog :tools :id definition.name :value definition})
-     (let [definition {:description "Edit a UTF-8 file using anchors from read_file: supply snapshot, start LINE#HASH, optional inclusive end (defaults to start), new_text, and position replace (default), before, or after. Empty new_text deletes a replacement range. Line anchors and the whole snapshot must still match; re-read after any edit or stale-snapshot error. new_text contains plain replacement lines, without read prefixes; a final newline is optional."
-                       :effect :tool.files/edit
-                       :input_schema (schema {:new_text {:description "Replacement text"
-                                                         :type :string}
-                                              :snapshot {:description "Snapshot tag from the latest read_file header"
-                                                         :type :string}
-                                              :start {:description "First LINE#HASH anchor from read_file"
-                                                      :type :string}
-                                              :end {:description "Last inclusive LINE#HASH anchor (defaults to start)"
-                                                    :type :string}
-                                              :position {:description "replace (default), before, or after; insertions require one anchor"
-                                                         :enum [:replace
-                                                                :before
-                                                                :after]
-                                                         :type :string}
-                                              :path {:description "File path"
-                                                     :type :string}}
-                                             [:path :snapshot :start :new_text])
-                       :name :edit_file}]
-       {:catalog :tools :id definition.name :value definition})
-     {:catalog :effects :id :tool.files/read :value read-effect}
-     {:catalog :effects :id :tool.files/list :value list-effect}
-     {:catalog :effects :id :tool.files/write :value write-effect}
-     {:catalog :effects :id :tool.files/edit :value edit-effect}
-     {:catalog :events :value {:event :tool/files-complete :handler completed}}]
-    {}))
-
-{: build :read-effect read-effect :edit-effect edit-effect}
+{:read-effect read-effect
+ :edit-effect edit-effect
+ :write-effect write-effect
+ :schema schema
+ :list-effect list-effect
+ :completed completed}

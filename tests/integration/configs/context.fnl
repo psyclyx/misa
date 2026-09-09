@@ -1,6 +1,4 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {"value" 42}
-   :modules {
-    "module-1" {:priority 0 :build ((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/context.fnl")}}})
+(let [config {"value" 42}
+      app ((require :tests.application) {:config config})]
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/context.fnl") {:config config}))
+  {:config config :definitions app.definitions})

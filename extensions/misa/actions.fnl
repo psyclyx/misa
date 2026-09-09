@@ -1,9 +1,8 @@
-(local definitions (require :misa.definitions))
-
 ;; Discoverable UI invocations. The palette uses ordinary replaceable choices;
 ;; feature owners register actions and retain all execution behavior.
 
 (fn hover [_ event]
+  "Record the hovered action and link."
   {:patch {:hover_action (if (and (= (type event.action) :string)
                                   (not= event.action ""))
                              event.action
@@ -14,6 +13,7 @@
                            misa.delete)}})
 
 (fn invoke-action [db event]
+  "Dispatch an available action and resume terminal input."
   (let [action (misa.actions.lookup event.action)]
     (if (and (not (and misa.choices misa.choices.pending
                        (misa.choices.pending db))) action
@@ -23,10 +23,12 @@
         {:fx [{:type :terminal/read}]})))
 
 (fn palette-shortcut [_ event]
+  "Resolve the global action-palette shortcut."
   (when (= (misa.keybindings.action :global event) :action_palette)
     {:type :actions/open}))
 
 (fn open-palette [db event]
+  "Open a choice session containing available actions."
   (if (or (and db.picker (= db.picker.id :actions)) db.dialog)
       {:fx [{:type :terminal/read}]}
       (let [items {}]
@@ -67,6 +69,7 @@
                  :type :dispatch}]}))))
 
 (fn select-action [db event]
+  "Dispatch the selected action when its picker token matches."
   (if (or (not= event.picker :actions)
           (not= event.picker_token (tostring db.action_sequence)))
       nil
@@ -78,6 +81,7 @@
         {: fx})))
 
 (fn resolve-global-input [db event]
+  "Resolve global actions and the colon palette shortcut."
   (when (and (not db.dialog) (not db.picker))
     (let [bound (misa.keybindings.action :global event)]
       (var selected nil)
@@ -94,35 +98,9 @@
                        (or (= (or editor.text "") "") (= editor.mode :normal)))
               {:type :actions/open :query (event.text:sub 2)}))))))
 
-(fn build []
-  "Build the declarations for actions."
-  (definitions.build :actions
-    [{:catalog :events :value {:event :ui/hover :handler hover}}
-     {:catalog :events :value {:event :ui/action :handler invoke-action}}
-     (let [definition {:action :action_palette :context :global :default [:f1]}]
-       {:catalog :keybindings
-        :id (.. definition.context "/" definition.action)
-        :value definition})
-     (let [definition {:binding {:action :action_palette :context :global}
-                       :event {:type :actions/open}
-                       :id :actions.open
-                       :label "Open action palette / key reference"}]
-       {:catalog :actions :id definition.id :value definition})
-     (let [definition {:id :actions/picker-palette
-                       :event :terminal/input
-                       :priority 900
-                       :context [:db/path :picker]
-                       :resolve palette-shortcut}]
-       {:catalog :routes :id definition.id :value definition})
-     (let [definition {:id :actions/input
-                       :event :terminal/input
-                       :priority 700
-                       :context [:db/path]
-                       :resolve resolve-global-input}]
-       {:catalog :routes :id definition.id :value definition})
-     {:catalog :events :value {:event :actions/open :handler open-palette}}
-     {:catalog :events
-      :value {:event :actions/selected :handler select-action}}]
-    {}))
-
-{: build}
+{:hover hover
+ :resolve-global-input resolve-global-input
+ :select-action select-action
+ :palette-shortcut palette-shortcut
+ :invoke-action invoke-action
+ :open-palette open-palette}

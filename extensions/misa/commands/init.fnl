@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Canonical command invocation and generic recent replay. Command execution has
 ;; one normalization path whether input was typed, picked, or replayed.
 
@@ -29,6 +27,7 @@
         preferences)))
 
 (fn invoke [db event]
+  "Record a command invocation and dispatch its execution."
   (let [command (assert (misa.commands.lookup event.command) "unknown command")
         args (trim event.arguments)]
     (if (and (= args "") (or command.completion command.complete)
@@ -104,6 +103,7 @@
    :title (command.name:sub 2)})
 
 (fn open-choice [db event]
+  "Open argument choices for a command."
   (let [command (assert (misa.commands.lookup event.command))]
     (if (and command.choice_available (not (command.choice_available db)))
         {:fx [{:type :dispatch :event {:type command.choice_unavailable}}]}
@@ -124,6 +124,7 @@
                  :type :dispatch}]}))))
 
 (fn select-choice [db event]
+  "Resume a command after selecting its argument."
   (let [pending (and db.choice_commands
                      (. db.choice_commands.pending event.picker_token))]
     (if (or (not= event.picker :command-choice) (not pending))
@@ -137,19 +138,11 @@
                 (set invocation.resumed_choice true)
                 {: patch :fx [{:event invocation :type :dispatch}]}))))))
 
-(fn build []
-  "Build the declarations for commands."
-  (definitions.build :commands
-    [{:catalog :services :id :commands.invocation :value invocation}
-     {:catalog :services :id :commands.canonical :value canonical}
-     {:catalog :services :id :commands.recent :value recent}
-     {:catalog :services :id :commands.choice-items :value choice-items}
-     {:catalog :services :id :commands.choice-spec :value choice-spec}
-     {:catalog :events :value {:event :commands/invoke :handler invoke}}
-     {:catalog :events
-      :value {:event :choices/command-open :handler open-choice}}
-     {:catalog :events
-      :value {:event :choices/command-selected :handler select-choice}}]
-    {}))
-
-{: build}
+{:recent recent
+ :canonical canonical
+ :invoke invoke
+ :choice-spec choice-spec
+ :open-choice open-choice
+ :invocation invocation
+ :select-choice select-choice
+ :choice-items choice-items}

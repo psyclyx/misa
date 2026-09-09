@@ -1,8 +1,8 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; The harness supplies a FIFO as python.so to pause native grammar loading.
 (fn []
-          (definitions.build :tests.syntax-worker [{:catalog :events  :value {:event :app/start :handler (fn [db]
+          (definitions.collect :tests.syntax-worker [{:catalog :events  :value {:event :app/start :handler (fn [db]
                             {:patch {:done 0 :healthy 0}
                              :fx [{:type :syntax/highlight
                                    :id :blocked-grammar

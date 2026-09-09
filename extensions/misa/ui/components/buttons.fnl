@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Shared click and keybinding presentation for actions, wherever they appear.
 (fn components-buttons [actions context]
   "Render button descriptors within the supplied dimensions."
@@ -29,10 +27,4 @@
             (table.insert spans part)))))
     spans))
 
-(fn build []
-  "Build the declarations for component buttons."
-  (definitions.build :component.buttons
-    [{:catalog :services :id :components.buttons :value components-buttons}]
-    {:requirements {:component.buttons [:keybindings.reference]}}))
-
-{:build build}
+{: components-buttons}

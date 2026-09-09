@@ -3,116 +3,215 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
-(local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
-(each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices
-                       :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.editor.render
-                       :misa.choices.picker.render :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout])]
-  (app.define ((. (require name) :build) context)))
-(local specs ((. (fennel.dofile :extensions/misa/editor/init.fnl) :build) context))
+(local context
+       {:argv []
+        :config {:components {:persist false} :themes {:persist false}}})
+(each [_ name (ipairs [:misa.json
+                       :misa.keybindings
+                       :misa.actions
+                       :misa.ui.layout
+                       :misa.commands
+                       :misa.choices
+                       :misa.ui.themes
+                       :misa.ui.themes.default
+                       :misa.ui.components
+                       :misa.editor.render
+                       :misa.choices.picker.render
+                       :misa.ui.values
+                       :misa.choices.preview
+                       :misa.models.preview
+                       :misa.choices.layout])]
+  (app.define (. (require :tests.stock) name)))
+
+(local specs (. (require :tests.stock) :misa.editor))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
+
 (app.define specs)
-(app.define (definitions.build :test [(let [definition {:name :/ping :description :Ping :event :test/ping}] {:catalog :commands :id (. definition :name) :value definition})
-                          (let [definition {:name :/choose :description :Choose :event :test/choose :completion :test}] {:catalog :commands :id (. definition :name) :value definition})
-                          {:catalog :completions :id (.. :test "/" (. {:value :alpha} :value)) :value {:group :test :value {:value :alpha}}}
-                          {:catalog :completions :id (.. :test "/" (. {:value :beta} :value)) :value {:group :test :value {:value :beta}}}]))
-(app.define (definitions.build :test [{:catalog :editor-edits :id :test_edit :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]))
-(app.define ((. (fennel.dofile :extensions/misa/editor/editing.fnl) :build) context))
+(app.define (definitions.collect :test
+              [(let [definition {:name :/ping
+                                 :description :Ping
+                                 :event :test/ping}]
+                 {:catalog :commands
+                  :id (. definition :name)
+                  :value definition})
+               (let [definition {:name :/choose
+                                 :description :Choose
+                                 :event :test/choose
+                                 :completion :test}]
+                 {:catalog :commands
+                  :id (. definition :name)
+                  :value definition})
+               {:catalog :completions
+                :id (.. :test "/" (. {:value :alpha} :value))
+                :value {:group :test :value {:value :alpha}}}
+               {:catalog :completions
+                :id (.. :test "/" (. {:value :beta} :value))
+                :value {:group :test :value {:value :beta}}}]))
+
+(app.define (definitions.collect :test
+              [{:catalog :editor-edits
+                :id :test_edit
+                :value (fn [editor]
+                         (misa.patch editor {:text :custom :cursor 6}))}]))
+(app.define (. (require :tests.stock) :misa.editor.editing))
 (app.install)
-(local cofx {:argv [] :terminal {:columns 80 :lines 24 :interactive true}})
+(local cofx {:config context.config
+             :argv []
+             :terminal {:columns 80 :lines 24 :interactive true}})
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
   (local result ((. handlers event.type) db event cofx))
   (assert (= before (misa.json.encode db)) "editor handler mutated state")
   (assert (= input (misa.json.encode event)) "editor handler mutated event")
   (assert (not (and result result.db)))
-  (values (misa.patch db (or (and result result.patch) {})) (and result result.fx)))
-(local initial (transition {:components {:roles {}} :themes {:active :default}} {:type :app/start}))
-(local failure
-       (G.for_all (G.vector (G.elements [{:type :terminal/input :kind :text :text :a}
-                                         {:type :terminal/input :kind :text :text "é"}
-                                         {:type :terminal/input :kind :text :text "/"}
-                                         {:type :terminal/input :kind :shift_enter}
-                                         {:type :terminal/input :kind :backspace}
-                                         {:type :terminal/input :kind :arrow_left}
-                                         {:type :terminal/input :kind :arrow_right}
-                                         {:type :terminal/input :kind :ctrl_c}
-                                         {:type :terminal/input :kind :enter}
-                                         {:type :editor/attach :attachment {:path :image.png}}
-                                         {:type :editor/detach}
-                                         {:type :editor/steer}
-                                         {:type :editor/restore :text :restored :attachments [{:path :restored.png}]}]))
-                  (fn [events]
-                    (var db initial)
-                    (each [_ event (ipairs events)]
-                      (set db (transition db event))
-                      (assert (and (>= db.editor.cursor 0) (<= db.editor.cursor (length db.editor.text))))
-                      (assert (= db.editor.cursor (misa.layout.boundary-at-or-before db.editor.text db.editor.cursor)))))
-                  {:cases 1000 :size 25}))
+  (values (misa.patch db (or (and result result.patch) {}))
+          (and result result.fx)))
+
+(local initial (transition {:components {:roles {}} :themes {:active :default}}
+                           {:type :app/start}))
+(local failure (G.for_all (G.vector (G.elements [{:type :terminal/input
+                                                  :kind :text
+                                                  :text :a}
+                                                 {:type :terminal/input
+                                                  :kind :text
+                                                  :text "é"}
+                                                 {:type :terminal/input
+                                                  :kind :text
+                                                  :text "/"}
+                                                 {:type :terminal/input
+                                                  :kind :shift_enter}
+                                                 {:type :terminal/input
+                                                  :kind :backspace}
+                                                 {:type :terminal/input
+                                                  :kind :arrow_left}
+                                                 {:type :terminal/input
+                                                  :kind :arrow_right}
+                                                 {:type :terminal/input
+                                                  :kind :ctrl_c}
+                                                 {:type :terminal/input
+                                                  :kind :enter}
+                                                 {:type :editor/attach
+                                                  :attachment {:path :image.png}}
+                                                 {:type :editor/detach}
+                                                 {:type :editor/steer}
+                                                 {:type :editor/restore
+                                                  :text :restored
+                                                  :attachments [{:path :restored.png}]}]))
+                          (fn [events]
+                            (var db initial)
+                            (each [_ event (ipairs events)]
+                              (set db (transition db event))
+                              (assert (and (>= db.editor.cursor 0)
+                                           (<= db.editor.cursor
+                                               (length db.editor.text))))
+                              (assert (= db.editor.cursor
+                                         (misa.layout.boundary-at-or-before db.editor.text
+                                                                            db.editor.cursor)))))
+                          {:cases 1000 :size 25}))
+
 (assert (not failure) (and failure (fennel.view failure)))
-(local attached (transition initial {:type :editor/attach :attachment {:path :old.png}}))
-(local restored (transition attached {:type :editor/restore :text :new :attachments [{:path :new.png}]}))
+(local attached
+       (transition initial {:type :editor/attach :attachment {:path :old.png}}))
+(local restored (transition attached
+                            {:type :editor/restore
+                             :text :new
+                             :attachments [{:path :new.png}]}))
 (assert (= (. restored.editor.attachments 1 :path) :new.png))
 (assert (= (. restored.editor.attachments 2 :path) :old.png))
-(local (submitted submit-fx) (transition restored {:type :terminal/input :kind :enter}))
+(local (submitted submit-fx)
+       (transition restored {:type :terminal/input :kind :enter}))
 (assert (= submitted.editor.text ""))
 (assert (= (length submitted.editor.attachments) 0))
 (assert (= (. submit-fx 1 :event :attachments) restored.editor.attachments))
 (assert (= (. submit-fx 1 :event :prompt) :new))
-(local chosen (transition initial {:type :terminal/input :kind :text :text "/choose"}))
+(local chosen
+       (transition initial {:type :terminal/input :kind :text :text "/choose"}))
 (local arguments (transition chosen {:type :terminal/input :kind :enter}))
 (assert (= arguments.editor.choice_kind :argument))
 (assert (= arguments.editor.text "/choose "))
-(local picked (transition arguments {:type :terminal/input :kind :text :text :beta}))
-(local (executed execute-fx) (transition picked {:type :terminal/input :kind :enter}))
+(local picked
+       (transition arguments {:type :terminal/input :kind :text :text :beta}))
+(local (executed execute-fx)
+       (transition picked {:type :terminal/input :kind :enter}))
 (assert (= (. execute-fx 1 :event :type) :commands/invoke))
 (assert (= (. execute-fx 1 :event :arguments) :beta))
 (assert (= executed.editor.text ""))
 (local busy (transition restored {:type :agent/status :status :running}))
-(local (cancelled cancel-fx) (transition busy {:type :terminal/input :kind :ctrl_c}))
+(local (cancelled cancel-fx)
+       (transition busy {:type :terminal/input :kind :ctrl_c}))
 (assert (= cancelled.editor busy.editor))
 (assert (= (. cancel-fx 1 :event :type) :agent/cancel-active))
 (each [_ cursor (ipairs [-1 1 99])]
-  (local bounded (transition initial {:type :editor/restore :replace true :text "é" : cursor}))
+  (local bounded (transition initial
+                             {:type :editor/restore
+                              :replace true
+                              :text "é"
+                              : cursor}))
   (assert (= bounded.editor.cursor (if (>= cursor 2) 2 0))))
+
 (local before (misa.json.encode picked))
 (misa.editor.layout picked {:terminal cofx.terminal})
 (assert (= before (misa.json.encode picked)) "editor projection mutated state")
 
-(assert (= (. (transition initial {:type :terminal/input :kind :test_edit}) :editor :text) :custom))
+(assert (= (. (transition initial {:type :terminal/input :kind :test_edit})
+              :editor :text) :custom))
 
 ;; The optional modal policy accounts inside these direct editor handlers too.
 
-(local command-draft (transition initial {:type :terminal/input :kind :text :text "/choose"}))
+(local command-draft (transition initial
+                                 {:type :terminal/input
+                                  :kind :text
+                                  :text "/choose"}))
 (assert (= (. command-draft.editing.undo 1 :text) ""))
-(local command-args (transition command-draft {:type :terminal/input :kind :enter}))
-(local argument-draft (transition command-args {:type :terminal/input :kind :text :text :beta}))
+(local command-args
+       (transition command-draft {:type :terminal/input :kind :enter}))
+(local argument-draft (transition command-args
+                                  {:type :terminal/input
+                                   :kind :text
+                                   :text :beta}))
 (assert (= (length argument-draft.editing.undo) 1))
-(local command-sent (transition argument-draft {:type :terminal/input :kind :enter}))
+(local command-sent
+       (transition argument-draft {:type :terminal/input :kind :enter}))
 (assert (= command-sent.editor.text ""))
-(assert (= (length command-sent.editing.undo) 0) "inline invocation retained undo history")
+(assert (= (length command-sent.editing.undo) 0)
+        "inline invocation retained undo history")
 (assert (= command-sent.editing.insert_group nil))
-(local overlay-draft (misa.patch argument-draft {:editor {:choice_overlay :token}}))
-(local overlay-sent (transition overlay-draft {:type :editor/choice-selected :picker :inline-choice
-                                              :picker_token :token :value :beta}))
+(local overlay-draft
+       (misa.patch argument-draft {:editor {:choice_overlay :token}}))
+(local overlay-sent (transition overlay-draft
+                                {:type :editor/choice-selected
+                                 :picker :inline-choice
+                                 :picker_token :token
+                                 :value :beta}))
+
 (assert (= overlay-sent.editor.text ""))
-(assert (= (length overlay-sent.editing.undo) 0) "overlay invocation retained undo history")
-(local selected-draft (misa.patch argument-draft
-                                 {:editor {:selection_start 0 :selection_end 2}
-                                  :editing {:anchor 0 :operator :delete}}))
-(local restored-draft (transition selected-draft {:type :editor/restore :replace true
-                                                 :text "é🙂" :cursor 3
-                                                 :attachments [{:path :draft.png}]}))
+(assert (= (length overlay-sent.editing.undo) 0)
+        "overlay invocation retained undo history")
+(local selected-draft
+       (misa.patch argument-draft
+                   {:editor {:selection_start 0 :selection_end 2}
+                    :editing {:anchor 0 :operator :delete}}))
+
+(local restored-draft
+       (transition selected-draft
+                   {:type :editor/restore
+                    :replace true
+                    :text "é🙂"
+                    :cursor 3
+                    :attachments [{:path :draft.png}]}))
+
 (assert (= restored-draft.editor.cursor 3))
 (assert (= (. restored-draft.editor.attachments 1 :path) :draft.png))
 (assert (= restored-draft.editor.selection_start nil))
 (assert (= restored-draft.editing.anchor nil))
 (assert (= restored-draft.editing.operator nil))
 (assert (= (length restored-draft.editing.undo) 0))
-(local (steered-draft steer-fx) (transition selected-draft {:type :editor/steer}))
+(local (steered-draft steer-fx)
+       (transition selected-draft {:type :editor/steer}))
 (assert (= steered-draft.editor.selection_end nil))
 (assert (= steered-draft.editing.anchor nil))
 (assert (= (length steered-draft.editing.undo) 0))

@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     settings['smoke'] = {'directory': directory, 'python': sys.executable}
     for name in ('history', 'themes', 'components', 'preferences'):
         settings.setdefault(name, {})['persist'] = False
-    (work / 'config.fnl').write_text(application(config, default=True, omit=('provider.', 'protocol.', 'auth')))
+    (work / 'config.fnl').write_text(application(config, default=True, omit=('misa.providers.', 'misa.protocols.')))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
     env = fixture_environment(work, TERM='xterm-ghostty', TERM_PROGRAM='ghostty', MISA_AUTH_FILE=str(work/'auth'), MISA_STATE_FILE=str(work/'state'))

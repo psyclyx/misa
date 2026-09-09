@@ -1,12 +1,11 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {"models" {"default" "claude/claude-sonnet-5"} "providers" {"claude" {"executable" "@WORK@/claude"}}}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.agent.stream")}
-    "module-2" {:priority 1000 :build (require "misa.json")}
-    "module-3" {:priority 2000 :build (require "misa.providers.claude")}
-    "module-4" {:priority 3000 :build (require "misa.tools.shell")}
-    "module-5" {:priority 4000 :build (require "misa.models")}
-    "module-6" {:priority 5000 :build (require "misa.agent")}
-    "module-7" {:priority 6000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/runtime-regressions-check.fnl")}}})
+(let [config {"models" {"default" "claude/claude-sonnet-5"}
+              "providers" {"claude" {"executable" "@WORK@/claude"}}}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.agent.stream))
+  (app.include (. (require :tests.stock) :misa.json))
+  (app.include (. (require :tests.stock) :misa.providers.claude))
+  (app.include (. (require :tests.stock) :misa.tools.shell))
+  (app.include (. (require :tests.stock) :misa.models))
+  (app.include (. (require :tests.stock) :misa.agent))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/runtime-regressions-check.fnl") {:config config}))
+  {:config config :definitions app.definitions})

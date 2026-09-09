@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn quota-number [value]
   (let [number (tonumber value)]
     (when (and number (= number number) (>= number 0) (< number math.huge))
@@ -227,6 +225,7 @@
    :fx (misa.stream.effects fx)})
 
 (fn stream [db event]
+  "Translate streamed transport records into agent events."
   (let [streams (or (and db.providers db.providers.codex_streams) {})
         state (or (. streams event.id) {:reasoning {}})]
     (if (= event.phase :start)
@@ -265,6 +264,7 @@
             (stream-update event.id next-state fx))))))
 
 (fn refresh-usage [config db event]
+  "Describe a quota refresh request."
   (when (or (not event.provider) (= event.provider :openai-codex))
     (let [provider (and db.providers db.providers.openai-codex)]
       (if (and provider provider.usage_request)
@@ -288,6 +288,7 @@
                    :timeouts config.timeouts}]})))))
 
 (fn receive-usage [config db event cofx]
+  "Apply a completed quota request."
   (let [provider (and db.providers db.providers.openai-codex)]
     (when (and provider provider.usage_request
                (= provider.usage_request event.id))
@@ -344,6 +345,7 @@
            : fx})))))
 
 (fn receive-reset-credits [db event]
+  "Apply the available usage reset credits."
   (let [provider (and db.providers db.providers.openai-codex)]
     (when (and provider provider.reset_credits_request
                (= event.id provider.reset_credits_request))
@@ -353,6 +355,7 @@
        :fx [{:type :dispatch :event {:type :usage/updated}}]})))
 
 (fn reset-usage [config db _ cofx]
+  "Describe an explicitly requested usage reset."
   (let [provider (and db.providers db.providers.openai-codex)]
     (when (and provider (not provider.reset_request)
                (not provider.reset_refresh)
@@ -383,6 +386,7 @@
               {:type :dispatch :event {:type :usage/updated}}]}))))
 
 (fn reset-complete [db event]
+  "Apply a completed usage reset."
   (let [provider (and db.providers db.providers.openai-codex)]
     (when (and provider provider.reset_request
                (= event.id provider.reset_request))
@@ -410,6 +414,7 @@
     {:reasoning {:effort value :summary :auto}}))
 
 (fn discover-models [config _ event]
+  "Describe model discovery for this provider."
   (when (or (not event.provider) (= event.provider :openai-codex))
     {:fx [{:type :http/request
            :id :models-openai-codex
@@ -427,6 +432,7 @@
            :timeouts config.timeouts}]}))
 
 (fn receive-models [serializer-id _ event]
+  "Normalize the discovered model catalogue."
   (let [fx []]
     (when (and event.ok (= (type event.data) :table)
                (= (type event.data.models) :table))
@@ -512,123 +518,15 @@
      :type :http/request
      :url (or config.url "https://chatgpt.com/backend-api/codex/responses")}))
 
-(fn build [context]
-  "Describe openai codex policies for the supplied application settings."
-  (let [declarations []
-        providers (or (and (= (type context.config) :table)
-                           context.config.providers) nil)
-        raw-config (or (and (= (type providers) :table) providers.openai_codex)
-                       nil)
-        config (or (and (= (type raw-config) :table) raw-config) {})]
-    (table.insert declarations
-                  (let [definition {:description "ChatGPT subscription OAuth"
-                                    :id :openai-codex
-                                    :label "OpenAI Codex"
-                                    :model_provider :openai-codex
-                                    :discover_models (not config.models)
-                                    :profile {:authorization_url "https://auth.openai.com/api/accounts/deviceauth/usercode"
-                                              :id :default
-                                              :token_url "https://auth.openai.com/oauth/token"}
-                                    :strategy :device_oauth}]
-                    {:catalog :auth-providers
-                     :id (. definition :id)
-                     :value definition}))
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :usage/refresh
-                           :handler (fn [db event]
-                                      (refresh-usage config db event))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :provider/codex-usage
-                           :handler (fn [db event cofx]
-                                      (receive-usage config db event cofx))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :provider/codex-reset-credits
-                           :handler receive-reset-credits}})
-    ;; The Codex backend client maps account/rateLimitResetCredit/consume
-    ;; to this WHAM endpoint with redeem_request_id as its idempotency key.
-    ;; Never send this request from setup, usage refresh, or a retry timer.
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :provider/codex-reset
-                           :handler (fn [db _ cofx]
-                                      (reset-usage config db _ cofx))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :provider/codex-reset-complete
-                           :handler reset-complete}})
-    (let [serializer-id :openai.responses.codex]
-      (table.insert declarations
-                    {:catalog :serializers
-                     :id serializer-id
-                     :value {:accepts (fn [name]
-                                        (= name :reasoning_effort))
-                             :serialize serialize}})
-      (let [reasoning-api {:request_options {:reasoning_effort {:choices [:low
-                                                                          :medium
-                                                                          :high
-                                                                          :xhigh]
-                                                                :default :medium}}
-                           :request_options_serializer serializer-id}]
-        ;; ChatGPT's catalogue uses Codex slugs and reasoning metadata, rather
-        ;; than the public API's /v1/models shape. Explicit catalogues stay static.
-        (when (not config.models)
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event :models/discover
-                                 :handler (fn [_ event]
-                                            (discover-models config _ event))}})
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event :provider/codex-models
-                                 :handler (fn [_ event]
-                                            (receive-models serializer-id _
-                                                            event))}}))
-        (each [_ model (ipairs (or config.models
-                                   [{:api reasoning-api
-                                     :context_window 1000000
-                                     :id :openai-codex/gpt-5.4
-                                     :label "GPT-5.4 (ChatGPT)"
-                                     :model :gpt-5.4}
-                                    {:api reasoning-api
-                                     :context_window 400000
-                                     :id :openai-codex/gpt-5.3-codex
-                                     :label "GPT-5.3 Codex"
-                                     :model :gpt-5.3-codex}]))]
-          (let [api (if (and (= (type model.api) :table)
-                             (= (type model.api.request_options) :table))
-                        (misa.patch model.api
-                                    {:request_options_serializer serializer-id})
-                        model.api)]
-            (table.insert declarations
-                          (let [definition {: api
-                                            :context_window model.context_window
-                                            :id model.id
-                                            :label (or model.label model.id)
-                                            :model model.model
-                                            :provider :openai-codex}]
-                            {:catalog :models
-                             :id (. definition :id)
-                             :value definition}))))
-        (table.insert declarations
-                      {:catalog :effects
-                       :id :provider.openai-codex
-                       :value (fn [effect]
-                                (request config serializer-id effect))})
-        (each [id value (pairs records)]
-          (table.insert declarations {:catalog :codex-records : id : value}))
-        (table.insert declarations
-                      {:catalog :validators
-                       :id :codex-records
-                       :value (fn [_ value]
-                                (assert (= (type value) :function)
-                                        "codex-records requires function definitions"))})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :provider/openai-codex-complete
-                               :handler stream}})
-        (definitions.build :provider.openai-codex declarations {})))))
-
-{:build build :request request :usage-windows usage-windows}
+{:records records
+ :stream stream
+ :refresh-usage refresh-usage
+ :receive-usage receive-usage
+ :receive-reset-credits receive-reset-credits
+ :reset-usage reset-usage
+ :reset-complete reset-complete
+ :serialize serialize
+ :discover-models discover-models
+ :receive-models receive-models
+ :request request
+ :usage-windows usage-windows}

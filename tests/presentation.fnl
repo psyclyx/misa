@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Projection contracts: surfaces survive rich spans, and popups retain context.
 
@@ -384,4 +384,4 @@ c"}
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions.build :tests.presentation declarations {}))
+          (definitions.collect :tests.presentation declarations {}))

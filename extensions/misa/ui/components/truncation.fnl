@@ -1,7 +1,6 @@
-(local definitions (require :misa.definitions))
-
 ;; Bound an already laid-out view. Omitted rows are chrome, never source text.
 (fn render [model context]
+  "Render the supplied semantic model within the available dimensions."
   (let [source (or model.lines [])
         limit (math.max 0 (math.floor (or model.limit (length source))))]
     (var lines [])
@@ -41,10 +40,4 @@
               (each [_ line (ipairs notice)] (table.insert lines line)))))
       {: lines})))
 
-(fn build []
-  "Build the declarations for component truncation."
-  (definitions.build :component.truncation
-    [{:catalog :components :id :default.content.truncated :value {: render}}]
-    {}))
-
-{:build build}
+{: render}

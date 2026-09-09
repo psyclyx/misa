@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Generic choice state and transitions shared by inline and overlay presentations.
 
 (local key-context :choices)
@@ -41,20 +39,6 @@
   ;; panels so secondary choices get short sequences too.
   (if (and (= bank 1) (<= slot 5)) slot
       (+ 6 (* 3 (- slot (if (= bank 1) 6 1))) (- bank 1))))
-
-(local fallback {:alt+/ :replace_view
-                 :alt+p :cycle_previous
-                 :alt+v :favorite
-                 :arrow_down :next
-                 :arrow_left :cycle_previous
-                 :arrow_right :cycle
-                 :arrow_up :previous
-                 :ctrl_c :cancel
-                 :ctrl_d :cancel
-                 :enter :accept
-                 :eof :cancel
-                 :escape :cancel
-                 :tab :complete})
 
 (fn scalar? [v]
   (or (= (type v) :string) (= (type v) :number) (= (type v) :boolean)))
@@ -144,9 +128,8 @@
   (let [view (. (misa.catalog :choice-views) id)]
     (and view (or (not view.compatible) (view.compatible session)))))
 
-(fn configured [purpose]
-  (let [purposes (and (= (type misa.choices.config) :table) misa.choices
-                      misa.choices.config misa.choices.config.purposes)]
+(fn configured [settings purpose]
+  (let [purposes settings.purposes]
     (var selected (or (and (= (type purposes) :table)
                            (or (. purposes purpose)
                                (. purposes (purpose:gsub "_" "-"))))
@@ -190,7 +173,7 @@
                                           (. session.panels slot)
                                           (. session.panels slot :items))
                               :view id
-                              :config misa.choices.config}
+                              :config session.settings}
                              [:choices/builtin-items id slot])
                    (project-items view session db))
         state (or (. session.view_state id) {:highlight 0})
@@ -246,12 +229,6 @@
     (set at (- at 1)))
   (value:sub 1 (math.max 0 (- at 1))))
 
-(local positional-actions {})
-(each [bank keys (ipairs banks)]
-  (each [slot key (ipairs keys)]
-    (when (= bank 1)
-      (tset positional-actions (.. :alt+ key) (.. :option_ bank "_" slot)))))
-
 (fn alt-text [event]
   (let [text (if (= event.kind :alt) event.text
                  (and (= event.kind :key) (= (type event.key) :string)) (event.key:match "^alt%+(.+)$"))]
@@ -260,13 +237,10 @@
 (fn action [event]
   "Return the session transition for a named choice action."
   (let [alt (alt-text event)]
-    (if (= (type event.action) :string) event.action (. continuations alt)
-        :sequence misa.keybindings.action
-        (misa.keybindings.action key-context event)
-        (let [key (or (and (= event.kind :key) event.key)
-                      (and (= event.kind :alt) (.. :alt+ (event.text:lower)))
-                      event.kind)]
-          (or (. fallback key) (. positional-actions key))))))
+    (if (= (type event.action) :string) event.action
+        (. continuations alt) :sequence
+        (and misa.keybindings misa.keybindings.action) (misa.keybindings.action key-context
+                                                                                event))))
 
 (fn needs-targets [session event]
   "Return whether this input needs positional choice targets."
@@ -284,12 +258,7 @@
     (if configured configured (and bank slot (> slot 0) (. banks bank))
         (if (and (= bank 1) (<= slot 5) misa.keybindings misa.keybindings.hint)
             nil
-            (shortcut (position-rank bank slot)))
-        (not (and misa.keybindings misa.keybindings.hint))
-        (let [keys (icollect [key value (pairs fallback)]
-                     (when (= value name) key))]
-          (table.sort keys)
-          (. keys 1)))))
+            (shortcut (position-rank bank slot))))))
 
 (fn key-text [event]
   (let [alt (alt-text event)]
@@ -364,7 +333,8 @@
                           :preference_scope (misa.replace spec.preference_scope)
                           :view_state (misa.replace {})
                           :view_ids (misa.replace (or spec.views
-                                                      (configured purpose)))
+                                                      (configured session.settings
+                                                                  purpose)))
                           :custom_views misa.delete}) db)))
 
 (local frame-keys [:title
@@ -405,12 +375,12 @@
           (tset patch :stack (misa.replace stack))
           (refresh (misa.patch session patch) db)))))
 
-(fn new [spec db]
+(fn new [settings spec db]
   "Create a choice session from an explicit specification and database."
   (assert (and (= (type spec) :table) (= (type spec.title) :string)
                (not= spec.title ""))
           "choice session requires a title")
-  (let [session (apply-spec {:stack {}} spec db)]
+  (let [session (apply-spec {:stack {} : settings} spec db)]
     (if spec.view_definitions
         (let [ids {}
               custom {}]
@@ -435,6 +405,7 @@
   {:session (refresh (misa.patch session patch) db) :consumed true})
 
 (fn move [session direction _db]
+  "Move choice focus while preserving unchanged projection values."
   ;; Moving only changes focus. Build immutable projection records here; the
   ;; owning transaction validates the changed state once at the commit boundary.
   (let [panel (. session.panels 1)
@@ -462,6 +433,7 @@
           {:session next-session :consumed true}))))
 
 (fn cycle [session direction db]
+  "Rotate the visible choice views."
   (let [ids {}
         custom {}
         count (length session.view_ids)]
@@ -475,13 +447,15 @@
               :custom_views (misa.replace (when session.custom_views
                                             custom))} db)))
 
-(fn accept-2 [session _ db]
+(fn accept-focused [session _ db]
+  "Accept the focused choice when one is available."
   (let [panel (. session.panels 1)]
     (if (> panel.highlight 0)
         (accept session (. panel.items panel.highlight) db)
         {: session :consumed false})))
 
 (fn cancel [session _ db]
+  "Cancel the current input interaction."
   (let [parent (pop-narrow session db)]
     {:session (or parent session)
      :consumed true
@@ -489,6 +463,7 @@
      :narrowed (not= parent nil)}))
 
 (fn favorite [session]
+  "Return the favorite toggle requested for the focused choice."
   (let [panel (. session.panels 1)]
     (if (and session.preference_scope (> panel.highlight 0))
         {: session
@@ -497,6 +472,7 @@
         {: session :consumed false})))
 
 (fn backspace [session _ db]
+  "Remove the preceding character from the active input."
   (if (not= session.query "")
       (changed session {:query (pop-utf8 session.query)} db)
       (let [parent (pop-narrow session db)]
@@ -504,24 +480,11 @@
          :consumed (not= parent nil)
          :narrowed (not= parent nil)})))
 
-(fn text-2 [session event db]
+(fn insert-text [session event db]
+  "Insert the received text at the active input position."
   (if (= (type event.text) :string)
       (changed session {:query (.. session.query event.text)} db)
       {: session :consumed false}))
-
-(local inputs {:text text-2
-               :backspace backspace
-               :previous (fn [session _ db] (move session (- 1) db))
-               :next (fn [session _ db] (move session 1 db))
-               :cycle (fn [session _ db] (cycle session 1 db))
-               :cycle_previous (fn [session _ db] (cycle session (- 1) db))
-               :replace_view (fn [session]
-                               {: session :consumed true :replace_view true})
-               :open_overlay (fn [session]
-                               {: session :consumed true :open_overlay true})
-               :favorite favorite
-               :cancel cancel
-               :accept accept-2})
 
 (fn complete [session db]
   (let [panel (. session.panels 1)]
@@ -597,10 +560,12 @@
    :value value.value})
 
 (fn compute-choices-builtin-items [inputs]
+  "Project builtin choice items while preserving unchanged array identity."
   (let [scope (. inputs 3)
         session {:items (. inputs 1)
                  :query (. inputs 2)
-                 :preference_scope scope}
+                 :preference_scope scope
+                 :settings (. inputs 7)}
         db {:preferences {:scopes {}}}]
     (when scope
       (tset db.preferences.scopes scope (. inputs 4)))
@@ -618,6 +583,7 @@
     (and session session.combo)))
 
 (fn route-terminal-input [db event]
+  "Route terminal input to the active choice sequence."
   (let [session (or (and db.picker db.picker.session)
                     (and db.editor db.editor.choice))]
     (when (and session
@@ -628,6 +594,7 @@
                                    :terminal/input)}))))
 
 (fn route-ui-action [db event]
+  "Route a UI action to the active choice session."
   (when (and (or db.picker (and db.editor db.editor.choice))
              (= (type event.action) :string)
              (event.action:match "^choices%.option_%d+_%d+$"))
@@ -636,6 +603,7 @@
         {:type :choices/dispatch :action (event.action:sub 9)})))
 
 (fn on-choices-dispatch [db event]
+  "Dispatch a choice action to the visible session."
   (if (and (not db.picker) (not (and db.editor db.editor.choice)))
       {:fx [{:type :terminal/read}]}
       {:fx [{:event {:action event.action
@@ -705,20 +673,24 @@
   result)
 
 (fn favorite? [value session db]
+  "Return whether a choice is marked as a favorite."
   (let [p (preference db session.preference_scope value.id)]
     (and p (= p.favorite true))))
 
 (fn recent-before? [a b session db]
+  "Order choices by their recorded recency and frequency."
   (let [pa (or (preference db session.preference_scope a.id) {})
         pb (or (preference db session.preference_scope b.id) {})]
     (> (+ (* (or pa.last 0) 1000000) (or pa.uses 0))
        (+ (* (or pb.last 0) 1000000) (or pb.uses 0)))))
 
 (fn used? [value session db]
+  "Return whether a choice has recorded usage."
   (let [p (preference db session.preference_scope value.id)]
     (and p (> (or p.uses 0) 0))))
 
 (fn browse [session match-items db]
+  "Group matching choices into recent, suggested, and remaining items."
   (let [all (match-items session.items session.query)]
     (if (not= session.query "") all
         (let [curated (accumulate [hidden false _ value (ipairs all)]
@@ -738,7 +710,9 @@
           (let [result {}
                 seen {}
                 limit (math.max 0
-                                (math.floor (or (tonumber misa.choices.config.recent_limit)
+                                (math.floor (or (tonumber (. (or session.settings
+                                                                 {})
+                                                             :recent_limit))
                                                 3)))]
             (for [index 1 (math.min (length recent) limit
                                     (math.max 0 (- (length all) 1)))]
@@ -756,6 +730,7 @@
             result)))))
 
 (fn session-open? [db]
+  "Return whether an inline or overlay choice session is open."
   (or (not= db.picker nil) (and db.editor (not= db.editor.choice nil)) false))
 
 (fn choices-replace-view [session id db]
@@ -777,224 +752,70 @@
              db)))
 
 (fn choice-sources [_ source]
+  "Validate a choice source."
   (assert (and (= (type source) :table) (= (type source.items) :function))
           "choice source requires items"))
 
 (fn choice-views [_ view]
+  "Validate a choice view."
   (assert (= (type view) :table) "choice view must be a table"))
 
 (fn choice-inputs [_ handler]
+  "Validate a choice input handler."
   (assert (= (type handler) :function) "choice input must be a function"))
 
-(fn build [context]
-  "Build the declarations for choices."
-  (let [declarations []]
-    (table.insert declarations {:catalog :services
-                                :id :choices.config
-                                :value (or (and (= (type context.config) :table)
-                                                (= (type context.config.choices)
-                                                   :table)
-                                                context.config.choices)
-                                           {})})
-    ;; Only built-in views have this closed dependency contract. Extension
-    ;; views keep receiving the complete current session/database each call.
-    ;; Including prior items lets the cache adopt canonical committed arrays
-    ;; after native validation, then reuse them while only focus changes.
-    (table.insert declarations
-                  (let [definition {:id :choices/builtin-items
-                                    :inputs [[:db/path :items]
-                                             [:db/path :query]
-                                             [:db/path :scope]
-                                             [:db/path :preferences]
-                                             [:db/path :prior]
-                                             [:db/path :view]
-                                             [:db/path :config]]
-                                    :compute compute-choices-builtin-items}]
-                    {:catalog :subscriptions
-                     :id (. definition :id)
-                     :value definition}))
-    (table.insert declarations
-                  {:catalog :services
-                   :id :choices.pending
-                   :value choices-pending})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :choices.needs-targets?
-                   :value needs-targets})
-    (table.insert declarations
-                  (let [definition {:id :choices/sequence
-                                    :event :terminal/input
-                                    :priority 950
-                                    :context [:db/path]
-                                    :resolve route-terminal-input}]
-                    {:catalog :routes :id (. definition :id) :value definition}))
-    (table.insert declarations
-                  (let [definition {:id :choices/visible-action
-                                    :event :ui/action
-                                    :priority 800
-                                    :context [:db/path]
-                                    :resolve route-ui-action}]
-                    {:catalog :routes :id (. definition :id) :value definition}))
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :choices/ignored
-                           :handler (fn []
-                                      {:fx [{:type :terminal/read}]})}})
-    (let [key-defaults {:accept [:enter]
-                        :complete [:tab]
-                        :cancel [:escape :ctrl_c :ctrl_d :eof]
-                        :cycle [:arrow_right]
-                        :cycle_previous [:arrow_left :alt+p]
-                        :favorite [:alt+v]
-                        :next [:arrow_down]
-                        :open_overlay []
-                        :previous [:arrow_up]
-                        :replace_view [:alt+/]}]
-      (each [name keys (pairs key-defaults)]
-        (table.insert declarations
-                      (let [definition {:action name
-                                        :context key-context
-                                        :default keys}]
-                        {:catalog :keybindings
-                         :id (.. (. definition :context) "/"
-                                 (. definition :action))
-                         :value definition})))
-      (each [bank keys (ipairs banks)]
-        (for [slot 1 9]
-          (table.insert declarations
-                        (let [definition {:action (.. :option_ bank "_" slot)
-                                          :context key-context
-                                          :default (if (and (= bank 1)
-                                                            (. keys slot))
-                                                       [(.. :alt+ (. keys slot))]
-                                                       [])}]
-                          {:catalog :keybindings
-                           :id (.. (. definition :context) "/"
-                                   (. definition :action))
-                           :value definition}))))
-      (let [labels {:accept "Accept choice"
-                    :complete "Complete to branch"
-                    :cancel "Cancel choices / back"
-                    :cycle "Next choice view"
-                    :cycle_previous "Previous choice view"
-                    :favorite "Toggle favorite choice"
-                    :next "Next choice"
-                    :open_overlay "Expand inline choices"
-                    :previous "Previous choice"
-                    :replace_view "Replace choice view"}]
-        (each [name label (pairs labels)]
-          (let [action-name name]
-            (fn action-available? [db]
-              (let [session (or (and db.picker db.picker.session)
-                                (and db.editor db.editor.choice))]
-                (and (not= session nil)
-                     (or (not= action-name :favorite)
-                         (not= session.preference_scope nil))
-                     (or (not= action-name :open_overlay) (= db.picker nil)))))
+(fn options [config]
+  "Return configured choice behavior and presentation preferences."
+  (let [value config.choices]
+    (if (= (type value) :table)
+        {:purposes value.purposes :recent_limit value.recent_limit}
+        {})))
 
-            (table.insert declarations
-                          (let [definition {:available action-available?
-                                            :binding {:action name
-                                                      :context key-context}
-                                            :event {:action name
-                                                    :type :choices/dispatch}
-                                            :id (.. :choices. name)
-                                            : label}]
-                            {:catalog :actions
-                             :id (. definition :id)
-                             :value definition}))))
-        ;; Positional targets use the same geometry resolver for keyboard and pointer.
-        ;; A stale or hidden button therefore cannot choose a different hidden row.
-        (each [bank keys (ipairs banks)]
-          (for [slot 1 9]
-            (let [name (.. :option_ bank "_" slot)]
-              (table.insert declarations
-                            (let [definition {:available session-open?
-                                              :binding {:action name
-                                                        :context key-context}
-                                              :event {:action name
-                                                      :type :choices/dispatch}
-                                              :id (.. :choices. name)
-                                              :label (.. "Choose visible item "
-                                                         bank ":" slot)}]
-                              {:catalog :actions
-                               :id (. definition :id)
-                               :value definition})))))
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :choices/dispatch
-                               :handler on-choices-dispatch}})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.source
-                       :value choices-source})
-        (table.insert declarations
-                      {:catalog :choice-views :id :all :value {:title :All}})
-        (table.insert declarations
-                      {:catalog :choice-views
-                       :id :favorites
-                       :value {:include favorite? :title :Favorites}})
-        (table.insert declarations
-                      {:catalog :choice-views
-                       :id :frecency
-                       :value {:include used?
-                               :order recent-before?
-                               :title :Recent}})
-        ;; Grouping is a view policy. The layout treats section names as ordinary
-        ;; row metadata, so extensions can compose other grouped lists the same way.
-        (table.insert declarations
-                      {:catalog :choice-views
-                       :id :browse
-                       :value {:project browse :title :Browse}})
-        (table.insert declarations
-                      {:catalog :services :id :choices.session :value new})
-        (table.insert declarations
-                      {:catalog :services :id :choices.refresh :value refresh})
-        (table.insert declarations
-                      {:catalog :services :id :choices.action :value action})
-        (table.insert declarations
-                      {:catalog :services :id :choices.hint :value hint})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.first-index
-                       :value first})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.set-items
-                       :value choices-set-items})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.replace-view
-                       :value choices-replace-view})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.registered-views
-                       :value choices-registered-views})
-        (table.insert declarations
-                      {:catalog :services :id :choices.accept :value accept})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.projected-rows
-                       :value choices-projected-rows})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.rows
-                       :value choices-rows})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.hotkeys
-                       :value choices-hotkeys})
-        (table.insert declarations
-                      {:catalog :services
-                       :id :choices.positional
-                       :value choices-positional})
-        (table.insert declarations
-                      {:catalog :services :id :choices.input :value input})
-        (definitions.build :choices
-          declarations
-          {:choice-inputs inputs
-           :validators {:choice-inputs choice-inputs
-                        :choice-views choice-views
-                        :choice-sources choice-sources}})))))
+(fn action-available? [action-name db]
+  "Return whether the visible session supports the named action."
+  (let [session (or (and db.picker db.picker.session)
+                    (and db.editor db.editor.choice))]
+    (and (not= session nil)
+         (or (not= action-name :favorite) (not= session.preference_scope nil))
+         (or (not= action-name :open_overlay) (= db.picker nil)))))
 
-{: build}
+{:accept accept
+ :action action
+ :action-available? action-available?
+ :banks banks
+ :browse browse
+ :choice-inputs choice-inputs
+ :choice-sources choice-sources
+ :choice-views choice-views
+ :choices-hotkeys choices-hotkeys
+ :choices-pending choices-pending
+ :choices-positional choices-positional
+ :choices-projected-rows choices-projected-rows
+ :choices-registered-views choices-registered-views
+ :choices-replace-view choices-replace-view
+ :choices-rows choices-rows
+ :choices-set-items choices-set-items
+ :choices-source choices-source
+ :compute-choices-builtin-items compute-choices-builtin-items
+ :favorite? favorite?
+ :first first
+ :hint hint
+ :input input
+ :key-context key-context
+ :needs-targets needs-targets
+ :new new
+ :on-choices-dispatch on-choices-dispatch
+ :options options
+ :recent-before? recent-before?
+ :refresh refresh
+ :route-terminal-input route-terminal-input
+ :route-ui-action route-ui-action
+ :session-open? session-open?
+ :used? used?
+ :backspace backspace
+ :move move
+ :cancel cancel
+ :favorite favorite
+ :insert-text insert-text
+ :cycle cycle
+ :accept-focused accept-focused}

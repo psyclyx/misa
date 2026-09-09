@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -18,4 +18,4 @@
                                             "partial transcript was not retained")
                                     nil)}})
           nil
-          (definitions.build :tests.integration.fixtures.interrupted-check declarations {}))
+          (definitions.collect :tests.integration.fixtures.interrupted-check declarations {}))

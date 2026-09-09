@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Raw native descriptors isolate presentation clocks from Fennel timer policy.
 (fn view [db]
@@ -32,7 +32,7 @@
    :cursor {:row 1 :byte 0}})
 
 (fn [context]
-          (definitions.build :tests.clock-animations [{:catalog :events  :value {:event :app/start :handler (fn [db]
+          (definitions.collect :tests.clock-animations [{:catalog :events  :value {:event :app/start :handler (fn [db]
                             (local initial {:mode :active :ticks 0 :gates 0})
                             {:patch initial
                              :fx (if context.config.headless

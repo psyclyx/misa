@@ -1,9 +1,8 @@
-(local definitions (require :misa.definitions))
-
 ;; Submitted input history. Navigation and search are policies over ordinary
 ;; editor restore events and generic choice sessions; drafts are never stored.
 
 (fn available? [db]
+  "Return whether history navigation is available."
   (and (not= db.editor nil) (not db.picker) (not db.dialog) (not db.selection)
        (not db.editor.choice)))
 
@@ -69,6 +68,7 @@
                        fx))))))
 
 (fn on-history-search [db]
+  "Open a picker over saved input history."
   (if (not (available? db))
       {:fx [{:type :terminal/read}]}
       (let [history (state db)
@@ -109,6 +109,7 @@
                  :type :dispatch}]}))))
 
 (fn on-history-selected [db event]
+  "Restore the selected history entry to the draft."
   (let [history (state db)]
     (if (or (not= event.picker :input-history)
             (not= event.picker_token (tostring history.sequence)))
@@ -122,6 +123,7 @@
                        [(restore event.value) {:type :terminal/read}]))))))
 
 (fn route-terminal-input [db event]
+  "Route terminal input to history navigation."
   (when (available? db)
     (var action (misa.keybindings.action :history event))
     (let [editor db.editor
@@ -147,129 +149,88 @@
     (set bytes (+ bytes (length (. entries first)))))
   (fcollect [index first (length entries)] (. entries index)))
 
-(fn build [context]
-  "Build the declarations for history."
-  (let [declarations []
-        supplied-config (or (and (= (type context.config) :table)
-                                 context.config.history)
-                            {})
-        config (or (and (= (type supplied-config) :table) supplied-config) {})
-        max-entries (or config.max_entries 500)
-        max-bytes (or config.max_bytes 65536)]
-    (each [name value (pairs {:max_bytes max-bytes :max_entries max-entries})]
-      (assert (and (= (type value) :number) (>= value 1) (= (% value 1) 0))
-              (.. :history. name " must be a positive integer")))
+(fn options [config]
+  "Validate history persistence and retention settings."
+  (let [value (or config.history {})
+        settings (if (= (type value) :table) value {})
+        result {:persist settings.persist
+                :max_entries (or settings.max_entries 500)
+                :max_bytes (or settings.max_bytes 65536)}]
+    (each [_ limit (ipairs [result.max_entries result.max_bytes])]
+      (assert (and (= (type limit) :number) (>= limit 1) (= (% limit 1) 0))
+              "history limits must be positive integers"))
+    result))
 
-    (fn save [history]
-      (if (= config.persist false) {}
-          [{:data {:entries history.entries :version 1}
-            :namespace :history
-            :type :state/save}]))
+(fn save [config history]
+  "Save."
+  (if (= config.persist false) {}
+      [{:data {:entries history.entries :version 1}
+        :namespace :history
+        :type :state/save}]))
 
-    (each [name keys (pairs {:next [:ctrl_n :alt+n]
-                             :previous [:ctrl_p :alt+p]
-                             :search [:ctrl_r]})]
-      (table.insert declarations
-                    (let [definition {:action name
-                                      :context :history
-                                      :default keys}]
-                      {:catalog :keybindings
-                       :id (.. (. definition :context) "/"
-                               (. definition :action))
-                       :value definition}))
-      (table.insert declarations
-                    (let [definition {:available available?
-                                      :binding {:action name :context :history}
-                                      :event {:type (.. :history/ name)}
-                                      :id (.. :history. name)
-                                      :label (or (and (= name :search)
-                                                      "Search input history")
-                                                 (and (= name :previous)
-                                                      "Previous input")
-                                                 "Next input")}]
-                      {:catalog :actions
-                       :id (. definition :id)
-                       :value definition})))
+(fn on-app-start [config db]
+  "Initialize input history and request persisted entries."
+  (let [config (options config)
+        max-entries config.max_entries
+        max-bytes config.max_bytes]
+    {:patch {:history (misa.replace (state db))}
+     :fx (or (and (= config.persist false) {})
+             [{:completion :history/loaded
+               :namespace :history
+               :type :state/load}])}))
 
-    (fn on-app-start [db]
-      {:patch {:history (misa.replace (state db))}
-       :fx (or (and (= config.persist false) {})
-               [{:completion :history/loaded
-                 :namespace :history
-                 :type :state/load}])})
+(fn on-history-loaded [config db event]
+  "Merge saved history with input accepted while loading."
+  (let [config (options config)
+        max-entries config.max_entries
+        max-bytes config.max_bytes]
+    (if (not= event.namespace :history) nil
+        (let [history (state db)
+              entries {}]
+          (when (not= event.found false)
+            (let [data event.data]
+              (assert (and (= (type data) :table) (= data.version 1)
+                           (= (type data.entries) :table))
+                      "invalid input history data")
+              (each [_ text (ipairs data.entries)]
+                (assert (= (type text) :string)
+                        "history entry must be a string")
+                (when (<= (length text) max-bytes)
+                  (add entries text)))))
+          ;; Input may have been accepted while the native load was outstanding.
+          (each [_ text (ipairs history.entries)]
+            (add entries text))
+          (updated history
+                   {:entries (misa.replace (recent-entries entries max-entries
+                                                           max-bytes))})))))
 
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :app/start :handler on-app-start}})
+(fn on-agent-submitted [config db event]
+  "Record accepted input and trim history to configured limits."
+  (let [config (options config)
+        max-entries config.max_entries
+        max-bytes config.max_bytes]
+    (let [history (state db)
+          entries {}]
+      (each [index text (ipairs history.entries)]
+        (tset entries index text))
+      (let [changed (and (= (type event.prompt) :string)
+                         (<= (length event.prompt) max-bytes)
+                         (add entries event.prompt))
+            next-history (misa.patch history (reset-navigation))]
+        (if changed
+            (let [next-history (misa.patch next-history
+                                           {:entries (misa.replace (recent-entries entries
+                                                                                   max-entries
+                                                                                   max-bytes))})]
+              (updated next-history {} (save config next-history)))
+            (updated next-history {}))))))
 
-    (fn on-history-loaded [db event]
-      (if (not= event.namespace :history) nil
-          (let [history (state db)
-                entries {}]
-            (when (not= event.found false)
-              (let [data event.data]
-                (assert (and (= (type data) :table) (= data.version 1)
-                             (= (type data.entries) :table))
-                        "invalid input history data")
-                (each [_ text (ipairs data.entries)]
-                  (assert (= (type text) :string)
-                          "history entry must be a string")
-                  (when (<= (length text) max-bytes)
-                    (add entries text)))))
-            ;; Input may have been accepted while the native load was outstanding.
-            (each [_ text (ipairs history.entries)]
-              (add entries text))
-            (updated history
-                     {:entries (misa.replace (recent-entries entries
-                                                             max-entries
-                                                             max-bytes))}))))
-
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :history/loaded :handler on-history-loaded}})
-
-    (fn on-agent-submitted [db event]
-      (let [history (state db)
-            entries {}]
-        (each [index text (ipairs history.entries)]
-          (tset entries index text))
-        (let [changed (and (= (type event.prompt) :string)
-                           (<= (length event.prompt) max-bytes)
-                           (add entries event.prompt))
-              next-history (misa.patch history (reset-navigation))]
-          (if changed
-              (let [next-history (misa.patch next-history
-                                             {:entries (misa.replace (recent-entries entries
-                                                                                     max-entries
-                                                                                     max-bytes))})]
-                (updated next-history {} (save next-history)))
-              (updated next-history {})))))
-
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :agent/submitted :handler on-agent-submitted}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :history/previous
-                           :handler (fn [db] (navigate db 1))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :history/next
-                           :handler (fn [db] (navigate db (- 1)))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :history/search :handler on-history-search}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :history/selected
-                           :handler on-history-selected}})
-    (table.insert declarations
-                  (let [definition {:id :history/input
-                                    :event :terminal/input
-                                    :priority 300
-                                    :context [:db/path]
-                                    :resolve route-terminal-input}]
-                    {:catalog :routes :id (. definition :id) :value definition}))
-    (definitions.build :history declarations {})))
-
-{: build : recent-entries : navigate}
+{:available? available?
+ :navigate navigate
+ :on-agent-submitted on-agent-submitted
+ :on-app-start on-app-start
+ :on-history-loaded on-history-loaded
+ :on-history-search on-history-search
+ :on-history-selected on-history-selected
+ :recent-entries recent-entries
+ :route-terminal-input route-terminal-input}

@@ -1,15 +1,17 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {"choices" {"purposes" {"models" ["frecency" "all"]}} "keybindings" {"choices" {"open_overlay" ["alt+x"] "option_1_1" ["alt+z"]}}}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.ui.values")}
-    "module-2" {:priority 1000 :build (require "misa.choices.matching")}
-    "module-3" {:priority 2000 :build (require "misa.keybindings")}
-    "module-4" {:priority 3000 :build (require "misa.ui.layout")}
-    "module-5" {:priority 4000 :build (require "misa.commands")}
-    "module-6" {:priority 5000 :build (require "misa.choices")}
-    "module-7" {:priority 6000 :build (require "misa.choices.preview")}
-    "module-8" {:priority 7000 :build (require "misa.choices.layout")}
-    "module-9" {:priority 8000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/choice-contracts.fnl")}
-    :misa.models.preview {:source :misa.models.preview}}})
+(let [config {"choices" {"purposes" {"models" ["frecency" "all"]}}}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.ui.values))
+  (app.include (. (require :tests.stock) :misa.choices.matching))
+  (app.include (. (require :tests.stock) :misa.keybindings))
+  (app.include (. (require :tests.stock) :misa.ui.layout))
+  (app.include (. (require :tests.stock) :misa.commands))
+  (app.include (. (require :tests.stock) :misa.choices))
+  (app.include (. (require :tests.stock) :misa.choices.preview))
+  (app.include (. (require :tests.stock) :misa.choices.layout))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/choice-contracts.fnl") {:config config}))
+  (app.include (. (require :tests.stock) :misa.models.preview))
+  (tset app.definitions.keybindings :choices/open_overlay
+        {:context :choices :action :open_overlay :default ["alt+x"]})
+  (tset app.definitions.keybindings :choices/option_1_1
+        {:context :choices :action :option_1_1 :default ["alt+z"]})
+  {:config config :definitions app.definitions})

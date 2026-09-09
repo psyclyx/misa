@@ -1,8 +1,6 @@
 (local {:view validate :integer? integer?}
        (require :misa.ui.components.validation))
 
-(local definitions (require :misa.definitions))
-
 ;; Semantic visual component registry. Implementations are immutable registration
 ;; data; every role selection lives in transactional application state.
 
@@ -156,6 +154,7 @@
     (resolve-safe db role rendered render-context)))
 
 (fn components-projection-value [inputs _ previous]
+  "Project a component collection while retaining compatible cache entries."
   (let [db (. inputs 1)
         items (. inputs 2)
         render-context (. inputs 3)
@@ -228,6 +227,7 @@
   (misa.patch db {:components {:roles {role id}}}))
 
 (fn app-start [config configured db]
+  "Initialize selected presentation state and request persisted choices."
   (let [initial (when (not db.components)
                   {:roles (collect [role id (pairs configured)]
                             (when (not= role :persist)
@@ -243,6 +243,7 @@
              :type :state/load}])}))
 
 (fn components-loaded [db event]
+  "Restore available component role selections."
   (if (or (= event.found false) (= event.data misa.json-null))
       nil
       (let [saved event.data]
@@ -258,6 +259,7 @@
           {:patch {:components {: roles}}}))))
 
 (fn components-swap-handler [config db event]
+  "Select a component role and plan persistence and redraw effects."
   (assert (and (= (type event.role) :string)
                (= (type event.implementation) :string))
           "invalid component swap")
@@ -269,38 +271,19 @@
     (tset fx (+ (length fx) 1) {:event {:type :ui/redraw} :type :dispatch})
     {:patch {:components (misa.replace next.components)} : fx}))
 
-(fn build [context]
-  "Build the module declarations."
-  (let [config (let [value (. (or context.config {}) :components)]
-                 (if (= (type value) :table) value {}))
-        configured (if (= (type config.roles) :table) config.roles config)]
-    (definitions.build :components
-      [{:catalog :services :id :components.lookup :value components-lookup}
-       {:catalog :services :id :components.resolve :value components-resolve}
-       {:catalog :services :id :components.render :value components-render}
-       (let [definition {:id :components/projection
-                         :inputs [[:db/path :db]
-                                  [:db/path :items]
-                                  [:db/path :context]]
-                         :compute components-projection-value}]
-         {:catalog :subscriptions :id (. definition :id) :value definition})
-       {:catalog :services :id :components.project :value components-project}
-       {:catalog :services :id :components.swap :value components-swap}
-       {:catalog :events
-        :value {:event :app/start
-                :handler (fn [db] (app-start config configured db))}}
-       {:catalog :events
-        :value {:event :components/loaded :handler components-loaded}}
-       {:catalog :events
-        :value {:event :components/swap
-                :handler (fn [db event]
-                           (components-swap-handler config db event))}}]
-      {:validators {:components (fn [id component]
-                                  (assert (and (= (type id) :string)
-                                               (not= id "")
-                                               (= (type component) :table)
-                                               (= (type component.render)
-                                                  :function))
-                                          "component requires an id and render function"))}})))
+(fn validate-component [id component]
+  "Require a component with a callable renderer."
+  (assert (and (= (type id) :string) (not= id "") (= (type component) :table)
+               (= (type component.render) :function))
+          "component requires an id and render function"))
 
-{:build build}
+{: app-start
+ : components-loaded
+ : components-lookup
+ : components-project
+ : components-projection-value
+ : components-render
+ : components-resolve
+ : components-swap
+ : components-swap-handler
+ : validate-component}

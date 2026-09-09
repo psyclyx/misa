@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -114,4 +114,4 @@
                                                    :type :picker/input}
                                            :type :dispatch}]})}})
           nil
-          (definitions.build :tests.command-history declarations {}))
+          (definitions.collect :tests.command-history declarations {}))

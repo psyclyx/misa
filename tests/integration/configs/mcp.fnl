@@ -1,6 +1,4 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.tools.shell")}}})
+(let [config {}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.tools.shell))
+  {:config config :definitions app.definitions})

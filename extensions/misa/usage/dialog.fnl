@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Usage projects normalized provider facts into generic data rows and actions.
 ;; Transport and account mutations remain provider-owned.
 (fn text [value] {:type :text :value value})
@@ -180,6 +178,7 @@
       {: sections : actions})))
 
 (fn update [db _ cofx]
+  "Refresh the open usage dashboard."
   (when (and db.dialog (= db.dialog.id :usage))
     (let [display (model db (/ cofx.clock.wall_ms 1000))]
       {:fx [{:type :dispatch
@@ -190,6 +189,7 @@
                      :actions display.actions}}]})))
 
 (fn open-dashboard [db _ cofx]
+  "Open the usage dashboard and start its refresh timer."
   (let [display (model db (/ cofx.clock.wall_ms 1000))]
     {:fx [{:type :dispatch
            :event {:type :dialog/open
@@ -207,9 +207,11 @@
           {:type :dispatch :event {:type :usage/refresh}}]}))
 
 (fn tick [db event cofx]
+  "Refresh usage or stop the timer after the dashboard closes."
   (or (update db event cofx) {:fx [{:type :timer/stop :id :usage/countdown}]}))
 
 (fn invoke-action [db event]
+  "Dispatch an available action and resume terminal input."
   (if event.cancelled
       {:fx [{:type :timer/stop :id :usage/countdown}]}
       (when (and db.dialog (= db.dialog.id :usage))
@@ -220,31 +222,7 @@
           (when (and action action.event (not action.disabled))
             {:fx [{:type :dispatch :event (misa.snapshot action.event)}]})))))
 
-(fn build []
-  "Declare the usage dashboard and its interactions."
-  (definitions.build :usage
-    [(let [definition {:context :usage :action :codex-reset :default ["r"]}]
-       {:catalog :keybindings
-        :id (.. definition.context "/" definition.action)
-        :value definition})
-     (let [definition {:context :usage :action :extra-manage :default ["e"]}]
-       {:catalog :keybindings
-        :id (.. definition.context "/" definition.action)
-        :value definition})
-     (let [definition {:id :usage.open
-                       :label "Show usage"
-                       :event {:type :usage/open}
-                       :available (fn [db] (not db.dialog))}]
-       {:catalog :actions :id definition.id :value definition})
-     (let [definition {:choice_purpose :command
-                       :description "Show token and subscription usage"
-                       :event :usage/open
-                       :name :/usage}]
-       {:catalog :commands :id definition.name :value definition})
-     {:catalog :events :value {:event :usage/open :handler open-dashboard}}
-     {:catalog :events :value {:event :usage/updated :handler update}}
-     {:catalog :events :value {:event :usage/tick :handler tick}}
-     {:catalog :events :value {:event :usage/action :handler invoke-action}}]
-    {}))
-
-{: build}
+{:open-dashboard open-dashboard
+ :invoke-action invoke-action
+ :tick tick
+ :update update}

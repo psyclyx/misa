@@ -2,16 +2,16 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (local misa _G.misa)
-(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
-(app.install)
+(app.define (. (require :tests.stock) :misa.json))
 (local config {:providers {:fake {:responses [:hello
                                               {:stream [{:type :tool_call :id :call :name :test :arguments {}}
                                                         {:type :tool_call :index 7 :arguments_json :fragment}]
                                                :usage {:output_tokens 3}}
                                               {:stream [] :error :failed}]}}})
-(local specs ((. (fennel.dofile :extensions/misa/providers/fake.fnl) :build) {: config}))
+(app.install {:config config})
+(local specs (. (require :tests.stock) :misa.providers.fake))
 (var handler nil)
 (each [_ spec (pairs (. specs :events))]
   (set handler spec.handler))

@@ -4,7 +4,10 @@ const Harness = support.Harness;
 
 fn expectFailure(h: *Harness, invocation: Harness.Invocation, needles: []const []const u8) !void {
     const result = try h.run(invocation);
-    try std.testing.expect(result.term == .exited and result.term.exited != 0);
+    if (result.term != .exited or result.term.exited == 0) {
+        std.debug.print("expected failure containing {s}, got {any}\nstdout:\n{s}\nstderr:\n{s}\n", .{ needles[0], result.term, result.stdout, result.stderr });
+        return error.ExpectedFailure;
+    }
     for (needles) |needle| try support.contains(result.stderr, needle);
 }
 
@@ -12,12 +15,12 @@ test "invalid extension and callback contracts report actionable errors" {
     inline for (.{
         .{ "bad", "misa.providers.unknown" },
         .{ "fail", "exploded" },
-        .{ "missing-definitions", "module requires build or definitions" },
-        .{ "malformed-module", "module returned no definitions" },
+        .{ "missing-definitions", "configuration must contain a definitions table" },
+        .{ "malformed-module", "configuration must contain a definitions table" },
         .{ "constructor-trace", "constructor exploded" },
         .{ "late-effect", "UnknownNativeEffect" },
         .{ "nul-extension", "No such file or directory" },
-        .{ "nul-command", "command argv must not contain NUL" },
+        .{ "nul-command", "command argv must contain nonempty strings without NUL" },
     }) |case| {
         var h = try Harness.init();
         defer h.deinit();
@@ -39,9 +42,10 @@ test "installed generated extensions preserve actionable diagnostics" {
     defer h.deinit();
     _ = h.environ.swapRemove("MISA_EXTENSION_DIR");
     try h.config(
-        \\(local standard (require :misa.standard))
-        \\(standard.application {:config {:models {:default 42}}
-        \\                       :modules {:models {:build (require :misa.models)}}})
+        \\(let [config {:models {:default 42}}
+        \\      app ((require :tests.application) {:config config})]
+        \\  (app.include (. (require :tests.stock) :misa.models))
+        \\  {:config config :definitions app.definitions})
     );
     try expectFailure(&h, .{ .binary = @import("integration_options").installed_binary }, &.{ "models/init.lua:", "config.models.default must be a nonempty string", "stack traceback:" });
 }

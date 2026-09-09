@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (assert (and (and (and (= _G.os nil) (= _G.io nil)) (= _G.print nil))
              (= _G.debug nil)))
@@ -30,4 +30,4 @@
                         {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.sandbox declarations {}))
+          (definitions.collect :tests.integration.fixtures.sandbox declarations {}))

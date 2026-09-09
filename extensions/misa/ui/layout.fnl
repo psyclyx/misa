@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Pure terminal-cell layout primitives. The width tables intentionally mirror
 ;; src/terminal/width.zig so Lua projections and the native presenter agree.
 
@@ -582,10 +580,4 @@
             :wrap-ranges wrap-ranges
             :wrap-spans wrap-spans})
 
-(fn build []
-  "Build the declarations for layout."
-  (let [declarations []]
-    (table.insert declarations {:catalog :services :id :layout :value api})
-    (definitions.build :layout declarations {})))
-
-{:build build}
+api

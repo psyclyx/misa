@@ -1,7 +1,6 @@
-(local definitions (require :misa.definitions))
-
 ;; Named reactive facts, configured presentation metadata, and one component path.
 (fn indicators-model-value [selected inputs]
+  "Combine selected indicator metadata with reactive facts."
   {:indicators (icollect [index selection (ipairs (selected))]
                  (let [fact (. inputs index)
                        definition (. (misa.catalog :indicators) selection.id)]
@@ -50,6 +49,7 @@
     (. (misa.components.render db :status.indicators model presentation) :lines)))
 
 (fn validate-indicator [id definition]
+  "Validate the query and presentation metadata of an indicator."
   (assert (and (= (type definition) :table) (= definition.id id)
                (= definition.value nil) (= (type definition.query) :table)
                (= (type (. definition.query 1)) :string)
@@ -65,91 +65,27 @@
                    (= (type definition.hotkey.action) :string)))
           "indicator hotkey must name context and action"))
 
-(fn selections [root]
-  "Resolve configured indicator ordering and per-identity overrides."
-  (let [configured (or root.indicators
-                       [{:id :activity :priority 100 :representation :icon}
-                        {:id :model
-                         :priority 90
-                         :representation :value
-                         :hotkey true}
-                        {:id :effort :priority 70 :hotkey true}
-                        {:id :session :priority 40 :representation :icon}
-                        {:id :context :priority 80}
-                        {:id :plan :priority 60}
-                        {:id :transcript-detail :priority 20 :hotkey true}])]
-    (assert (= (type configured) :table)
-            "config.status.indicators must be an array")
-    (let [overrides (or root.indicator_overrides {})]
-      (assert (= (type overrides) :table)
-              "config.status.indicator_overrides must be a table")
-      (let [selected-ids {}
-            entries []]
-        (fn add [item]
-          (let [selection (if (= (type item) :string) {:id item} item)]
-            (assert (and (= (type selection) :table)
-                         (= (type selection.id) :string))
-                    "invalid indicator selection")
-            (assert (not (. selected-ids selection.id))
-                    "duplicate indicator selection")
-            (tset selected-ids selection.id true)
-            (let [override (. overrides selection.id)]
-              (when (not= override false)
-                (assert (or (= override nil) (= (type override) :table))
-                        "indicator override must be a table or false")
-                (let [merged (collect [key value (pairs selection)] key value)]
-                  (each [key value (pairs (or override {}))]
-                    (assert (not= key :id)
-                            "indicator override cannot change its id")
-                    (tset merged key value))
-                  (table.insert entries merged))))))
+(fn selections [configured]
+  "Validate an ordered indicator selection without changing its values."
+  (assert (= (type configured) :table) "status indicators must be an array")
+  (let [seen {}]
+    (icollect [index value (ipairs configured)]
+      (let [selection (if (= (type value) :string) {:id value} value)
+            representation (or selection.representation :label)]
+        (assert (and (= (type selection) :table)
+                     (= (type selection.id) :string))
+                "invalid indicator selection")
+        (assert (not (. seen selection.id)) "duplicate indicator selection")
+        (tset seen selection.id true)
+        (assert (or (= representation :label) (= representation :icon)
+                    (= representation :value) (= representation :label_value))
+                "invalid indicator representation")
+        {:id selection.id
+         :representation representation
+         :hotkey selection.hotkey
+         :priority (or (tonumber selection.priority) (- 1000 index))}))))
 
-        (each [_ item (ipairs configured)] (add item))
-        (let [additions (icollect [id (pairs overrides)]
-                          (do
-                            (assert (= (type id) :string)
-                                    "indicator override id must be a string")
-                            (when (not (. selected-ids id)) id)))]
-          (table.sort additions)
-          (each [_ id (ipairs additions)] (add {: id}))
-          (let [selections (icollect [index item (ipairs entries)]
-                             (let [selection (if (= (type item) :string)
-                                                 {:id item}
-                                                 item)
-                                   representation (or selection.representation
-                                                      :label)]
-                               (assert (and (= (type selection) :table)
-                                            (= (type selection.id) :string))
-                                       "invalid status indicator selection")
-                               (assert (or (= representation :label)
-                                           (= representation :icon)
-                                           (= representation :value)
-                                           (= representation :label_value))
-                                       "invalid indicator representation")
-                               {:id selection.id
-                                : representation
-                                :hotkey selection.hotkey
-                                :priority (or (tonumber selection.priority)
-                                              (- 1000 index))}))]
-            selections))))))
-
-(fn build [context]
-  "Declare the configured indicator queries and presentation service."
-  (let [selections (selections (or (. (or context.config {}) :status) {}))]
-    (fn selected []
-      (icollect [_ selection (ipairs selections)]
-        (when (. (misa.catalog :indicators) selection.id) selection)))
-
-    (definitions.build :indicators
-      [(let [definition {:id :indicators/model
-                         :inputs (fn []
-                                   (icollect [_ selection (ipairs (selected))]
-                                     (. (misa.catalog :indicators) selection.id
-                                        :query)))
-                         :compute (fn [inputs]
-                                    (indicators-model-value selected inputs))}]
-         {:catalog :subscriptions :id (. definition :id) :value definition})
-       {:catalog :services :id :status.indicators :value status-indicators}]
-      {:validators {:indicators validate-indicator}})))
-
-{:build build :selections selections}
+{: indicators-model-value
+ : selections
+ : status-indicators
+ : validate-indicator}

@@ -1,8 +1,7 @@
-(local definitions (require :misa.definitions))
-
 ;; Selection status belongs beside the input; the transcript remains the view.
 
 (fn render-selection [model context]
+  "Render selection content."
   (let [path (: (table.concat (or model.path {}) " / ") :gsub "[\r\n]" " ")
         lines [{:spans [{:style :label
                          :text (misa.layout.clip (.. (or (and model.copied
@@ -18,12 +17,4 @@
       (table.remove lines))
     {:dock :input :input_disabled true : lines}))
 
-(fn build []
-  "Declare selection rendering."
-  (definitions.build :component.selection
-    [{:catalog :components
-      :id :default.selection
-      :value {:render render-selection}}]
-    {}))
-
-{: build}
+{:render-selection render-selection}

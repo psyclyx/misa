@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Optional tool-result summaries. A configured role owns independent, tool-free
 ;; requests; canonical results and the main conversation never contain summaries.
 (fn fresh [sequence] {:sequence (or sequence 0) :queue [] :seen {}})
@@ -31,6 +29,7 @@
   {:type :dispatch :event (misa.patch (or data {}) {: type})})
 
 (fn transcript-tool-result [db event]
+  "Queue an eligible tool result for summarization."
   (let [current (state db)
         model (and misa.models misa.models.for-role
                    (misa.models.for-role db :summarizer))
@@ -60,6 +59,7 @@
                   [(dispatch :tool-summary/next)]))))))
 
 (fn tool-summary-next [db]
+  "Start the next queued summarization request."
   (let [current (state db)]
     (when (and (not current.active) (> (length current.queue) 0))
       (let [queue (icollect [index item (ipairs current.queue)]
@@ -97,6 +97,7 @@
                                                          "\nResult:\n" item.text)}]}]}])))))))
 
 (fn agent-stream-delta [db event]
+  "Accumulate text for the active summary request."
   (let [current (active db event)]
     (when (and current event.delta (= event.delta.type :text)
                (= (type event.delta.text) :string))
@@ -106,16 +107,19 @@
                                                 2000)}})))))
 
 (fn agent-stream-usage [db event]
+  "Record token usage for the active summary request."
   (let [current (active db event)]
     (when (and current (= (type event.usage) :table))
       (update (misa.patch current {:active {:usage event.usage}})))))
 
 (fn model-changed [db]
+  "Request reconciliation after the summarizer selection changes."
   (let [current db.tool_summary]
     (when (and current (or current.active (> (length current.queue) 0)))
       {:fx [(dispatch :tool-summary/reconcile)]})))
 
 (fn tool-summary-reconcile [db]
+  "Cancel or requeue summary work after model availability changes."
   (let [current (state db)
         model (and misa.models misa.models.for-role
                    (misa.models.for-role db :summarizer))
@@ -144,6 +148,7 @@
                 effects)))))
 
 (fn finish [db event failed]
+  "Finish a summary request and publish valid summary text."
   (let [current (active db event)]
     (when current
       (let [request current.active
@@ -171,36 +176,18 @@
         (update (misa.patch current {:active misa.delete}) effects)))))
 
 (fn reset [db]
+  "Cancel active summary work and clear queued results."
   (let [current (state db)]
     (update (fresh current.sequence)
             (if current.active
                 [{:type :operation/cancel :id current.active.id}]
                 []))))
 
-(fn build []
-  "Declare transcript tool-result summarization."
-  (let [fx []]
-    (fn add-event! [name handler]
-      (table.insert fx {:catalog :events :value {:event name :handler handler}}))
-
-    (add-event! :transcript/tool-result transcript-tool-result)
-    (add-event! :tool-summary/next tool-summary-next)
-    (add-event! :agent/stream-delta agent-stream-delta)
-    (add-event! :agent/stream-usage agent-stream-usage)
-    ;; Observe the final model state after every handler in the original
-    ;; transaction, regardless of extension registration order.
-    (each [_ name (ipairs [:model/role
-                           :model/roles-loaded
-                           :models/update
-                           :models/provider-availability
-                           :models/replace-provider])]
-      (add-event! name model-changed))
-    (add-event! :tool-summary/reconcile tool-summary-reconcile)
-    (add-event! :agent/result (fn [db event] (finish db event false)))
-    (add-event! :agent/stream-end (fn [db event] (finish db event false)))
-    (add-event! :agent/stream-error (fn [db event] (finish db event true)))
-    (add-event! :agent/reset reset)
-    (add-event! :transcript/reset reset)
-    (definitions.build :tool_summary fx {})))
-
-{:build build}
+{: agent-stream-delta
+ : agent-stream-usage
+ : finish
+ : model-changed
+ : reset
+ : tool-summary-next
+ : tool-summary-reconcile
+ : transcript-tool-result}

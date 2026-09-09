@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -109,4 +109,4 @@ c"}
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions.build :tests.selection_document declarations {}))
+          (definitions.collect :tests.selection_document declarations {}))

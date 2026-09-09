@@ -1,10 +1,13 @@
-(local definitions (require :misa.definitions))
-
 ;; Immutable editor transitions. Choice sessions own filtering and navigation;
 ;; the editor owns draft text, cursor, attachments, and submission effects.
 
-(fn previous-cursor [text cursor] (misa.layout.previous-boundary text cursor))
-(fn next-cursor [text cursor] (misa.layout.next-boundary text cursor))
+(fn previous-cursor [text cursor]
+  "Return the preceding grapheme boundary."
+  (misa.layout.previous-boundary text cursor))
+
+(fn next-cursor [text cursor]
+  "Return the following grapheme boundary."
+  (misa.layout.next-boundary text cursor))
 
 (fn state [db]
   (let [editor (or db.editor {})
@@ -68,6 +71,7 @@
                       :choice_overlay misa.delete}))
 
 (fn with-text [editor text cursor]
+  "Return an editor value with updated text and cursor."
   (misa.patch editor {: text
                       :cursor (or cursor (length text))
                       :dismissed_choice misa.delete}))
@@ -167,10 +171,12 @@
                                                                          db))}))))))
 
 (fn emptied [editor]
+  "Clear the current editor draft."
   (clear-choice (misa.patch (with-text editor "" 0)
                             {:attachments (misa.replace {})})))
 
 (fn selected [db event cofx]
+  "Apply the accepted choice to the editor."
   (let [previous (state db)]
     (if (or (not= event.picker :inline-choice)
             (not= event.picker_token previous.choice_overlay)
@@ -282,6 +288,7 @@
                    reason)) nil)))
 
 (fn ctrl-d [editor]
+  "Delete forward or signal empty input."
   (if (< editor.cursor (length editor.text))
       (misa.patch editor
                   {:text (.. (editor.text:sub 1 editor.cursor)
@@ -291,27 +298,18 @@
       editor))
 
 (fn backspace [editor]
+  "Remove the preceding character from the active input."
   (let [previous (previous-cursor editor.text editor.cursor)]
     (with-text editor
       (.. (editor.text:sub 1 previous) (editor.text:sub (+ editor.cursor 1)))
       previous)))
 
-(fn text-2 [editor event]
+(fn insert-text [editor event]
+  "Insert the received text at the active input position."
   (with-text editor
     (.. (editor.text:sub 1 editor.cursor) event.text
         (editor.text:sub (+ editor.cursor 1)))
     (+ editor.cursor (length event.text))))
-
-(local edits {:text text-2
-              :backspace backspace
-              :arrow_left (fn [editor]
-                            (with-text editor editor.text
-                              (previous-cursor editor.text editor.cursor)))
-              :arrow_right (fn [editor]
-                             (with-text editor editor.text
-                               (next-cursor editor.text editor.cursor)))
-              :ctrl_c emptied
-              :ctrl_d ctrl-d})
 
 (fn raw-input [editor event db cofx]
   (if (or (= event.kind :eof) (and (= event.kind :ctrl_d) (= editor.text "")))
@@ -345,6 +343,7 @@
                      :preserve)))))
 
 (fn terminal-input [db input cofx]
+  "Route terminal input to choices or the draft editor."
   (let [previous (state db)
         event (if (= input.kind :shift_enter) {:kind :text :text "\n"} input)
         editor (if (= input.kind :shift_enter) (clear-choice previous) previous)
@@ -374,6 +373,7 @@
           (if result (values result reason) (raw-input editor event db cofx))))))
 
 (fn restore [db event]
+  "Restore draft text, cursor, and attachments."
   (let [editor (state db)
         incoming (or event.text "")
         text (if event.replace incoming
@@ -400,6 +400,7 @@
                nil :restore))))
 
 (fn attach [db event]
+  "Add an attachment to the current draft."
   (let [editor (state db)
         attachments {}]
     (each [_ item (ipairs (or editor.attachments {}))]
@@ -408,6 +409,7 @@
     (updated (misa.patch editor {:attachments (misa.replace attachments)}))))
 
 (fn detach [db]
+  "Remove an attachment from the current draft."
   (let [editor (state db)
         attachments {}]
     (for [index 1 (- (length (or editor.attachments {})) 1)]
@@ -415,6 +417,7 @@
     (updated (misa.patch editor {:attachments (misa.replace attachments)}))))
 
 (fn compute-editor-lifecycle [inputs]
+  "Combine lifecycle flags from editor contributors."
   (let [result {:hold_exit false :block_draft false}]
     (for [index 1 inputs.n]
       (let [flags (. inputs index)]
@@ -475,6 +478,7 @@
        :row cursor.row})))
 
 (fn lifecycle-inputs []
+  "Return lifecycle subscription queries declared by editor contributors."
   (let [contributors (or (and misa.editor misa.editor.lifecycle) {})
         names (icollect [name (pairs contributors)]
                 name)]
@@ -483,6 +487,7 @@
       (. contributors name))))
 
 (fn input-model [db]
+  "Select the dependencies of the editor input projection."
   (let [editor (assert db.editor "editor state is not initialized")]
     {:cursor editor.cursor
      :mode editor.mode
@@ -497,6 +502,7 @@
                           (misa.choices.pending db))}))
 
 (fn editor-steer [db _ cofx]
+  "Interrupt the agent and submit the current draft as steering input."
   (let [editor (state db)]
     (if (. (misa.sub db [:editor/lifecycle]) :block_draft)
         (updated editor)
@@ -511,6 +517,7 @@
           (values result :steer)))))
 
 (fn editor-completion-check [db event cofx]
+  "Resume input or exit when all editor work has settled."
   (let [editor db.editor
         pending (and cofx.terminal.interactive editor
                      (or (not= editor.text "")
@@ -525,10 +532,12 @@
               {:type :terminal/read})]}))
 
 (fn agent-completed [_ event]
+  "Schedule a completion check after the agent finishes."
   {:fx [{:type :dispatch
          :event {:type :editor/completion-check :exit event.exit}}]})
 
 (fn agent-unavailable [_ event cofx]
+  "Report an unavailable agent and resume input or exit."
   {:fx [{:event {:level :error :text event.message :type :transcript/harness}
          :type :dispatch}
         {:type (if cofx.terminal.interactive
@@ -536,65 +545,52 @@
                    :app/quit)}]})
 
 (fn agent-status [db event]
+  "Update the editor busy state from agent status."
   (updated (misa.patch (state db) {:busy (not= event.status :ready)}) []))
 
 (fn validate-transition [_ handler]
+  "Validate an editor transition."
   (assert (= (type handler) :function) "transition must be a function"))
 
-(fn build [context]
-  "Build the declarations for editor."
-  (let [declarations []
-        config (or (and (= (type context.config) :table) context.config.ui) nil)
-        plain-prompt (and (= (type config) :table) (= config.plain_prompt true))]
-    ;; Lifecycle contributors supply named queries whose results are data flags.
-    (table.insert declarations
-                  (let [definition {:id :editor/lifecycle
-                                    :inputs lifecycle-inputs
-                                    :compute compute-editor-lifecycle}]
-                    {:catalog :subscriptions
-                     :id (. definition :id)
-                     :value definition}))
-    (table.insert declarations
-                  {:catalog :projections
-                   :id :editor.project-input
-                   :value {:inputs input-model
-                           :render render-editor-project-input}})
-    (table.insert declarations
-                  {:catalog :services :id :editor.layout :value editor-layout})
+(fn app-start [config db _ cofx]
+  "Initialize editor input and display a prompt when configured."
+  (let [plain-prompt (= (. (or config.ui {}) :plain_prompt) true)]
+    (let [fx {}]
+      (when (= (length cofx.argv) 0)
+        (when (and (not cofx.terminal.interactive) plain-prompt)
+          (table.insert fx {:lines [{:spans [{:style {:foreground :default}
+                                              :text "misa> enter a prompt:"}]}]
+                            :type :view/commit}))
+        (table.insert fx {:type :terminal/read}))
+      (updated (state db) fx))))
 
-    (fn app-start [db _ cofx]
-      (let [fx {}]
-        (when (= (length cofx.argv) 0)
-          (when (and (not cofx.terminal.interactive) plain-prompt)
-            (table.insert fx {:lines [{:spans [{:style {:foreground :default}
-                                                :text "misa> enter a prompt:"}]}]
-                              :type :view/commit}))
-          (table.insert fx {:type :terminal/read}))
-        (updated (state db) fx)))
+(fn account-transition [handler db event cofx]
+  "Account for an editor transition and its input activity."
+  (let [(result reason) (handler db event cofx)]
+    (accounted db result (or reason :preserve) cofx)))
 
-    (let [handlers {:app/start app-start
-                    :agent/status agent-status
-                    :agent/unavailable agent-unavailable
-                    :agent/completed agent-completed
-                    :editor/completion-check editor-completion-check
-                    :editor/restore restore
-                    :editor/attach attach
-                    :editor/detach detach
-                    :editor/steer editor-steer
-                    :ui/redraw (fn []
-                                 {:fx [{:type :terminal/read}]})
-                    :editor/choice-selected selected
-                    :terminal/input terminal-input}]
-      (each [name handler (pairs handlers)]
-        (fn on-handler [db event cofx]
-          (let [(result reason) (handler db event cofx)]
-            (accounted db result (or reason :preserve) cofx)))
-
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event name :handler on-handler}}))
-      (definitions.build :editor
-        declarations
-        {:editor-edits edits :validators {:editor-edits validate-transition}}))))
-
-{: build}
+{:agent-completed agent-completed
+ :agent-status agent-status
+ :agent-unavailable agent-unavailable
+ :app-start app-start
+ :attach attach
+ :compute-editor-lifecycle compute-editor-lifecycle
+ :detach detach
+ :editor-completion-check editor-completion-check
+ :editor-layout editor-layout
+ :editor-steer editor-steer
+ :input-model input-model
+ :lifecycle-inputs lifecycle-inputs
+ :account-transition account-transition
+ :render-editor-project-input render-editor-project-input
+ :restore restore
+ :selected selected
+ :terminal-input terminal-input
+ :validate-transition validate-transition
+ :with-text with-text
+ :emptied emptied
+ :previous-cursor previous-cursor
+ :backspace backspace
+ :insert-text insert-text
+ :ctrl-d ctrl-d
+ :next-cursor next-cursor}

@@ -1,17 +1,21 @@
-(local definitions (require :misa.definitions))
-
 ;; Modal editing policy over the editor's text/cursor model. Motions operate on
 ;; grapheme boundaries; neither terminal decoding nor the view knows Vim.
 
 (fn line-start [text at]
+  "Return the start position of the containing line."
   (- (or (: (text:sub 1 at) :match ".*\n()") 1) 1))
 
 (fn line-end [text at]
+  "Return the end position of the containing line."
   (- (or (text:find "\n" (+ at 1) true) (+ (length text) 1)) 1))
 
-(fn prev [text at] (misa.layout.previous-boundary text at))
+(fn prev [text at]
+  "Return the preceding text boundary."
+  (misa.layout.previous-boundary text at))
 
-(fn next-at [text at] (misa.layout.next-boundary text at))
+(fn next-at [text at]
+  "Return the following text boundary."
+  (misa.layout.next-boundary text at))
 
 (fn class [text at]
   (let [c (text:sub (+ at 1) (next-at text at))]
@@ -22,6 +26,7 @@
             :punctuation))))
 
 (fn vertical [editor direction]
+  "Move the cursor vertically while preserving its column."
   (let [text editor.text
         at editor.cursor
         start (line-start text at)
@@ -35,6 +40,7 @@
           (+ target bytes)))))
 
 (fn word-end [editor]
+  "Return the end of the current or following word."
   (let [text editor.text]
     (var at (next-at text editor.cursor))
     (while (and (< at (length text)) (= (class text at) :space))
@@ -46,6 +52,7 @@
       at)))
 
 (fn word-previous [editor]
+  "Return the start of the previous word."
   (let [text editor.text]
     (var at (prev text editor.cursor))
     (while (and (> at 0) (= (class text at) :space))
@@ -56,6 +63,7 @@
       at)))
 
 (fn word-next [editor]
+  "Return the start of the next word."
   (let [text editor.text]
     (var at editor.cursor)
     (let [group (class text at)]
@@ -64,18 +72,6 @@
       (while (and (< at (length text)) (= (class text at) :space))
         (set at (next-at text at)))
       at)))
-
-(local motions {:left (fn [editor] (prev editor.text editor.cursor))
-                :right (fn [editor] (next-at editor.text editor.cursor))
-                :line_start (fn [editor] (line-start editor.text editor.cursor))
-                :line_end (fn [editor] (line-end editor.text editor.cursor))
-                :down (fn [editor] (vertical editor :down))
-                :up (fn [editor] (vertical editor :up))
-                :first (fn [] 0)
-                :last (fn [editor] (length editor.text))
-                :word_next word-next
-                :word_previous word-previous
-                :word_end word-end})
 
 (fn selection [editor state]
   (if (= state.anchor nil) nil
@@ -124,6 +120,7 @@
       state))
 
 (fn insert [editor _ event]
+  "Apply an insert-mode action to the editor."
   (let [action event.action
         places {:append next-at
                 :insert_start line-start
@@ -142,10 +139,12 @@
      :editing (reset-navigation)}))
 
 (fn visual [editor _ event]
+  "Toggle structural range selection."
   {:editor {:mode :visual}
    :editing {:anchor editor.cursor :linewise (= event.action :visual_line)}})
 
 (fn undo [editor state event]
+  "Move between the editor undo and redo histories."
   (let [from (if (= event.action :undo) :undo :redo)
         to (if (= event.action :undo) :redo :undo)
         source (or (. state from) {})
@@ -167,6 +166,7 @@
        :editing patch})))
 
 (fn paste [editor _ _event db]
+  "Insert clipboard contents using characterwise or linewise placement."
   (let [register (or db.clipboard {})]
     (var text (or register.text ""))
     (var at (next-at editor.text editor.cursor))
@@ -184,11 +184,13 @@
               :cursor (+ at (length text))}}))
 
 (fn submit []
+  "Return to insert mode and submit the editor input."
   {:editor {:mode :insert}
    :editing {:anchor misa.delete}
    :fx [{:event {:type :terminal/input :kind :enter} :type :dispatch}]})
 
 (fn normal [editor]
+  "Enter normal editing mode and reset motion state."
   {:editor {:mode :normal
             :cursor (if (and (= (or editor.mode :insert) :insert)
                              (> editor.cursor
@@ -196,20 +198,6 @@
                         (prev editor.text editor.cursor)
                         editor.cursor)}
    :editing (reset-navigation)})
-
-(local actions {:normal normal
-                :submit submit
-                :insert insert
-                :append insert
-                :insert_start insert
-                :append_end insert
-                :open_below insert
-                :open_above insert
-                :visual visual
-                :visual_line visual
-                :undo undo
-                :redo undo
-                :paste paste})
 
 (local operators {:delete true :change true :yank true})
 
@@ -260,6 +248,7 @@
           {:editor editor-patch :editing state-patch}))))
 
 (fn action [db event]
+  "Apply a modal editing action to the current draft."
   (if (not db.editor) {:fx [{:type :terminal/read}]}
       (let [previous db.editor
             editor (misa.patch previous
@@ -291,6 +280,7 @@
 (local interrupt-inputs {:ctrl_c true :ctrl_d true :eof true})
 
 (fn route-input [db event cofx enabled]
+  "Route terminal input according to the selected editing mode."
   (when (and enabled cofx.terminal.interactive (not db.dialog) (not db.picker)
              (not db.selection) db.editor)
     (if (= (or db.editor.mode :insert) :insert)
@@ -300,9 +290,12 @@
         {:action (or (misa.keybindings.action :editor.normal event) :ignore)
          :type :editing/action})))
 
-(fn available? [db] (and db.editor (not db.selection)))
+(fn available? [db]
+  "Return whether modal editing is available."
+  (and db.editor (not db.selection)))
 
 (fn on-editing-interrupt [_ event]
+  "Return modal editing to insert mode after an interrupt."
   {:patch {:editor {:mode :insert
                     :selection_start misa.delete
                     :selection_end misa.delete}
@@ -310,107 +303,45 @@
    :fx [{:type :dispatch :event event.input}]})
 
 (fn editing-actions [_ handler]
+  "Validate an editing action."
   (assert (= (type handler) :function) "action must be a function"))
 
 (fn editing-motions [_ handler]
+  "Validate an editing motion."
   (assert (= (type handler) :function) "motion must be a function"))
 
-(fn build [context]
-  "Build the declarations for editing."
-  (let [declarations []
-        mode (or (. (or context.config.editing {}) :mode) :vim)]
+(fn enabled? [config]
+  "Return whether modal editing is enabled, validating the selected mode."
+  (let [mode (or (. (or config.editing {}) :mode) :vim)]
     (assert (or (= mode :vim) (= mode :plain))
             "editing.mode must be vim or plain")
-    (let [enabled (= mode :vim)]
-      (fn editor-transition [state previous editor reason interactive]
-        "Reconcile editing history after an editor transition."
-        (if (or (= reason :restore) (= reason :steer) (and enabled interactive))
-            (transition state previous editor reason)
-            state))
+    (= mode :vim)))
 
-      (table.insert declarations
-                    {:catalog :services
-                     :id :editor.transition
-                     :value editor-transition})
-      (let [bindings {:append [:a]
-                      :append_end [:A]
-                      :change [:c]
-                      :delete [:d]
-                      :delete_character [:x]
-                      :down [:j :arrow_down]
-                      :first [:g]
-                      :insert [:i]
-                      :insert_start [:I]
-                      :last [:G]
-                      :left [:h :arrow_left]
-                      :line_end ["$"]
-                      :line_start [:0]
-                      :normal [:escape]
-                      :open_above [:O]
-                      :open_below [:o]
-                      :paste [:p]
-                      :redo [:U]
-                      :right [:l :arrow_right]
-                      :submit [:enter]
-                      :undo [:u]
-                      :up [:k :arrow_up]
-                      :visual [:v]
-                      :visual_line [:V]
-                      :word_end [:e]
-                      :word_next [:w]
-                      :word_previous [:b]
-                      :yank [:y]}
-            action-order {}]
-        (each [action (pairs bindings)]
-          (tset action-order (+ (length action-order) 1) action))
-        (table.sort action-order)
-        (each [_ action (ipairs action-order)]
-          (let [keys (. bindings action)]
-            (table.insert declarations
-                          (let [definition {: action
-                                            :context :editor.normal
-                                            :default keys}]
-                            {:catalog :keybindings
-                             :id (.. (. definition :context) "/"
-                                     (. definition :action))
-                             :value definition}))
-            (table.insert declarations
-                          (let [definition {:available available?
-                                            :binding {: action
-                                                      :context :editor.normal}
-                                            :event {: action
-                                                    :type :editing/action}
-                                            :id (.. :editor. action)
-                                            :label (.. "Editor: "
-                                                       (action:gsub "_" " "))}]
-                            {:catalog :actions
-                             :id (. definition :id)
-                             :value definition}))))
+(fn editor-transition [enabled state previous editor reason interactive]
+  "Reconcile editing history after an editor transition."
+  (if (or (= reason :restore) (= reason :steer) (and enabled interactive))
+      (transition state previous editor reason)
+      state))
 
-        (fn route-terminal-input [db event cofx]
-          (route-input db event cofx enabled))
-
-        (table.insert declarations
-                      (let [definition {:id :editing/input
-                                        :event :terminal/input
-                                        :priority 200
-                                        :context [:db/path]
-                                        :resolve route-terminal-input}]
-                        {:catalog :routes
-                         :id (. definition :id)
-                         :value definition}))
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :editing/interrupt
-                               :handler on-editing-interrupt}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :editing/action :handler action}})
-        (definitions.build :editing
-          declarations
-          {:editing-motions motions
-           :editing-actions actions
-           :validators {:editing-motions editing-motions
-                        :editing-actions editing-actions}})))))
-
-{: build}
+{:action action
+ :available? available?
+ :editing-actions editing-actions
+ :editing-motions editing-motions
+ :editor-transition editor-transition
+ :enabled? enabled?
+ :on-editing-interrupt on-editing-interrupt
+ :route-input route-input
+ :submit submit
+ :next-at next-at
+ :line-start line-start
+ :insert insert
+ :visual visual
+ :normal normal
+ :word-previous word-previous
+ :paste paste
+ :prev prev
+ :word-next word-next
+ :undo undo
+ :vertical vertical
+ :word-end word-end
+ :line-end line-end}

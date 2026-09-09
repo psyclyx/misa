@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Source-preserving structural selection. Ranges are zero-based, half-open;
 ;; Markdown normalization is mapped back onto the original bytes before use.
 
@@ -218,11 +216,4 @@
         (close 0 (length text))
         root))))
 
-(fn build []
-  "Build the declarations for selection document."
-  (definitions.build :selection_document
-    [{:catalog :services :id :selection.document :value selection-document}
-     {:catalog :services :id :selection.children :value selection-children}]
-    {}))
-
-{: build}
+{:selection-children selection-children :selection-document selection-document}

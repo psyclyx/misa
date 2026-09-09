@@ -17,29 +17,28 @@
               :status {:model (fn [] (lines 1 :status))}
               :ui {:layers (fn [] layers)}
               :editor {:layout (fn [_ context]
-                                   (set editor-layout context.layout)
-                                   {:input (lines inputs :input)
-                                    :completions (lines completion-count
-                                                        :completion)
-                                    :row inputs
-                                    :byte 0})}
+                                 (set editor-layout context.layout)
+                                 {:input (lines inputs :input)
+                                  :completions (lines completion-count
+                                                      :completion)
+                                  :row inputs
+                                  :byte 0})}
               :transcript {:window (fn [_db _context count]
-                                   (lines count :transcript))}})
+                                     (lines count :transcript))}})
 
-(fn setup [extension]
-  (local definitions (extension.build {}))
+(fn setup [definitions]
   (each [name value (pairs (or definitions.services {}))]
-    (local parts (icollect [part (name:gmatch "[^.]+") ] part))
+    (local parts (icollect [part (name:gmatch "[^.]+")] part))
     (var target _G.misa)
     (for [index 1 (- (length parts) 1)]
       (local part (. parts index))
       (when (not (. target part)) (tset target part {}))
       (set target (. target part)))
     (tset target (. parts (length parts)) value))
-  (each [_ render (pairs (or definitions.views {}))] (set view render)))
+  (each [_ render (pairs (or definitions.views {}))]
+    (set view render)))
 
-(setup (fennel.dofile :extensions/misa/ui/layout.fnl))
-(setup (fennel.dofile :extensions/misa/ui/init.fnl))
+(setup (require :misa.standard.presentation.ui))
 (assert (> (_G.misa.ui.completion-room {} {:lines 48 :columns 80} 1) 9)
         "tall terminals should have room for more than nine completion candidates")
 
@@ -62,7 +61,8 @@
         (assert (= completions room)
                 "positional keys disagree with visible completion rows")
         (assert (= editor-layout.dock_count dock))
-        (assert (= (. (_G.misa.ui.input-budgets editor-layout count dock) :completions) room)
+        (assert (= (. (_G.misa.ui.input-budgets editor-layout count dock)
+                      :completions) room)
                 "editor did not receive the root layout budget")))))
 
 (for [height 1 30]
@@ -94,10 +94,12 @@
   (assert (= (. source 1 :spans 1 :animation) animation)
           "root clipping mutated the source animation"))
 
-(each [id component (pairs (. ((. (fennel.dofile :extensions/misa/editor/render.fnl) :build) {}) :components))]
+(each [id component (pairs (. (require :misa.standard.editor.render)
+                              :components))]
   (when (= id :default.editor.input)
     (each [_ mode (ipairs [:insert :normal :visual])]
-      (local input (component.render {:text "hello" :cursor 2 : mode} {:columns 20}))
+      (local input (component.render {:text "hello" :cursor 2 : mode}
+                                     {:columns 20}))
       (assert (= input.cursor.shape (if (= mode :insert) :bar :block))
               "editor mode must choose the native cursor shape"))))
 

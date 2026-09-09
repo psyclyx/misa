@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn [context]
           (local declarations [])
@@ -152,4 +152,4 @@ second line"))
                                                    :type :test/history-step}
                                            :type :dispatch}]})}})
           nil
-          (definitions.build :tests.history declarations {}))
+          (definitions.collect :tests.history declarations {}))

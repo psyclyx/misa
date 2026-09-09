@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -72,4 +72,4 @@
                                             "stream chunks were not compacted once")
                                     nil)}})
           nil
-          (definitions.build :tests.integration.fixtures.stream-check declarations {}))
+          (definitions.collect :tests.integration.fixtures.stream-check declarations {}))

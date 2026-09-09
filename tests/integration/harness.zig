@@ -88,7 +88,8 @@ pub const Harness = struct {
     }
 
     pub fn config(self: *Harness, value: []const u8) !void {
-        try self.write("config.fnl", value);
+        const prefix = "(local fixture-fennel (require :fennel))\n(set fixture-fennel.path (.. \"@ROOT@/?.fnl;\" fixture-fennel.path))\n";
+        try self.write("config.fnl", try std.fmt.allocPrint(self.allocator(), "{s}{s}", .{ prefix, value }));
         try self.environ.put("MISA_CONFIG", try self.path("config.fnl"));
     }
 

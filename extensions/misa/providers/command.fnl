@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (fn latest-prompt [messages]
   (let [message (. messages (length messages))]
     (assert (and message (= message.role :user))
@@ -14,6 +12,12 @@
 
 (fn request [argv effect]
   "Append the user prompt to the configured process arguments."
+  (assert (and (= (type argv) :table) (> (length argv) 0))
+          "command argv must be a nonempty array")
+  (each [_ argument (ipairs argv)]
+    (assert (and (= (type argument) :string) (not= argument "")
+                 (not (argument:find "\000" 1 true)))
+            "command argv must contain nonempty strings without NUL"))
   (assert (and (= (type effect.id) :string) (not= effect.id ""))
           "command id must be a nonempty string")
   (let [direct {}]
@@ -48,39 +52,4 @@
                :type :dispatch}))
     {: fx}))
 
-(fn build [context]
-  "Build the command provider catalogs from application settings."
-  (let [declarations []
-        providers (or (and (= (type context.config) :table)
-                           context.config.providers) nil)
-        command (or (and (= (type providers) :table) providers.command) nil)
-        configured (or (and (= (type command) :table) command.argv) nil)]
-    (assert (and (= (type configured) :table) (> (length configured) 0))
-            "config.providers.command.argv must be a nonempty array")
-    (let [argv {}]
-      (for [i 1 (length configured)]
-        (assert (and (= (type (. configured i)) :string)
-                     (not= (. configured i) ""))
-                "command argv must contain nonempty strings")
-        (assert (not (: (. configured i) :find "\000" 1 true))
-                "command argv must not contain NUL")
-        (tset argv i (. configured i)))
-      (table.insert declarations
-                    (let [definition {:id :command/default
-                                      :label :Command
-                                      :model :default
-                                      :provider :command}]
-                      {:catalog :models
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    {:catalog :effects
-                     :id :provider.command
-                     :value (fn [effect] (request argv effect))})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :provider/command-complete
-                             :handler complete}})
-      (definitions.build :provider.command declarations {}))))
-
-{:build build :request request :complete complete}
+{:request request :complete complete}

@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 (fn []
           (local declarations [])
@@ -37,4 +37,4 @@
                                                "second result"))
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions.build :tests.integration.fixtures.runtime-regressions-check declarations {}))
+          (definitions.collect :tests.integration.fixtures.runtime-regressions-check declarations {}))

@@ -1,22 +1,20 @@
-(local standard (require :misa.standard))
-
-(standard.application
-  {:config {}
-   :modules {
-    "module-1" {:priority 0 :build (require "misa.ui.values")}
-    "module-2" {:priority 1000 :build (require "misa.keybindings")}
-    "module-3" {:priority 2000 :build (require "misa.dialogs")}
-    "module-4" {:priority 3000 :build (require "misa.ui.themes")}
-    "module-5" {:priority 4000 :build (require "misa.ui.themes.default")}
-    "module-6" {:priority 5000 :build (require "misa.ui.components")}
-    "module-7" {:priority 6000 :build (require "misa.ui.layout")}
-    "module-8" {:priority 7000 :build (require "misa.markdown")}
-    "module-9" {:priority 8000 :build (require "misa.markdown.render")}
-    "module-10" {:priority 9000 :build (require "misa.ui.components.truncation")}
-    "module-11" {:priority 10000 :build (require "misa.ui.components.group")}
-    "module-12" {:priority 11000 :build (require "misa.transcript.render")}
-    "module-13" {:priority 12000 :build (require "misa.editor.render")}
-    "module-14" {:priority 13000 :build (require "misa.ui.components.buttons")}
-    "module-15" {:priority 14000 :build (require "misa.dialogs.render")}
-    "module-16" {:priority 15000 :build ((. (require :fennel) :dofile) "@ROOT@/tests/presentation.fnl")}
-    :misa.transcript.groups {:source :misa.transcript.groups}}})
+(let [config {}
+      app ((require :tests.application) {:config config})]
+  (app.include (. (require :tests.stock) :misa.ui.values))
+  (app.include (. (require :tests.stock) :misa.keybindings))
+  (app.include (. (require :tests.stock) :misa.dialogs))
+  (app.include (. (require :tests.stock) :misa.ui.themes))
+  (app.include (. (require :tests.stock) :misa.ui.themes.default))
+  (app.include (. (require :tests.stock) :misa.ui.components))
+  (app.include (. (require :tests.stock) :misa.ui.layout))
+  (app.include (. (require :tests.stock) :misa.markdown))
+  (app.include (. (require :tests.stock) :misa.markdown.render))
+  (app.include (. (require :tests.stock) :misa.ui.components.truncation))
+  (app.include (. (require :tests.stock) :misa.ui.components.group))
+  (app.include (. (require :tests.stock) :misa.transcript.render))
+  (app.include (. (require :tests.stock) :misa.editor.render))
+  (app.include (. (require :tests.stock) :misa.ui.components.buttons))
+  (app.include (. (require :tests.stock) :misa.dialogs.render))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/presentation.fnl") {:config config}))
+  (app.include (. (require :tests.stock) :misa.transcript.groups))
+  {:config config :definitions app.definitions})

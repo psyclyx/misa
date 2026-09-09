@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Pure Markdown parsing. Semantic content has no size or nesting budget;
 ;; terminal layout, colors, and syntax highlighting belong to the view layer.
 
@@ -484,12 +482,4 @@
              (set document (parse value document))
              document)})
 
-(fn build []
-  "Declare Markdown parsing services."
-  (definitions.build :markdown
-    [{:catalog :services
-      :id :markdown
-      :value {:parse parse :new-document new-document}}]
-    {}))
-
-{:build build :parse parse :new-document new-document}
+{: new-document : parse}

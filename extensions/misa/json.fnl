@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Provider-neutral JSON values used at Lua protocol boundaries.
 (fn utf8 [codepoint]
   (if (<= codepoint 127) (string.char codepoint) (<= codepoint 2047)
@@ -229,10 +227,4 @@
     (set visit encode-value)
     (visit root)))
 
-(fn build []
-  "Build the declarations for json."
-  (definitions.build :json
-    [{:catalog :services :id :json :value {: decode : encode}}]
-    {}))
-
-{: build : decode : encode}
+{:decode decode :encode encode}

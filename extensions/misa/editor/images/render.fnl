@@ -1,8 +1,7 @@
-(local definitions (require :misa.definitions))
-
 ;; A semantic image rectangle, with a readable fallback on text-only terminals.
 
 (fn render-image [model context]
+  "Render image content."
   (let [title (.. (: (: (or model.name :Image) :gsub "[%z\001-\031\127]" " ")
                      :gsub "\194[\128-\159]" " ") "  "
                   (tostring (or model.width "?")) "×"
@@ -35,12 +34,4 @@
                :width preview.width})))
     {: lines}))
 
-(fn build []
-  "Declare image attachment rendering."
-  (definitions.build :component.image
-    [{:catalog :components
-      :id :default.attachment.image
-      :value {:render render-image}}]
-    {}))
-
-{: build}
+{:render-image render-image}

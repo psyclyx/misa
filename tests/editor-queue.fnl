@@ -13,7 +13,7 @@
 (local misa _G.misa)
 
 (local app ((require :tests.application) context))
-(local declarations (require :misa.definitions))
+(local declarations (require :tests.declarations))
 (each [_ name (ipairs [:misa.json
                        :misa.keybindings
                        :misa.actions
@@ -29,23 +29,23 @@
                        :misa.editor
                        :misa.editor.images
                        :misa.editor.editing])]
-  (app.include (require name) context))
+  (app.include (. (require :tests.stock) name) context))
 
 (var (db native) nil)
 
-(app.define (declarations.build :editor-queue-1 [{:catalog :events  :value {:event :app/start :handler (fn [state]
+(app.define (declarations.collect :editor-queue-1 [{:catalog :events  :value {:event :app/start :handler (fn [state]
                                        {:patch {:models
                                             {:entries [{:id :capture/model
                                                         :model :model
                                                         :provider :capture}]
                                              :selected :capture/model}}})}}]))
 
-(app.define (declarations.build :editor-queue-2 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state) nil)}}]))
+(app.define (declarations.collect :editor-queue-2 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state) nil)}}]))
 
-(app.define (declarations.build :editor-queue-3 [{:catalog :events  :value {:event :test/attachment :handler (fn [state event]
+(app.define (declarations.collect :editor-queue-3 [{:catalog :events  :value {:event :test/attachment :handler (fn [state event]
                                        {:patch {:editor {:attachments (misa.replace event.attachments)}}})}}]))
 
-(app.define (declarations.build :editor-queue-4 [{:catalog :events  :value {:event :test/exit-after-response :handler (fn [state]
+(app.define (declarations.collect :editor-queue-4 [{:catalog :events  :value {:event :test/exit-after-response :handler (fn [state]
                                        {:patch {:agent {:exit_after_response true}}})}}]))
 
 (app.install context)

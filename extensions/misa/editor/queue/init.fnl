@@ -1,9 +1,8 @@
-(local definitions (require :misa.definitions))
-
 ;; Submission scheduling is independent of the editor and provider loop. One
 ;; pending prompt coalesces consecutive submissions, preserving their order.
 
 (fn state [db]
+  "Return the current queue state with initial defaults."
   (or db.queue {:attachments {} :pending "" :sending false}))
 
 (fn append [queue text attachments]
@@ -20,6 +19,7 @@
     next))
 
 (fn empty? [queue]
+  "Return whether the input queue has no pending entries."
   (and (= queue.pending "") (= (length (or queue.attachments {})) 0)))
 
 (fn ready? [db queue]
@@ -58,6 +58,7 @@
                  :type :dispatch}]}))))
 
 (fn on-agent-reset [_]
+  "Clear pending and outstanding input submissions."
   {:patch {:queue (misa.replace {:attachments {} :pending "" :sending false})}})
 
 (fn acknowledge [db]
@@ -69,12 +70,14 @@
     (drain db (misa.patch (state db) {:sending false}))))
 
 (fn on-queue-submission-settled []
+  "Release the outstanding submission and resume queue delivery."
   ;; Acknowledge after events emitted by agent/submit, not
   ;; merely after its state transition. Rejection diagnostics
   ;; must run before an older completion can permit exit.
   {:fx [{:type :dispatch :event {:type :queue/submission-acknowledged}}]})
 
 (fn on-agent-status [db event]
+  "Drain pending input when the agent becomes ready."
   (if (not= event.status :ready)
       {:patch {:queue (misa.patch (state db) {:sending false})}}
       nil))
@@ -84,46 +87,20 @@
   (drain db (append (state db) event.prompt event.attachments)))
 
 (fn compute-queue-lifecycle [inputs]
+  "Report whether pending submissions should hold editor exit."
   (let [queue (. inputs 1)]
     {:hold_exit (and (not= queue nil)
                      (or (not (empty? queue)) (= queue.sending true)))}))
 
-(fn build []
-  "Build the declarations for queue."
-  (definitions.build :queue
-    [{:catalog :services :id :editor.submit-event :value :queue/submit}
-     (let [definition {:id :queue/lifecycle
-                       :inputs [[:db/path :queue]]
-                       :compute compute-queue-lifecycle}]
-       {:catalog :subscriptions :id (. definition :id) :value definition})
-     {:catalog :services :id :editor.lifecycle.queue :value [:queue/lifecycle]}
-     {:catalog :events :value {:event :queue/submit :handler submit}}
-     {:catalog :events :value {:event :agent/status :handler on-agent-status}}
-     {:catalog :events
-      :value {:event :agent/completed
-              :handler (fn [db]
-                         ;; Completion does not acknowledge an outstanding submit.
-                         (drain db (state db)))}}
-     {:catalog :events
-      :value {:event :queue/submission-settled
-              :handler on-queue-submission-settled}}
-     {:catalog :events
-      :value {:event :queue/submission-acknowledged :handler acknowledge}}
-     {:catalog :events :value {:event :agent/reset :handler on-agent-reset}}
-     {:catalog :events :value {:event :queue/take :handler take}}
-     {:catalog :events :value {:event :queue/steer :handler steer}}
-     (let [definition {:available (fn [db]
-                                    (and db.queue (not (empty? db.queue))))
-                       :event {:type :queue/take}
-                       :id :queue.edit
-                       :keys [:alt+e]
-                       :label "Edit pending message"}]
-       {:catalog :actions :id (. definition :id) :value definition})
-     (let [definition {:event {:type :editor/steer}
-                       :id :queue.steer
-                       :keys [:alt+enter]
-                       :label "Interrupt and send draft / pending message"}]
-       {:catalog :actions :id (. definition :id) :value definition})]
-    {}))
-
-{: build : append : drain : submit : steer : take : acknowledge}
+{:acknowledge acknowledge
+ :append append
+ :compute-queue-lifecycle compute-queue-lifecycle
+ :drain drain
+ :empty? empty?
+ :on-agent-reset on-agent-reset
+ :on-agent-status on-agent-status
+ :on-queue-submission-settled on-queue-submission-settled
+ :state state
+ :steer steer
+ :submit submit
+ :take take}

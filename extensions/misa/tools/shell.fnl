@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (local errors
        {:Canceled "Command cancelled."
         :StartupTimeout "The command did not start producing output before the timeout."
@@ -39,35 +37,21 @@
      :type :process/run}))
 
 (fn completed [_ event]
+  "Translate captured process completion into a tool result."
   {:fx [{:type :dispatch
          :event {:type :tool/result
                  :tool_call_id event.id
                  :is_error (not event.ok)
                  :text (output-text event)}}]})
 
-(fn build [context]
-  "Declare the shell tool with its configured executable."
-  (let [tools (and (= (type context.config) :table) context.config.tools)
-        raw (and (= (type tools) :table) tools.shell)
-        config (if (= (type raw) :table) raw {})
-        executable (or config.executable :sh)]
-    (assert (and (= (type executable) :string) (not= executable ""))
+(fn executable [config]
+  "Validate and return the configured shell executable."
+  (let [name (or config.executable :sh)]
+    (assert (and (= (type name) :string) (not= name ""))
             "config.tools.shell.executable must be nonempty")
-    (definitions.build :tool.shell
-      [{:catalog :tools
-        :id :shell
-        :value {:name :shell
-                :description "Run a shell command in Misa's working directory and return its captured output."
-                :effect :tool.shell/run
-                :input_schema {:type :object
-                               :additionalProperties false
-                               :properties {:command {:description "Shell command to execute"
-                                                      :type :string}}
-                               :required [:command]}}}
-       {:catalog :effects
-        :id :tool.shell/run
-        :value (fn [effect] (process-effect executable effect))}
-       {:catalog :events
-        :value {:event :tool/shell-complete :handler completed}}])))
+    name))
 
-{: build : output-text : process-effect}
+{:output-text output-text
+ :process-effect process-effect
+ :completed completed
+ :executable executable}

@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 (local symbols {:alt "⌥"
                 :arrow_down "↓"
                 :arrow_left "←"
@@ -23,23 +21,18 @@
                                                                   (event.text:lower))
       event.kind))
 
-(fn binding-keys [configured binding]
-  (let [raw (. configured binding.context)
-        section (if (= (type raw) :table) raw {})
-        override (. section binding.action)
-        keys (if (= override nil) binding.default override)
+(fn binding-keys [binding]
+  (let [keys binding.default
         normalized (if (= (type keys) :string) [keys] keys)]
-    (assert (= (type normalized) :table)
-            "configured keybinding must be a string or array")
+    (assert (= (type normalized) :table) "keybinding must be a string or array")
     normalized))
 
-(fn resolve-action [configured bindings context-name event]
-  "Resolve an input event against configured bindings, rejecting ambiguity."
+(fn resolve-action [bindings context-name event]
+  "Resolve an input event against bindings, rejecting ambiguity."
   (let [key (key-of event)]
     (accumulate [matched nil _ binding (ipairs bindings)]
       (if (= binding.context context-name)
-          (accumulate [found matched _ candidate (ipairs (binding-keys configured
-                                                                       binding))]
+          (accumulate [found matched _ candidate (ipairs (binding-keys binding))]
             (if (= candidate key)
                 (do
                   (assert (or (= found nil) (= found binding.action))
@@ -48,16 +41,13 @@
                 found))
           matched))))
 
-(fn hint [configured bindings context-name action]
+(fn hint [bindings context-name action]
+  "Return the first key for an action."
   (let [binding (accumulate [found nil _ binding (ipairs bindings) &until found]
                   (when (and (= binding.context context-name)
                              (= binding.action action))
-                    binding))
-        raw (. configured context-name)
-        override (and (= (type raw) :table) (. raw action))]
-    (if binding (. (binding-keys configured binding) 1)
-        (= (type override) :string) override
-        (= (type override) :table) (. override 1))))
+                    binding))]
+    (when binding (. (binding-keys binding) 1))))
 
 (fn tokens [key]
   "Split a key binding into display tokens, preserving key case."
@@ -89,25 +79,9 @@
                      :text (.. " " entry.label)}))
     spans))
 
-(fn build [context]
-  "Declare configurable semantic keybindings and their display services."
-  (let [raw (and (= (type context.config) :table) context.config.keybindings)
-        configured (if (= (type raw) :table) raw {})]
-    (definitions.build :keybindings
-      [{:catalog :services
-        :id :keybindings.action
-        :value (fn [context-name event]
-                 "Resolve an input event in a binding context."
-                 (resolve-action configured (misa.keybindings.all) context-name
-                                 event))}
-       {:catalog :services
-        :id :keybindings.hint
-        :value (fn [context-name action]
-                 "Return the first configured key for an action."
-                 (hint configured (misa.keybindings.all) context-name action))}
-       {:catalog :services :id :keybindings.tokens :value tokens}
-       {:catalog :services :id :keybindings.text :value text}
-       {:catalog :services :id :keybindings.render :value render}
-       {:catalog :services :id :keybindings.reference :value reference}])))
-
-{: build : resolve-action : tokens}
+{:resolve-action resolve-action
+ :tokens tokens
+ :hint hint
+ :text text
+ :render render
+ :reference reference}

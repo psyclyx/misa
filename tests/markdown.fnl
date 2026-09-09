@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Regression: ordinary text must not trigger a suffix search per byte.
 
@@ -186,4 +186,4 @@ code
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions.build :tests.markdown declarations {}))
+          (definitions.collect :tests.markdown declarations {}))

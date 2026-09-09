@@ -1,5 +1,3 @@
-(local definitions (require :misa.definitions))
-
 ;; Generic labeled facts, meters, details, and inline actions. Geometry is
 ;; measured once across all sections, so every row shares the same columns.
 (fn span [text style] {: text :style (or style :value)})
@@ -14,6 +12,7 @@
   (and (= (type value) :number) (= value value) (< (math.abs value) math.huge)))
 
 (fn render [model context]
+  "Render the supplied semantic model within the available dimensions."
   (let [width (math.max 1 (or context.columns 80))]
     (var label-width 0)
     (var value-width 0)
@@ -78,12 +77,4 @@
                 (add detail))))))
       {: lines})))
 
-(fn build []
-  "Build the declarations for component data."
-  (definitions.build :component.data
-    [{:catalog :components :id :default.data :value {: render}}]
-    {:requirements {:component.data [:layout
-                                     :components.buttons
-                                     :values.render]}}))
-
-{:build build}
+{: render}

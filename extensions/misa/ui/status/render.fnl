@@ -1,10 +1,9 @@
-(local definitions (require :misa.definitions))
-
 ;; Indicator row composition; general value formatting is owned by values.
 
 (fn span [text style action] {: text : style : action})
 (fn text-value [text] [(span text)])
 (fn activity [fact context]
+  "Render an activity label with optional clock animation."
   (assert (= (type fact.state) :string) "activity requires a state")
   (let [animation context.activity_animation
         result (text-value fact.state)]
@@ -52,6 +51,7 @@
     result))
 
 (fn render-indicators [model context]
+  "Fit indicators to the available width by configured priority."
   (let [source (or model.indicators {})
         keep {}]
     (for [i 1 (length source)] (tset keep i true))
@@ -94,15 +94,4 @@
                 (tset spans (+ (length spans) 1) item-span))))
           {:lines (or (and (> (length spans) 0) [{: spans}]) {})})))))
 
-(fn build []
-  "Declare status-line rendering."
-  (let [declarations [{:catalog :value-renderers :id :activity :value activity}]]
-    (table.insert declarations
-                  {:catalog :components
-                   :id :default.status.indicators
-                   :value {:render render-indicators}})
-    (definitions.build :component.status
-      declarations
-      {:requirements {:component.status [:values.render]}})))
-
-{:build build}
+{: activity : render-indicators}

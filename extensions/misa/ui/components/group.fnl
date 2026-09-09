@@ -1,6 +1,5 @@
-(local definitions (require :misa.definitions))
-
 (fn boundary [model context]
+  "Render a full-width boundary containing optional facts."
   (let [columns (math.max 1 (or context.columns 80))
         parts [{:text "──" :style :dim}]]
     (fn append [spans]
@@ -27,12 +26,4 @@
                            :source false}))))
       {: lines})))
 
-(fn build []
-  "Declare the shared content boundary renderer."
-  (definitions.build :component.group
-    [{:catalog :components
-      :id :default.group.boundary
-      :value {:render boundary}}]
-    {:requirements {:component.group [:layout :values.render]}}))
-
-{:build build}
+{: boundary}

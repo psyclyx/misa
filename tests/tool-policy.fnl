@@ -62,13 +62,13 @@
 
 (let [bindings [{:context :editor :action :submit :default [:enter]}]
       event {:kind :key :key :enter}]
-  (assert (= (keys.resolve-action {} bindings :editor event) :submit))
-  (assert (= (keys.resolve-action {:editor {:submit []}} bindings :editor event)
+  (assert (= (keys.resolve-action bindings :editor event) :submit))
+  (assert (= (keys.resolve-action [{:context :editor :action :submit :default []}] :editor event)
              nil))
-  (assert (= (keys.resolve-action {:editor {:submit :x}} bindings :editor
+  (assert (= (keys.resolve-action [{:context :editor :action :submit :default :x}] :editor
                                   {:kind :text :text :x}) :submit))
   (fails? (fn []
-            (keys.resolve-action {}
+            (keys.resolve-action
                                  [{:context :editor
                                    :action :a
                                    :default [:enter]}

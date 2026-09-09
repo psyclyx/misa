@@ -3,9 +3,9 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.transcript.syntax :misa.costs])]
-  (app.define ((. (require name) :build) {:config {}})))
+  (app.define (. (require :tests.stock) name)))
 (var renders 0)
 (var hints 0)
 
@@ -13,7 +13,7 @@
 (local context {:columns 80})
 (local items (fcollect [i 1 300] {:id (tostring i) :role :fixture :model {:text (tostring i)}}))
 (fn project [state records ctx] (misa.components.project state :test records (or ctx context)))
-(app.define (definitions.build :fixture [{:catalog :components :id :default.fixture :value {:render (fn [model _ previous]
+(app.define (definitions.collect :fixture [{:catalog :components :id :default.fixture :value {:render (fn [model _ previous]
                           (set renders (+ renders 1))
                           (when previous (set hints (+ hints 1)))
                           (values {:lines [{:spans [{:text model.text :style :plain
@@ -23,7 +23,7 @@
        {:catalog :components :id :alternate :value {:render (fn [model] {:lines [{:spans [{:text (.. :alternate- model.text)}]}]})}}
        {:catalog :themes :id :other :value {:palette {:ink :red} :styles {:plain {:foreground :ink}}}}]))
 (var observed nil)
-(app.define (definitions.build :fixture [{:catalog :events  :value {:event :set :handler (fn [_ event] {:patch {:components (misa.replace db.components) :themes db.themes
+(app.define (definitions.collect :fixture [{:catalog :events  :value {:event :set :handler (fn [_ event] {:patch {:components (misa.replace db.components) :themes db.themes
                                       :text event.text :fail (= event.fail true)}})}}
        {:catalog :views :id :main :value (fn [state]
                    (set observed (misa.components.project state :transaction
