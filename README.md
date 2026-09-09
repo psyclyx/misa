@@ -106,7 +106,9 @@ the embedded runtime core to portable Lua source. Installed catalog IDs use gene
 cannot be hidden by stale generated files. The original sources are installed
 alongside generated files, whose line layout is correlated to the Fennel source
 for diagnostics. The embedded runtime core loads translated Lua at startup;
-the embedded compiler remains available for custom Fennel modules.
+the embedded compiler remains available for custom Fennel modules. `zig build run`
+uses those freshly built Lua modules too; set `MISA_EXTENSION_DIR` to the source
+`extensions` directory explicitly when debugging runtime Fennel compilation.
 
 ## Event, coeffect, effect, and view contract
 
