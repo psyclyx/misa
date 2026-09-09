@@ -24,6 +24,79 @@
           span.link (tset links span.link true))))
   (values actions links))
 
+;; Validate semantic output once, before it enters composition or a cache. The
+;; terminal still validates the final native frame, including payload encodings.
+(fn integer [value minimum maximum]
+  (and (= (type value) :number) (= value (math.floor value))
+       (>= value minimum) (<= value maximum)))
+
+(fn array [value label]
+  (assert (= (type value) :table) (.. label " must be an array"))
+  (each [key _ (pairs value)]
+    (assert (integer key 1 (length value)) (.. label " must be a dense array")))
+  value)
+
+(fn printable [text]
+  (assert (and (= (type text) :string) (not (text:find "[%z\1-\31\127]")))
+          "span text must be printable text on one line"))
+
+(fn validate [rendered]
+  (assert (= (type rendered) :table) "component render must return a table")
+  (each [_ line (ipairs (array rendered.lines :lines))]
+    (assert (= (type line) :table) "line must be a table")
+    (each [_ span (ipairs (array line.spans :spans))]
+      (assert (= (type span) :table) "span must be a table")
+      (printable span.text)
+      (each [_ field (ipairs [:action :link])]
+        (when (. span field) (assert (= (type (. span field)) :string) (.. field " must be text"))))
+      (when span.animation
+        (assert (= (type span.animation) :table) "animation must be a table")
+        (each [_ frame (ipairs (array span.animation.frames :frames))]
+          (assert (= (type frame) :table) "animation frame must be a table")
+          (each [key _ (pairs frame)]
+            (assert (or (= key :text) (= key :style)) "invalid animation frame field"))
+          (when frame.text (printable frame.text)))
+        (assert (and (= (type span.animation.id) :string) (not= span.animation.id "")
+                     (integer span.animation.interval_ms 10 60000)
+                     (integer (length span.animation.frames) 1 64)
+                     (integer (or span.animation.phase 0) 0 (- (length span.animation.frames) 1)))
+                "invalid animation timing or identity")))
+    (when line.image
+      (local image line.image)
+      (assert (= (type image) :table) "image must be a table")
+      (each [_ pair (ipairs [[:id 4294967295] [:width 480] [:height 320] [:columns 65535] [:rows 65535]])]
+        (assert (integer (. image (. pair 1)) 1 (. pair 2)) "invalid image geometry"))
+      (when image.column (assert (integer image.column 1 65535) "invalid image column"))
+      (assert (and (= image.format :rgba) (= (type image.data) :string)) "invalid image payload")))
+  (when rendered.cursor
+    (local cursor rendered.cursor)
+    (assert (and (= (type cursor) :table)
+                 (integer cursor.row 1 (length rendered.lines))) "invalid cursor row")
+    (local spans (. rendered.lines cursor.row :spans))
+    (assert (and (= cursor.column nil)
+                 (or (= cursor.shape nil) (= cursor.shape :bar) (= cursor.shape :block)))
+            "invalid cursor shape or column")
+    (var bytes 0)
+    (each [_ span (ipairs spans)] (set bytes (+ bytes (length span.text))))
+    (assert (integer cursor.byte 0 bytes) "invalid cursor byte")
+    (var start 0)
+    (each [_ span (ipairs spans)]
+      (when (and (>= cursor.byte start) (< cursor.byte (+ start (length span.text))))
+        (local byte (span.text:byte (+ (- cursor.byte start) 1)))
+        (assert (or (< byte 128) (>= byte 192)) "cursor byte splits a UTF-8 character"))
+      (set start (+ start (length span.text)))))
+  rendered)
+
+(fn failure [role context diagnostic]
+  (local message (.. "Component " role " failed"))
+  (local requested (and (= (type context) :table) context.columns))
+  (local columns (if (integer requested 0 65535) requested (length message)))
+  (local text (if (and misa.layout misa.layout.clip) (misa.layout.clip message (math.max 0 columns))
+                  (: (message:gsub "[\128-\255]" "?") :sub 1 (math.max 0 columns))))
+  {:component_error {: role :detail (tostring diagnostic)}
+   :lines [{:content false :component_error {: role :detail (tostring diagnostic)}
+            :spans [{: text}]}]})
+
 {:setup (fn [context]
           (local setup-fx [])
           (local implementations {})
@@ -162,22 +235,34 @@
                                                                            padding)})))))
                                   result)})
           ;; Child views share role selections and retain semantic styles.
+          (var render-safe nil)
           (fn child-context [db context]
             (local next (shallow (or context {})))
             (set next.render_child
                  (fn [role model child]
-                   (local component (misa.component db role))
                    (local context (or child next))
-                   (component.render model (if component.compose (child-context db context) context))))
+                   (render-safe db role model context)))
             next)
+          (set render-safe
+               (fn [db role model context cache]
+                 (local (ok rendered next-cache)
+                        (pcall (fn []
+                                 (local component (misa.component db role))
+                                 (local (view next-cache)
+                                        (component.render model
+                                                          (if component.compose (child-context db context) (or context {}))
+                                                          cache))
+                                 (values (validate view) next-cache))))
+                 (if ok (values rendered next-cache)
+                     (values (failure role context rendered) nil))))
+          (fn resolve-safe [db role source context]
+            (local (ok view) (pcall misa.resolve_component db source context))
+            (if ok view (failure role context view)))
           (table.insert setup-fx
                         {:type :register/service :name :render_component
                          :value (fn [db role model render-context]
-                                  (local component (misa.component db role))
-                                  (local rendered (component.render model
-                                                    (if component.compose (child-context db render-context)
-                                                        (or render-context {}))))
-                                  (misa.resolve_component db rendered render-context))})
+                                  (local rendered (render-safe db role model render-context))
+                                  (resolve-safe db role rendered render-context))})
           (table.insert setup-fx
                         {:type :register/sub
                          :value {:id :components/projection
@@ -194,14 +279,15 @@
                                                            (not (. entries item.id)))
                                                       "component collection requires unique nonempty ids")
                                               (local old (and previous (. previous.entries item.id)))
-                                              (local component (misa.component db item.role))
-                                              (local same (and old (or (not component.compose) (= db.components old.components)) (= component old.component)
+                                              (local (found selected) (pcall misa.component db item.role))
+                                              (local component (and found selected))
+                                              (local same (and old (or (and component (not component.compose)) (= db.components old.components)) (= component old.component)
                                                                (same-fields item.model old.model)
                                                                (same-fields render-context old.context)))
                                               (local (source cache)
                                                      (if same (values old.source old.cache)
-                                                         (component.render item.model (if component.compose (child-context db render-context) render-context)
-                                                                           (and old (= component old.component) old.cache))))
+                                                         (render-safe db item.role item.model render-context
+                                                                      (and old (= component old.component) old.cache))))
                                               (local (actions links) (if same (values old.actions old.links)
                                                                         (hover-targets source)))
                                               (local hover-action (and db.hover_action (. actions db.hover_action) db.hover_action))
@@ -215,7 +301,7 @@
                                                           : source : cache : actions : links : theme
                                                           :hover_action hover-action :hover_link hover-link
                                                           :choice_pending (and misa.choice_pending (misa.choice_pending db))
-                                                          :view (misa.resolve_component db source render-context)}))
+                                                          :view (resolve-safe db item.role source render-context)}))
                                               (tset entries item.id entry)
                                               (table.insert views entry.view))
                                             {: entries : views})}})

@@ -61,13 +61,19 @@ test "component collections retain output and roll back speculative projections"
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/component-projections.fnl"} }, "component projection contracts passed\n");
 }
 
+test "component failures preserve sibling output and recover after replacement" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/component-failures.fnl"} }, "component failure containment passed\n");
+}
+
 test "Kimi usage requests preserve credential boundaries and reject stale results" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/kimi-usage.fnl"} }, "Kimi usage contracts passed\n");
 }
 
-test "subscription memoization commits and rolls back with state" {
+test "presentation memoization is isolated from committed model updates" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/subscription-transactions.fnl"} }, "subscription transaction contracts passed\n");
