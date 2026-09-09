@@ -1,124 +1,145 @@
 # Standard library layout
 
-Bundled modules live under `misa/`. Paths express the feature that owns a policy
-or representation: things belong together when they change for the same domain
-reason. Operating on strings, returning component definitions, or invoking a
-host effect is not enough to establish shared ownership.
-
-For example, fuzzy matching implements choice ranking, so it lives at
-`misa.choices.matching`. Markdown has its own document model and rendering rules,
-so `misa.markdown` owns both parsing and `misa.markdown.render`. Transcript syntax
-captures and tool summaries serve transcript presentation, so they live under
-`misa.transcript`. A dialog renderer belongs beside dialog state and composition;
-implementing the component interface does not make it a shared UI primitive.
+Bundled modules live under `misa/`. Paths express ownership: keep code together
+when it changes for the same domain reason. Fuzzy matching belongs to choice
+ranking, so it lives at `misa.choices.matching`. Markdown owns parsing and
+rendering under `misa.markdown`. A shared input type or component interface does
+not establish shared ownership.
 
 | Owner | Responsibility |
 | --- | --- |
-| `misa.standard`, `misa.default`, `misa.definitions` | Application construction, stock composition, and catalog declarations |
-| `misa.agent` | Conversation lifecycle, provider correlation, tool continuation, and normalized stream effects |
-| `misa.models` | Model discovery and selection, request options, effort, and model preview presentation |
+| `misa.standard` | Stock application data, settings, and registration wiring |
+| `misa.agent` | Conversation lifecycle, response correlation, tool continuation, and stream normalization |
+| `misa.models` | Model discovery and selection, request options, effort, and model previews |
 | `misa.costs` | Model pricing and response cost accounting |
-| `misa.usage` | Token usage capture and quota refresh policy; `misa.usage.dialog` provides the optional dashboard |
-| `misa.choices` | Choice state, ranking, geometry, preview dispatch, preferences, and picker behavior |
-| `misa.commands` | Command discovery, invocation, and command palette |
-| `misa.actions`, `misa.keybindings` | Independent action routing and contextual keybinding features |
+| `misa.usage` | Usage capture and refresh policy; its `dialog` provides the optional dashboard |
+| `misa.choices` | Choice state, ranking, geometry, previews, preferences, and picker behavior |
+| `misa.commands` | Command discovery, invocation, and the command palette |
+| `misa.actions`, `misa.keybindings` | Action routing and contextual keyboard interpretation |
 | `misa.dialogs` | Dialog lifecycle, composition, and rendering |
-| `misa.editor` | Input state, editing policy, history, attachments, images, queued input, and their presentation |
-| `misa.markdown` | Markdown documents, incremental parsing, and terminal rendering |
-| `misa.protocols` | Provider wire formats |
-| `misa.providers` | Provider adapters and authentication policy |
-| `misa.selection` | Selection state, source document structure, and selection presentation |
-| `misa.transcript` | Response and block models, viewport, group boundaries, syntax captures, tool presentation, and summaries |
-| `misa.tools` | File and shell execution definitions |
-| `misa.clipboard`, `misa.links` | Independent clipboard and external link effects |
-| `misa.ui` | Frame composition, chrome, layout, typed values, and shared presentation machinery |
-| `misa.ui.components` | Component resolution, fault boundaries, and shared content, data, button, and truncation primitives |
-| `misa.ui.status` | Status composition and semantic indicator registry |
-| `misa.ui.animations`, `misa.ui.themes` | Named presentation catalogs and stock implementations |
+| `misa.editor` | Input state, editing, history, attachments, images, queued input, and presentation |
+| `misa.selection` | Selection state, source documents, and presentation |
+| `misa.markdown` | Markdown documents and rendering |
+| `misa.transcript` | Response models, viewport, groups, syntax, and tool presentation |
+| `misa.protocols`, `misa.providers` | Wire formats, transport adapters, and authentication policy |
+| `misa.tools` | File and shell operations |
+| `misa.clipboard`, `misa.links` | Clipboard and external link effects |
+| `misa.ui` | Frame composition, layout, typed values, and shared presentation machinery |
 | `misa.json` | JSON encoding and decoding at data boundaries |
 
-A small independent owner can be one file. Do not invent a `text`, `system`, or
-similar umbrella to reduce the number of siblings. Actions and keybindings serve
-multiple features; they are not children of commands. Models, costs, and usage
-have their own contracts even though the agent contributes facts to them.
-Status consumes usage subscriptions; it does not own usage capture or refresh.
-The usage dashboard can be omitted while retaining those lifecycle handlers.
+A small independent owner can be one file. An owner with children uses
+`init.fnl`: `misa.editor` loads `misa/editor/init.fnl`, while
+`misa.editor.history` loads `misa/editor/history.fnl`. Do not add a sibling
+`editor.fnl`. Use hyphens within multiword names and plural names for families
+such as `providers`, `tools`, and `components`.
 
-`require` names follow paths: `misa.editor.history` loads
-`misa/editor/history.fnl`. When an owner has children, its entrypoint is
-`init.fnl`: `misa.editor` loads `misa/editor/init.fnl`. There is no sibling
-`editor.fnl` competing with `editor/`. An `init.fnl` exposes the owner's public
-contract and, for stateful features, declares its lifecycle. It need not
-automatically install every child.
+Use `render.fnl` for component implementations and `view.fnl` for preparing
+semantic child views from feature state. A dialog renderer stays beside dialog
+state. Shared primitives belong under `misa.ui.components` when their contract
+is independent of a particular feature. Status consumes usage subscriptions;
+it does not own usage capture. The usage dashboard can be omitted while keeping
+usage lifecycle handlers.
 
-Use `render.fnl` for feature-specific component implementations and `view.fnl`
-for composition that prepares semantic child views from feature state.
-For example, `misa.dialogs.view` composes dialog content while
-`misa.dialogs.render` implements its chrome. Both stay with dialogs.
-Shared primitives belong under `misa.ui.components` only when their contract is
-independent of the consuming feature. Name other modules for their responsibility,
-such as `matching`, `history`, or `preview`; use hyphens within multiword names.
-Plural names identify families of implementations (`providers`, `protocols`,
-`tools`, `components`, `themes`, `animations`).
+`misa.runtime.*` names private framework modules embedded from
+`src/lua_runtime/`. Those modules own transactions and subscriptions, rather
+than selectable application policy.
 
-`misa.runtime.*` is reserved for private framework modules embedded from
-`src/lua_runtime/`. Those modules implement host transactions and subscriptions;
-they are not selectable application modules.
+# Implementation and composition
 
-# Composition and names
+Implementation modules return tables of named operations and domain values.
+They do not assign catalog IDs, subscribe handlers, or choose keyboard bindings.
+For example, `misa.agent` exposes conversation transitions and
+`misa.providers.command` exposes process request and completion operations.
+These functions can be tested with explicit inputs.
 
-`misa.default` contains ordinary configuration and named module descriptors.
-Every stock `modules` key equals its `source` name:
+Stock modules under `misa.standard` return declaration maps. They associate
+implementation values with application identities and inputs:
 
 ```fennel
-{:modules
- {:misa.editor {:source :misa.editor :priority 0}}}
+(local agent (require :misa.agent))
+
+{:events {:agent/cancel {:event :agent/cancel-active
+                        :priority 63000
+                        :handler agent.cancel}}}
 ```
 
-`misa.standard.application` resolves selected sources and calls their pure
-constructors before installation. Merely importing the default does not load
-all those sources. Custom applications can select stock sources, provide their
-own `source` names, or supply a constructor directly through `build`.
-See the [application configuration documentation](../README.md#event-coeffect-effect-and-view-contract)
-for catalog composition and overrides.
+A declaration key identifies a registration; its `event` field selects the
+incoming event. They serve different purposes and need not match. Several
+independently replaceable handlers may observe the same event. Source names,
+service paths, event names, and registration IDs are also separate contracts.
+Moving a file does not rename its public service or event vocabulary.
 
-Source names identify code ownership. They do not determine public service
-paths, event types, configuration keys, or definition IDs. For example,
-`misa.models` provides `misa.models.lookup`, `misa.markdown.render` provides named
-component definitions, and `misa.editor` handles `editor/restore`.
-Keep these semantic contracts stable when moving source files. Override a
-module by its `modules` key; override a particular implementation by its catalog
-ID.
+[`misa.standard`](misa/standard/init.fnl) combines the stock fragments into
+`{:config settings :definitions catalogs}`. Its
+[`settings`](misa/standard/settings.fnl) contains runtime defaults. Individual
+fragments remain available through ordinary `require`:
 
-The Nix `standardExtensions` catalog mirrors these paths. An owner's constructor
-uses the `init` attribute: `standardExtensions.misa.editor.init` evaluates to
-`"misa.editor"`, while `standardExtensions.misa.editor.history` evaluates to
-`"misa.editor.history"`. `standardExtensions.misa.markdown.render` selects the
-Markdown renderer independently of its parser.
+- `misa.standard.editor` contains editor wiring.
+- `misa.standard.providers.openai` contains OpenAI provider wiring;
+  `misa.standard.protocols.openai` contains the shared protocol catalogs.
+- `misa.standard.agent.stream` selects stream normalization independently of the
+  conversation lifecycle.
+- `misa.standard.presentation.*` contains shared presentation composition.
+- `misa.standard.tools.files` contains file tool registrations.
+
+Importing a fragment does not install it. Its entries can be selected, combined,
+changed, or omitted with ordinary table operations. The complete application
+crosses one validation/install boundary, after which its catalogs are sealed.
+There is no module constructor protocol or separate override language.
+
+Copy stock data before editing it so another import remains unchanged:
+
+```fennel
+(local app (misa.snapshot (require :misa.standard)))
+(local replacement (. (require :my.editor) :input))
+
+(tset app.definitions.components :default.editor.input replacement)
+(tset app.definitions.keybindings :global/toggle_verbose :default ["alt+v"])
+(tset app.definitions.commands :/clear nil)
+app
+```
+
+`replacement` is a component record such as `{:render render-input}`. Existing
+keys replace values, new keys add values, `nil` removes them, and `[]` is an
+empty array. `misa.snapshot` copies nested tables and retains function values.
+Database patch controls such as `misa.delete` belong to state transitions, not
+application composition.
+
+Keep request URLs, timeouts, persistence preferences, and other runtime options
+in `config`. Event adapters receive `cofx.config`; service and effect adapters
+can read the installed immutable settings with `misa.configuration()`. Pass the
+relevant data into implementation functions. Model entries, auth profiles,
+keybinding arrays, and renderer implementations belong in declaration catalogs.
+Runtime selections such as the active theme or component role remain feature
+state and can still be persisted or changed by events.
+
+The Nix `standardExtensions` catalog mirrors source paths. Its `init` attribute
+names an owner's entrypoint: `standardExtensions.misa.standard.agent.init`
+evaluates to `"misa.standard.agent"`. See the
+[application contract](../README.md#event-coeffect-effect-and-view-contract) for
+catalog shapes and configuration examples.
 
 # Fennel conventions
 
 Follow the [Fennel style guide](https://fennel-lang.org/style) and format sources
 with `fnlfmt`. Use `local` for module bindings and `let` inside functions. Bind
-related values together; use `var` only for values that actually change. Prefer
-collection expressions for transforms and Fennel loop termination to raw Lua.
-Keep comments for rationale that the code cannot express.
+related values together; use `var` only for values that change. Prefer collection
+expressions for transforms and Fennel control flow to raw Lua. Keep comments for
+rationale that code cannot express.
 
-Every module returns a table. Selectable features expose a named `build`
-function; policy modules expose a small set of domain operations. Each public
-function has a short docstring: one sentence first, with further explanation
-separated by a blank line when needed. Preserve established host data keys;
-use kebab-case for Fennel names and `?` for predicates.
+Every module returns a table. Give each public function a short docstring whose
+first sentence explains its operation; separate further details with a blank
+line. Preserve established host data keys, use kebab-case for Fennel names, and
+use `?` for predicates.
 
-Declaration tables associate events, services, and components with behavior.
-Substantial behavior belongs in named functions outside those tables. Pass
-configuration and other dependencies explicitly to policy functions; retain
-small anonymous adapters when they make the association clearer. Do not expose
-private helpers as runtime services merely to test them. Stateful parser and
-cache closures are appropriate when their state is the abstraction being built.
+Substantial behavior belongs in named functions outside wiring tables. Pass
+configuration and other dependencies explicitly; small adapters can make their
+association clear. Do not expose private helpers as runtime services merely to
+test them. Stateful parser and cache objects are appropriate when that state is
+the abstraction being created; they do not imply a construction lifecycle for
+ordinary modules.
 
-Direct policy tests exercise model transitions and request construction without
-installing an application. Integration tests cover the wiring and host contracts.
-`tests/extension-style.fnl` checks module exports, public docstrings, duplicate
-module function names, and lexical/control-flow conventions across the native
-source catalog. These checks supplement review; they do not measure code quality.
+Direct policy tests exercise state transitions and request construction without
+installing an application. Integration tests cover stock wiring and host
+contracts. `tests/extension-style.fnl` checks module exports, public docstrings,
+and lexical/control-flow conventions; these checks supplement review.

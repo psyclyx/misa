@@ -4,36 +4,30 @@ misa is a small event-driven coding-agent harness built with Zig 0.16,
 system LuaJIT, bundled Fennel 1.6.0, and system tree-sitter. Terminal presentation
 uses Zig; bounded image decoding uses system libpng and libjpeg-turbo.
 
-Configuration is ordinary Fennel data. Import the standard application, compose
-changes, and return its compiled definitions. For the defaults with one component
-replaced, save this as `config.fnl`:
+Configuration is ordinary Fennel data. Copy the stock application, change its
+maps, and return it. For the defaults with one component replaced, save this as
+`config.fnl`:
 
 ```fennel
-(local standard (require :misa.standard))
+(local app (misa.snapshot (require :misa.standard)))
 
-(standard.application
-  (misa.compose
-    [standard.default
-     {:definitions
-       {:components
-         {:default.root.header
-           {:render (fn [_ _]
-                      {:lines [{:spans [{:text "my misa"}]}]})}}}}]))
+(fn header [_ _]
+  {:lines [{:spans [{:text "my misa"}]}]})
+
+(tset app.definitions.components :default.root.header {:render header})
+app
 ```
 
-Run `misa --config ./config.fnl`. Definition IDs select what changes: a new ID adds
-an implementation; an existing ID replaces it. The imported default stays
-unchanged. Change configuration data the same way, for example
-`{:config {:models {:default "provider/model"}}}`. Nested maps compose;
-nonempty arrays and scalar values replace their previous values. Use
-`(misa.replace [])` to clear an array.
+Run `misa --config ./config.fnl`. A new map key adds an implementation; assigning
+an existing key replaces it; assigning `nil` removes it. Arrays are ordinary
+arrays, so `[]` clears one. `misa.snapshot` copies nested tables while retaining
+functions, leaving imported stock data unchanged.
 
-The default is a normal application value, not an inheritance directive. Assemble
-smaller applications from selected module constructors and explicit definitions;
-omitting the defaults loads none of their providers, tools, or presentation.
-A minimal configuration is `{:definitions {}}`. Constructors build data before
-installation; the native installer retains callbacks in Lua and installs the
-finished catalogs once.
+Settings are equally direct:
+`(tset app.config.models :default "provider/model")`. Implementation choices live
+in `app.definitions`; runtime options live in `app.config`. The host validates
+and installs the finished application once. A minimal application is
+`{:config {} :definitions {}}`.
 
 ```sh
 zig build
@@ -81,7 +75,7 @@ Pass `--installed` to `tests/ghostty-input.py` to verify the executable's instal
 catalog rather than loading extensions from the worktree. This mode uses the
 catalog installed alongside `misa-fixture` by `zig build fixture-app`.
 
-Without an override, misa loads the installed `share/misa/default.fnl`, which
+Without an explicit configuration path, misa loads the installed `share/misa/default.fnl`, which
 selects all shipped real providers, Claude Code by default, coding tools, model
 policy, authentication commands, the agent, and the UI as a useful coding
 profile. Run `misa login claude` first.
@@ -131,40 +125,60 @@ A minimal application can return its definitions directly:
   :services {:example.enabled (fn [db] db.example.enabled)}}}
 ```
 
-Standard modules return tables with a named `build` function, for example
-`{:build build}`. `standard.application` calls selected builders with `{config}` before
-installation and composes their results. Constructors produce data and functions;
-startup IO belongs in effects from an `app/start` handler. Constructors must not
-read installed services or mutate `misa`. Closures may call declared services
-later, after the whole application has been installed.
+Implementation modules export named functions and domain values. Stock composition
+under `misa.standard` associates those values with catalog IDs, event types,
+keyboard bindings, and ordering. Importing `misa.editor`, for example, gives
+editor operations; importing `misa.standard.editor` gives the stock
+editor catalog fragment. Neither import installs anything.
 
-`misa.compose` returns a new application specification. Catalog entries are
-replaced by ID, so an override changes one implementation without copying the
-stock application. New IDs add entries. `misa.delete` explicitly disables a named
-definition until installation, including defaults produced by module constructors.
-A later concrete definition re-enables that ID. Deleted modules are removed during
-composition. `standard.default.modules` contains independently selectable policy,
-provider, protocol, and component modules. Stock module IDs equal their source
-names, such as `misa.editor` and `misa.markdown.render`.
-`modules[id].source` names a module
-to require only when selected; `modules[id].build` can supply a pure constructor
-directly instead. `modules[id].priority` contributes to its event priorities.
-The explicit `definitions` map is composed after module output. Settings are
-shared immutable inputs; composition and compilation leave imported defaults
-unchanged.
+Use ordinary map operations to customize a copied application:
 
-All standard source modules live under `extensions/misa/`, grouped by owner.
-For example, `misa.editor` resolves to `misa/editor/init.fnl`, and
-`misa.editor.history` resolves to `misa/editor/history.fnl`. Use ordinary
-`require` with those names. Source module names select code; services, events,
-configuration keys, and catalog IDs retain their semantic names. Moving the
-editor source does not rename `misa.editor.layout` or `editor/restore`.
-See the [standard library layout](extensions/README.md) for ownership rules.
+```fennel
+(local app (misa.snapshot (require :misa.standard)))
+(local replacement (. (require :my.editor) :input))
 
-To omit one default module, compose `{:modules {:misa.providers.openrouter misa.delete}}`.
-To replace its constructor, use the same module ID with `{:source :my.provider}`
-or `{:build my-constructor}`. Definition overrides remain the finer-grained
-choice when replacing one handler or component.
+(tset app.definitions.components :default.editor.input replacement)
+(tset app.definitions.keybindings :global/toggle_verbose :default ["alt+v"])
+(tset app.definitions.commands :/clear nil)
+app
+```
+
+The replacement component is a data record such as `{:render render-input}`.
+Changing the value at the existing component key keeps its role association;
+adding a new component ID makes another implementation available. Runtime
+component selection and persistence still use `config.components.roles` and
+`components/swap`.
+
+Stock fragments are ordinary catalog maps. Import only the fragments needed by
+a smaller application and combine their entries explicitly:
+
+```fennel
+(local definitions {})
+(each [_ fragment (ipairs [(require :misa.standard.json)
+                           (require :misa.standard.agent.stream)
+                           (require :misa.standard.protocols.openai)
+                           (require :misa.standard.providers.openai)])]
+  (each [kind entries (pairs fragment)]
+    (when (not (. definitions kind)) (tset definitions kind {}))
+    (each [id value (pairs entries)]
+      (tset definitions kind id value))))
+
+{:config {} :definitions definitions}
+```
+
+This example selects transport services and an OpenAI adapter; a conversation
+application also needs agent, model, and interaction policies. Each fragment
+shows its complete wiring. [`misa.standard`](extensions/misa/standard/init.fnl)
+shows the stock combination, and
+[`misa.standard.settings`](extensions/misa/standard/settings.fnl) shows the
+runtime defaults. Keep function definitions in implementation modules and choose
+registration identities in application composition.
+
+Source names follow ownership paths: `misa.editor` resolves to
+`misa/editor/init.fnl`, and `misa.editor.history` to `misa/editor/history.fnl`.
+Source names, service paths, event types, and registration IDs are separate
+contracts. Moving editor code does not rename `misa.editor.layout` or
+`editor/restore`. See the [standard library layout](extensions/README.md).
 
 Catalogs use the following entries (the outer map key is the entry's ID):
 
@@ -211,7 +225,10 @@ explicit continuation event when startup work needs other owners' settled state.
 Base coeffects include immutable `config` and `argv`, terminal facts, and
 `clock={wall_ms,monotonic_ms}`. Native code supplies both clocks; use monotonic time
 for elapsed durations. The runtime coeffects also include `host={executable,config_path}`
-for subprocess bridges; pure constructors receive only configuration data. Policy stays in Lua; native code owns IO, cancellation,
+for subprocess bridges. Stock service and effect adapters can read installed settings
+with `misa.configuration()` and pass explicit data into policy functions. This
+returns a borrowed immutable value. Startup IO is described by effects from
+`app/start` handlers. Policy stays in Lua; native code owns IO, cancellation,
 JSON transport validation, and terminal frame decoding.
 
 Routes read their declared subscription context and return a semantic event or
@@ -221,8 +238,9 @@ routing. Routes return no patches or effects. Subscriptions use
 `misa.sub(db, [id, ...args])`; see [subscription contracts](docs/subscriptions.md)
 for nullable inputs, consumer scopes, and speculative commit/rollback.
 
-Protocol modules export named `configure` functions. Providers compose their named
-handler and adapter definitions before installation. The asynchronous
+Protocol modules export request, discovery, serialization, and stream operations.
+These consume explicit transport settings and normalized request/event data; stock
+provider fragments associate them with effects and completion events. The asynchronous
 `syntax/highlight` effect accepts `id`, `language`, `source`, and `completion`,
 with an optional `timeout_ms` (1–60000; default 1000). Its completion event has
 `id`, `ok`, and `data` containing ordered
@@ -622,8 +640,8 @@ text is retained in full, including streaming chunks. `config.messages` controls
 initial `verbose` and the structured tool-argument `redact_keys`, `max_string`,
 `max_items`, and `max_depth` limits. Headless output remains plain.
 
-Include `misa.ui.components.content`, `misa.ui.components.truncation`, and `misa.transcript.tools` with
-`misa.transcript.tools.render`; include `misa.ui.components.truncation` and `misa.transcript.groups` with `misa.transcript.render`.
+The stock presentation `elements` fragment supplies shared content components;
+its `tools` and `transcript` fragments supply the matching policy and group wiring.
 Presentation extensions can register a tool binding without modifying its definition:
 
 ```fennel
@@ -735,10 +753,11 @@ formatted suffixes, or animation frames. Built-in types also include `text`,
 `boolean`, `number`, `activity` (with `state`), `unavailable` (with `reason`), and
 `money` (with `amount`, `currency`, `estimated`, and `unknown`).
 
-`misa.ui.values` installs an open, pure value-rendering dispatcher, independently of
-status or transcript components. Include it with those consumers. Extensions
+`misa.ui.values` implements an open, pure value-rendering dispatcher. Select
+`misa.standard.presentation.values` with status or transcript consumers. Applications
 add `value-renderers["my-type"] = function(fact,context) ... end` returning semantic spans. `misa.values.render(fact,context?)` invokes it;
-unknown types fail explicitly; named definitions are replaced during composition. The default component
+unknown types fail explicitly. Replace a renderer by assigning its entry in
+`app.definitions["value-renderers"]`. The default component
 uses shared compact-number, percentage, and currency formatters, while owning
 styles and width dropping. Response cost metadata is a money fact too, including
 `pending=true` with no amount before completion. Timestamps reach components as
@@ -817,19 +836,21 @@ one measured projection. A choice taller than the available space keeps a
 selectable representation with an explicit ellipsis. Input docks participate in
 inline geometry, so positional hotkeys refer to the rows actually displayed.
 
-Inline and overlay sessions resolve the same `keybindings.choices` actions and
+Inline and overlay sessions resolve the same choice keybinding declarations and
 positional banks. `misa.choices.layout` is the single projection for responsive
 preferred/min/max overlay bounds, preview and panel allocation, shared hints,
 and positional targets. The picker component only renders that projection.
-Include `misa.keybindings` with choice layout and the editor, picker, and status
-components. All key hints use its shared token renderer, preserving input case;
+Select `misa.standard.keybindings` with choice layout and the editor, picker,
+and status components. All key hints use its shared token renderer, preserving input case;
 equivalent encodings such as `ctrl_n` and `ctrl+n` produce identical spans.
-Include `misa.choices.preview` with `misa.choices.layout`. It renders typed preview data to
+Select `misa.standard.choices.preview` with choice layout. The
+`misa.choices.preview` implementation renders typed preview data to
 semantic lines before geometry is calculated; compact and overlay input handling
 use the same resulting line heights and targets. Extensions register
 `choice-previews["my-preview"] = function(model,context) ... end`, returning semantic lines. `context` supplies `columns` and `compact`.
-Use `config.choices.preview_renderers` to map a preview type to a renderer ID;
-unknown IDs fail explicitly; named definitions are replaced during composition.
+The preview type indexes `app.definitions["choice-previews"]` directly.
+Assign a different function at that key to replace its renderer; unknown types
+fail explicitly.
 
 Model previews carry `type="model"`, raw `context_window`, and `cost` facts from
 `misa.costs.model`: `currency`, `token_unit`, `pricing`, `estimated`, and
@@ -928,10 +949,10 @@ while the session serializes Lua transactions, redraws incrementally, and
 interleaves terminal reads with stream batches. Slow policy handling therefore
 applies backpressure instead of growing the session queue, and Ctrl-C can cancel
 the active socket or child promptly without invoking Lua from an I/O thread.
-`misa.tools.files` registers `read_file`, `list_directory`, `write_file`, and
-`edit_file`; `misa.tools.shell` registers `shell`. They are ordinary explicit Fennel
-extensions and are not enabled by the harness. `misa mcp` exposes the same
-Extension-registered schemas and effect translators as an MCP stdio server. The
+`misa.standard.tools.files` declares `read_file`, `list_directory`, `write_file`,
+and `edit_file`; `misa.standard.tools.shell` declares `shell`. Their implementations
+live under `misa.tools`. These are ordinary application choices. `misa mcp` exposes
+the application's tool schemas and effect translators as an MCP stdio server. The
 Claude provider supplies this bridge through `--mcp-config` whenever tools are
 registered, while retaining `--tools ""` so Claude's own tools remain disabled.
 The MCP child inherits `MISA_CONFIG`; configurations selected with `--config`
@@ -945,9 +966,9 @@ Claude's existing Pro/Max credentials without copying them into Misa. Its
 catalogue uses the current full model IDs from Anthropic's model documentation:
 Fable 5.1, Opus 5, Sonnet 5, and Haiku 4.5. At startup Misa reads
 `subscriptionType` from `claude auth status`; Max accounts get a 1M Opus
-context window and other plans get 200k. `config.providers.claude.max_plan` is
-an optional boolean override for environments where status discovery is
-unavailable. API-backed Anthropic catalogues are
+context window and other plans get 200k. To keep a fixed limit, set the model
+record's `context_window` and remove the
+`app.definitions.events["provider.claude/availability"]` handler. API-backed Anthropic catalogues are
 refreshed from `GET /v1/models` for the models available to that API key.
 `misa.editor` owns multiline UTF-8 editor state and transitions. `misa.transcript` owns
 transcript scrolling and bounded window extraction. `misa.models`, `misa.models.options`,
@@ -995,7 +1016,7 @@ stale quota values.
 
 Codex reset details come from `/wham/rate-limit-reset-credits`; the dashboard shows
 the available count and each returned expiry. The inline **Use reset** button (`r`,
-configurable through `keybindings.usage.codex-reset`) requires confirmation before
+configured by the `usage/codex-reset` keybinding entry) requires confirmation before
 POSTing to `/wham/rate-limit-reset-credits/consume`. Pending operations disable the
 button; an uncertain result retains the redemption key for an explicit retry.
 Refreshing usage never consumes a reset. The API follows the
@@ -1013,7 +1034,7 @@ and leaves credential handling inside Claude Code. It reports available quota
 windows, model-scoped limits, subscription type and extra-usage amounts. Monetary
 scaling uses explicit decimal places when present, otherwise the CLI's currency
 minor-unit conversion. Extra usage is one row with enabled state, spending, and
-monthly limit. **Manage** (`e`, configurable through `keybindings.usage.extra-manage`)
+monthly limit. **Manage** (`e`, configured by the `usage/extra-manage` keybinding entry)
 opens Claude's usage settings for enablement and limit changes; the CLI has no
 exposed settings-update control. `config.links.command` selects the browser opener
 (default `["xdg-open"]`; use `["open"]` on macOS). The probe session's cost is not
@@ -1070,7 +1091,8 @@ Enter submits; Shift-Enter inserts a newline (including Ghostty CSI-u input).
 The prompt shows insert (`┌`), normal (`◆`), or visual (`◇`)
 mode, and continuations share a vertical rail. Set `config.editing.mode` to
 `"plain"` to disable modal editing, or replace the `misa.editor.editing` extension. Bindings
-are configurable under `config.keybindings["editor.normal"]`.
+are data in `app.definitions.keybindings`; change the `default` array of the
+corresponding `editor.normal/...` entry.
 
 `misa.editor.history` records accepted submissions, deduplicating consecutive identical
 prompts. Ctrl-P/N or Alt-P/N move backward/forward through history; Up/Down do
@@ -1157,12 +1179,12 @@ an argv array such as `["wl-copy"]`, `["xclip", "-selection", "clipboard"]`, or
 `["pbcopy"]` to send copied text to that process's stdin instead. The internal
 register always remains available for editor paste.
 
-Features return `actions[id] = {label,event,keys?,binding?,available?}`
-in definition catalogs; `binding` identifies a configured `{context,action}`, and `available(db)`
-controls contextual discovery. Without `binding`, an action gets a global
-binding under its ID; `keys` supplies optional defaults. Configure it through
-`config.keybindings.global[id]`. The `misa.actions` extension routes global action
-bindings and supplies the palette.
+Stock composition defines actions as `actions[id] = {label,event,binding?,available?}`.
+`binding` selects a semantic `{context,action}` keybinding, and `available(db)`
+controls contextual discovery. Keyboard mappings live separately in
+`definitions.keybindings[id] = {context,action,default=[...]}`. Set that entry's
+`default` array to change its keys or `[]` to leave it unbound. The `misa.actions`
+implementation routes global actions and supplies the palette.
 `misa.selection` accepts `{["selection-sources"]={[id]=function(db) ... end}}`
 in definition catalogs, with the function returning
 source documents with `{id,label,text,kind,first,last,children}` and unique string
@@ -1259,8 +1281,14 @@ process/interprocess-locked compare-and-swap over credential generation, refresh
 token, and profile; logout or a newer login always wins and stale refreshes can
 never resurrect it. Mutations take a sibling interprocess lock, reload the latest
 document, merge one provider, and atomically replace it, so concurrent Misa
-processes do not lose unrelated grants. Kimi defaults to the official global `.ai` profile; set
-`config.providers.kimi.region` to `"mainland"` for the `.com` endpoint bundle.
+processes do not lose unrelated grants. Kimi defaults to the official global `.ai`
+profile. Select the `.com` endpoint bundle through authentication data:
+
+```fennel
+(tset app.definitions.auth-providers :kimi-coding :profile
+      (. (require :misa.providers.kimi) :profiles :mainland))
+```
+
 The selected profile and trusted refresh/API endpoint metadata are stored with
 the credential so regions cannot silently drift. Credentials are
 written atomically with mode `0600` beneath a mode `0700` directory. The
@@ -1273,14 +1301,28 @@ through process configuration, for example
 cannot grant themselves destinations. `misa login claude` delegates to `claude auth login`; Claude Code
 continues to own and refresh its existing subscription credentials.
 
-When assembling a smaller application, select provider and protocol constructors
-explicitly in `modules`. HTTP adapters also need `misa.json` and
-`misa.agent.stream`;
-UI and tool presentation modules are separate choices. The default specification
-shows the complete stock composition and its named module IDs.
-OpenAI and OpenRouter use `misa.protocols.openai`; Anthropic and Kimi use
-`misa.protocols.anthropic`. ChatGPT subscription access is the separate
-`misa.providers.openai-codex` extension and its Codex Responses protocol.
+For a smaller application, import the desired `misa.standard.providers.*` and
+`misa.standard.protocols.*` catalog fragments. HTTP adapters also need the stock
+JSON and stream services. OpenAI and OpenRouter share the OpenAI protocol;
+Anthropic and Kimi share the Anthropic protocol. ChatGPT subscription access uses
+the independent `misa.standard.providers.openai-codex` fragment. UI and tool
+presentation fragments can be selected separately.
+
+Model catalogues and discovery choices are explicit application data:
+
+```fennel
+(tset app.definitions.models :openai/private-model
+      {:id :openai/private-model :provider :openai
+       :model "private-model" :label "Private model" :context_window 128000})
+(tset app.definitions.auth-providers :openai :discover_models false)
+```
+
+Remove other model entries with `nil` when a fixed catalogue is desired.
+`config.providers` holds request options such as URLs, timeouts, and the Claude
+executable; model lists, discovery flags, authentication profiles, and fixed
+context limits live in their corresponding declaration maps. Provider request
+and model-normalization operations are public functions for custom adapters.
+
 OpenAI-compatible delta projections can be extended with
 `{["openai-deltas"]={["my_delta"]=function(delta, record) ... end}}`.
 Pure projections return arrays of normalized agent deltas and run in deterministic catalog
