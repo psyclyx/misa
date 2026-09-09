@@ -16,8 +16,8 @@
    :provider model.provider})
 
 (fn find [entries id]
-  (each [_ model (ipairs entries)] (when (= model.id id) (lua "return model")))
-  nil)
+  (accumulate [found nil _ model (ipairs entries) &until found]
+    (when (= model.id id) model)))
 
 (fn browse-visible? [model db]
   (let [config (or db.models.catalogue_filter {})
@@ -52,29 +52,123 @@
 (fn updated [state]
   {:patch {:models (misa.replace state)}})
 
+(fn compute-models-indicator [inputs]
+  (let [model (. inputs 1)]
+    {:type :text :value (or (and model model.label) :none)}))
+
+(fn selected-model-open [db]
+  (or (and db.models db.models.selected) nil))
+
+(fn complete-model-open [_ db]
+  (let [result {}]
+    (each [_ model (ipairs (or (and db.models db.models.entries) {}))]
+      (let [api (or model.api {})
+            metadata {:type :model
+                      :model model.model
+                      :provider model.provider
+                      :title model.id}]
+        (when model.context_window
+          (set metadata.context_window model.context_window))
+        (when api.request_options
+          (set metadata.request_options :available))
+        (let [cost (and misa.costs misa.costs.model
+                        (misa.costs.model db model.id))]
+          (when cost
+            (set metadata.cost cost))
+          (tset result (+ (length result) 1)
+                {:browse_visible (browse-visible? model db)
+                 :display {:label (.. model.provider "/" model.model)}
+                 :id model.id
+                 :path model.id
+                 :preview metadata
+                 :search [model.id
+                          (or model.label "")
+                          (or model.model "")
+                          (or model.provider "")]
+                 :value model.id}))))
+    result))
+
+(fn compute-models-selected [inputs]
+  (let [model (find (or (. inputs 1) []) (. inputs 2))]
+    (when model
+      {:context_window model.context_window
+       :id model.id
+       :provider model.provider
+       :label (.. model.provider "/" model.model)
+       :pricing model.pricing})))
+
+(fn compute-models-projection [inputs]
+  {:configured_default (. inputs 1) :selected (. inputs 2)})
+
+(fn on-model-picker-open [db]
+  (if (or db.picker db.dialog)
+      {:fx [{:type :terminal/read}]}
+      {:fx [{:event {:command :/model :type :choices/command-open}
+             :type :dispatch}]}))
+
+(fn on-model-open [db event]
+  (let [state (assert db.models "model state is not initialized")
+        requested (or (and (= (type event.arguments) :string)
+                           (event.arguments:match "^%s*(%S+)%s*$"))
+                      nil)]
+    (assert (and requested (find state.entries requested))
+            "unknown or unavailable model")
+    {:patch {:models {:selected requested}} :fx [{:type :terminal/read}]}))
+
+(fn on-model-select [db event]
+  (assert (and (= (type event.id) :string) (find db.models.entries event.id))
+          "unknown or unavailable model")
+  {:patch {:models {:selected event.id}}})
+
+(fn models-for-role [db role]
+  "Resolve the model selected for a named role."
+  (let [state db.models]
+    (when state
+      (find state.entries
+            (if (= role :default) state.selected
+                (and state.roles (. state.roles role)))))))
+
+(fn complete-model-role [_ db]
+  (let [items []]
+    (each [_ role (ipairs [:default :summarizer])]
+      (each [_ model (ipairs (or (and db.models db.models.entries) []))]
+        (table.insert items {:value (.. role " " model.id)})))
+    (table.insert items {:value "summarizer off"})
+    items))
+
+(fn on-model-role [db event]
+  (let [(role id) (: (or event.arguments "") :match "^(%S+)%s+(%S+)$")]
+    (assert (and role id (or (= role :default) (= role :summarizer))
+                 (or (and (= role :summarizer) (= id :off))
+                     (find db.models.entries id)))
+            "use /role default|summarizer provider/model (or summarizer off)")
+    (let [roles (misa.patch (or db.models.roles {})
+                            {role (if (= id :off)
+                                      misa.delete
+                                      id)})]
+      {:patch {:models {:roles (misa.replace roles)
+                        :selected (when (= role :default)
+                                    id)}}
+       :fx [{:type :state/save :namespace :model-roles :data roles}
+            {:type :terminal/read}]})))
+
 (fn build [context]
   "Build the declarations for models."
   (let [declarations []]
-    (do
-      (table.insert declarations
-                    (let [definition {:icon "◆"
-                                      :id :model
-                                      :label :model
-                                      :hotkey {:action :open_model_picker
-                                               :context :global}
-                                      :query [:models/indicator]}]
-                      {:catalog :indicators
-                       :id (. definition :id)
-                       :value definition})))
+    (table.insert declarations
+                  (let [definition {:icon "◆"
+                                    :id :model
+                                    :label :model
+                                    :hotkey {:action :open_model_picker
+                                             :context :global}
+                                    :query [:models/indicator]}]
+                    {:catalog :indicators
+                     :id (. definition :id)
+                     :value definition}))
     (table.insert declarations
                   (let [definition {:id :models/indicator
                                     :inputs [[:models/selected]]
-                                    :compute (fn [inputs]
-                                               (let [model (. inputs 1)]
-                                                 {:type :text
-                                                  :value (or (and model
-                                                                  model.label)
-                                                             :none)}))}]
+                                    :compute compute-models-indicator}]
                     {:catalog :subscriptions
                      :id (. definition :id)
                      :value definition}))
@@ -96,57 +190,12 @@
                      :value definition}))
     (table.insert declarations
                   (let [definition {:choice_purpose :models
-                                    :complete (fn [_ db]
-                                                (let [result {}]
-                                                  (each [_ model (ipairs (or (and db.models
-                                                                                  db.models.entries)
-                                                                             {}))]
-                                                    (let [api (or model.api {})
-                                                          metadata {:type :model
-                                                                    :model model.model
-                                                                    :provider model.provider
-                                                                    :title model.id}]
-                                                      (when model.context_window
-                                                        (set metadata.context_window
-                                                             model.context_window))
-                                                      (when api.request_options
-                                                        (set metadata.request_options
-                                                             :available))
-                                                      (let [cost (and misa.costs
-                                                                      misa.costs.model
-                                                                      (misa.costs.model db
-                                                                                        model.id))]
-                                                        (when cost
-                                                          (set metadata.cost
-                                                               cost))
-                                                        (tset result
-                                                              (+ (length result)
-                                                                 1)
-                                                              {:browse_visible (browse-visible? model
-                                                                                                db)
-                                                               :display {:label (.. model.provider
-                                                                                    "/"
-                                                                                    model.model)}
-                                                               :id model.id
-                                                               :path model.id
-                                                               :preview metadata
-                                                               :search [model.id
-                                                                        (or model.label
-                                                                            "")
-                                                                        (or model.model
-                                                                            "")
-                                                                        (or model.provider
-                                                                            "")]
-                                                               :value model.id}))))
-                                                  result))
+                                    :complete complete-model-open
                                     :description "Choose the active model"
                                     :event :model/open
                                     :name :/model
                                     :preference_scope :models
-                                    :selected (fn [db]
-                                                (or (and db.models
-                                                         db.models.selected)
-                                                    nil))}]
+                                    :selected selected-model-open}]
                     {:catalog :commands
                      :id (. definition :name)
                      :value definition}))
@@ -154,18 +203,7 @@
                   (let [definition {:id :models/selected
                                     :inputs [[:db/path :models :entries]
                                              [:db/path :models :selected]]
-                                    :compute (fn [inputs]
-                                               (let [model (find (or (. inputs
-                                                                        1)
-                                                                     [])
-                                                                 (. inputs 2))]
-                                                 (when model
-                                                   {:context_window model.context_window
-                                                    :id model.id
-                                                    :provider model.provider
-                                                    :label (.. model.provider
-                                                               "/" model.model)
-                                                    :pricing model.pricing})))}]
+                                    :compute compute-models-selected}]
                     {:catalog :subscriptions
                      :id (. definition :id)
                      :value definition}))
@@ -175,9 +213,7 @@
                                               :models
                                               :configured_default]
                                              [:models/selected]]
-                                    :compute (fn [inputs]
-                                               {:configured_default (. inputs 1)
-                                                :selected (. inputs 2)})}]
+                                    :compute compute-models-projection}]
                     {:catalog :subscriptions
                      :id (. definition :id)
                      :value definition}))
@@ -219,288 +255,184 @@
         (when (not= default nil)
           (assert (and (= (type default) :string) (not= default ""))
                   "config.models.default must be a nonempty string"))
+
+        (fn on-app-start [db _ cofx]
+          (when (not db.models)
+            (let [result (updated (rebuild {:available (or db.provider_availability
+                                                           {})
+                                            :catalogue (icollect [_ model (ipairs (misa.models.all))]
+                                                         (copy-model model))
+                                            :configured_default default
+                                            :roles (or (and configured
+                                                            configured.roles)
+                                                       {})
+                                            :catalogue_filter (or (and configured
+                                                                       configured.catalogue_filter)
+                                                                  {})
+                                            :catalogue_now (/ (or (and cofx
+                                                                       cofx.clock
+                                                                       cofx.clock.wall_ms)
+                                                                  0)
+                                                              1000)
+                                            :entries {}
+                                            :selected default}
+                                           default))]
+              (set result.fx
+                   [{:type :state/load
+                     :namespace :model-roles
+                     :completion :model/roles-loaded}])
+              result)))
+
         (table.insert declarations
                       {:catalog :events
-                       :value {:event :app/start
-                               :handler (fn [db _ cofx]
-                                          (when (not db.models)
-                                            (let [result (updated (rebuild {:available (or db.provider_availability
-                                                                                           {})
-                                                                            :catalogue (icollect [_ model (ipairs (misa.models.all))]
-                                                                                         (copy-model model))
-                                                                            :configured_default default
-                                                                            :roles (or (and configured
-                                                                                            configured.roles)
-                                                                                       {})
-                                                                            :catalogue_filter (or (and configured
-                                                                                                       configured.catalogue_filter)
-                                                                                                  {})
-                                                                            :catalogue_now (/ (or (and cofx
-                                                                                                       cofx.clock
-                                                                                                       cofx.clock.wall_ms)
-                                                                                                  0)
-                                                                                              1000)
-                                                                            :entries {}
-                                                                            :selected default}
-                                                                           default))]
-                                              (set result.fx
-                                                   [{:type :state/load
-                                                     :namespace :model-roles
-                                                     :completion :model/roles-loaded}])
-                                              result)))}})
+                       :value {:event :app/start :handler on-app-start}})
         (table.insert declarations
                       {:catalog :events
                        :value {:event :model/picker-open
-                               :handler (fn [db]
-                                          (if (or db.picker db.dialog)
-                                              {:fx [{:type :terminal/read}]}
-                                              {:fx [{:event {:command :/model
-                                                             :type :choices/command-open}
-                                                     :type :dispatch}]}))}})
+                               :handler on-model-picker-open}})
         (table.insert declarations
                       {:catalog :events
-                       :value {:event :model/open
-                               :handler (fn [db event]
-                                          (let [state (assert db.models
-                                                              "model state is not initialized")
-                                                requested (or (and (= (type event.arguments)
-                                                                      :string)
-                                                                   (event.arguments:match "^%s*(%S+)%s*$"))
-                                                              nil)]
-                                            (assert (and requested
-                                                         (find state.entries
-                                                               requested))
-                                                    "unknown or unavailable model")
-                                            {:patch {:models {:selected requested}}
-                                             :fx [{:type :terminal/read}]}))}})
+                       :value {:event :model/open :handler on-model-open}})
+
+        (fn on-models-provider-availability [db event]
+          (assert (and (= (type event.provider) :string)
+                       (= (type event.available) :boolean))
+                  "invalid provider availability")
+          (let [state (assert db.models "model state is not initialized")]
+            (updated (rebuild (misa.patch state
+                                          {:available {event.provider event.available}})
+                              default))))
+
         (table.insert declarations
                       {:catalog :events
                        :value {:event :models/provider-availability
-                               :handler (fn [db event]
-                                          (assert (and (= (type event.provider)
-                                                          :string)
-                                                       (= (type event.available)
-                                                          :boolean))
-                                                  "invalid provider availability")
-                                          (let [state (assert db.models
-                                                              "model state is not initialized")]
-                                            (updated (rebuild (misa.patch state
-                                                                          {:available {event.provider event.available}})
-                                                              default))))}})
+                               :handler on-models-provider-availability}})
+
+        (fn on-models-update [db event]
+          (assert (and (= (type event.provider) :string)
+                       (= (type event.models) :table))
+                  "invalid model update")
+          (let [state (assert db.models "model state is not initialized")
+                updates {}]
+            (each [_ update (ipairs event.models)]
+              (assert (and (= (type update) :table)
+                           (= (type update.id) :string))
+                      "invalid model update")
+              (assert (or (= update.context_window nil)
+                          (and (= (type update.context_window) :number)
+                               (> update.context_window 0)
+                               (= (% update.context_window 1) 0)))
+                      "invalid context window")
+              (tset updates update.id update))
+            (let [catalogue {}]
+              (each [index model (ipairs state.catalogue)]
+                (let [update (or (and (= model.provider event.provider)
+                                      (. updates model.id))
+                                 nil)]
+                  (tset catalogue index
+                        (if update
+                            (misa.patch model
+                                        {:context_window (misa.replace update.context_window)
+                                         :api (when (not= update.api nil)
+                                                (misa.replace update.api))
+                                         :pricing (when (not= update.pricing
+                                                              nil)
+                                                    (misa.replace update.pricing))})
+                            model))))
+              (updated (rebuild (misa.patch state
+                                            {:catalogue (misa.replace catalogue)})
+                                default)))))
+
         (table.insert declarations
                       {:catalog :events
-                       :value {:event :models/update
-                               :handler (fn [db event]
-                                          (assert (and (= (type event.provider)
-                                                          :string)
-                                                       (= (type event.models)
-                                                          :table))
-                                                  "invalid model update")
-                                          (let [state (assert db.models
-                                                              "model state is not initialized")
-                                                updates {}]
-                                            (each [_ update (ipairs event.models)]
-                                              (assert (and (= (type update)
-                                                              :table)
-                                                           (= (type update.id)
-                                                              :string))
-                                                      "invalid model update")
-                                              (assert (or (= update.context_window
-                                                             nil)
-                                                          (and (= (type update.context_window)
-                                                                  :number)
-                                                               (> update.context_window
-                                                                  0)
-                                                               (= (% update.context_window
-                                                                     1)
-                                                                  0)))
-                                                      "invalid context window")
-                                              (tset updates update.id update))
-                                            (let [catalogue {}]
-                                              (each [index model (ipairs state.catalogue)]
-                                                (let [update (or (and (= model.provider
-                                                                         event.provider)
-                                                                      (. updates
-                                                                         model.id))
-                                                                 nil)]
-                                                  (tset catalogue index
-                                                        (if update
-                                                            (misa.patch model
-                                                                        {:context_window (misa.replace update.context_window)
-                                                                         :api (when (not= update.api
-                                                                                          nil)
-                                                                                (misa.replace update.api))
-                                                                         :pricing (when (not= update.pricing
-                                                                                              nil)
-                                                                                    (misa.replace update.pricing))})
-                                                            model))))
-                                              (updated (rebuild (misa.patch state
-                                                                            {:catalogue (misa.replace catalogue)})
-                                                                default)))))}})
+                       :value {:event :models/update :handler on-models-update}})
+
+        (fn on-models-replace-provider [db event]
+          (assert (and (= (type event.provider) :string)
+                       (not= event.provider ""))
+                  "model provider must be nonempty")
+          (assert (= (type event.models) :table) "models must be an array")
+          (let [state (assert db.models "model state is not initialized")
+                catalogue {}
+                seen {}]
+            (each [_ model (ipairs state.catalogue)]
+              (when (or (not= model.provider event.provider)
+                        (and (= model.id state.selected)
+                             (not= event.authoritative true)))
+                (tset catalogue (+ (length catalogue) 1) model)
+                (tset seen model.id true)))
+            (each [_ model (ipairs event.models)]
+              (assert (and (= (type model) :table) (= (type model.id) :string)
+                           (not= model.id ""))
+                      "invalid discovered model")
+              (assert (and (= (type model.model) :string) (not= model.model ""))
+                      "invalid discovered model ID")
+              (assert (or (= model.context_window nil)
+                          (and (= (type model.context_window) :number)
+                               (> model.context_window 0)
+                               (= (% model.context_window 1) 0)))
+                      "invalid context window")
+              (when (. seen model.id)
+                (let [index (accumulate [found nil i existing (ipairs catalogue)
+                                         &until found]
+                              (when (= existing.id model.id) i))]
+                  (when index (table.remove catalogue index))))
+              (tset seen model.id true)
+              (tset catalogue (+ (length catalogue) 1)
+                    {:api model.api
+                     :context_window model.context_window
+                     :id model.id
+                     :created model.created
+                     :recommended model.recommended
+                     :popularity_rank model.popularity_rank
+                     :label (or (and (= (type model.label) :string) model.label)
+                                model.id)
+                     :model model.model
+                     :pricing model.pricing
+                     :provider event.provider}))
+            (updated (rebuild (misa.patch state
+                                          {:catalogue (misa.replace catalogue)})
+                              default))))
+
         (table.insert declarations
                       {:catalog :events
                        :value {:event :models/replace-provider
-                               :handler (fn [db event]
-                                          (assert (and (= (type event.provider)
-                                                          :string)
-                                                       (not= event.provider ""))
-                                                  "model provider must be nonempty")
-                                          (assert (= (type event.models) :table)
-                                                  "models must be an array")
-                                          (let [(state catalogue seen) (values (assert db.models
-                                                                                       "model state is not initialized")
-                                                                               {}
-                                                                               {})]
-                                            (each [_ model (ipairs state.catalogue)]
-                                              (when (or (not= model.provider
-                                                              event.provider)
-                                                        (and (= model.id
-                                                                state.selected)
-                                                             (not= event.authoritative
-                                                                   true)))
-                                                (tset catalogue
-                                                      (+ (length catalogue) 1)
-                                                      model)
-                                                (tset seen model.id true)))
-                                            (each [_ model (ipairs event.models)]
-                                              (assert (and (= (type model)
-                                                              :table)
-                                                           (= (type model.id)
-                                                              :string)
-                                                           (not= model.id ""))
-                                                      "invalid discovered model")
-                                              (assert (and (= (type model.model)
-                                                              :string)
-                                                           (not= model.model ""))
-                                                      "invalid discovered model ID")
-                                              (assert (or (= model.context_window
-                                                             nil)
-                                                          (and (= (type model.context_window)
-                                                                  :number)
-                                                               (> model.context_window
-                                                                  0)
-                                                               (= (% model.context_window
-                                                                     1)
-                                                                  0)))
-                                                      "invalid context window")
-                                              (when (. seen model.id)
-                                                (each [i existing (ipairs catalogue)]
-                                                  (when (= existing.id model.id)
-                                                    (table.remove catalogue i)
-                                                    (lua :break))))
-                                              (tset seen model.id true)
-                                              (tset catalogue
-                                                    (+ (length catalogue) 1)
-                                                    {:api model.api
-                                                     :context_window model.context_window
-                                                     :id model.id
-                                                     :created model.created
-                                                     :recommended model.recommended
-                                                     :popularity_rank model.popularity_rank
-                                                     :label (or (and (= (type model.label)
-                                                                        :string)
-                                                                     model.label)
-                                                                model.id)
-                                                     :model model.model
-                                                     :pricing model.pricing
-                                                     :provider event.provider}))
-                                            (updated (rebuild (misa.patch state
-                                                                          {:catalogue (misa.replace catalogue)})
-                                                              default))))}})
+                               :handler on-models-replace-provider}})
         (table.insert declarations
                       {:catalog :events
-                       :value {:event :model/select
-                               :handler (fn [db event]
-                                          (assert (and (= (type event.id)
-                                                          :string)
-                                                       (find db.models.entries
-                                                             event.id))
-                                                  "unknown or unavailable model")
-                                          {:patch {:models {:selected event.id}}})}})
+                       :value {:event :model/select :handler on-model-select}})
         (table.insert declarations
                       {:catalog :services
                        :id :models.for-role
-                       :value (fn [db role]
-                                "Resolve the model selected for a named role."
-                                (let [state db.models]
-                                  (when state
-                                    (find state.entries
-                                          (if (= role :default) state.selected
-                                              (and state.roles
-                                                   (. state.roles role)))))))})
+                       :value models-for-role})
         (table.insert declarations
                       (let [definition {:name :/role
                                         :description "Assign a model to a role (default or summarizer)"
                                         :event :model/role
-                                        :complete (fn [_ db]
-                                                    (let [items []]
-                                                      (each [_ role (ipairs [:default
-                                                                             :summarizer])]
-                                                        (each [_ model (ipairs (or (and db.models
-                                                                                        db.models.entries)
-                                                                                   []))]
-                                                          (table.insert items
-                                                                        {:value (.. role
-                                                                                    " "
-                                                                                    model.id)})))
-                                                      (table.insert items
-                                                                    {:value "summarizer off"})
-                                                      items))}]
+                                        :complete complete-model-role}]
                         {:catalog :commands
                          :id (. definition :name)
                          :value definition}))
         (table.insert declarations
                       {:catalog :events
-                       :value {:event :model/role
-                               :handler (fn [db event]
-                                          (let [(role id) (: (or event.arguments
-                                                                 "")
-                                                             :match
-                                                             "^(%S+)%s+(%S+)$")]
-                                            (assert (and role id
-                                                         (or (= role :default)
-                                                             (= role
-                                                                :summarizer))
-                                                         (or (and (= role
-                                                                     :summarizer)
-                                                                  (= id :off))
-                                                             (find db.models.entries
-                                                                   id)))
-                                                    "use /role default|summarizer provider/model (or summarizer off)")
-                                            (let [roles (misa.patch (or db.models.roles
-                                                                        {})
-                                                                    {role (if (= id
-                                                                                 :off)
-                                                                              misa.delete
-                                                                              id)})]
-                                              {:patch {:models {:roles (misa.replace roles)
-                                                                :selected (when (= role
-                                                                                   :default)
-                                                                            id)}}
-                                               :fx [{:type :state/save
-                                                     :namespace :model-roles
-                                                     :data roles}
-                                                    {:type :terminal/read}]})))}})
+                       :value {:event :model/role :handler on-model-role}})
+
+        (fn on-model-roles-loaded [db event]
+          (when (and (not= event.found false) (= (type event.data) :table))
+            (let [roles {}]
+              (each [role id (pairs event.data)]
+                (when (and (= (type role) :string) (= (type id) :string))
+                  (tset roles role id)))
+              (each [role id (pairs (or (and configured configured.roles) {}))]
+                (tset roles role id))
+              {:patch {:models {:roles (misa.replace roles)
+                                :selected (when roles.default
+                                            roles.default)}}})))
+
         (table.insert declarations
                       {:catalog :events
                        :value {:event :model/roles-loaded
-                               :handler (fn [db event]
-                                          (when (and (not= event.found false)
-                                                     (= (type event.data)
-                                                        :table))
-                                            (let [roles {}]
-                                              (each [role id (pairs event.data)]
-                                                (when (and (= (type role)
-                                                              :string)
-                                                           (= (type id) :string))
-                                                  (tset roles role id)))
-                                              (each [role id (pairs (or (and configured
-                                                                             configured.roles)
-                                                                        {}))]
-                                                (tset roles role id))
-                                              {:patch {:models {:roles (misa.replace roles)
-                                                                :selected (when roles.default
-                                                                            roles.default)}}})))}})
+                               :handler on-model-roles-loaded}})
         (definitions.build :models declarations {})))))
 
 {: build}

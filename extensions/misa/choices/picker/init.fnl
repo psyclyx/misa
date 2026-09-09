@@ -109,136 +109,105 @@
         (set patch.view_state states)))
     {:patch {:picker {:session patch}} :fx (or fx [{:type :terminal/read}])}))
 
+(fn on-picker-open [db event]
+  (assert (or (not db.picker) (= event.nested true)) "a picker is already open")
+  (let [state (open-state event db (or (and event.nested db.picker) nil))]
+    (updated (if event.choose_view
+                 (view-picker state db)
+                 state))))
+
+(fn on-picker-update [db event]
+  (var state db.picker)
+  (if (or (not state) (not= event.id state.id) (not= event.token state.token))
+      nil
+      (do
+        (if event.items
+            (set state
+                 (misa.patch state
+                             {:session (misa.replace (misa.choices.set-items state.session
+                                                                             event.items
+                                                                             db))}))
+            event.panels
+            (let [replacement (open-state {:completion state.completion
+                                           :id state.id
+                                           :panels event.panels
+                                           :preference_scope state.session.preference_scope
+                                           :purpose state.session.purpose
+                                           :selected (or (and (not= event.selected
+                                                                    nil)
+                                                              event.selected)
+                                                         state.session.selected)
+                                           :title state.session.title
+                                           :token state.token}
+                                          db state.parent)]
+              (set state replacement)))
+        (when (not= event.selected nil)
+          (let [selected (when (not= event.selected misa.json-null)
+                           event.selected)
+                session (misa.patch state.session
+                                    {:selected (misa.replace selected)})]
+            (set state
+                 (misa.patch state
+                             {:session (misa.replace (misa.choices.refresh session
+                                                                           db))}))))
+        (updated state []))))
+
+(fn route-terminal-input [_ event]
+  (misa.patch event {:type :picker/input}))
+
+(fn on-picker-input [db event cofx]
+  (let [state (assert db.picker)
+        action (misa.choices.action event)
+        geometry (when (misa.choices.needs-targets? state.session event)
+                   (misa.choices.picker-layout state.session db cofx.terminal))
+        result (misa.choices.input state.session
+                                   {: action
+                                    :kind event.kind
+                                    :text event.text
+                                    :key event.key
+                                    :targets (and geometry geometry.targets)}
+                                   db)]
+    (fn next-state []
+      (misa.patch state {:session (misa.replace result.session)}))
+
+    (if result.replace_view
+        (updated (view-picker (next-state) db))
+        (and (= state.id :picker-picker) state.parent result.accepted)
+        (updated (misa.patch state.parent
+                             {:session (misa.replace (misa.choices.replace-view state.parent.session
+                                                                                result.accepted.value
+                                                                                db))}))
+        (and (= state.id :picker-picker) state.parent result.cancelled)
+        (updated state.parent)
+        result.accepted
+        (updated state.parent (finish (next-state) result.accepted false))
+        result.cancelled
+        (updated state.parent (finish (next-state) nil true))
+        result.favorite
+        (updated-session state result.session
+                         [{:event {:scope result.session.preference_scope
+                                   :type :preferences/toggle
+                                   :value result.favorite}
+                           :type :dispatch}
+                          {:type :terminal/read}])
+        (updated-session state result.session))))
+
 (fn build []
   "Build the declarations for picker."
-  (let [declarations []]
-    (table.insert declarations {:catalog :services
-                                :id :picker.enabled?
-                                :value true})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :picker/open
-                           :handler (fn [db event]
-                                      (assert (or (not db.picker)
-                                                  (= event.nested true))
-                                              "a picker is already open")
-                                      (let [state (open-state event db
-                                                              (or (and event.nested
-                                                                       db.picker)
-                                                                  nil))]
-                                        (updated (if event.choose_view
-                                                     (view-picker state db)
-                                                     state))))}})
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :picker/update
-                           :handler (fn [db event]
-                                      (var state db.picker)
-                                      (if (or (not state)
-                                              (not= event.id state.id)
-                                              (not= event.token state.token))
-                                          nil
-                                          (do
-                                            (if event.items
-                                                (set state
-                                                     (misa.patch state
-                                                                 {:session (misa.replace (misa.choices.set-items state.session
-                                                                                                                 event.items
-                                                                                                                 db))}))
-                                                event.panels
-                                                (do
-                                                  (let [replacement (open-state {:completion state.completion
-                                                                                 :id state.id
-                                                                                 :panels event.panels
-                                                                                 :preference_scope state.session.preference_scope
-                                                                                 :purpose state.session.purpose
-                                                                                 :selected (or (and (not= event.selected
-                                                                                                          nil)
-                                                                                                    event.selected)
-                                                                                               state.session.selected)
-                                                                                 :title state.session.title
-                                                                                 :token state.token}
-                                                                                db
-                                                                                state.parent)]
-                                                    (set state replacement))))
-                                            (when (not= event.selected nil)
-                                              (let [selected (when (not= event.selected
-                                                                         misa.json-null)
-                                                               event.selected)
-                                                    session (misa.patch state.session
-                                                                        {:selected (misa.replace selected)})]
-                                                (set state
-                                                     (misa.patch state
-                                                                 {:session (misa.replace (misa.choices.refresh session
-                                                                                                               db))}))))
-                                            (updated state []))))}})
-    (table.insert declarations
-                  (let [definition {:id :picker/input
-                                    :event :terminal/input
-                                    :priority 800
-                                    :context [:db/path :picker]
-                                    :resolve (fn [_ event]
-                                               (misa.patch event
-                                                           {:type :picker/input}))}]
-                    {:catalog :routes :id (. definition :id) :value definition}))
-    (table.insert declarations
-                  {:catalog :events
-                   :value {:event :picker/input
-                           :handler (fn [db event cofx]
-                                      (let [state (assert db.picker)
-                                            action (misa.choices.action event)
-                                            geometry (when (misa.choices.needs-targets? state.session
-                                                                                        event)
-                                                       (misa.choices.picker-layout state.session
-                                                                                   db
-                                                                                   cofx.terminal))
-                                            result (misa.choices.input state.session
-                                                                       {: action
-                                                                        :kind event.kind
-                                                                        :text event.text
-                                                                        :key event.key
-                                                                        :targets (and geometry
-                                                                                      geometry.targets)}
-                                                                       db)]
-                                        (fn next-state []
-                                          (misa.patch state
-                                                      {:session (misa.replace result.session)}))
-
-                                        (if result.replace_view
-                                            (updated (view-picker (next-state)
-                                                                  db))
-                                            (and (= state.id :picker-picker)
-                                                 state.parent result.accepted)
-                                            (updated (misa.patch state.parent
-                                                                 {:session (misa.replace (misa.choices.replace-view state.parent.session
-                                                                                                                    result.accepted.value
-                                                                                                                    db))}))
-                                            (and (= state.id :picker-picker)
-                                                 state.parent result.cancelled)
-                                            (updated state.parent)
-                                            result.accepted
-                                            (updated state.parent
-                                                     (finish (next-state)
-                                                             result.accepted
-                                                             false))
-                                            result.cancelled
-                                            (updated state.parent
-                                                     (finish (next-state) nil
-                                                             true))
-                                            result.favorite
-                                            (updated-session state
-                                                             result.session
-                                                             [{:event {:scope result.session.preference_scope
-                                                                       :type :preferences/toggle
-                                                                       :value result.favorite}
-                                                               :type :dispatch}
-                                                              {:type :terminal/read}])
-                                            (updated-session state
-                                                             result.session))))}})
-    (definitions.build :picker
-      declarations
-      {:requirements {:picker.enabled? [:choices.action
-                                        :choices.picker-layout
-                                        :choices.session]}})))
+  (definitions.build :picker
+    [{:catalog :services :id :picker.enabled? :value true}
+     {:catalog :events :value {:event :picker/open :handler on-picker-open}}
+     {:catalog :events
+      :value {:event :picker/update :handler on-picker-update}}
+     (let [definition {:id :picker/input
+                       :event :terminal/input
+                       :priority 800
+                       :context [:db/path :picker]
+                       :resolve route-terminal-input}]
+       {:catalog :routes :id (. definition :id) :value definition})
+     {:catalog :events :value {:event :picker/input :handler on-picker-input}}]
+    {:requirements {:picker.enabled? [:choices.action
+                                      :choices.picker-layout
+                                      :choices.session]}}))
 
 {: build}

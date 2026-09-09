@@ -1,7 +1,5 @@
 (local definitions (require :misa.definitions))
 
-;; Command provider for tests and user-supplied model adapters.
-
 (fn latest-prompt [messages]
   (let [message (. messages (length messages))]
     (assert (and message (= message.role :user))
@@ -14,8 +12,44 @@
         (assert (not= prompt "") "command prompt must be nonempty")
         prompt))))
 
+(fn request [argv effect]
+  "Append the user prompt to the configured process arguments."
+  (assert (and (= (type effect.id) :string) (not= effect.id ""))
+          "command id must be a nonempty string")
+  (let [direct {}]
+    (for [i 1 (length argv)]
+      (tset direct i (. argv i)))
+    (tset direct (+ (length direct) 1) (latest-prompt effect.messages))
+    {:argv direct
+     :completion :provider/command-complete
+     :id effect.id
+     :type :provider/process}))
+
+(fn complete [_ event]
+  "Translate process completion into normalized stream events."
+  (assert (and (= (type event.id) :string) (not= event.id ""))
+          "command completion id must be nonempty")
+  (let [fx [{:event {:id event.id :type :agent/stream-start} :type :dispatch}]]
+    (if event.ok
+        (do
+          (tset fx (+ (length fx) 1)
+                {:event {:delta {:text event.stdout :type :text}
+                         :id event.id
+                         :type :agent/stream-delta}
+                 :type :dispatch})
+          (tset fx (+ (length fx) 1)
+                {:event {:id event.id :type :agent/stream-end} :type :dispatch}))
+        (tset fx (+ (length fx) 1)
+              {:event {:id event.id
+                       :message (or (and (not= event.stderr "") event.stderr)
+                                    (.. "command exited "
+                                        (tostring event.status)))
+                       :type :agent/stream-error}
+               :type :dispatch}))
+    {: fx}))
+
 (fn build [context]
-  "Describe command policies for the supplied application settings."
+  "Build the command provider catalogs from application settings."
   (let [declarations []
         providers (or (and (= (type context.config) :table)
                            context.config.providers) nil)
@@ -42,51 +76,11 @@
       (table.insert declarations
                     {:catalog :effects
                      :id :provider.command
-                     :value (fn [effect]
-                              (assert (and (= (type effect.id) :string)
-                                           (not= effect.id ""))
-                                      "command id must be a nonempty string")
-                              (let [direct {}]
-                                (for [i 1 (length argv)]
-                                  (tset direct i (. argv i)))
-                                (tset direct (+ (length direct) 1)
-                                      (latest-prompt effect.messages))
-                                {:argv direct
-                                 :completion :provider/command-complete
-                                 :id effect.id
-                                 :type :provider/process}))})
+                     :value (fn [effect] (request argv effect))})
       (table.insert declarations
                     {:catalog :events
                      :value {:event :provider/command-complete
-                             :handler (fn [_ event]
-                                        (assert (and (= (type event.id) :string)
-                                                     (not= event.id ""))
-                                                "command completion id must be nonempty")
-                                        (let [fx [{:event {:id event.id
-                                                           :type :agent/stream-start}
-                                                   :type :dispatch}]]
-                                          (if event.ok
-                                              (do
-                                                (tset fx (+ (length fx) 1)
-                                                      {:event {:delta {:text event.stdout
-                                                                       :type :text}
-                                                               :id event.id
-                                                               :type :agent/stream-delta}
-                                                       :type :dispatch})
-                                                (tset fx (+ (length fx) 1)
-                                                      {:event {:id event.id
-                                                               :type :agent/stream-end}
-                                                       :type :dispatch}))
-                                              (tset fx (+ (length fx) 1)
-                                                    {:event {:id event.id
-                                                             :message (or (and (not= event.stderr
-                                                                                     "")
-                                                                               event.stderr)
-                                                                          (.. "command exited "
-                                                                              (tostring event.status)))
-                                                             :type :agent/stream-error}
-                                                     :type :dispatch}))
-                                          {: fx}))}})
+                             :handler complete}})
       (definitions.build :provider.command declarations {}))))
 
-{: build}
+{:build build :request request :complete complete}

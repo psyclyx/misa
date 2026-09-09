@@ -189,65 +189,62 @@
                      :sections display.sections
                      :actions display.actions}}]})))
 
+(fn open-dashboard [db _ cofx]
+  (let [display (model db (/ cofx.clock.wall_ms 1000))]
+    {:fx [{:type :dispatch
+           :event {:type :dialog/open
+                   :id :usage
+                   :title "Usage"
+                   :sections display.sections
+                   :actions display.actions
+                   :cancellable true
+                   :completion :usage/action
+                   :correlation :usage}}
+          {:type :timer/start
+           :id :usage/countdown
+           :interval_ms 60000
+           :completion :usage/tick}
+          {:type :dispatch :event {:type :usage/refresh}}]}))
+
+(fn tick [db event cofx]
+  (or (update db event cofx) {:fx [{:type :timer/stop :id :usage/countdown}]}))
+
+(fn invoke-action [db event]
+  (if event.cancelled
+      {:fx [{:type :timer/stop :id :usage/countdown}]}
+      (when (and db.dialog (= db.dialog.id :usage))
+        (let [action (accumulate [found nil _ action (ipairs db.dialog.actions)]
+                       (if (= action.id event.action)
+                           action
+                           found))]
+          (when (and action action.event (not action.disabled))
+            {:fx [{:type :dispatch :event (misa.snapshot action.event)}]})))))
+
 (fn build []
   "Declare the usage dashboard and its interactions."
   (definitions.build :usage
     [(let [definition {:context :usage :action :codex-reset :default ["r"]}]
        {:catalog :keybindings
-        :id (.. (. definition :context) "/" (. definition :action))
+        :id (.. definition.context "/" definition.action)
         :value definition})
      (let [definition {:context :usage :action :extra-manage :default ["e"]}]
        {:catalog :keybindings
-        :id (.. (. definition :context) "/" (. definition :action))
+        :id (.. definition.context "/" definition.action)
         :value definition})
      (let [definition {:id :usage.open
                        :label "Show usage"
                        :event {:type :usage/open}
                        :available (fn [db] (not db.dialog))}]
-       {:catalog :actions :id (. definition :id) :value definition})
+       {:catalog :actions :id definition.id :value definition})
      (let [definition {:choice_purpose :command
                        :description "Show token and subscription usage"
                        :event :usage/open
                        :name :/usage}]
-       {:catalog :commands :id (. definition :name) :value definition})
-     {:catalog :events
-      :value {:event :usage/open
-              :handler (fn [db _ cofx]
-                         (let [display (model db (/ cofx.clock.wall_ms 1000))]
-                           {:fx [{:type :dispatch
-                                  :event {:type :dialog/open
-                                          :id :usage
-                                          :title "Usage"
-                                          :sections display.sections
-                                          :actions display.actions
-                                          :cancellable true
-                                          :completion :usage/action
-                                          :correlation :usage}}
-                                 {:type :timer/start
-                                  :id :usage/countdown
-                                  :interval_ms 60000
-                                  :completion :usage/tick}
-                                 {:type :dispatch
-                                  :event {:type :usage/refresh}}]}))}}
+       {:catalog :commands :id definition.name :value definition})
+     {:catalog :events :value {:event :usage/open :handler open-dashboard}}
      {:catalog :events :value {:event :usage/updated :handler update}}
-     {:catalog :events
-      :value {:event :usage/tick
-              :handler (fn [db event cofx]
-                         (or (update db event cofx)
-                             {:fx [{:type :timer/stop :id :usage/countdown}]}))}}
-     {:catalog :events
-      :value {:event :usage/action
-              :handler (fn [db event]
-                         (if event.cancelled
-                             {:fx [{:type :timer/stop :id :usage/countdown}]}
-                             (when (and db.dialog (= db.dialog.id :usage))
-                               (let [action (accumulate [found nil _ action (ipairs db.dialog.actions)]
-                                              (if (= action.id event.action)
-                                                  action found))]
-                                 (when (and action action.event
-                                            (not action.disabled))
-                                   {:fx [{:type :dispatch
-                                          :event (misa.snapshot action.event)}]})))))}}]
+     {:catalog :events :value {:event :usage/tick :handler tick}}
+     {:catalog :events :value {:event :usage/action :handler invoke-action}}]
     {}))
 
 {: build}

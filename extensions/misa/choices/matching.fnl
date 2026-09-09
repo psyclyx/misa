@@ -44,42 +44,31 @@
         (not= lv rv) (< lv rv)
         (< left.ordinal right.ordinal))))
 
+(fn fuzzy-choices [source query text]
+  "Return matching choices ordered by match quality."
+  (let [ranked []
+        result []]
+    (each [ordinal item (ipairs source)]
+      (let [extra (if (= (type item.search) :string) item.search
+                      (= (type item.search) :table) (table.concat item.search
+                                                                  " ")
+                      "")
+            searchable (or (and text (text item))
+                           (.. item.value " " (or item.label "") " "
+                               (or item.description "") " " extra))
+            rank (if (= query "") 0 (score query searchable))]
+        (when rank
+          (table.insert ranked {: item : ordinal :score rank}))))
+    (table.sort ranked rank-before?)
+    (each [_ value (ipairs ranked)]
+      (table.insert result value.item))
+    result))
+
 (fn build []
   "Declare fuzzy ranking for choices."
-  (let [declarations []]
-    (table.insert declarations {:catalog :services
-                                :id :fuzzy.score
-                                :value score})
-    (table.insert declarations
-                  {:catalog :services
-                   :id :fuzzy.choices
-                   :value (fn [source query text]
-                            "Return matching choices ordered by match quality."
-                            (let [ranked []
-                                  result []]
-                              (each [ordinal item (ipairs source)]
-                                (let [extra (if (= (type item.search) :string)
-                                                item.search
-                                                (= (type item.search) :table)
-                                                (table.concat item.search " ")
-                                                "")
-                                      searchable (or (and text (text item))
-                                                     (.. item.value " "
-                                                         (or item.label "") " "
-                                                         (or item.description
-                                                             "")
-                                                         " " extra))
-                                      rank (if (= query "") 0
-                                               (score query searchable))]
-                                  (when rank
-                                    (table.insert ranked
-                                                  {: item
-                                                   : ordinal
-                                                   :score rank}))))
-                              (table.sort ranked rank-before?)
-                              (each [_ value (ipairs ranked)]
-                                (table.insert result value.item))
-                              result))})
-    (definitions.build :fuzzy declarations {})))
+  (definitions.build :fuzzy
+    [{:catalog :services :id :fuzzy.score :value score}
+     {:catalog :services :id :fuzzy.choices :value fuzzy-choices}]
+    {}))
 
-{: build}
+{: build : score :choices fuzzy-choices}

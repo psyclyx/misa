@@ -17,40 +17,40 @@
     (.. clipped (or (and (< (length clipped) (length text)) "…") ""))))
 
 (fn lines [source first last]
-  (var (result at) (values {} first))
-  (while (< at last)
-    (let [newline (source:find "[\r\n]" (+ at 1))
-          finish (math.min last (or (and newline (- newline 1)) last))]
-      (tset result (+ (length result) 1)
-            {:first at :last finish :text (source:sub (+ at 1) finish)})
-      (when (or (not newline) (> newline last)) (lua :break))
-      (set at newline)
-      (when (= (source:sub newline (+ newline 1)) "\r\n")
-        (set at (+ at 1)))))
-  result)
+  (let [result []]
+    (var at first)
+    (while (< at last)
+      (let [newline (source:find "[\r\n]" (+ at 1))
+            finish (math.min last (or (and newline (- newline 1)) last))]
+        (table.insert result
+                      {:first at
+                       :last finish
+                       :text (source:sub (+ at 1) finish)})
+        (set at (if (or (not newline) (> newline last)) last
+                    (= (source:sub newline (+ newline 1)) "\r\n") (+ newline 1)
+                    newline))))
+    result))
 
 (fn source-map [source]
-  (var (breaks at removed) (values {} 1 0))
-  (while true
-    (let [found (source:find "\r\n" at true)]
-      (when (not found) (lua :break))
-      (set removed (+ removed 1))
-      (tset breaks (+ (length breaks) 1) (- (+ found 1) removed))
-      (set at (+ found 2))))
-  (fn [offset]
-    (var (low high) (values 1 (length breaks)))
-    (while (<= low high)
-      (let [middle (math.floor (/ (+ low high) 2))]
-        (if (<= (. breaks middle) offset) (set low (+ middle 1))
-            (set high (- middle 1)))))
-    (+ offset high)))
+  (let [breaks []]
+    (each [found (source:gmatch "()\r\n")]
+      (table.insert breaks (- found (length breaks))))
+    (fn [offset]
+      (var low 1)
+      (var high (length breaks))
+      (while (<= low high)
+        (let [middle (math.floor (/ (+ low high) 2))]
+          (if (<= (. breaks middle) offset) (set low (+ middle 1))
+              (set high (- middle 1)))))
+      (+ offset high))))
 
 (fn table-rows [source first last]
   (let [rows {}]
     (each [row-index row (ipairs (lines source first last))]
       ;; A parsed table's second row is its alignment separator, never data.
       (when (not= row-index 2)
-        (let [(cells delimiters) (values {} {})
+        (let [cells {}
+              delimiters {}
               text row.text]
           (var (at code) (values 1 nil))
           (while (<= at (length text))
@@ -98,161 +98,131 @@
                       row.first row.last cells)))))
     rows))
 
+(fn selection-children [document current]
+  "Return selectable children of a semantic document node."
+  (if (> (length current.children) 0)
+      current.children
+      (let [result {}
+            source document.text
+            first current.first
+            last current.last]
+        (if (= current.kind :character) result
+            (do
+              (if (= current.kind :word)
+                  (do
+                    (var at first)
+                    (while (< at last)
+                      (let [finish (math.min last
+                                             (misa.layout.next-boundary source
+                                                                        at))]
+                        (tset result (+ (length result) 1)
+                              (node :character (source:sub (+ at 1) finish) at
+                                    finish))
+                        (set at finish))))
+                  (or (= current.kind :line) (= current.kind :cell)
+                      (= current.kind :heading))
+                  (let [text (source:sub (+ first 1) last)]
+                    (each [a word b (text:gmatch "()(%S+)()")]
+                      (table.insert result
+                                    (node :word word (- (+ first a) 1)
+                                          (- (+ first b) 1)))))
+                  (each [_ line (ipairs (lines source first last))]
+                    (tset result (+ (length result) 1)
+                          (node :line line.text line.first line.last))))
+              result)))))
+
+(fn selection-document [id label text]
+  "Build a semantic selection document from source text."
+  (let [parsed (and misa.markdown (misa.markdown.parse text))
+        original (source-map text)
+        root (node :message label 0 (length text))]
+    (set (root.id root.text) (values id text))
+    (let [sections {}]
+      (var parent root)
+      (let [lists []]
+        (fn list-block [block first last]
+          (let [depth (math.max 1 (or block.depth 1))]
+            (while (and (> (length lists) 0)
+                        (> (. lists (length lists) :depth) depth))
+              (table.remove lists))
+            (var frame (. lists (length lists)))
+            (when (or (not frame) (< frame.depth depth))
+              (let [list (node :list "List" first last)]
+                (table.insert (or (and frame frame.item.children)
+                                  parent.children)
+                              list)
+                (set frame {: depth :node list})
+                (table.insert lists frame)))
+            (let [line (node :line (excerpt text first last) first last)]
+              (if (and (= block.kind :list_continuation) frame.item)
+                  (table.insert frame.item.children line)
+                  (let [item (node :list_item
+                                   (.. "Item: " (excerpt text first last)) first
+                                   last [line])]
+                    (table.insert frame.node.children item)
+                    (set frame.item item)))
+              (each [_ ancestor (ipairs lists)]
+                (set ancestor.node.last last)
+                (set ancestor.item.last last)))))
+
+        (fn close [until-level finish]
+          (while (and (> (length sections) 0)
+                      (>= (. sections (length sections) :level) until-level))
+            (let [section (table.remove sections)]
+              (set section.node.last (math.max section.node.first finish))
+              (set section.content.last (math.max section.content.first finish))))
+          (set parent (or (and (> (length sections) 0)
+                               (. sections (length sections) :content))
+                          root))
+          nil)
+
+        (each [_ block (ipairs (or (and parsed parsed.blocks) {}))]
+          (let [first (original block.source_start)
+                last (original block.source_end)]
+            (when (and (not= block.kind :list_item)
+                       (not= block.kind :list_continuation)
+                       (not= block.kind :blank))
+              (while (> (length lists) 0) (table.remove lists)))
+            (if (or (= block.kind :list_item) (= block.kind :list_continuation))
+                (list-block block first last)
+                (= block.kind :heading)
+                (do
+                  (close block.level first)
+                  (let [title (: (text:sub (+ first 1) last) :gsub "^%s*#+%s*"
+                                 "")
+                        section (node :section title first (length text))
+                        heading (node :heading (.. "Heading: " title) first
+                                      last)]
+                    (var content-start last)
+                    (if (= (text:sub (+ last 1) (+ last 2)) "\r\n")
+                        (set content-start (+ last 2))
+                        (: (text:sub (+ last 1) (+ last 1)) :match "[\r\n]")
+                        (set content-start (+ last 1)))
+                    (let [content (node :content "Section content"
+                                        content-start (length text))]
+                      (set section.children [heading content])
+                      (tset parent.children (+ (length parent.children) 1)
+                            section)
+                      (tset sections (+ (length sections) 1)
+                            {: content :level block.level :node section})
+                      (set parent content))))
+                (not= block.kind :blank)
+                (let [children (or (and (= block.kind :table)
+                                        (table-rows text first last))
+                                   nil)]
+                  (var label (block.kind:gsub "_" " "))
+                  (when (not= block.kind :table)
+                    (set label (.. label ": " (excerpt text first last))))
+                  (tset parent.children (+ (length parent.children) 1)
+                        (node block.kind label first last children))))))
+        (close 0 (length text))
+        root))))
+
 (fn build []
   "Build the declarations for selection document."
   (definitions.build :selection_document
-    [{:catalog :services
-      :id :selection.document
-      :value (fn [id label text]
-               "Build a semantic selection document from source text."
-               (let [parsed (and misa.markdown (misa.markdown.parse text))
-                     original (source-map text)
-                     root (node :message label 0 (length text))]
-                 (set (root.id root.text) (values id text))
-                 (let [sections {}]
-                   (var parent root)
-                   (let [lists []]
-                     (fn list-block [block first last]
-                       (let [depth (math.max 1 (or block.depth 1))]
-                         (while (and (> (length lists) 0)
-                                     (> (. lists (length lists) :depth) depth))
-                           (table.remove lists))
-                         (var frame (. lists (length lists)))
-                         (when (or (not frame) (< frame.depth depth))
-                           (let [list (node :list "List" first last)]
-                             (table.insert (or (and frame frame.item.children)
-                                               parent.children)
-                                           list)
-                             (set frame {: depth :node list})
-                             (table.insert lists frame)))
-                         (let [line (node :line (excerpt text first last) first
-                                          last)]
-                           (if (and (= block.kind :list_continuation)
-                                    frame.item)
-                               (table.insert frame.item.children line)
-                               (do
-                                 (let [item (node :list_item
-                                                  (.. "Item: "
-                                                      (excerpt text first last))
-                                                  first last [line])]
-                                   (table.insert frame.node.children item)
-                                   (set frame.item item))))
-                           (each [_ ancestor (ipairs lists)]
-                             (set ancestor.node.last last)
-                             (set ancestor.item.last last)))))
-
-                     (fn close [until-level finish]
-                       (while (and (> (length sections) 0)
-                                   (>= (. sections (length sections) :level)
-                                       until-level))
-                         (let [section (table.remove sections)]
-                           (set section.node.last
-                                (math.max section.node.first finish))
-                           (set section.content.last
-                                (math.max section.content.first finish))))
-                       (set parent (or (and (> (length sections) 0)
-                                            (. sections (length sections)
-                                               :content))
-                                       root))
-                       nil)
-
-                     (each [_ block (ipairs (or (and parsed parsed.blocks) {}))]
-                       (let [(first last) (values (original block.source_start)
-                                                  (original block.source_end))]
-                         (when (and (not= block.kind :list_item)
-                                    (not= block.kind :list_continuation)
-                                    (not= block.kind :blank))
-                           (while (> (length lists) 0) (table.remove lists)))
-                         (if (or (= block.kind :list_item)
-                                 (= block.kind :list_continuation))
-                             (list-block block first last)
-                             (= block.kind :heading)
-                             (do
-                               (close block.level first)
-                               (let [title (: (text:sub (+ first 1) last) :gsub
-                                              "^%s*#+%s*" "")
-                                     section (node :section title first
-                                                   (length text))
-                                     heading (node :heading
-                                                   (.. "Heading: " title) first
-                                                   last)]
-                                 (var content-start last)
-                                 (if (= (text:sub (+ last 1) (+ last 2)) "\r\n")
-                                     (set content-start (+ last 2))
-                                     (: (text:sub (+ last 1) (+ last 1)) :match
-                                        "[\r\n]")
-                                     (set content-start (+ last 1)))
-                                 (let [content (node :content "Section content"
-                                                     content-start (length text))]
-                                   (set section.children [heading content])
-                                   (tset parent.children
-                                         (+ (length parent.children) 1) section)
-                                   (tset sections (+ (length sections) 1)
-                                         {: content
-                                          :level block.level
-                                          :node section})
-                                   (set parent content))))
-                             (not= block.kind :blank)
-                             (do
-                               (let [children (or (and (= block.kind :table)
-                                                       (table-rows text first
-                                                                   last))
-                                                  nil)]
-                                 (var label (block.kind:gsub "_" " "))
-                                 (when (not= block.kind :table)
-                                   (set label
-                                        (.. label ": "
-                                            (excerpt text first last))))
-                                 (tset parent.children
-                                       (+ (length parent.children) 1)
-                                       (node block.kind label first last
-                                             children)))))))
-                     (close 0 (length text))
-                     root))))}
-     {:catalog :services
-      :id :selection.children
-      :value (fn [document current]
-               "Return selectable children of a semantic document node."
-               (if (> (length current.children) 0)
-                   current.children
-                   (do
-                     (let [result {}
-                           source document.text
-                           (first last) (values current.first current.last)]
-                       (if (= current.kind :character) result
-                           (do
-                             (if (= current.kind :word)
-                                 (do
-                                   (var at first)
-                                   (while (< at last)
-                                     (let [finish (math.min last
-                                                            (misa.layout.next-boundary source
-                                                                                       at))]
-                                       (tset result (+ (length result) 1)
-                                             (node :character
-                                                   (source:sub (+ at 1) finish)
-                                                   at finish))
-                                       (set at finish))))
-                                 (or (= current.kind :line)
-                                     (= current.kind :cell)
-                                     (= current.kind :heading))
-                                 (do
-                                   (let [text (source:sub (+ first 1) last)]
-                                     (var at 1)
-                                     (while (<= at (length text))
-                                       (let [(a b) (text:find "%S+" at)]
-                                         (when (not a)
-                                           (lua :break))
-                                         (tset result (+ (length result) 1)
-                                               (node :word (text:sub a b)
-                                                     (- (+ first a) 1)
-                                                     (+ first b)))
-                                         (set at (+ b 1))))))
-                                 (each [_ line (ipairs (lines source first last))]
-                                   (tset result (+ (length result) 1)
-                                         (node :line line.text line.first
-                                               line.last))))
-                             result))))))}]
+    [{:catalog :services :id :selection.document :value selection-document}
+     {:catalog :services :id :selection.children :value selection-children}]
     {}))
 
 {: build}

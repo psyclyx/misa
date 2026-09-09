@@ -1,9 +1,5 @@
 (local definitions (require :misa.definitions))
 
-;; Claude Code process transport. Claude owns subscription credentials; Misa
-;; owns conversation policy and invokes the same stream-json protocol used by
-;; the Agent SDK.
-
 (fn transcript [messages]
   (let [out ["Continue this conversation. Preserve the roles and treat tool results as authoritative."]]
     (each [_ message (ipairs messages)]
@@ -63,6 +59,7 @@
   {:type :dispatch :event (misa.patch (or data {}) {: id : type})})
 
 (fn delta [id value] (emit id :agent/stream-delta {:delta value}))
+
 (fn fresh []
   {:message_seq 0
    :messages {}
@@ -73,6 +70,7 @@
    :saw_content false})
 
 (fn message-key [state] (or state.current_message "seq:0"))
+
 (fn block-key [state index] (.. (message-key state) ":" (tostring index)))
 
 (fn body [state index value fx id]
@@ -88,8 +86,6 @@
                              :saw_content true}))
         state)))
 
-;; The CLI requires the MCP namespace on the wire, but Misa's own tools
-;; retain their registered names in canonical conversation data.
 (fn tool-name [name]
   (if (= (type name) :string) (name:gsub "^mcp__misa__" "") name))
 
@@ -125,98 +121,73 @@
                    :input_includes_cache false
                    :cost_usd cost}})))
 
-(local partials {:message_start (fn [state record id]
-                                  (when (= (type record.message) :table)
-                                    (let [sequence (+ state.message_seq 1)
-                                          key (if record.message.id
-                                                  (.. "id:" record.message.id)
-                                                  (.. "seq:" sequence))]
-                                      {:state (misa.patch state
-                                                          {:message_seq sequence
-                                                           :current_message key})
-                                       :fx [(usage id record.message.usage)]})))
-                 :message_delta (fn [_ record id]
-                                  {:fx [(emit id :agent/stream-usage
-                                              {:stop_reason (and (= (type record.delta)
-                                                                    :table)
-                                                                 record.delta.stop_reason)
-                                               :usage {:output_tokens (or (and (= (type record.usage)
-                                                                                  :table)
-                                                                               record.usage.output_tokens)
-                                                                          0)}})]})
-                 :content_block_start (fn [state record id]
-                                        (when (= (type record.content_block)
-                                                 :table)
-                                          (let [block record.content_block
-                                                fx []
-                                                value (if (and (= block.type
-                                                                  :text)
-                                                               (= (type block.text)
-                                                                  :string)
-                                                               (not= block.text
-                                                                     ""))
-                                                          {:type :text
-                                                           :text block.text}
-                                                          (and (= block.type
-                                                                  :thinking)
-                                                               (= (type block.thinking)
-                                                                  :string)
-                                                               (not= block.thinking
-                                                                     ""))
-                                                          {:type :thinking
-                                                           :text block.thinking}
-                                                          nil)
-                                                next (body state record.index
-                                                           value fx id)]
-                                            {:state (if (= block.type :tool_use)
-                                                        (tool next record.index
-                                                              block false fx id)
-                                                        next)
-                                             : fx})))
-                 :content_block_delta (fn [state record id]
-                                        (when (= (type record.delta) :table)
-                                          (let [value record.delta
-                                                fx []
-                                                content (if (and (= value.type
-                                                                    :text_delta)
-                                                                 (= (type value.text)
-                                                                    :string))
-                                                            {:type :text
-                                                             :text value.text}
-                                                            (and (= value.type
-                                                                    :thinking_delta)
-                                                                 (= (type value.thinking)
-                                                                    :string))
-                                                            {:type :thinking
-                                                             :text value.thinking}
-                                                            nil)
-                                                next (body state record.index
-                                                           content fx id)]
-                                            (when (= value.type
-                                                     :input_json_delta)
-                                              (let [call-id (. state.block_tools
-                                                               (block-key state
-                                                                          record.index))
-                                                    call (and call-id
-                                                              (. state.tools
-                                                                 call-id))]
-                                                (when (not (and call
-                                                                call.complete))
-                                                  (table.insert fx
-                                                                (delta id
-                                                                       {:type :tool_call
-                                                                        :index (or (and call
-                                                                                        call.index)
-                                                                                   (block-key state
-                                                                                              record.index))
-                                                                        :arguments_json_delta (or value.partial_json
-                                                                                                  "")})))))
-                                            {:state (if (= value.type
-                                                           :input_json_delta)
-                                                        (misa.patch next
-                                                                    {:saw_content true})
-                                                        next)
-                                             : fx})))})
+(fn message-start [state record id]
+  (when (= (type record.message) :table)
+    (let [sequence (+ state.message_seq 1)
+          key (if record.message.id
+                  (.. "id:" record.message.id)
+                  (.. "seq:" sequence))]
+      {:state (misa.patch state {:message_seq sequence :current_message key})
+       :fx [(usage id record.message.usage)]})))
+
+(fn message-delta [_ record id]
+  {:fx [(emit id :agent/stream-usage
+              {:stop_reason (and (= (type record.delta) :table)
+                                 record.delta.stop_reason)
+               :usage {:output_tokens (or (and (= (type record.usage) :table)
+                                               record.usage.output_tokens)
+                                          0)}})]})
+
+(fn content-block-start [state record id]
+  (when (= (type record.content_block) :table)
+    (let [block record.content_block
+          fx []
+          value (if (and (= block.type :text) (= (type block.text) :string)
+                         (not= block.text ""))
+                    {:type :text :text block.text}
+                    (and (= block.type :thinking)
+                         (= (type block.thinking) :string)
+                         (not= block.thinking ""))
+                    {:type :thinking :text block.thinking}
+                    nil)
+          next (body state record.index value fx id)]
+      {:state (if (= block.type :tool_use)
+                  (tool next record.index block false fx id)
+                  next)
+       : fx})))
+
+(fn content-block-delta [state record id]
+  (when (= (type record.delta) :table)
+    (let [value record.delta
+          fx []
+          content (if (and (= value.type :text_delta)
+                           (= (type value.text) :string))
+                      {:type :text :text value.text}
+                      (and (= value.type :thinking_delta)
+                           (= (type value.thinking) :string))
+                      {:type :thinking :text value.thinking}
+                      nil)
+          next (body state record.index content fx id)]
+      (when (= value.type :input_json_delta)
+        (let [call-id (. state.block_tools (block-key state record.index))
+              call (and call-id (. state.tools call-id))]
+          (when (not (and call call.complete))
+            (table.insert fx
+                          (delta id
+                                 {:type :tool_call
+                                  :index (or (and call call.index)
+                                             (block-key state record.index))
+                                  :arguments_json_delta (or value.partial_json
+                                                            "")})))))
+      {:state (if (= value.type :input_json_delta)
+                  (misa.patch next {:saw_content true})
+                  next)
+       : fx})))
+
+(local partials {:message_start message-start
+                 :message_delta message-delta
+                 :content_block_start content-block-start
+                 :content_block_delta content-block-delta})
 
 (fn assistant-record [previous record id]
   (when (= (type record.message) :table)
@@ -312,9 +283,8 @@
      :remaining (when used (- 100 used))
      :reset_at (when (= (type value.resets_at) :string) value.resets_at)}))
 
-;; Isolate the experimental get_usage shape here. Never interpret the new
-;; probe session's zero cost as this application's conversation cost.
 (fn quota-snapshot [data]
+  "Normalize Claude account limits into a quota snapshot."
   (let [windows []]
     (var extra-usage nil)
     (let [limits (and (= data.rate_limits_available true)
@@ -375,13 +345,15 @@
 
 (fn usage-response [event]
   (when (and event.ok (= (type event.data) :table))
-    (each [_ record (ipairs event.data)]
-      (let [response (and (= (type record) :table) record.response)]
-        (when (and (= (type record) :table) (= record.type :control_response)
-                   (= (type response) :table) (= response.request_id event.id)
-                   (= response.subtype :success)
-                   (= (type response.response) :table))
-          (lua "return response.response"))))))
+    (accumulate [found nil _ record (ipairs event.data)]
+      (or found (let [response (and (= (type record) :table) record.response)]
+                  (when (and (= (type record) :table)
+                             (= record.type :control_response)
+                             (= (type response) :table)
+                             (= response.request_id event.id)
+                             (= response.subtype :success)
+                             (= (type response.response) :table))
+                    response.response))))))
 
 (fn merge-quota [previous incoming]
   (let [update (and incoming.windows (. incoming.windows 1))]
@@ -431,14 +403,13 @@
                                           :remaining (when used
                                                        (math.max 0 (- 100 used)))}]}}}]}))))
 
-(local records {:stream_event (fn [state record id]
-                                (let [streamed (and (= (type record.event)
-                                                       :table)
-                                                    record.event)
-                                      handler (and streamed
-                                                   (. (misa.catalog :claude-stream-events)
-                                                      streamed.type))]
-                                  (when handler (handler state streamed id))))
+(fn stream-event [state record id]
+  (let [streamed (and (= (type record.event) :table) record.event)
+        handler (and streamed (. (misa.catalog :claude-stream-events)
+                                 streamed.type))]
+    (when handler (handler state streamed id))))
+
+(local records {:stream_event stream-event
                 :assistant assistant-record
                 :user user-record
                 :result result-record
@@ -492,8 +463,139 @@
                     (table.insert fx {:id event.id :type :operation/finish})))))
             (stream-update event.id next fx))))))
 
+(fn refresh-usage [config executable db event]
+  (when (or (not event.provider) (= event.provider :claude))
+    (let [provider (and db.providers db.providers.claude)]
+      (if (and provider provider.usage_request)
+          {:patch {:providers {:claude {:usage_again true}}}}
+          (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
+                id (.. :claude-usage- sequence)]
+            {:patch {:providers {:claude {:usage_sequence sequence
+                                          :usage_request id}}}
+             :fx [{:type :provider/process
+                   : id
+                   :completion :provider/claude-usage
+                   :argv [executable
+                          :--print
+                          :--input-format
+                          :stream-json
+                          :--output-format
+                          :stream-json
+                          :--verbose
+                          :--no-session-persistence
+                          :--setting-sources
+                          ""
+                          :--settings
+                          "{\"disableAllHooks\":true}"
+                          :--strict-mcp-config
+                          :--mcp-config
+                          "{\"mcpServers\":{}}"]
+                   :stdin_json {:type :control_request
+                                :request_id id
+                                :request {:subtype :get_usage}}
+                   :stdout_format :json_lines
+                   :timeouts (or config.usage_timeouts
+                                 {:startup_ms 10000
+                                  :idle_ms 10000
+                                  :overall_ms 30000})}]})))))
+
+(fn receive-usage [db event]
+  (let [provider (and db.providers db.providers.claude)]
+    (when (and provider provider.usage_request
+               (= provider.usage_request event.id))
+      (let [data (usage-response event)
+            snapshot (misa.patch (quota-snapshot (or data {}))
+                                 {:summary (when (not data)
+                                             "Claude CLI usage unavailable")})
+            plan (and data (= (type data.subscription_type) :string)
+                      data.subscription_type)
+            updated {:type :dispatch :event {:type :usage/updated}}]
+        {:patch {:providers {:claude {:usage_request misa.delete
+                                      :usage_again misa.delete
+                                      :subscription_type (when data
+                                                           (misa.replace plan))
+                                      :usage (misa.replace snapshot)}}}
+         :fx (if provider.usage_again
+                 [updated
+                  {:type :dispatch
+                   :event {:type :usage/refresh :provider :claude}}]
+                 [updated])}))))
+
+(fn provider-availability [configured-models db event]
+  (if (or (not= event.provider :claude) (= event.subscription_type nil)
+          (= event.subscription_type misa.json-null))
+      nil
+      (let [has-extended-opus (or (= event.subscription_type :max)
+                                  (= event.subscription_type :team)
+                                  (= event.subscription_type :enterprise))
+            updates {}]
+        (each [_ model (ipairs configured-models)]
+          (when (model.model:match "^claude%-opus%-")
+            (tset updates (+ (length updates) 1)
+                  {:context_window (or (and has-extended-opus 1000000) 200000)
+                   :id model.id})))
+        {:patch {:providers {:claude {:subscription_type event.subscription_type}}}
+         :fx [{:event {:models updates :provider :claude :type :models/update}
+               :type :dispatch}]})))
+
+(fn request [config serializer-id executable effect cofx]
+  "Build a Claude CLI request with explicit host and provider settings."
+  (let [argv [executable
+              :--print
+              :--input-format
+              :stream-json
+              :--output-format
+              :stream-json
+              :--verbose
+              :--include-partial-messages
+              :--model
+              effect.model
+              :--tools
+              ""
+              :--strict-mcp-config
+              :--permission-mode
+              :dontAsk
+              :--no-session-persistence]]
+    (each [_ argument (ipairs (misa.request-options.serialize serializer-id
+                                                              (or effect.request_options
+                                                                  {})))]
+      (table.insert argv argument))
+    (when (> (length effect.tools) 0)
+      (let [host (or cofx.host {})
+            mcp-command (or config.mcp_command host.executable :misa)
+            mcp-arguments (or config.mcp_arguments
+                              (and host.config_path
+                                   [:mcp :--config host.config_path])
+                              [:mcp])
+            allowed {}]
+        (each [_ tool (ipairs effect.tools)]
+          (tset allowed (+ (length allowed) 1) (.. :mcp__misa__ tool.name)))
+        (tset argv (+ (length argv) 1) :--mcp-config)
+        (tset argv (+ (length argv) 1) (mcp-config mcp-command mcp-arguments))
+        (tset argv (+ (length argv) 1) :--allowedTools)
+        (tset argv (+ (length argv) 1) (table.concat allowed ","))))
+    (when effect.system_prompt
+      (tset argv (+ (length argv) 1) :--system-prompt)
+      (tset argv (+ (length argv) 1) effect.system_prompt))
+    {: argv
+     :completion :provider/claude-complete
+     :id effect.id
+     :stdin_json {:message {:content (prompt-content effect.messages)
+                            :role :user}
+                  :parent_tool_use_id misa.json-null
+                  :type :user}
+     :stdout_format :json_lines_stream
+     :type :provider/process}))
+
+(fn receive-quota [db event]
+  (let [previous (and db.providers db.providers.claude
+                      db.providers.claude.usage)]
+    {:patch {:providers {:claude {:usage (misa.replace (merge-quota previous
+                                                                    event.usage))}}}
+     :fx [{:type :dispatch :event {:type :usage/updated}}]}))
+
 (fn build [context]
-  "Describe claude policies for the supplied application settings."
+  "Build the claude provider catalogs from application settings."
   (let [declarations []]
     (table.insert declarations
                   (let [definition {:description "Claude Pro/Max via Claude Code"
@@ -506,287 +608,127 @@
                      :value definition}))
     (let [providers (or (and (= (type context.config) :table)
                              context.config.providers)
-                        nil)]
-      (var config (or (and (= (type providers) :table) providers.claude) nil))
-      (set config (or (and (= (type config) :table) config) {}))
-      (let [executable (or config.executable :claude)]
-        (assert (and (= (type executable) :string) (not= executable ""))
-                "config.providers.claude.executable must be nonempty")
+                        nil)
+          raw-config (or (and (= (type providers) :table) providers.claude) nil)
+          config (or (and (= (type raw-config) :table) raw-config) {})
+          executable (or config.executable :claude)]
+      (assert (and (= (type executable) :string) (not= executable ""))
+              "config.providers.claude.executable must be nonempty")
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :usage/refresh
+                             :handler (fn [db event]
+                                        (refresh-usage config executable db
+                                                       event))}})
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :provider/claude-usage
+                             :handler receive-usage}})
+      (assert (or (= config.mcp_command nil)
+                  (and (= (type config.mcp_command) :string)
+                       (not= config.mcp_command "")))
+              "config.providers.claude.mcp_command must be nonempty")
+      (assert (or (= config.mcp_arguments nil)
+                  (= (type config.mcp_arguments) :table))
+              "config.providers.claude.mcp_arguments must be an array")
+      (assert (or (= config.max_plan nil) (= (type config.max_plan) :boolean))
+              "config.providers.claude.max_plan must be boolean")
+      (let [max-plan (= config.max_plan true)
+            serializer-id :claude.cli]
         (table.insert declarations
-                      {:catalog :events
-                       :value {:event :usage/refresh
-                               :handler (fn [db event]
-                                          (when (or (not event.provider)
-                                                    (= event.provider :claude))
-                                            (let [provider (and db.providers
-                                                                db.providers.claude)]
-                                              (if (and provider
-                                                       provider.usage_request)
-                                                  {:patch {:providers {:claude {:usage_again true}}}}
-                                                  (let [sequence (+ (or (and provider
-                                                                             provider.usage_sequence)
-                                                                        0)
-                                                                    1)
-                                                        id (.. :claude-usage-
-                                                               sequence)]
-                                                    {:patch {:providers {:claude {:usage_sequence sequence
-                                                                                  :usage_request id}}}
-                                                     :fx [{:type :provider/process
-                                                           : id
-                                                           :completion :provider/claude-usage
-                                                           :argv [executable
-                                                                  :--print
-                                                                  :--input-format
-                                                                  :stream-json
-                                                                  :--output-format
-                                                                  :stream-json
-                                                                  :--verbose
-                                                                  :--no-session-persistence
-                                                                  :--setting-sources
-                                                                  ""
-                                                                  :--settings
-                                                                  "{\"disableAllHooks\":true}"
-                                                                  :--strict-mcp-config
-                                                                  :--mcp-config
-                                                                  "{\"mcpServers\":{}}"]
-                                                           :stdin_json {:type :control_request
-                                                                        :request_id id
-                                                                        :request {:subtype :get_usage}}
-                                                           :stdout_format :json_lines
-                                                           :timeouts (or config.usage_timeouts
-                                                                         {:startup_ms 10000
-                                                                          :idle_ms 10000
-                                                                          :overall_ms 30000})}]})))))}})
-        (table.insert declarations
-                      {:catalog :events
-                       :value {:event :provider/claude-usage
-                               :handler (fn [db event]
-                                          (let [provider (and db.providers
-                                                              db.providers.claude)]
-                                            (when (and provider
-                                                       provider.usage_request
-                                                       (= provider.usage_request
-                                                          event.id))
-                                              (let [data (usage-response event)
-                                                    snapshot (misa.patch (quota-snapshot (or data
-                                                                                             {}))
-                                                                         {:summary (when (not data)
-                                                                                     "Claude CLI usage unavailable")})
-                                                    plan (and data
-                                                              (= (type data.subscription_type)
-                                                                 :string)
-                                                              data.subscription_type)
-                                                    updated {:type :dispatch
-                                                             :event {:type :usage/updated}}]
-                                                {:patch {:providers {:claude {:usage_request misa.delete
-                                                                              :usage_again misa.delete
-                                                                              :subscription_type (when data
-                                                                                                   (misa.replace plan))
-                                                                              :usage (misa.replace snapshot)}}}
-                                                 :fx (if provider.usage_again
-                                                         [updated
-                                                          {:type :dispatch
-                                                           :event {:type :usage/refresh
-                                                                   :provider :claude}}]
-                                                         [updated])}))))}})
-        (assert (or (= config.mcp_command nil)
-                    (and (= (type config.mcp_command) :string)
-                         (not= config.mcp_command "")))
-                "config.providers.claude.mcp_command must be nonempty")
-        (assert (or (= config.mcp_arguments nil)
-                    (= (type config.mcp_arguments) :table))
-                "config.providers.claude.mcp_arguments must be an array")
-        (assert (or (= config.max_plan nil) (= (type config.max_plan) :boolean))
-                "config.providers.claude.max_plan must be boolean")
-        (let [max-plan (= config.max_plan true)
-              serializer-id :claude.cli]
-          (table.insert declarations
-                        {:catalog :serializers
-                         :id serializer-id
-                         :value {:accepts (fn [name]
-                                            (= name :reasoning_effort))
-                                 :serialize (fn [name value]
-                                              "Return command arguments for a supported option."
-                                              (when (= name :reasoning_effort)
-                                                [:--effort value]))}})
-          (let [reasoning-api {:request_options {:reasoning_effort {:choices [:low
-                                                                              :medium
-                                                                              :high
-                                                                              :max]
-                                                                    :default :high}}
-                               :request_options_serializer serializer-id}
-                configured-models (or config.models
-                                      [{:context_window 1000000
-                                        :id :claude/claude-fable-5-1
-                                        :label "Claude Fable 5.1"
-                                        :model :claude-fable-5-1}
-                                       {:context_window (or (and max-plan
-                                                                 1000000)
-                                                            200000)
-                                        :id :claude/claude-opus-5
-                                        :label "Claude Opus 5"
-                                        :model :claude-opus-5}
-                                       {:context_window 1000000
-                                        :id :claude/claude-sonnet-5
-                                        :label "Claude Sonnet 5"
-                                        :model :claude-sonnet-5}
-                                       {:context_window 200000
-                                        :id :claude/claude-haiku-4-5-20251001
-                                        :label "Claude Haiku 4.5"
-                                        :model :claude-haiku-4-5-20251001}])]
-            (assert (and (= (type configured-models) :table)
-                         (> (length configured-models) 0))
-                    "config.providers.claude.models must be nonempty")
-            (each [_ model (ipairs configured-models)]
-              (assert (and (= (type model) :table) (= (type model.id) :string)
-                           (= (type model.model) :string))
-                      "invalid Claude model")
-              (let [source (or model.api reasoning-api)
-                    api (if (and (= (type source) :table)
-                                 (= (type source.request_options) :table))
-                            (misa.patch source
-                                        {:request_options_serializer serializer-id})
-                            source)]
-                (table.insert declarations
-                              (let [definition {: api
-                                                :context_window model.context_window
-                                                :id model.id
-                                                :label (or model.label model.id)
-                                                :model model.model
-                                                :provider :claude}]
-                                {:catalog :models
-                                 :id (. definition :id)
-                                 :value definition}))))
-            (when (= config.max_plan nil)
+                      {:catalog :serializers
+                       :id serializer-id
+                       :value {:accepts (fn [name]
+                                          (= name :reasoning_effort))
+                               :serialize (fn [name value]
+                                            "Return command arguments for a supported option."
+                                            (when (= name :reasoning_effort)
+                                              [:--effort value]))}})
+        (let [reasoning-api {:request_options {:reasoning_effort {:choices [:low
+                                                                            :medium
+                                                                            :high
+                                                                            :max]
+                                                                  :default :high}}
+                             :request_options_serializer serializer-id}
+              configured-models (or config.models
+                                    [{:context_window 1000000
+                                      :id :claude/claude-fable-5-1
+                                      :label "Claude Fable 5.1"
+                                      :model :claude-fable-5-1}
+                                     {:context_window (or (and max-plan 1000000)
+                                                          200000)
+                                      :id :claude/claude-opus-5
+                                      :label "Claude Opus 5"
+                                      :model :claude-opus-5}
+                                     {:context_window 1000000
+                                      :id :claude/claude-sonnet-5
+                                      :label "Claude Sonnet 5"
+                                      :model :claude-sonnet-5}
+                                     {:context_window 200000
+                                      :id :claude/claude-haiku-4-5-20251001
+                                      :label "Claude Haiku 4.5"
+                                      :model :claude-haiku-4-5-20251001}])]
+          (assert (and (= (type configured-models) :table)
+                       (> (length configured-models) 0))
+                  "config.providers.claude.models must be nonempty")
+          (each [_ model (ipairs configured-models)]
+            (assert (and (= (type model) :table) (= (type model.id) :string)
+                         (= (type model.model) :string))
+                    "invalid Claude model")
+            (let [source (or model.api reasoning-api)
+                  api (if (and (= (type source) :table)
+                               (= (type source.request_options) :table))
+                          (misa.patch source
+                                      {:request_options_serializer serializer-id})
+                          source)]
               (table.insert declarations
-                            {:catalog :events
-                             :value {:event :models/provider-availability
-                                     :handler (fn [db event]
-                                                (if (or (not= event.provider
-                                                              :claude)
-                                                        (= event.subscription_type
-                                                           nil)
-                                                        (= event.subscription_type
-                                                           misa.json-null))
-                                                    nil
-                                                    (do
-                                                      (let [has-extended-opus (or (= event.subscription_type
-                                                                                     :max)
-                                                                                  (= event.subscription_type
-                                                                                     :team)
-                                                                                  (= event.subscription_type
-                                                                                     :enterprise))
-                                                            updates {}]
-                                                        (each [_ model (ipairs configured-models)]
-                                                          (when (model.model:match "^claude%-opus%-")
-                                                            (tset updates
-                                                                  (+ (length updates)
-                                                                     1)
-                                                                  {:context_window (or (and has-extended-opus
-                                                                                            1000000)
-                                                                                       200000)
-                                                                   :id model.id})))
-                                                        {:patch {:providers {:claude {:subscription_type event.subscription_type}}}
-                                                         :fx [{:event {:models updates
-                                                                       :provider :claude
-                                                                       :type :models/update}
-                                                               :type :dispatch}]}))))}}))
-            (table.insert declarations
-                          {:catalog :effects
-                           :id :provider.claude
-                           :value (fn [effect cofx]
-                                    (let [argv [executable
-                                                :--print
-                                                :--input-format
-                                                :stream-json
-                                                :--output-format
-                                                :stream-json
-                                                :--verbose
-                                                :--include-partial-messages
-                                                :--model
-                                                effect.model
-                                                :--tools
-                                                ""
-                                                :--strict-mcp-config
-                                                :--permission-mode
-                                                :dontAsk
-                                                :--no-session-persistence]]
-                                      (each [_ argument (ipairs (misa.request-options.serialize serializer-id
-                                                                                                (or effect.request_options
-                                                                                                    {})))]
-                                        (table.insert argv argument))
-                                      (when (> (length effect.tools) 0)
-                                        (let [host (or cofx.host {})
-                                              mcp-command (or config.mcp_command
-                                                              host.executable
-                                                              :misa)
-                                              mcp-arguments (or config.mcp_arguments
-                                                                (and host.config_path
-                                                                     [:mcp
-                                                                      :--config
-                                                                      host.config_path])
-                                                                [:mcp])
-                                              allowed {}]
-                                          (each [_ tool (ipairs effect.tools)]
-                                            (tset allowed
-                                                  (+ (length allowed) 1)
-                                                  (.. :mcp__misa__ tool.name)))
-                                          (tset argv (+ (length argv) 1)
-                                                :--mcp-config)
-                                          (tset argv (+ (length argv) 1)
-                                                (mcp-config mcp-command
-                                                            mcp-arguments))
-                                          (tset argv (+ (length argv) 1)
-                                                :--allowedTools)
-                                          (tset argv (+ (length argv) 1)
-                                                (table.concat allowed ","))))
-                                      (when effect.system_prompt
-                                        (tset argv (+ (length argv) 1)
-                                              :--system-prompt)
-                                        (tset argv (+ (length argv) 1)
-                                              effect.system_prompt))
-                                      {: argv
-                                       :completion :provider/claude-complete
-                                       :id effect.id
-                                       :stdin_json {:message {:content (prompt-content effect.messages)
-                                                              :role :user}
-                                                    :parent_tool_use_id misa.json-null
-                                                    :type :user}
-                                       :stdout_format :json_lines_stream
-                                       :type :provider/process}))})
+                            (let [definition {: api
+                                              :context_window model.context_window
+                                              :id model.id
+                                              :label (or model.label model.id)
+                                              :model model.model
+                                              :provider :claude}]
+                              {:catalog :models
+                               :id (. definition :id)
+                               :value definition}))))
+          (when (= config.max_plan nil)
             (table.insert declarations
                           {:catalog :events
-                           :value {:event :provider/claude-complete
-                                   :handler stream}})
-            (table.insert declarations
-                          {:catalog :events
-                           :value {:event :provider/claude-quota
+                           :value {:event :models/provider-availability
                                    :handler (fn [db event]
-                                              (let [previous (and db.providers
-                                                                  db.providers.claude
-                                                                  db.providers.claude.usage)]
-                                                {:patch {:providers {:claude {:usage (misa.replace (merge-quota previous
-                                                                                                                event.usage))}}}
-                                                 :fx [{:type :dispatch
-                                                       :event {:type :usage/updated}}]}))}})
-            (each [id value (pairs records)]
-              (table.insert declarations
-                            {:catalog :claude-records : id : value}))
+                                              (provider-availability configured-models
+                                                                     db event))}}))
+          (table.insert declarations
+                        {:catalog :effects
+                         :id :provider.claude
+                         :value (fn [effect cofx]
+                                  (request config serializer-id executable
+                                           effect cofx))})
+          (table.insert declarations
+                        {:catalog :events
+                         :value {:event :provider/claude-complete
+                                 :handler stream}})
+          (table.insert declarations
+                        {:catalog :events
+                         :value {:event :provider/claude-quota
+                                 :handler receive-quota}})
+          (each [id value (pairs records)]
+            (table.insert declarations {:catalog :claude-records : id : value}))
+          (table.insert declarations
+                        {:catalog :validators
+                         :id :claude-records
+                         :value (fn [_ value]
+                                  (assert (= (type value) :function)
+                                          "claude-records requires function definitions"))})
+          (each [id value (pairs partials)]
             (table.insert declarations
-                          {:catalog :validators
-                           :id :claude-records
-                           :value (fn [_ value]
-                                    (assert (= (type value) :function)
-                                            "claude-records requires function definitions"))})
-            (each [id value (pairs partials)]
-              (table.insert declarations
-                            {:catalog :claude-stream-events : id : value}))
-            (table.insert declarations
-                          {:catalog :validators
-                           :id :claude-stream-events
-                           :value (fn [_ value]
-                                    (assert (= (type value) :function)
-                                            "claude-stream-events requires function definitions"))})
-            (definitions.build :provider.claude declarations {})))))))
+                          {:catalog :claude-stream-events : id : value}))
+          (table.insert declarations
+                        {:catalog :validators
+                         :id :claude-stream-events
+                         :value (fn [_ value]
+                                  (assert (= (type value) :function)
+                                          "claude-stream-events requires function definitions"))})
+          (definitions.build :provider.claude declarations {}))))))
 
-{: build}
+{:build build :request request :quota-snapshot quota-snapshot}

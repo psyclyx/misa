@@ -210,7 +210,8 @@
             (let [viewport (misa.choices.viewport panel (. columns 1 :rows)
                                                   width room 1)]
               (values viewport viewport.targets))
-            (let [(rows targets) (values {} {})
+            (let [rows {}
+                  targets {}
                   first (misa.choices.first-index panel room)]
               (for [index first (math.min (length panel.items)
                                           (- (+ first room) 1))]
@@ -280,18 +281,29 @@
           (updated (if (= edited.text "") (clear-choice edited) edited) nil
                    reason)) nil)))
 
-(local edits {:text (fn [editor event]
-                      (with-text editor
-                        (.. (editor.text:sub 1 editor.cursor) event.text
-                            (editor.text:sub (+ editor.cursor 1)))
-                        (+ editor.cursor (length event.text))))
-              :backspace (fn [editor]
-                           (let [previous (previous-cursor editor.text
-                                                           editor.cursor)]
-                             (with-text editor
-                               (.. (editor.text:sub 1 previous)
-                                   (editor.text:sub (+ editor.cursor 1)))
-                               previous)))
+(fn ctrl-d [editor]
+  (if (< editor.cursor (length editor.text))
+      (misa.patch editor
+                  {:text (.. (editor.text:sub 1 editor.cursor)
+                             (editor.text:sub (+ (next-cursor editor.text
+                                                              editor.cursor)
+                                                 1)))})
+      editor))
+
+(fn backspace [editor]
+  (let [previous (previous-cursor editor.text editor.cursor)]
+    (with-text editor
+      (.. (editor.text:sub 1 previous) (editor.text:sub (+ editor.cursor 1)))
+      previous)))
+
+(fn text-2 [editor event]
+  (with-text editor
+    (.. (editor.text:sub 1 editor.cursor) event.text
+        (editor.text:sub (+ editor.cursor 1)))
+    (+ editor.cursor (length event.text))))
+
+(local edits {:text text-2
+              :backspace backspace
               :arrow_left (fn [editor]
                             (with-text editor editor.text
                               (previous-cursor editor.text editor.cursor)))
@@ -299,15 +311,7 @@
                              (with-text editor editor.text
                                (next-cursor editor.text editor.cursor)))
               :ctrl_c emptied
-              :ctrl_d (fn [editor]
-                        (if (< editor.cursor (length editor.text))
-                            (misa.patch editor
-                                        {:text (.. (editor.text:sub 1
-                                                                    editor.cursor)
-                                                   (editor.text:sub (+ (next-cursor editor.text
-                                                                                    editor.cursor)
-                                                                       1)))})
-                            editor))})
+              :ctrl_d ctrl-d})
 
 (fn raw-input [editor event db cofx]
   (if (or (= event.kind :eof) (and (= event.kind :ctrl_d) (= editor.text "")))
@@ -360,14 +364,14 @@
         (raw-input editor event db cofx)
         (let [action (when (not (and (= event.kind :enter)
                                      (submit-exact-choice editor)))
-                       (misa.choices.action event))]
-          (let [(result reason) (when (and editor.choice
-                                           (or editor.choice.combo action
-                                               (= event.kind :alt)
-                                               (= event.kind :text)
-                                               (= event.kind :backspace)))
-                                  (choice-input editor event action db cofx))]
-            (if result (values result reason) (raw-input editor event db cofx)))))))
+                       (misa.choices.action event))
+              (result reason) (when (and editor.choice
+                                         (or editor.choice.combo action
+                                             (= event.kind :alt)
+                                             (= event.kind :text)
+                                             (= event.kind :backspace)))
+                                (choice-input editor event action db cofx))]
+          (if result (values result reason) (raw-input editor event db cofx))))))
 
 (fn restore [db event]
   (let [editor (state db)
@@ -410,210 +414,187 @@
       (tset attachments index (. editor.attachments index)))
     (updated (misa.patch editor {:attachments (misa.replace attachments)}))))
 
+(fn compute-editor-lifecycle [inputs]
+  (let [result {:hold_exit false :block_draft false}]
+    (for [index 1 inputs.n]
+      (let [flags (. inputs index)]
+        (assert (= (type flags) :table)
+                "editor lifecycle query must return flags")
+        (each [key value (pairs flags)]
+          (assert (and (or (= key :hold_exit) (= key :block_draft))
+                       (= (type value) :boolean))
+                  "invalid editor lifecycle flag")
+          (when value
+            (tset result key true)))))
+    result))
+
+(fn render-editor-project-input [db context]
+  "Render editor input, reusing the accepted projection when unchanged."
+  (let [editor db.editor]
+    (misa.components.render db :editor.input
+                            {:cursor editor.cursor
+                             :mode editor.mode
+                             :text editor.text
+                             :selection_end editor.selection_end
+                             :selection_start editor.selection_start}
+                            context)))
+
+(fn editor-layout [db projection-context]
+  "Lay out editor input and completions within the supplied budgets."
+  (let [editor (assert db.editor "editor state is not initialized")]
+    (var completions {:rows {}})
+    (let [terminal (and projection-context projection-context.terminal)
+          input (misa.editor.project-input db
+                                           {:columns (or (and terminal
+                                                              terminal.columns)
+                                                         80)})
+          room (or (and projection-context projection-context.layout
+                        (. (misa.ui.input-budgets projection-context.layout
+                                                  (length input.lines)
+                                                  projection-context.layout.dock_count)
+                           :completions))
+                   (and terminal misa.ui misa.ui.completion-room
+                        (misa.ui.completion-room db terminal
+                                                 (length input.lines)))
+                   5)
+          cursor (or input.cursor {:byte 0 :row 1 :shape :bar})]
+      (when (and editor.choice (not editor.choice_overlay))
+        (set completions (completion-layout editor db room
+                                            (or (and terminal terminal.columns)
+                                                80))))
+      {:busy false
+       :byte cursor.byte
+       :shape cursor.shape
+       :completions (. (misa.components.render db
+                                               (or (and completions.columns
+                                                        :picker)
+                                                   :editor.completions)
+                                               completions)
+                       :lines)
+       :input input.lines
+       :row cursor.row})))
+
+(fn lifecycle-inputs []
+  (let [contributors (or (and misa.editor misa.editor.lifecycle) {})
+        names (icollect [name (pairs contributors)]
+                name)]
+    (table.sort names)
+    (icollect [_ name (ipairs names)]
+      (. contributors name))))
+
+(fn input-model [db]
+  (let [editor (assert db.editor "editor state is not initialized")]
+    {:cursor editor.cursor
+     :mode editor.mode
+     :text editor.text
+     :selection_end editor.selection_end
+     :selection_start editor.selection_start
+     :components db.components
+     :themes db.themes
+     :hover_action db.hover_action
+     :hover_link db.hover_link
+     :choice_pending (and misa.choices misa.choices.pending
+                          (misa.choices.pending db))}))
+
+(fn editor-steer [db _ cofx]
+  (let [editor (state db)]
+    (if (. (misa.sub db [:editor/lifecycle]) :block_draft)
+        (updated editor)
+        (let [result (dispatch-input (misa.patch (emptied editor)
+                                                 {:mode :insert
+                                                  :selection_start misa.delete
+                                                  :selection_end misa.delete})
+                                     {:attachments editor.attachments
+                                      :prompt editor.text
+                                      :type :queue/steer}
+                                     cofx)]
+          (values result :steer)))))
+
+(fn editor-completion-check [db event cofx]
+  (let [editor db.editor
+        pending (and cofx.terminal.interactive editor
+                     (or (not= editor.text "")
+                         (> (length (or editor.attachments {})) 0)))
+        active (and db.agent
+                    (or (not= db.agent.status :ready) db.agent.startup_prompt))]
+    {:fx [(if (and event.exit (not active) (not pending)
+                   (not (. (misa.sub db [:editor/lifecycle]) :hold_exit)))
+              {:type :app/quit}
+              cofx.terminal.interactive
+              {:event {:type :ui/redraw} :type :dispatch}
+              {:type :terminal/read})]}))
+
+(fn agent-completed [_ event]
+  {:fx [{:type :dispatch
+         :event {:type :editor/completion-check :exit event.exit}}]})
+
+(fn agent-unavailable [_ event cofx]
+  {:fx [{:event {:level :error :text event.message :type :transcript/harness}
+         :type :dispatch}
+        {:type (if cofx.terminal.interactive
+                   :terminal/read
+                   :app/quit)}]})
+
+(fn agent-status [db event]
+  (updated (misa.patch (state db) {:busy (not= event.status :ready)}) []))
+
+(fn validate-transition [_ handler]
+  (assert (= (type handler) :function) "transition must be a function"))
+
 (fn build [context]
   "Build the declarations for editor."
   (let [declarations []
         config (or (and (= (type context.config) :table) context.config.ui) nil)
         plain-prompt (and (= (type config) :table) (= config.plain_prompt true))]
-    ;; Setup-only named query contributors can precede or follow editor.
-    ;; Example: register/service editor_lifecycle.images => [:images/lifecycle].
-    ;; Contributors return data flags, never transaction callbacks.
+    ;; Lifecycle contributors supply named queries whose results are data flags.
     (table.insert declarations
                   (let [definition {:id :editor/lifecycle
-                                    :inputs (fn []
-                                              (let [contributors (or (and misa.editor
-                                                                          misa.editor.lifecycle)
-                                                                     {})
-                                                    names (icollect [name (pairs contributors)]
-                                                            name)]
-                                                (table.sort names)
-                                                (icollect [_ name (ipairs names)]
-                                                  (. contributors name))))
-                                    :compute (fn [inputs]
-                                               (let [result {:hold_exit false
-                                                             :block_draft false}]
-                                                 (for [index 1 inputs.n]
-                                                   (let [flags (. inputs index)]
-                                                     (assert (= (type flags)
-                                                                :table)
-                                                             "editor lifecycle query must return flags")
-                                                     (each [key value (pairs flags)]
-                                                       (assert (and (or (= key
-                                                                           :hold_exit)
-                                                                        (= key
-                                                                           :block_draft))
-                                                                    (= (type value)
-                                                                       :boolean))
-                                                               "invalid editor lifecycle flag")
-                                                       (when value
-                                                         (tset result key true)))))
-                                                 result))}]
+                                    :inputs lifecycle-inputs
+                                    :compute compute-editor-lifecycle}]
                     {:catalog :subscriptions
                      :id (. definition :id)
                      :value definition}))
     (table.insert declarations
                   {:catalog :projections
                    :id :editor.project-input
-                   :value {:inputs (fn [db]
-                                     (let [editor (assert db.editor
-                                                          "editor state is not initialized")]
-                                       {:cursor editor.cursor
-                                        :mode editor.mode
-                                        :text editor.text
-                                        :selection_end editor.selection_end
-                                        :selection_start editor.selection_start
-                                        :components db.components
-                                        :themes db.themes
-                                        :hover_action db.hover_action
-                                        :hover_link db.hover_link
-                                        :choice_pending (and misa.choices
-                                                             misa.choices.pending
-                                                             (misa.choices.pending db))}))
-                           :render (fn [db context]
-                                     "Render editor input, reusing the accepted projection when unchanged."
-                                     (let [editor db.editor]
-                                       (misa.components.render db :editor.input
-                                                               {:cursor editor.cursor
-                                                                :mode editor.mode
-                                                                :text editor.text
-                                                                :selection_end editor.selection_end
-                                                                :selection_start editor.selection_start}
-                                                               context)))}})
+                   :value {:inputs input-model
+                           :render render-editor-project-input}})
     (table.insert declarations
-                  {:catalog :services
-                   :id :editor.layout
-                   :value (fn [db projection-context]
-                            "Lay out editor input and completions within the supplied budgets."
-                            (let [editor (assert db.editor
-                                                 "editor state is not initialized")]
-                              (var completions {:rows {}})
-                              (let [terminal (and projection-context
-                                                  projection-context.terminal)
-                                    input (misa.editor.project-input db
-                                                                     {:columns (or (and terminal
-                                                                                        terminal.columns)
-                                                                                   80)})
-                                    room (or (and projection-context
-                                                  projection-context.layout
-                                                  (. (misa.ui.input-budgets projection-context.layout
-                                                                            (length input.lines)
-                                                                            projection-context.layout.dock_count)
-                                                     :completions))
-                                             (and terminal misa.ui
-                                                  misa.ui.completion-room
-                                                  (misa.ui.completion-room db
-                                                                           terminal
-                                                                           (length input.lines)))
-                                             5)
-                                    cursor (or input.cursor
-                                               {:byte 0 :row 1 :shape :bar})]
-                                (when (and editor.choice
-                                           (not editor.choice_overlay))
-                                  (set completions
-                                       (completion-layout editor db room
-                                                          (or (and terminal
-                                                                   terminal.columns)
-                                                              80))))
-                                {:busy false
-                                 :byte cursor.byte
-                                 :shape cursor.shape
-                                 :completions (. (misa.components.render db
-                                                                         (or (and completions.columns
-                                                                                  :picker)
-                                                                             :editor.completions)
-                                                                         completions)
-                                                 :lines)
-                                 :input input.lines
-                                 :row cursor.row})))})
-    (let [handlers {:app/start (fn [db _ cofx]
-                                 (let [fx {}]
-                                   (when (= (length cofx.argv) 0)
-                                     (when (and (not cofx.terminal.interactive)
-                                                plain-prompt)
-                                       (table.insert fx
-                                                     {:lines [{:spans [{:style {:foreground :default}
-                                                                        :text "misa> enter a prompt:"}]}]
-                                                      :type :view/commit}))
-                                     (table.insert fx {:type :terminal/read}))
-                                   (updated (state db) fx)))
-                    :agent/status (fn [db event]
-                                    (updated (misa.patch (state db)
-                                                         {:busy (not= event.status
-                                                                      :ready)})
-                                             []))
-                    :agent/unavailable (fn [_ event cofx]
-                                         {:fx [{:event {:level :error
-                                                        :text event.message
-                                                        :type :transcript/harness}
-                                                :type :dispatch}
-                                               {:type (if cofx.terminal.interactive
-                                                          :terminal/read
-                                                          :app/quit)}]})
-                    :agent/completed (fn [_ event]
-                                       {:fx [{:type :dispatch
-                                              :event {:type :editor/completion-check
-                                                      :exit event.exit}}]})
-                    :editor/completion-check (fn [db event cofx]
-                                               (let [editor db.editor
-                                                     pending (and cofx.terminal.interactive
-                                                                  editor
-                                                                  (or (not= editor.text
-                                                                            "")
-                                                                      (> (length (or editor.attachments
-                                                                                     {}))
-                                                                         0)))
-                                                     active (and db.agent
-                                                                 (or (not= db.agent.status
-                                                                           :ready)
-                                                                     db.agent.startup_prompt))]
-                                                 {:fx [(if (and event.exit
-                                                                (not active)
-                                                                (not pending)
-                                                                (not (. (misa.sub db
-                                                                                  [:editor/lifecycle])
-                                                                        :hold_exit)))
-                                                           {:type :app/quit}
-                                                           cofx.terminal.interactive
-                                                           {:event {:type :ui/redraw}
-                                                            :type :dispatch}
-                                                           {:type :terminal/read})]}))
+                  {:catalog :services :id :editor.layout :value editor-layout})
+
+    (fn app-start [db _ cofx]
+      (let [fx {}]
+        (when (= (length cofx.argv) 0)
+          (when (and (not cofx.terminal.interactive) plain-prompt)
+            (table.insert fx {:lines [{:spans [{:style {:foreground :default}
+                                                :text "misa> enter a prompt:"}]}]
+                              :type :view/commit}))
+          (table.insert fx {:type :terminal/read}))
+        (updated (state db) fx)))
+
+    (let [handlers {:app/start app-start
+                    :agent/status agent-status
+                    :agent/unavailable agent-unavailable
+                    :agent/completed agent-completed
+                    :editor/completion-check editor-completion-check
                     :editor/restore restore
                     :editor/attach attach
                     :editor/detach detach
-                    :editor/steer (fn [db _ cofx]
-                                    (let [editor (state db)]
-                                      (if (. (misa.sub db [:editor/lifecycle])
-                                             :block_draft)
-                                          (updated editor)
-                                          (let [result (dispatch-input (misa.patch (emptied editor)
-                                                                                   {:mode :insert
-                                                                                    :selection_start misa.delete
-                                                                                    :selection_end misa.delete})
-                                                                       {:attachments editor.attachments
-                                                                        :prompt editor.text
-                                                                        :type :queue/steer}
-                                                                       cofx)]
-                                            (values result :steer)))))
+                    :editor/steer editor-steer
                     :ui/redraw (fn []
                                  {:fx [{:type :terminal/read}]})
                     :editor/choice-selected selected
                     :terminal/input terminal-input}]
       (each [name handler (pairs handlers)]
+        (fn on-handler [db event cofx]
+          (let [(result reason) (handler db event cofx)]
+            (accounted db result (or reason :preserve) cofx)))
+
         (table.insert declarations
                       {:catalog :events
-                       :value {:event name
-                               :handler (fn [db event cofx]
-                                          (let [(result reason) (handler db
-                                                                         event
-                                                                         cofx)]
-                                            (accounted db result
-                                                       (or reason :preserve)
-                                                       cofx)))}}))
+                       :value {:event name :handler on-handler}}))
       (definitions.build :editor
         declarations
-        {:editor-edits edits
-         :validators {:editor-edits (fn [_ handler]
-                                      (assert (= (type handler) :function)
-                                              "transition must be a function"))}}))))
+        {:editor-edits edits :validators {:editor-edits validate-transition}}))))
 
 {: build}

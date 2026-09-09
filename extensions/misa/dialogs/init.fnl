@@ -167,36 +167,36 @@
       state.cancellable (completed state :cancel true false)
       {:fx [{:type :terminal/read}]}))
 
+(fn enter [state]
+  (var primary nil)
+  (each [_ action (ipairs state.actions)]
+    (when (and action.primary (not action.disabled))
+      (set primary action.id)))
+  (if primary (activate state primary)
+      state.input_enabled (completed state :submit false false)
+      {:fx [{:type :terminal/read}]}))
+
+(fn backspace [state]
+  (if state.input_enabled
+      (let [text state.input]
+        (var at (length text))
+        (while (and (> at 0) (>= (text:byte at) 128) (< (text:byte at) 192))
+          (set at (- at 1)))
+        (updated state {:input (text:sub 1 (math.max 0 (- at 1)))}))
+      {:fx [{:type :terminal/read}]}))
+
+(fn text-2 [state event]
+  (if state.input_enabled
+      (updated state {:input (.. state.input (or event.text ""))})
+      {:fx [{:type :terminal/read}]}))
+
 (local inputs {:escape cancel
                :ctrl_c cancel
                :ctrl_d cancel
                :eof cancel
-               :text (fn [state event]
-                       (if state.input_enabled
-                           (updated state
-                                    {:input (.. state.input (or event.text ""))})
-                           {:fx [{:type :terminal/read}]}))
-               :backspace (fn [state]
-                            (if state.input_enabled
-                                (let [text state.input]
-                                  (var at (length text))
-                                  (while (and (> at 0) (>= (text:byte at) 128)
-                                              (< (text:byte at) 192))
-                                    (set at (- at 1)))
-                                  (updated state
-                                           {:input (text:sub 1
-                                                             (math.max 0
-                                                                       (- at 1)))}))
-                                {:fx [{:type :terminal/read}]}))
-               :enter (fn [state]
-                        (var primary nil)
-                        (each [_ action (ipairs state.actions)]
-                          (when (and action.primary (not action.disabled))
-                            (set primary action.id)))
-                        (if primary (activate state primary)
-                            state.input_enabled
-                            (completed state :submit false false)
-                            {:fx [{:type :terminal/read}]}))})
+               :text text-2
+               :backspace backspace
+               :enter enter})
 
 (local scroll-keys {:arrow_up -1
                     :arrow_down 1
@@ -246,6 +246,26 @@
         (let [handler (. (misa.catalog :dialog-inputs) event.kind)]
           (if handler (handler state event) {:fx [{:type :terminal/read}]})))))
 
+(fn on-dialog-action [db event]
+  (if (and (correlated? db.dialog event) (not db.dialog.protected))
+      (activate db.dialog event.action)
+      {:fx [{:type :terminal/read}]}))
+
+(fn route-ui-action [state event]
+  ;; While modal, suppress underlying view actions as well.
+  (var selected nil)
+  (when (not state.protected)
+    (each [_ action (ipairs (buttons state))]
+      (when (= event.action (token state action))
+        (set selected action.id))))
+  {:type :dialog/action
+   :id state.id
+   :correlation state.correlation
+   :action selected})
+
+(fn dialog-inputs [_ handler]
+  (assert (= (type handler) :function) "transition must be a function"))
+
 (fn build []
   "Build the declarations for dialogs."
   (let [fx [{:catalog :services :id :dialogs.enabled? :value true}
@@ -263,26 +283,10 @@
                               :event :ui/action
                               :priority 1000
                               :context [:db/path :dialog]
-                              :resolve (fn [state event]
-                                         ;; While modal, suppress underlying view actions as well.
-                                         (var selected nil)
-                                         (when (not state.protected)
-                                           (each [_ action (ipairs (buttons state))]
-                                             (when (= event.action
-                                                      (token state action))
-                                               (set selected action.id))))
-                                         {:type :dialog/action
-                                          :id state.id
-                                          :correlation state.correlation
-                                          :action selected})}]
+                              :resolve route-ui-action}]
               {:catalog :routes :id (. definition :id) :value definition})
             {:catalog :events
-             :value {:event :dialog/action
-                     :handler (fn [db event]
-                                (if (and (correlated? db.dialog event)
-                                         (not db.dialog.protected))
-                                    (activate db.dialog event.action)
-                                    {:fx [{:type :terminal/read}]}))}}]]
+             :value {:event :dialog/action :handler on-dialog-action}}]]
     (each [name handler (pairs {:dialog/open open
                                 :dialog/update update
                                 :dialog/close close
@@ -291,9 +295,6 @@
       (table.insert fx {:catalog :events :value {:event name :handler handler}}))
     (definitions.build :dialogs
       fx
-      {:dialog-inputs inputs
-       :validators {:dialog-inputs (fn [_ handler]
-                                     (assert (= (type handler) :function)
-                                             "transition must be a function"))}})))
+      {:dialog-inputs inputs :validators {:dialog-inputs dialog-inputs}})))
 
 {: build}

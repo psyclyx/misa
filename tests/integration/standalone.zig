@@ -396,3 +396,21 @@ test "projection regions isolate editor and transcript invalidation" {
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/projection-regions.fnl"} }, "projection region ownership passed\n");
 }
+
+test "feature policy seams passed" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/feature-policies.fnl"} }, "feature policy seams passed\n");
+}
+
+test "provider policy contracts passed" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/provider-policies.fnl"} }, "provider policy contracts passed\n");
+}
+
+test "tool and keybinding policy contracts passed" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-policy.fnl"} }, "tool and keybinding policy contracts passed\n");
+}

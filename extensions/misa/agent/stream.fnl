@@ -1,5 +1,20 @@
 (local definitions (require :misa.definitions))
 
+(fn allowed-keys? [value allowed]
+  (accumulate [valid true key (pairs value)]
+    (and valid (= (. allowed key) true))))
+
+(fn plain-text? [effect]
+  (let [event effect.event
+        delta (and (= (type event) :table) event.delta)]
+    (and (= effect.type :dispatch) event (= event.type :agent/stream-delta)
+         (= (type delta) :table)
+         (or (= delta.type :text) (= delta.type :thinking))
+         (= (type delta.text) :string)
+         (allowed-keys? effect {:type true :event true})
+         (allowed-keys? event {:type true :id true :delta true})
+         (allowed-keys? delta {:type true :text true}))))
+
 (fn stream-effects [effects]
   "Combine adjacent plain deltas in one batch, preserving request and effect boundaries."
   (let [result []]
@@ -13,26 +28,8 @@
                                       {:event {:delta {:text (table.concat chunks)}}})))
         (set (first chunks) (values nil nil))))
 
-    (fn plain-text [effect]
-      (let [event effect.event
-            delta (and (= (type event) :table) event.delta)]
-        (when (and (= effect.type :dispatch) event
-                   (= event.type :agent/stream-delta) (= (type delta) :table)
-                   (or (= delta.type :text) (= delta.type :thinking))
-                   (= (type delta.text) :string))
-          (each [key (pairs effect)]
-            (when (not (or (= key :type) (= key :event)))
-              (lua "return false")))
-          (each [key (pairs event)]
-            (when (not (or (= key :type) (= key :id) (= key :delta)))
-              (lua "return false")))
-          (each [key (pairs delta)]
-            (when (not (or (= key :type) (= key :text)))
-              (lua "return false")))
-          true)))
-
     (each [_ effect (ipairs effects)]
-      (if (plain-text effect)
+      (if (plain-text? effect)
           (do
             (when (and first
                        (or (not= first.event.id effect.event.id)
@@ -53,4 +50,4 @@
     [{:catalog :services :id :stream.effects :value stream-effects}]
     {}))
 
-{: build}
+{:build build :effects stream-effects}

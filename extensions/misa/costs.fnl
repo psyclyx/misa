@@ -23,284 +23,246 @@
   "Estimate a request's cost from token prices and reported usage."
   (if (valid? usage.cost_usd)
       {:estimated false :unknown false :usd usage.cost_usd}
-      (if (not pricing) {:estimated true :unknown true :usd 0}
-          (do
-            (var (input read write)
-                 (values (or usage.input_tokens 0)
-                         (or usage.cache_read_tokens 0)
-                         (or usage.cache_write_tokens 0)))
-            (when usage.input_includes_cache
-              (set input (math.max 0 (- (- input read) write))))
-            (let [counts {:cache_read read
-                          :cache_write write
-                          : input
-                          :output (or usage.output_tokens 0)}
-                  result {:estimated true
-                          :unknown false
-                          :usd (or pricing.request 0)}]
-              (each [name count (pairs counts)]
-                (if (not (valid? count)) (set result.unknown true) (> count 0)
-                    (if (= (. pricing name) nil) (set result.unknown true)
-                        (set result.usd
-                             (+ result.usd
-                                (/ (* count (. pricing name)) 1000000))))))
-              result)))))
+      (not pricing)
+      {:estimated true :unknown true :usd 0}
+      (let [read (or usage.cache_read_tokens 0)
+            write (or usage.cache_write_tokens 0)
+            input (or usage.input_tokens 0)
+            counts {:cache_read read
+                    :cache_write write
+                    :input (if usage.input_includes_cache
+                               (math.max 0 (- input read write))
+                               input)
+                    :output (or usage.output_tokens 0)}
+            result {:estimated true :unknown false :usd (or pricing.request 0)}]
+        (each [name count (pairs counts)]
+          (if (not (valid? count)) (set result.unknown true) (< 0 count)
+              (if (= (. pricing name) nil) (set result.unknown true)
+                  (set result.usd
+                       (+ result.usd (/ (* count (. pricing name)) 1000000))))))
+        result)))
+
+(fn model-rates [overrides db id]
+  (if (. overrides id) (. overrides id)
+      (let [model (accumulate [found nil _ model (ipairs (or (and db.models
+                                                                  db.models.catalogue)
+                                                             (misa.models.all)))
+                               &until found]
+                    (when (= model.id id) model))]
+        (when model (rates model.pricing)))))
+
+(fn costs-model [overrides db id]
+  "Return configured pricing and availability for a model."
+  (let [pricing (model-rates overrides db id)]
+    {:currency :USD
+     :token_unit 1000000
+     : pricing
+     :estimated true
+     :unavailable (= pricing nil)}))
+
+(fn costs-responses [inputs _ previous]
+  (let [entries {}]
+    (each [id response (pairs (or (. inputs 1) {}))]
+      (let [old (and previous (. previous id))]
+        (if (and old (= response old.input))
+            (tset entries id old)
+            (let [result response.cost]
+              (tset entries id
+                    {:input response
+                     :value {:type :money
+                             :currency :USD
+                             :pending (= result nil)
+                             :model response.model
+                             :estimated (= (and result result.estimated) true)
+                             :unknown (= (and result result.unknown) true)
+                             :amount (and result result.usd)}})))))
+    entries))
+
+(fn response-value [inputs query]
+  (let [entry (. (. inputs 1) (. query 2))]
+    (and entry entry.value)))
+
+(fn costs-groups [inputs _ previous]
+  (let [groups {}]
+    (each [id response (pairs (or (. inputs 1) {}))]
+      (let [owner (or response.parent_response_id id)
+            group (or (. groups owner)
+                      {:type :money
+                       :currency :USD
+                       :amount 0
+                       :estimated false
+                       :unknown false
+                       :pending true})
+            cost response.cost]
+        (when cost
+          (set group.pending false)
+          (set group.amount (+ group.amount cost.usd))
+          (set group.estimated (or group.estimated cost.estimated false))
+          (set group.unknown (or group.unknown cost.unknown false)))
+        (tset groups owner group)))
+    (each [id group (pairs groups)]
+      (when group.pending
+        (set group.amount nil))
+      (let [old (and previous (. previous id))]
+        (when (and old (= old.amount group.amount)
+                   (= old.estimated group.estimated)
+                   (= old.unknown group.unknown) (= old.pending group.pending))
+          (tset groups id old))))
+    groups))
+
+(fn costs-group [db id]
+  "Aggregate cost facts for the supplied response IDs."
+  (. (misa.sub db [:costs/groups]) id))
+
+(fn costs-total [inputs]
+  (let [total {:estimated false :unknown false :usd 0}]
+    (var count 0)
+    (each [_ response (pairs (or (. inputs 1) {}))]
+      (when response.cost
+        (set count (+ count 1))
+        (set total.usd (+ total.usd response.cost.usd))
+        (set total.estimated (or total.estimated response.cost.estimated))
+        (set total.unknown (or total.unknown response.cost.unknown))))
+    (set total.responses count)
+    total))
+
+(fn costs-indicator [inputs]
+  (let [total (. inputs 1)]
+    {:type :money
+     :amount total.usd
+     :currency :USD
+     :estimated total.estimated
+     :unknown total.unknown}))
+
+(fn costs-response [db id]
+  "Return cost facts for a response."
+  (let [entry (. (misa.sub db [:costs/responses]) id)]
+    (and entry entry.value)))
+
+(fn reset [_ _event]
+  {:costs (misa.replace {:responses {}})})
+
+(fn response-patch [id response]
+  {:costs {:responses {id (misa.replace response)}}})
+
+(fn complete [overrides db event]
+  (let [response (or (. db.costs.responses event.response_id)
+                     (when event.model
+                       {:model event.model
+                        :pricing (model-rates overrides db event.model)}))]
+    (when response
+      (let [usage (misa.patch (or event.usage {}) {:cost_usd event.cost_usd})]
+        (response-patch event.response_id
+                        (misa.patch response
+                                    {:parent_response_id event.parent_response_id
+                                     :call_id event.call_id
+                                     :cost (misa.replace (estimate response.pricing
+                                                                   usage))}))))))
+
+(fn start-response [overrides db event]
+  (when (and db.costs event.model)
+    (response-patch event.response_id
+                    {:model event.model
+                     :pricing (model-rates overrides db event.model)})))
+
+(fn interrupt-response [db event]
+  (let [response (and db.costs (. db.costs.responses event.response_id))]
+    (when response
+      (response-patch event.response_id
+                      (misa.patch response
+                                  {:cost (misa.replace (if event.usage
+                                                           (estimate response.pricing
+                                                                     event.usage)
+                                                           {:estimated true
+                                                            :unknown true
+                                                            :usd 0}))})))))
 
 (fn build [context]
   "Build the declarations for costs."
-  (let [declarations []]
-    (var config (or (and (= (type context.config) :table) context.config.costs)
-                    {}))
-    (set config (or (and (= (type config) :table) config) {}))
-    (let [overrides {}]
-      (each [id value (pairs (or config.models {}))]
-        (assert (= (type id) :string) "cost model ID must be a string")
-        (tset overrides id (rates value)))
+  (let [declarations []
+        raw (and (= (type context.config) :table) context.config.costs)
+        config (if (= (type raw) :table) raw {})
+        overrides {}]
+    (each [id value (pairs (or config.models {}))]
+      (assert (= (type id) :string) "cost model ID must be a string")
+      (tset overrides id (rates value)))
+    (table.insert declarations {:catalog :services
+                                :id :costs.estimate
+                                :value estimate})
+    (table.insert declarations
+                  {:catalog :services
+                   :id :costs.model
+                   :value (fn [db id] (costs-model overrides db id))})
+    (table.insert declarations
+                  (let [definition {:id :costs/responses
+                                    :inputs [[:db/path :costs :responses]]
+                                    :compute costs-responses}]
+                    {:catalog :subscriptions
+                     :id definition.id
+                     :value definition}))
+    (table.insert declarations
+                  (let [definition {:id :costs/response
+                                    :inputs [[:costs/responses]]
+                                    :compute response-value}]
+                    {:catalog :subscriptions
+                     :id definition.id
+                     :value definition}))
+    ;; Child requests retain independent accounting and aggregate only here.
+    ;; A single fold serves every visible group, avoiding per-block scans.
+    (table.insert declarations
+                  (let [definition {:id :costs/groups
+                                    :inputs [[:db/path :costs :responses]]
+                                    :compute costs-groups}]
+                    {:catalog :subscriptions
+                     :id definition.id
+                     :value definition}))
+    (table.insert declarations
+                  {:catalog :services :id :costs.group :value costs-group})
+    (table.insert declarations
+                  (let [definition {:id :costs/total
+                                    :inputs [[:db/path :costs :responses]]
+                                    :compute costs-total}]
+                    {:catalog :subscriptions
+                     :id definition.id
+                     :value definition}))
+    (table.insert declarations
+                  (let [definition {:id :costs/indicator
+                                    :inputs [[:costs/total]]
+                                    :compute costs-indicator}]
+                    {:catalog :subscriptions
+                     :id definition.id
+                     :value definition}))
+    (table.insert declarations
+                  {:catalog :services
+                   :id :costs.response
+                   :value costs-response})
+    (table.insert declarations
+                  (let [definition {:icon "$"
+                                    :id :cost
+                                    :label :cost
+                                    :query [:costs/indicator]}]
+                    {:catalog :indicators :id definition.id :value definition}))
+    (let [transitions {:app/start reset
+                       :transcript/reset reset
+                       :transcript/response-start (fn [db event]
+                                                    (start-response overrides
+                                                                    db event))
+                       :transcript/response-end (fn [db event]
+                                                  (when db.costs
+                                                    (complete overrides db
+                                                              event)))
+                       :tool-summary/usage (fn [db event]
+                                             (when db.costs
+                                               (complete overrides db event)))
+                       :transcript/response-interrupted interrupt-response}]
+      (each [name transition (pairs transitions)]
+        (fn name-event [db event]
+          (let [patch (transition db event)]
+            (when patch {: patch})))
 
-      (fn model-rates [db id]
-        (if (. overrides id) (. overrides id)
-            (let [model (accumulate [found nil _ model (ipairs (or (and db.models
-                                                                        db.models.catalogue)
-                                                                   (misa.models.all)))
-                                     &until found]
-                          (when (= model.id id) model))]
-              (when model (rates model.pricing)))))
-
-      (table.insert declarations
-                    {:catalog :services :id :costs.estimate :value estimate})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :costs.model
-                     :value (fn [db id]
-                              "Return configured pricing and availability for a model."
-                              (let [pricing (model-rates db id)]
-                                {:currency :USD
-                                 :token_unit 1000000
-                                 : pricing
-                                 :estimated true
-                                 :unavailable (= pricing nil)}))})
-      (table.insert declarations
-                    (let [definition {:id :costs/responses
-                                      :inputs [[:db/path :costs :responses]]
-                                      :compute (fn [inputs _ previous]
-                                                 (let [entries {}]
-                                                   (each [id response (pairs (or (. inputs
-                                                                                    1)
-                                                                                 {}))]
-                                                     (let [old (and previous
-                                                                    (. previous
-                                                                       id))]
-                                                       (if (and old
-                                                                (= response
-                                                                   old.input))
-                                                           (tset entries id old)
-                                                           (do
-                                                             (let [result response.cost]
-                                                               (tset entries id
-                                                                     {:input response
-                                                                      :value {:type :money
-                                                                              :currency :USD
-                                                                              :pending (= result
-                                                                                          nil)
-                                                                              :model response.model
-                                                                              :estimated (= (and result
-                                                                                                 result.estimated)
-                                                                                            true)
-                                                                              :unknown (= (and result
-                                                                                               result.unknown)
-                                                                                          true)
-                                                                              :amount (and result
-                                                                                           result.usd)}}))))))
-                                                   entries))}]
-                      {:catalog :subscriptions
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    (let [definition {:id :costs/response
-                                      :inputs [[:costs/responses]]
-                                      :compute (fn [inputs query]
-                                                 (let [entry (. (. inputs 1)
-                                                                (. query 2))]
-                                                   (and entry entry.value)))}]
-                      {:catalog :subscriptions
-                       :id (. definition :id)
-                       :value definition}))
-      ;; Child requests retain independent accounting and aggregate only here.
-      ;; A single fold serves every visible group, avoiding per-block scans.
-      (table.insert declarations
-                    (let [definition {:id :costs/groups
-                                      :inputs [[:db/path :costs :responses]]
-                                      :compute (fn [inputs _ previous]
-                                                 (let [groups {}]
-                                                   (each [id response (pairs (or (. inputs
-                                                                                    1)
-                                                                                 {}))]
-                                                     (let [owner (or response.parent_response_id
-                                                                     id)
-                                                           group (or (. groups
-                                                                        owner)
-                                                                     {:type :money
-                                                                      :currency :USD
-                                                                      :amount 0
-                                                                      :estimated false
-                                                                      :unknown false
-                                                                      :pending true})
-                                                           cost response.cost]
-                                                       (when cost
-                                                         (set group.pending
-                                                              false)
-                                                         (set group.amount
-                                                              (+ group.amount
-                                                                 cost.usd))
-                                                         (set group.estimated
-                                                              (or group.estimated
-                                                                  cost.estimated
-                                                                  false))
-                                                         (set group.unknown
-                                                              (or group.unknown
-                                                                  cost.unknown
-                                                                  false)))
-                                                       (tset groups owner group)))
-                                                   (each [id group (pairs groups)]
-                                                     (when group.pending
-                                                       (set group.amount nil))
-                                                     (let [old (and previous
-                                                                    (. previous
-                                                                       id))]
-                                                       (when (and old
-                                                                  (= old.amount
-                                                                     group.amount)
-                                                                  (= old.estimated
-                                                                     group.estimated)
-                                                                  (= old.unknown
-                                                                     group.unknown)
-                                                                  (= old.pending
-                                                                     group.pending))
-                                                         (tset groups id old))))
-                                                   groups))}]
-                      {:catalog :subscriptions
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    {:catalog :services
-                     :id :costs.group
-                     :value (fn [db id]
-                              "Aggregate cost facts for the supplied response IDs."
-                              (. (misa.sub db [:costs/groups]) id))})
-      (table.insert declarations
-                    (let [definition {:id :costs/total
-                                      :inputs [[:db/path :costs :responses]]
-                                      :compute (fn [inputs]
-                                                 (let [total {:estimated false
-                                                              :unknown false
-                                                              :usd 0}]
-                                                   (var count 0)
-                                                   (each [_ response (pairs (or (. inputs
-                                                                                   1)
-                                                                                {}))]
-                                                     (when response.cost
-                                                       (set count (+ count 1))
-                                                       (set total.usd
-                                                            (+ total.usd
-                                                               response.cost.usd))
-                                                       (set total.estimated
-                                                            (or total.estimated
-                                                                response.cost.estimated))
-                                                       (set total.unknown
-                                                            (or total.unknown
-                                                                response.cost.unknown))))
-                                                   (set total.responses count)
-                                                   total))}]
-                      {:catalog :subscriptions
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    (let [definition {:id :costs/indicator
-                                      :inputs [[:costs/total]]
-                                      :compute (fn [inputs]
-                                                 (let [total (. inputs 1)]
-                                                   {:type :money
-                                                    :amount total.usd
-                                                    :currency :USD
-                                                    :estimated total.estimated
-                                                    :unknown total.unknown}))}]
-                      {:catalog :subscriptions
-                       :id (. definition :id)
-                       :value definition}))
-      (table.insert declarations
-                    {:catalog :services
-                     :id :costs.response
-                     :value (fn [db id]
-                              "Return cost facts for a response."
-                              (let [entry (. (misa.sub db [:costs/responses])
-                                             id)]
-                                (and entry entry.value)))})
-      (do
         (table.insert declarations
-                      (let [definition {:icon "$"
-                                        :id :cost
-                                        :label :cost
-                                        :query [:costs/indicator]}]
-                        {:catalog :indicators
-                         :id (. definition :id)
-                         :value definition})))
+                      {:catalog :events
+                       :value {:event name :handler name-event}}))
+      (definitions.build :costs declarations {}))))
 
-      (fn reset [_ _event]
-        {:costs (misa.replace {:responses {}})})
-
-      (fn response-patch [id response]
-        {:costs {:responses {id (misa.replace response)}}})
-
-      (fn complete [db event]
-        (let [response (or (. db.costs.responses event.response_id)
-                           (when event.model
-                             {:model event.model
-                              :pricing (model-rates db event.model)}))]
-          (when response
-            (let [usage (misa.patch (or event.usage {})
-                                    {:cost_usd event.cost_usd})]
-              (response-patch event.response_id
-                              (misa.patch response
-                                          {:parent_response_id event.parent_response_id
-                                           :call_id event.call_id
-                                           :cost (misa.replace (estimate response.pricing
-                                                                         usage))}))))))
-
-      (let [transitions {:app/start reset
-                         :transcript/reset reset
-                         :transcript/response-start (fn [db event]
-                                                      (when (and db.costs
-                                                                 event.model)
-                                                        (response-patch event.response_id
-                                                                        {:model event.model
-                                                                         :pricing (model-rates db
-                                                                                               event.model)})))
-                         :transcript/response-end (fn [db event]
-                                                    (when db.costs
-                                                      (complete db event)))
-                         :tool-summary/usage (fn [db event]
-                                               (when db.costs
-                                                 (complete db event)))
-                         :transcript/response-interrupted (fn [db event]
-                                                            (let [response (and db.costs
-                                                                                (. db.costs.responses
-                                                                                   event.response_id))]
-                                                              (when response
-                                                                (response-patch event.response_id
-                                                                                (misa.patch response
-                                                                                            {:cost (misa.replace (if event.usage
-                                                                                                                     (estimate response.pricing
-                                                                                                                               event.usage)
-                                                                                                                     {:estimated true
-                                                                                                                      :unknown true
-                                                                                                                      :usd 0}))})))))}]
-        (each [name transition (pairs transitions)]
-          (table.insert declarations
-                        {:catalog :events
-                         :value {:event name
-                                 :handler (fn [db event]
-                                            (let [patch (transition db event)]
-                                              (when patch {: patch})))}}))
-        (definitions.build :costs declarations {})))))
-
-{: build}
+{: build : estimate}

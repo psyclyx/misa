@@ -145,18 +145,19 @@
     (set at (+ at (length literal)))
     decoded)
 
-  (set value
-       (fn []
-         (whitespace)
-         (let [first (source:sub at at)]
-           (if (= first "\"") (string-value)
-               (= first "[") (array-value)
-               (= first "{") (object-value)
-               (= (source:sub at (+ at 3)) :true) (literal-value :true true)
-               (= (source:sub at (+ at 4)) :false) (literal-value :false false)
-               (= (source:sub at (+ at 3)) :null) (literal-value :null
-                                                                 misa.json-null)
-               (number-value)))))
+  (fn read-value []
+    (whitespace)
+    (let [first (source:sub at at)]
+      (if (= first "\"") (string-value)
+          (= first "[") (array-value)
+          (= first "{") (object-value)
+          (= (source:sub at (+ at 3)) :true) (literal-value :true true)
+          (= (source:sub at (+ at 4)) :false) (literal-value :false false)
+          (= (source:sub at (+ at 3)) :null) (literal-value :null
+                                                            misa.json-null)
+          (number-value))))
+
+  (set value read-value)
   (let [result (value)]
     (whitespace)
     (when (<= at (length source)) (fail "trailing JSON data"))
@@ -202,37 +203,36 @@
         (tset active value nil)
         (.. (if array "[" "{") (table.concat parts ",") (if array "]" "}"))))
 
-    (set visit (fn [value]
-                 (let [kind (type value)]
-                   (if (= value misa.json-null)
-                       :null
-                       (= kind :string)
-                       (.. "\""
-                           (value:gsub "[%z\001-\031\\\"]"
-                                       (fn [char]
-                                         (or (. escapes char)
-                                             (string.format "\\u%04x"
-                                                            (char:byte)))))
-                           "\"")
-                       (= kind :boolean)
-                       (if value :true :false)
-                       (= kind :number)
-                       (do
-                         (assert (and (= value value) (not= value math.huge)
-                                      (not= value (- math.huge)))
-                                 "JSON numbers must be finite")
-                         (tostring value))
-                       (do
-                         (assert (= kind :table)
-                                 (.. "unsupported JSON value: " kind))
-                         (table-value value))))))
+    (fn encode-value [value]
+      (let [kind (type value)]
+        (if (= value misa.json-null)
+            :null
+            (= kind :string)
+            (.. "\""
+                (value:gsub "[%z\001-\031\\\"]"
+                            (fn [char]
+                              (or (. escapes char)
+                                  (string.format "\\u%04x" (char:byte)))))
+                "\"")
+            (= kind :boolean)
+            (if value :true :false)
+            (= kind :number)
+            (do
+              (assert (and (= value value) (not= value math.huge)
+                           (not= value (- math.huge)))
+                      "JSON numbers must be finite")
+              (tostring value))
+            (do
+              (assert (= kind :table) (.. "unsupported JSON value: " kind))
+              (table-value value)))))
+
+    (set visit encode-value)
     (visit root)))
 
 (fn build []
   "Build the declarations for json."
-  (let [declarations []]
-    (table.insert declarations
-                  {:catalog :services :id :json :value {: decode : encode}})
-    (definitions.build :json declarations {})))
+  (definitions.build :json
+    [{:catalog :services :id :json :value {: decode : encode}}]
+    {}))
 
-{: build}
+{: build : decode : encode}
