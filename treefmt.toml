@@ -11,6 +11,11 @@ includes = ["*.zig"]
 command = "nixfmt"
 includes = ["*.nix"]
 
+[formatter.fennel]
+command = "fnlfmt"
+options = ["--fix"]
+includes = ["extensions/**/*.fnl", "src/lua_runtime/*.fnl"]
+
 [formatter.markdown]
 command = "prettier"
 options = ["--write"]

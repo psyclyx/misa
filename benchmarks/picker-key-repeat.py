@@ -24,6 +24,8 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tests'))
@@ -55,17 +57,14 @@ sys.stdout.flush()
 traces = []
 with tempfile.TemporaryDirectory(prefix='misa-picker-repeat-') as directory:
     work = Path(directory)
-    config = json.loads((ROOT / 'config/default.json').read_text())
-    config['extensions'] = [str(ROOT / 'benchmarks/picker-key-repeat.fnl')] + [
-        name for name in config['extensions']
-        if not name.startswith(('provider.', 'protocol.')) and name != 'auth']
+    config = {'extensions': [str(ROOT / 'benchmarks/picker-key-repeat.fnl')],
+              'config': {'models': {'default': 'bench/model-00001'}}}
     settings = config['config']
-    settings['models']['default'] = 'bench/model-00001'
     settings['benchmark'] = {'models': args.models}
     for name in ('history', 'themes', 'components', 'preferences'):
         settings.setdefault(name, {})['persist'] = False
-    path = work / 'config.json'
-    path.write_text(json.dumps(config))
+    path = work / 'config.fnl'
+    path.write_text(application(config, default=True, omit=('provider.', 'protocol.', 'auth')))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
     original = termios.tcgetattr(slave)

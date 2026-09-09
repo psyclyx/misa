@@ -12,6 +12,8 @@
 (dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 
+(local app ((require :tests.application) context))
+(local declarations (require :misa.definitions))
 (each [_ name (ipairs [:json
                        :keybindings
                        :actions
@@ -27,34 +29,26 @@
                        :editor
                        :images
                        :editing])]
-  (misa._setup (dofile (.. :extensions/ name :.fnl)) context))
+  (app.include (dofile (.. :extensions/ name :.fnl)) context))
 
 (var (db native) nil)
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :app/start
-                            :handler (fn [state]
+(app.define (declarations :editor-queue-1 [{:catalog :events  :value {:event :app/start :handler (fn [state]
                                        {:patch {:models
                                             {:entries [{:id :capture/model
                                                         :model :model
                                                         :provider :capture}]
-                                             :selected :capture/model}}})}]})
+                                             :selected :capture/model}}})}}]))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/read
-                            :handler (fn [state] (set db state) nil)}]})
+(app.define (declarations :editor-queue-2 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state) nil)}}]))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/attachment
-                            :handler (fn [state event]
-                                       {:patch {:editor {:attachments (misa.replace event.attachments)}}})}]})
+(app.define (declarations :editor-queue-3 [{:catalog :events  :value {:event :test/attachment :handler (fn [state event]
+                                       {:patch {:editor {:attachments (misa.replace event.attachments)}}})}}]))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/exit-after-response
-                            :handler (fn [state]
-                                       {:patch {:agent {:exit_after_response true}}})}]})
+(app.define (declarations :editor-queue-4 [{:catalog :events  :value {:event :test/exit-after-response :handler (fn [state]
+                                       {:patch {:agent {:exit_after_response true}}})}}]))
 
-(misa._seal context)
+(app.install context)
 
 (fn dispatch [event]
   (set native {})

@@ -5,7 +5,7 @@ const Harness = support.Harness;
 test "MCP initialization advertises object capabilities accepted by strict SDK clients" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/mcp.json"));
+    try h.config(@embedFile("configs/mcp.fnl"));
     try h.expect(.{ .args = &.{"mcp"}, .input =
         \\{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"sdk","version":"1"}}}
         \\
@@ -15,14 +15,14 @@ test "MCP initialization advertises object capabilities accepted by strict SDK c
 test "MCP ping preserves its complete JSON RPC envelope" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/mcp.json"));
+    try h.config(@embedFile("configs/mcp.fnl"));
     try h.expect(.{ .args = &.{"mcp"}, .input = "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"ping\"}\n" }, "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":{}}\n");
 }
 
 test "MCP shell tool returns the complete result envelope" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/mcp.json"));
+    try h.config(@embedFile("configs/mcp.fnl"));
     try h.expect(.{ .args = &.{"mcp"}, .input =
         \\{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"shell","arguments":{"command":"printf mcp-tool-ok"}}}
         \\
@@ -32,7 +32,7 @@ test "MCP shell tool returns the complete result envelope" {
 test "MCP exposes extension-defined tools" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/tool-loop.json"));
+    try h.config(@embedFile("configs/tool-loop.fnl"));
     const result = try h.run(.{ .args = &.{"mcp"}, .input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"value":"from tool"}}}
         \\
@@ -44,7 +44,7 @@ test "MCP exposes extension-defined tools" {
 test "MCP initialization listing and file writes share the tool registry" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/native-tools.json"));
+    try h.config(@embedFile("configs/native-tools.fnl"));
     const result = try h.run(.{ .args = &.{"mcp"}, .input = try h.expand(
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
         \\{"jsonrpc":"2.0","method":"notifications/initialized"}
@@ -60,7 +60,7 @@ test "MCP initialization listing and file writes share the tool registry" {
 test "MCP hashline edits check snapshots and return fresh anchors" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/native-tools.json"));
+    try h.config(@embedFile("configs/native-tools.fnl"));
     const result = try h.run(.{ .args = &.{"mcp"}, .input = try h.expand(
         \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"@WORK@/hashline.txt","content":"alpha"}}}
         \\{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"@WORK@/hashline.txt"}}}

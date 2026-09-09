@@ -1,7 +1,8 @@
 ;; Allocation observation, not native frame timing. GC is stopped only here.
 ;; tools/fennel benchmarks/grapheme-allocation.fnl /path/to/baseline/layout.fnl
 (local fennel (require :fennel))
-(fn api [path] (. ((. (fennel.dofile path) :setup)) :fx 1 :value))
+(require :tests.application)
+(fn api [path] (. ((fennel.dofile path) {}) :services :layout))
 (local baseline (api (assert (. arg 1) "baseline layout source required")))
 (local candidate (api :extensions/layout.fnl))
 (local cases [{:id :ascii :text (string.rep "ASCII " 64)}

@@ -4,7 +4,7 @@ const options = @import("integration_options");
 test "terminal coeffects preserve geometry and plain output" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/context.json"));
+    try h.config(@embedFile("configs/context.fnl"));
     try h.environ.put("COLUMNS", "37");
     try h.environ.put("LINES", "11");
     try h.expect(.{ .args = &.{"arg"} }, "plain\n");
@@ -41,7 +41,7 @@ test "editor insertion deletion and movement preserve grapheme boundaries" {
         var h = try Harness.init();
         defer h.deinit();
         try h.executable("echo-prompt", @embedFile("fixtures/integration-echo-prompt"));
-        try h.config(@embedFile("configs/editor.json"));
+        try h.config(@embedFile("configs/editor.fnl"));
         try h.expect(.{ .input = case[0] }, case[1]);
     }
 }
@@ -74,7 +74,7 @@ test "PTY redraw resize and alternate screen lifecycle" {
     var h = try Harness.init();
     defer h.deinit();
     try preparePty(&h);
-    try h.config(@embedFile("configs/pty-redraw.json"));
+    try h.config(@embedFile("configs/pty-redraw.fnl"));
     const result = try h.run(.{ .binary = "script", .args = &.{ "-qefc", "./pty-runner", "/dev/null" } });
     try @import("harness.zig").success(result);
     try expectOrdered(result.stdout, &.{ "\x1b[?1049h", "partial transcript", "resized 60x20", "producer completed", "\x1b[?1049l" });
@@ -86,7 +86,7 @@ test "PTY Ctrl C cancels the child and restores the screen" {
     var h = try Harness.init();
     defer h.deinit();
     try preparePty(&h);
-    try h.config(@embedFile("configs/pty-cancel.json"));
+    try h.config(@embedFile("configs/pty-cancel.fnl"));
     const result = try h.run(.{ .binary = "script", .args = &.{ "-qefc", "./pty-runner", "/dev/null" }, .input = "\x03", .input_delay_ms = 300 });
     try support.success(result);
     try expectOrdered(result.stdout, &.{ "\x1b[?1049h", "partial transcript", "cancelled child", "\x1b[?1049l" });

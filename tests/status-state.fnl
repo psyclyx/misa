@@ -3,22 +3,33 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
 (local feature (fennel.dofile :extensions/status.fnl))
-(local specs (feature.setup))
+(local specs (feature {}))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]})))
+(each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
+(app.define specs)
 ;; Minimal profiles without the indicator registry use the same component model.
-(local original-render misa.render_component)
-(local original-projection misa.indicators_projection)
-(local original-animation misa.animation_presentation)
+(local requests [])
+(var observed nil)
+(app.define (definitions :fixture [{:catalog :events  :value {:event :app/start :handler (fn [] {:patch {:selected {:provider :kimi :id :first}}})}}
+       {:catalog :events  :value {:event :model/select :handler (fn [_ event] {:patch {:selected (misa.replace event.model)}})}}
+       {:catalog :events  :value {:event :usage/refresh :handler (fn [_ event] (table.insert requests event.provider) nil)}}
+       {:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
+(app.install)
+(set misa.components {})
+(set misa.animations {})
+(set misa.models.all {})
+(local original-render misa.components.render)
+(local original-projection misa.status.indicators)
+(local original-animation misa.animations.state)
 (local animation-data {:enabled true :frames ["."]})
-(set misa.animation_presentation (fn [_ role] (assert (= role :status)) animation-data))
-(set misa.indicators_projection nil)
+(set misa.animations.state (fn [_ role] (assert (= role :status)) animation-data))
+(set misa.status.indicators nil)
 (local fallback-lines [{:spans [{:text :fallback}]}])
-(set misa.render_component
+(set misa.components.render
      (fn [_ role model context]
        (assert (= role :status.indicators) "status fallback uses a parallel renderer")
        (assert (= (. model.indicators 1 :id) :activity))
@@ -27,14 +38,12 @@
        (assert (= context.columns 20))
        (assert (= context.activity_animation animation-data))
        {:lines fallback-lines}))
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.name :status_projection)
-    (local context {:columns 20})
-    (assert (= (spec.value {:status {:mode :working}} context) fallback-lines))
-    (assert (= context.activity_animation nil))))
-(set misa.render_component original-render)
-(set misa.indicators_projection original-projection)
-(set misa.animation_presentation original-animation)
+(let [context {:columns 20}]
+  (assert (= ((. specs.services :status.model) {:status {:mode :working}} context) fallback-lines))
+  (assert (= context.activity_animation nil)))
+(set misa.components.render original-render)
+(set misa.status.indicators original-projection)
+(set misa.animations.state original-animation)
 (fn transition [db event]
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))
@@ -90,31 +99,22 @@
                                                                         :limit 100 :remaining 75}]}}}}))
 ;; Registration does not depend on indicator availability, and projection resolves
 ;; optional services when called, not from a setup-time snapshot.
-(each [_ available (ipairs [false true])]
-  (set misa.has_setup_effect (fn [] available))
-  (local configured (feature.setup))
-  (var (command-count projection indicator-count) (values 0 nil 0))
-  (each [_ spec (ipairs configured.fx)]
-    (when (= spec.type :register/command) (set command-count (+ command-count 1)))
-    (when (= spec.type :register/indicator) (set indicator-count (+ indicator-count 1)))
-    (when (= spec.name :status_projection) (set projection spec.value)))
-  (assert (= command-count 0))
-  (assert (= indicator-count (if available 4 0)))
-  (set misa.indicators_projection nil)
-  (set misa.render_component nil)
-  (assert (= (length (projection initial {})) 0))
-  (set misa.indicators_projection (fn [] [:late]))
-  (assert (= (. (projection initial {}) 1) :late)))
-(local configured (feature.setup))
+(local configured (feature {}))
+(assert (= configured.commands nil))
+(assert (= (length (icollect [id (pairs configured.indicators)] id)) 4))
+(local projection (. configured.services :status.model))
+(set misa.status.indicators nil)
+(set misa.components.render nil)
+(assert (= (length (projection initial {})) 0))
+(set misa.status.indicators (fn [] [:late]))
+(assert (= (. (projection initial {}) 1) :late))
 (var plan-query nil)
-(each [_ spec (ipairs configured.fx)]
-  (when (and (= spec.type :register/indicator) (= spec.value.id :plan))
-    (assert (= spec.value.action :usage.open))
-    (assert (= spec.value.value nil))
-    (set plan-query spec.value.query)))
+(assert (= configured.indicators.plan.action :usage.open))
+(assert (= configured.indicators.plan.value nil))
+(set plan-query configured.indicators.plan.query)
 (assert plan-query)
 (fn plan [db] (misa.sub db plan-query))
-(set misa.selected_model_projection (fn [] {:provider :kimi :id :kimi/model}))
+(set misa.models.selected (fn [] {:provider :kimi :id :kimi/model}))
 (assert (= (plan initial) nil) "missing quota invented a status value")
 (assert (= (. (plan quota-db) :type) :percent))
 (assert (= (. (plan quota-db) :basis) :remaining))
@@ -138,13 +138,12 @@
 (local quota-fact (plan quota-db))
 (assert (= quota-fact (plan (misa.patch quota-db {:hover_action :button}))))
 (assert (= quota-fact.value 75))
-(set misa.selected_model_projection (fn [] {:provider :other :id :other/model}))
+(set misa.models.selected (fn [] {:provider :other :id :other/model}))
 (assert (= (plan (misa.patch quota-db {:models {:selected :other/model
                                                :entries (misa.replace [{:id :other/model :provider :other}])}})) nil)
         "quota widget leaked across selected providers")
-(each [_ spec (ipairs configured.fx)]
-  (assert (not= spec.type :register/interceptor) "usage refresh must use explicit events"))
-(set misa.selected_model_projection (fn [db] db.selected))
+(assert (= configured.interceptors nil) "usage refresh must use explicit events")
+(set misa.models.selected (fn [db] db.selected))
 (local (selected refresh-fx) (transition {:selected {:provider :kimi}} {:type :usage/check-selected}))
 (assert (= (. refresh-fx 1 :event :provider) :kimi))
 (assert (= (. refresh-fx 1 :event :type) :usage/refresh))
@@ -172,20 +171,11 @@
 (assert (= (length removed-fx) 0))
 ;; Exercise real dispatch with status registered BEFORE the model owner. Effects
 ;; run only after commit, so the check must use the newly selected provider.
-(misa._setup_effects {:fx (icollect [_ spec (ipairs specs.fx)]
-                           (when (= spec.type :register/event) spec))})
-(local requests [])
-(var observed nil)
-(misa._setup_effects
- {:fx [{:type :register/event :name :app/start
-        :handler (fn [] {:patch {:selected {:provider :kimi :id :first}}})}
-       {:type :register/event :name :model/select
-        :handler (fn [_ event] {:patch {:selected (misa.replace event.model)}})}
-       {:type :register/event :name :usage/refresh
-        :handler (fn [_ event] (table.insert requests event.provider) nil)}
-       {:type :register/event :name :test/read
-        :handler (fn [db] (set observed db) nil)}]})
-(misa._seal {:config {} :argv []})
+
+
+
+
+
 (fn dispatch [event]
   (local effects (misa._dispatch event {:columns 80 :lines 24 :interactive false}
                                 {:wall_ms 0 :monotonic_ms 0}))

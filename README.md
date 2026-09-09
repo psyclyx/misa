@@ -1,93 +1,39 @@
 # misa
 
 misa is a small event-driven coding-agent harness built with Zig 0.16,
-system LuaJIT, bundled Fennel 1.6.0, and system tree-sitter. Terminal presentation uses Zig; bounded
-image decoding uses system libpng and libjpeg-turbo.
+system LuaJIT, bundled Fennel 1.6.0, and system tree-sitter. Terminal presentation
+uses Zig; bounded image decoding uses system libpng and libjpeg-turbo.
 
-No extensions are enabled implicitly: `{}` is valid and produces no output.
-The shipped extensions include `models`, `agent`, `auth`, `ui`, protocol adapters,
-and fake, command, Claude Code, OpenAI, Anthropic, OpenRouter, and Kimi
-providers. `tool.files` and `tool.shell` provide optional coding tools. Select
-them through the one ordered `extensions` list. Protocol
-adapters precede the API providers that use them:
+Configuration is ordinary Fennel data. Import the standard application, compose
+changes, and return its compiled definitions. For the defaults with one component
+replaced, save this as `config.fnl`:
 
-```json
-{
-  "extensions": [
-    "values",
-    "json",
-    "protocol.anthropic",
-    "provider.anthropic",
-    "provider.kimi",
-    "protocol.openai",
-    "provider.openai",
-    "provider.openrouter",
-    "provider.openai-codex",
-    "provider.claude",
-    "auth",
-    "tool.files",
-    "tool.shell",
-    "fuzzy",
-    "keybindings",
-    "actions",
-    "clipboard",
-    "links",
-    "dialogs",
-    "commands",
-    "choices",
-    "preferences",
-    "themes",
-    "theme.default",
-    "animations",
-    "animation.default",
-    "components",
-    "layout",
-    "choice_preview",
-    "choice_layout",
-    "markdown",
-    "selection_document",
-    "selection",
-    "component.markdown",
-    "component.image",
-    "indicators",
-    "component.tool",
-    "component.message",
-    "component.editor",
-    "component.picker",
-    "component.status",
-    "component.chrome",
-    "component.buttons",
-    "component.data",
-    "component.dialog",
-    "component.selection",
-    "dialog_view",
-    "messages",
-    "status",
-    "usage",
-    "picker",
-    "picker_view",
-    "models",
-    "costs",
-    "omnipicker",
-    "request_options",
-    "effort",
-    "agent",
-    "queue",
-    "queue_view",
-    "editor",
-    "images",
-    "attachments",
-    "history",
-    "editing",
-    "ui"
-  ],
-  "config": {
-    "models": {
-      "default": "claude/claude-sonnet-5"
-    }
-  }
-}
+```fennel
+(local standard (require :misa.standard))
+
+(standard.application
+  (misa.compose
+    [standard.default
+     {:definitions
+       {:components
+         {:default.root.header
+           {:render (fn [_ _]
+                      {:lines [{:spans [{:text "my misa"}]}]})}}}}]))
 ```
+
+Run `misa --config ./config.fnl`. Definition IDs select what changes: a new ID adds
+an implementation; an existing ID replaces it. The imported default stays
+unchanged. Change configuration data the same way, for example
+`{:config {:models {:default "provider/model"}}}`. Nested maps compose;
+nonempty arrays and scalar values replace their previous values. Use
+`(misa.replace [])` to clear an array.
+
+The default is a normal application value, not an inheritance directive. Assemble
+smaller applications from selected module constructors and explicit definitions;
+omitting the defaults loads none of their providers, tools, or presentation.
+A minimal configuration is `{:definitions {}}`. Constructors build data before
+installation; the native installer retains callbacks in Lua and installs the
+finished catalogs once.
 
 ```sh
 zig build
@@ -95,7 +41,7 @@ zig build test
 zig build test-integration
 zig build test-nix
 zig build -Doptimize=ReleaseSafe
-zig build run -- --config config/default.json hello
+zig build run -- --config config/default.fnl hello
 ```
 
 Use `nix-shell -A shell` for the pinned development dependencies. `zig build test`
@@ -135,7 +81,7 @@ Pass `--installed` to `tests/ghostty-input.py` to verify the executable's instal
 catalog rather than loading extensions from the worktree. This mode uses the
 catalog installed alongside `misa-fixture` by `zig build fixture-app`.
 
-Without an override, misa loads the installed `share/misa/default.json`, which
+Without an override, misa loads the installed `share/misa/default.fnl`, which
 selects all shipped real providers, Claude Code by default, coding tools, model
 policy, authentication commands, the agent, and the UI as a useful coding
 profile. Run `misa login claude` first.
@@ -151,6 +97,9 @@ never discovers its own executable path. Values containing `/` or ending in
 event framework are written in Fennel. The compiler is embedded in the executable;
 loading installed or custom Fennel extensions requires no external compiler.
 Lua extensions remain supported by the same VM boundary.
+For Fennel/Lua configuration, ordinary `require` searches its directory and the
+standard module directory. Return `{config=..., definitions=...}`; only `config`
+crosses the JSON boundary, while definition callbacks remain in the Lua VM.
 The build requires a host `luajit` executable to translate bundled extensions and
 the embedded runtime core to portable Lua source. Installed catalog IDs use generated `.lua` files; explicit
 `MISA_EXTENSION_DIR` overrides continue to use `.fnl` sources so development edits
@@ -161,115 +110,102 @@ the embedded compiler remains available for custom Fennel modules.
 
 ## Event, coeffect, effect, and view contract
 
-An extension returns `{ setup = function(context) ... end }`. Setup returns
-`{fx = {...}}`: an ordered array of registration effects, interpreted before the
-next extension's setup runs. There is no `run` phase or imperative `misa.reg_*` API.
-For example, a Fennel extension can declare an event handler and a shared service:
+An application is ordinary data: `{config, definitions}`. Definitions are maps
+of catalogs, each containing named entries. The host evaluates the configuration,
+copies only its JSON settings into native code, and installs the callback-bearing
+catalogs in Lua once. Installation validates and seals the complete application.
+There is no registration program to execute during startup or event handling.
+
+A minimal application can return its definitions directly:
 
 ```fennel
-{:setup (fn [context]
-  {:fx [{:type :register/event :name :app/start
-         :handler (fn [db event cofx]
-                    {:fx [{:type :dispatch
-                                 :event {:type :example/ready}}]})}
-        {:type :register/service :name :example
-         :value {:enabled (. context.config :example)}}]})}
+{:config {:example {:enabled true}}
+ :definitions
+ {:events {:example/start
+           {:event :app/start :priority 0
+            :handler (fn [db event cofx]
+                       {:patch {:example {:enabled cofx.config.example.enabled}}
+                        :fx [{:type :dispatch :event {:type :example/ready}}]})}}
+  :services {:example.enabled (fn [db] db.example.enabled)}}}
 ```
 
-Registration effects use these payloads:
+A reusable module may return a pure constructor `(fn [context] definitions)`.
+`standard.application` calls the selected constructors with `{config}` before
+installation and composes their results. Constructors produce data and functions;
+startup IO belongs in effects from an `app/start` handler. Constructors must not
+read installed services or mutate `misa`. Closures may call declared services
+later, after the whole application has been installed.
 
-- `{type="register/event", name=type, handler=fn}`: handlers run in registration order and
-  update canonical application state. A handler receives `(db, event, cofx)` and returns nil or
-  `{patch=<map>, fx=<ordered array>}`. Patches recursively merge maps, replace vectors and
-  scalar values, preserve identity for untouched branches, and support `(misa.replace value)`
-  and `misa.delete`. Returning `{db=<table>}` is rejected, including from Lua extensions.
-  Treat input state as immutable; allocate new data or use `misa.patch` for updates.
-  An empty table patch is a no-op, including at absent or scalar paths; use
-  `misa.replace({})` to clear a collection. Nonempty dense numeric arrays replace
-  the collection; sparse or mixed numeric/string patch tables are rejected.
-  Replacement data is validated recursively, even when its identity matches
-  existing state. Data cannot contain patch controls, cycles, metatables,
-  callbacks or non-finite numbers. Unchanged branches retain identity, including
-  equal replacement data. `misa.delete` and `misa.replace(nil)` remove a key;
-  `misa.json_null` stores an explicit JSON null.
-- `{type="register/event-route", value={id,event,priority,context,resolve}}`: declares
-  a pure route for one source event type. `context` is a subscription query;
-  nil makes the route inactive. `resolve(context,event,cofx)` returns nil to
-  decline or a semantic event to handle. Highest-priority claim wins; competing
-  claims at that priority are an error, not a registration-order tie-break.
-  Priority is a finite integer. The winning event goes directly to ordinary
-  handlers in the same transaction; it is not recursively routed. If no route
-  claims, the original event is handled. Routes cannot return patches or effects.
-  Global before/after interceptors are not supported.
-- `{type="register/cofx", name=name, handler=fn}`: derives a policy value. Derivations run in
-  registration order; a later derivation may read values installed by earlier
-  ones. Setup context also includes `host={executable,config_path}` so subprocess
-  bridges can reuse the running binary and explicitly selected configuration.
-  Base coeffects always include `config`, `argv`,
-  `terminal={interactive=<bool>,images=<bool>,columns=<integer>,lines=<integer>}`, and
-  `clock={wall_ms=<Unix epoch milliseconds>,monotonic_ms=<monotonic milliseconds>}`.
-  These names are reserved. Native code samples both clocks for every
-  transaction; elapsed durations must use `monotonic_ms`, never wall time.
-  Configuration and argv are shared immutable inputs by contract.
-- `{type="register/fx", name=type, handler=fn}`: translates a Fennel policy effect to one native effect
-  or an ordered array of native effects.
-- `{type="register/view", handler=fn}`: registers exactly one semantic projection.
-- `{type="register/sub", value={id=..., inputs=queries, compute=fn}}` (or `value={id=..., read=fn}`): registers a pure
-  query projection. Call it as `misa.sub(db, [id, ...args])`; `inputs` is a vector of query vectors
-  (or a function of the requested query when dependencies depend on its arguments),
-  and `compute` receives their values. Results are memoized by input identity across view passes
-  and within each pass. See [subscription contracts](docs/subscriptions.md) for nullable
-  inputs, bounded consumer scopes, and speculative commit/rollback.
-- `{type="register/view-layer", id=id, handler=fn}`: contributes an optional semantic overlay layer;
-  the highest `priority` wins (default 0), allowing temporary palettes above
-  input docks for selection and attachments, and modal dialogs;
-  the UI composes layers without knowing plugin-owned state.
-- `{type="register/model", value=model}`: adds a provider-owned catalogue entry, including an
-  optional `context_window` and API metadata. `api.request_options` maps generic
-  option names to `{choices={...},default=...,required=?}` declarations and
-  `api.request_options_serializer` identifies the provider transport serializer.
-- `{type="register/auth-provider", value=provider}`: declares an authentication ID, model
-  provider, native `strategy`, and (for OAuth) trusted endpoint `profile` for
-  completion and availability tracking. Native validation rejects drift.
-  `misa.auth_provider(id)` and `misa.auth_provider_for_model(id)` look up declarations
-  in the live registry, including providers registered later during setup.
-- `{type="register/command", value={name,description,event,completion?,complete?}}`: adds a
-  generic slash command. `completion` names a shared static candidate group;
-  `complete(prefix,db)` supplies dynamic candidates when needed.
-  `misa.command_invocation(text)` returns a `commands/invoke` event. Its handler
-  normalizes arguments, records preferences, and dispatches the declared execution
-  event; unrelated events carrying a `command` field are not intercepted.
-  Optional `choice_available(db)` and `choice_unavailable` (an event name) declare
-  how opening an unavailable command choice is handled.
-- `{type="register/completion", group=group, value={value,label?,description?}}`: lets any plugin add
-  a candidate to a shared completion group. The UI handles filtering, sorting,
-  display, and insertion, so providers only declare their authentication ID.
-- `{type="register/tool", value=tool}`: adds a semantic tool schema and its effect type.
-  `misa.models()`, `misa.model(id)`, `misa.auth_providers()`, `misa.commands()`, `misa.command(name)`,
-  `misa.tools()`, and `misa.tool(name)` expose the sealed registries.
-- `{type="register/service", name="namespace.member", value=value}` exports a
-  shared service; later extensions can consume it through `misa.namespace.member`.
-- `{type="register/setup-effect", name=type, handler=fn}` declares a plugin-owned
-  setup effect interpreter, such as the component and theme registries. Its name
-  must use the `register/` namespace. Its
-  handler receives the effect and may return `{fx={...}}` to expand it into
-  further setup effects.
+`misa.compose` returns a new application specification. Catalog entries are
+replaced by ID, so an override changes one implementation without copying the
+stock application. New IDs add entries. `misa.delete` explicitly disables a named
+definition until installation, including defaults produced by module constructors.
+A later concrete definition re-enables that ID. Deleted modules are removed during
+composition. `standard.default.modules` contains independently selectable policy,
+provider, protocol, and component modules. `modules[id].source` names a module
+to require only when selected; `modules[id].build` can supply a pure constructor
+directly instead. `modules[id].priority` contributes to its event priorities.
+The explicit `definitions` map is composed after module output. Settings are
+shared immutable inputs; composition and compilation leave imported defaults
+unchanged.
 
-Setup accepts registration effects only. Event transactions accept runtime effects
-only: registrations cannot be emitted by event handlers or runtime effect
-translators. Registrations seal after all extensions have completed setup.
-Perform startup IO through effects from an `app/start` handler. Plugin setup must
-return service declarations rather than assigning fields directly on `misa`.
-Initialize domain state in its owning `app/start` handler, not a global
-interceptor. A consumer that needs other startup owners' state should emit an
-explicit continuation event: dispatched effects run after the transaction
-commits. Bundled `agent/startup` checks settled authentication readiness;
-`request-options/reconcile` reads settled model state after startup and model
-changes. This avoids depending on extension registration order. Interceptors
-remain available for handler plumbing and ordered input routing, not as the
-default home for domain event policies.
-Protocol factories such as `misa.protocols.openai(spec)` return `{fx={...}}` for
-composition into a provider extension's setup result. The asynchronous
+Catalogs use the following entries (the outer map key is the entry's ID):
+
+| Catalog | Entry |
+| --- | --- |
+| `events` | `{event, handler, priority?}`; handlers receive `(db,event,cofx)` |
+| `routes` | `{event,priority,context,resolve}`; one pure event route |
+| `coeffects` | `function(cofx,event,db)`; derives a transaction input |
+| `effects` | `function(effect,cofx,db)`; translates policy effects |
+| `views` | `function(db,context)`; exactly one root semantic view |
+| `view-layers` | `function(db,context)`; optional semantic overlay |
+| `subscriptions` | `{inputs,compute}` or `{read}`; a pure query |
+| `projections` | `{inputs,render}`; an independently cached presentation owner |
+| `services` | A function or immutable value, named `namespace.member` |
+| `models`, `auth-providers`, `commands`, `actions`, `tools` | Domain declarations; their owning APIs validate and expose them |
+| `completions` | `{group,value={value,label?,description?}}` |
+| `requirements` | An array of service paths, keyed by consumer ID |
+| `validators` | A pure `(id,value)` validator, keyed by catalog name |
+
+Additional catalogs belong to their domain modules: components, themes, tool
+presentations, input policies, and protocol adapters remain ordinary named data.
+`misa.catalog(kind)` returns their installed map; `misa.catalog-entries(kind)`
+returns entries in priority and ID order. Both return borrowed immutable values.
+Service results and query inputs follow the same ownership contract unless an API
+explicitly documents fresh mutable storage. Copy or use `misa.patch` to derive a
+changed value; never edit a borrowed catalog, model, projection, or service table.
+
+Event handlers run by ascending finite integer `priority` (default zero), then
+by their stable definition IDs. Coeffects run by ID; do not encode hidden module
+load-order dependencies. Requirements such as
+`{:requirements {:feature ["themes.current" "components.render"]}}` are checked
+after services have been installed, with a diagnostic naming the missing consumer
+and path. Runtime effects cannot add definitions or reopen installation.
+
+Handlers return nil or `{patch=<map>, fx=<ordered array>}`. Patches recursively
+merge maps and replace nonempty arrays and scalars. Empty patches do nothing;
+`(misa.replace {})` clears a collection and `misa.delete` removes a key.
+`misa.json-null` stores JSON null. Returning a whole `db` is rejected. State
+contains finite JSON data, never callbacks, metatables, cycles, or patch controls;
+unchanged branches retain identity. Allocate new values rather than mutating
+handler inputs. Effects run only after the model transaction commits. Emit an
+explicit continuation event when startup work needs other owners' settled state.
+
+Base coeffects include immutable `config` and `argv`, terminal facts, and
+`clock={wall_ms,monotonic_ms}`. Native code supplies both clocks; use monotonic time
+for elapsed durations. The runtime coeffects also include `host={executable,config_path}`
+for subprocess bridges; pure constructors receive only configuration data. Policy stays in Lua; native code owns IO, cancellation,
+JSON transport validation, and terminal frame decoding.
+
+Routes read their declared subscription context and return a semantic event or
+nil. The highest-priority claim wins; equal-priority claims are an error. The
+winning event reaches ordinary handlers in the same transaction without recursive
+routing. Routes return no patches or effects. Subscriptions use
+`misa.sub(db, [id, ...args])`; see [subscription contracts](docs/subscriptions.md)
+for nullable inputs, consumer scopes, and speculative commit/rollback.
+
+Protocol modules export pure constructors too. Providers compose their named
+handler and adapter definitions before installation. The asynchronous
 `syntax/highlight` effect accepts `id`, `language`, `source`, and `completion`,
 with an optional `timeout_ms` (1–60000; default 1000). Its completion event has
 `id`, `ok`, and `data` containing ordered
@@ -283,8 +219,8 @@ state. It consumes explicit `transcript/updated` notifications, not a global
 before/after interceptor; projections never schedule highlighting.
 The `syntax/projections` subscription incrementally projects document
 entries, retaining unchanged results. Point queries use `syntax/projection`;
-collection consumers call `misa.syntax_projections(db)` once and pass that
-immutable snapshot to `misa.syntax_projection(snapshot, model)`. The latter is a
+collection consumers call `misa.syntax.all(db)` once and pass that
+immutable snapshot to `misa.syntax.for-model(snapshot, model)`. The latter is a
 pure lookup with source matching, not a subscription evaluation. Transcript
 enrichment therefore avoids both per-document scope eviction and repeated
 evaluation of the same collection query. Retained states do not depend on an external
@@ -429,12 +365,12 @@ facts should consume committed model state through declared projection inputs.
 Extensions can register a projection owner:
 
 ```fennel
-{:type :register/projection :name :feature_projection
- :inputs (fn [db] {:feature db.feature :theme db.themes})
- :render (fn [db context] (render-feature db.feature context))}
+{:projections {:feature.project
+ {:inputs (fn [db] {:feature db.feature :theme db.themes})
+ :render (fn [db context] (render-feature db.feature context))}}}
 ```
 
-This installs an ordinary service at `misa.feature_projection`. The owner must
+This installs an ordinary service at `misa.feature.project`. The owner must
 declare every state dependency used by its render callback; context fields are
 also compared. Inputs and outputs follow the framework's immutable-value
 contract. Calls can compose subscriptions and other projections. Accepted frames
@@ -524,21 +460,21 @@ visual roles to registered implementations. The independently loadable
 depends on a theme. `layout` provides pure terminal-cell width, fitting,
 semantic-span wrapping, and responsive-column primitives. Theme resolution is
 centralized at the component registry boundary. Custom code calls
-`misa.render_component(db, role, model, context)` and
-`misa.animation_span(db, role, options?)` for clock-driven visual motion.
+`misa.components.render(db, role, model, context)` and
+`misa.animations.span(db, role, options?)` for clock-driven visual motion.
 Component `render(model, context, previous?)` receives those tables directly and must not
 mutate them or any nested values. Allocate output records when decorating input
 data. Syntax projections in message models are ordinary immutable tables, not
 callbacks; their document/capture identities survive the component boundary.
 For a retained collection, use
-`misa.project_components(db, owner_id, [{id, role, model}, ...], context)`;
+`misa.components.project(db, owner_id, [{id, role, model}, ...], context)`;
 its `views` vector follows item order. Owner and item IDs must be nonempty strings,
 with unique item IDs per collection. Unchanged model/context fields reuse output;
 theme and relevant hover changes resolve decoration without recomputing semantics.
 Components may return an immutable incremental hint as a second result, received
 as `previous` on the next semantic computation. Rendering must remain correct
 without a hint. The framework's subscription scope owns these values and rolls
-them back with rejected transactions. Direct `render_component` is uncached.
+them back with rejected transactions. Direct `components.render` is uncached.
 Components registered with `compose=true` receive `context.render_child(role,
 model, child_context?)` for nested semantic views. Children use the same role
 selections; swapping a child invalidates its composing parent's cached output.
@@ -563,7 +499,7 @@ on a rendered result or individual line: the registry applies that style under
 every span and fills the row to the available width. The default `surface.*`
 tokens provide muted backgrounds; body text uses the terminal's default foreground.
 Animation roles are selected with `config.animations.roles`. Pure visual motion
-uses `misa.animation_span(db, role, options?)`, which returns a semantic span with
+uses `misa.animations.span(db, role, options?)`, which returns a semantic span with
 an animation descriptor. Options include a stable `id` (default
 `"animation/" .. role`), an initial `phase` (default 0), and a semantic `style`.
 Use distinct stable IDs for independent instances, or share an ID and vary
@@ -595,7 +531,7 @@ Headless output uses the base span text without ANSI animation output.
 Stateful behavior still uses ordinary events and effects. Plugins that need
 transactional ticks can explicitly dispatch `animations/start` and
 `animations/stop`, handle `animations/tick`, and call
-`misa.animation_frame(db, role, tick?)`; these retain the `timer/start` and
+`misa.animations.frame(db, role, tick?)`; these retain the `timer/start` and
 `timer/stop` path. Default visual activity does not start those timers.
 Selections live in `db`, so failed transactions roll back; successful swaps persist through
 the generic state service. Set `persist = false` in the corresponding config
@@ -634,7 +570,7 @@ extension performs a pure parse into semantic blocks and inlines; `component.mar
 terminal flow, while `component.message` supplies the outer rail, block surface, and collapsed previews.
 `component.tool` composes compact lifecycle headings and reusable content views;
 tool descriptions remain API documentation and are not displayed in the transcript.
-`tool_presentations` binds tools to generic field, text, code, numbered-line, and
+`tool.presentations` binds tools to generic field, text, code, numbered-line, and
 diff components, with a generic fallback for unconfigured tools. These bindings
 live outside tool definitions; content components know nothing about tool names
 or execution. `content.truncated` bounds rendered rows and shows a dim exact count
@@ -664,13 +600,14 @@ text is retained in full, including streaming chunks. `config.messages` controls
 initial `verbose` and the structured tool-argument `redact_keys`, `max_string`,
 `max_items`, and `max_depth` limits. Headless output remains plain.
 
-Load `component.content`, `component.truncation`, and `tool_presentations` before
-`component.tool`; load `component.truncation` and `component.group` alongside `component.message`.
+Include `component.content`, `component.truncation`, and `tool.presentations` with
+`component.tool`; include `component.truncation` and `component.group` with `component.message`.
 Presentation extensions can register a tool binding without modifying its definition:
 
 ```fennel
-{:type :register/tool-presentation :name :query
- :value {:subject :database :fields [:database :sql] :code :sql :language :sql :numbered false}}
+{:tool-presentations
+ {:query {:subject :database :fields [:database :sql]
+          :code :sql :language :sql :numbered false}}}
 ```
 
 A binding may instead be a pure function returning
@@ -679,7 +616,7 @@ The generic roles accept ordinary content: `content.fields` takes labeled values
 `content.lines` takes numbered rows with optional source offsets, and
 `content.truncated` takes rendered lines and a visible-line limit. Applications
 choose the bindings; renderers never inspect tool definitions or execute tools.
-For streaming, `misa.markdown.new_document():update(text)` retains completed
+For streaming, `misa.markdown.new-document():update(text)` retains completed
 blocks and reparses the final two blocks, where appended syntax can change the
 interpretation. Replacements rebuild the document; unchanged normalized source
 reuses it. The unfinished block can still reflow, and a large unfinished fence,
@@ -711,7 +648,7 @@ transcript state. Providers
 normalize every response to `agent/stream-start`, `agent/stream-delta`, optional
 `agent/stream-usage`, and `agent/stream-end`/`agent/stream-error`. Deltas cover
 text, thinking, and incrementally assembled tool calls. Protocol adapters use
-`misa.agent_stream_effects` to combine adjacent plain text or thinking deltas
+`misa.stream.effects` to combine adjacent plain text or thinking deltas
 already present in one transport batch. Request changes, different delta kinds,
 extra metadata, and intervening effects preserve their ordering boundaries;
 there is no waiting for more chunks. This avoids a full event/view transaction
@@ -728,36 +665,36 @@ an interrupted response remains marked in the visible transcript but is not
 replayed to the provider.
 
 Agent delta assembly is extensible through
-`{type="register/agent-delta", id="my_delta", value=function(stream, delta, request_id) ... end}`.
+`{["agent-deltas"]={["my_delta"]=function(stream, delta, request_id) ... end}}`.
 Pure handlers return `{patch=<stream-state patch>, fx=<ordered array>}` or nil.
 The agent applies request/cancellation correlation before dispatch. Handlers
 assemble canonical text, thinking, or tool-call blocks and emit transcript
 events; they do not mutate prior stream state or append conversation history.
 
 Transcript block updates expose
-`{type="register/transcript-delta", id="block_kind", value=function(block, event, policy) ... end}`.
+`{["transcript-deltas"]={["block_kind"]=function(block, event, policy) ... end}}`.
 Pure reducers return a block patch or nil; the transcript owner applies it without
 mutating the event or earlier blocks. `policy` provides the configured preview
 limits and redaction keys. This registry handles deltas, not block creation.
 
 The transcript owner publishes `{type="transcript/updated", response_id=...,
 block_id=...}` after changing blocks. `block_id` is optional for a whole-response
-update. Consumers call `misa.transcript_blocks(db, response_id, block_id?)` for
+update. Consumers call `misa.transcript.blocks(db, response_id, block_id?)` for
 the current immutable blocks without depending on response indices or storage
 layout. Missing targets return an empty array. An explicit notification without
 `response_id` requests processing of all blocks, for bulk imports that install
 canonical transcript state. Notifications identify what to read, not a copied
 text snapshot; queued duplicates safely observe the latest committed source.
 
-`register/transcript-presentation` takes `id=<block kind>` and
-`value=function(model, transcript_state, selected_range) ... end`. Pure projectors
+`transcript-presentations[block_kind]` is
+`function(model, transcript_state, selected_range) ... end`. Pure projectors
 return `{role=<component role>, model=<additional render fields>}` or nil to omit
 the block. Selection is nil for other blocks. These projections choose rendering
 without changing transcript facts or the component's returned line collection.
 
 `indicators` is a focused registry for semantic status values. Features return
-`{type="register/indicator", value={id,label?,icon?,hotkey?,query={"query-id",...}}}`
-in their setup effects. Queries use the existing subscription graph and explicit
+`indicators[id] = {label?,icon?,hotkey?,query={"query-id",...}}`
+in their definition catalogs. Queries use the existing subscription graph and explicit
 dependencies. They return nil to omit an item, or a typed fact; false and zero
 are values, not omission signals. The callback-based `value` API is removed.
 `config.status.indicators` selects order, label/icon representation, an optional
@@ -777,20 +714,19 @@ formatted suffixes, or animation frames. Built-in types also include `text`,
 `money` (with `amount`, `currency`, `estimated`, and `unknown`).
 
 `values` installs an open, pure value-rendering dispatcher, independently of
-status or transcript components. Load it before those consumers. Extensions
-add `{type="register/value-renderer",id="my-type",render=function(fact,context)
-... end}` returning semantic spans. `misa.render_value(fact,context?)` invokes it;
-unknown types and duplicate registrations fail explicitly. The default component
+status or transcript components. Include it with those consumers. Extensions
+add `value-renderers["my-type"] = function(fact,context) ... end` returning semantic spans. `misa.values.render(fact,context?)` invokes it;
+unknown types fail explicitly; named definitions are replaced during composition. The default component
 uses shared compact-number, percentage, and currency formatters, while owning
 styles and width dropping. Response cost metadata is a money fact too, including
 `pending=true` with no amount before completion. Timestamps reach components as
 raw `started_wall_ms`; the `timestamp` value renderer formats milliseconds as
 UTC time-of-day. The old formatted response `text` and `cost_format` service are removed.
 Animation selection is separate presentation data from
-`misa.animation_presentation(db,role)` / `[:animations/presentation role]`; the
+`misa.animations.state(db,role)` / `[:animations/presentation role]`; the
 activity renderer turns it into clock-driven spans without changing activity facts.
 
-`request_options` derives request readiness and selected option values entirely
+`request-options` derives request readiness and selected option values entirely
 from the active model's `api.request_options` metadata. Required options without
 values block a request before the user turn is recorded and emit a structured
 harness problem. `effort` is the reasoning-effort affordance: `/effort` lists
@@ -802,38 +738,38 @@ models without reasoning support simply expose no effort value.
 `choices` owns generic choice state and narrowing transitions shared by inline
 completion and overlays. The item contract separates stable `id`, emitted
 `value`, semantic `display`, hidden `search`, optional `preview`, and `path`.
-Choice sources are registered with `{type="register/choice-source", id=id, value=source}`; any item can narrow
+Choice sources are registered with `{["choice-sources"]={[id]=source}}`; any item can narrow
 to another source, and empty-query Backspace pops the whole narrowing frame.
 Selected rows retain the standard selected style in every panel; only the
 active leftmost panel receives the `>` focus marker.
 
 Choice views are immutable implementations registered with
-`{type="register/choice-view", id=id, value=view}`. The built-ins are `all`, `favorites`, `frecency`, and
+`{["choice-views"]={[id]=view}}`. The built-ins are `all`, `favorites`, `frecency`, and
 `browse`. Browse shows up to three recent choices above the remaining choices;
 searching produces a single ranked list. `config.choices.recent_limit` adjusts
 that count. Model and argument pickers use Browse beside Favorites by default.
 
-Choice sessions are immutable data. `choice_refresh`, `choice_set_items`, and
-`choice_replace_view` return a new session; callers must retain that return value.
-`choice_input` and `choice_accept` return a result containing `session` alongside
+Choice sessions are immutable data. `choices.refresh`, `choices.set-items`, and
+`choices.replace-view` return a new session; callers must retain that return value.
+`choices.input` and `choices.accept` return a result containing `session` alongside
 outcomes such as `accepted`, `cancelled`, and `narrowed`. Rows and layout never
 mutate the supplied session. Add input transitions with
-`{type="register/choice-input", id="my_action", value=function(session, event, db) ... end}`;
+`{["choice-inputs"]={["my_action"]=function(session, event, db) ... end}}`;
 the handler returns the same result shape and must leave its inputs unchanged.
 
 Editor handlers also return immutable patches. Register an additional text-edit
-kind with `{type="register/editor-edit", id="my_edit", value=function(editor, event) ... end}`.
+kind with `{["editor-edits"]={["my_edit"]=function(editor, event) ... end}}`.
 It returns the next editor data, without mutating either input; slash-choice
 synchronization then runs over that result. Submission and modal choice outcomes
 remain separate from these text edits.
 
-The Vim policy accepts `register/editing-motion` and `register/editing-action`
-effects with `id` and `value`. A motion receives editor data and returns a
+The Vim policy accepts the `editing-motions` and `editing-actions`
+catalogs, keyed by motion or action ID. A motion receives editor data and returns a
 grapheme-boundary byte offset. An action receives `(editor, editing, event, db)`
 and returns `{editor=<patch>, editing=<patch>, fx=<array>}`. Both are pure;
 the policy handles undo bookkeeping and selection projection around the result.
 Editor-owned transitions call the optional pure
-`editing_transition(editing, previous_editor, next_editor, reason, interactive)`
+`editor.transition(editing, previous_editor, next_editor, reason, interactive)`
 service in the same transaction. It returns the next editing state; reasons are
 `insert`, `edit`, `discard`, `restore`, `steer`, `undo`, `redo`, and `preserve`.
 Undo bookkeeping does not inspect unrelated events or infer submission from a
@@ -860,22 +796,21 @@ selectable representation with an explicit ellipsis. Input docks participate in
 inline geometry, so positional hotkeys refer to the rows actually displayed.
 
 Inline and overlay sessions resolve the same `keybindings.choices` actions and
-positional banks. `choice_layout` is the single projection for responsive
+positional banks. `choices.layout` is the single projection for responsive
 preferred/min/max overlay bounds, preview and panel allocation, shared hints,
 and positional targets. The picker component only renders that projection.
-Load `keybindings` before choice layout and the editor, picker, and status
+Include `keybindings` with choice layout and the editor, picker, and status
 components. All key hints use its shared token renderer, preserving input case;
 equivalent encodings such as `ctrl_n` and `ctrl+n` produce identical spans.
-Load `choice_preview` before `choice_layout`. It renders typed preview data to
+Include `choices.preview` with `choices.layout`. It renders typed preview data to
 semantic lines before geometry is calculated; compact and overlay input handling
 use the same resulting line heights and targets. Extensions register
-`{type="register/choice-preview",id="my-preview",render=function(model,context)
-... end}`, returning semantic lines. `context` supplies `columns` and `compact`.
+`choice-previews["my-preview"] = function(model,context) ... end`, returning semantic lines. `context` supplies `columns` and `compact`.
 Use `config.choices.preview_renderers` to map a preview type to a renderer ID;
-unknown IDs and duplicate registrations fail explicitly.
+unknown IDs fail explicitly; named definitions are replaced during composition.
 
 Model previews carry `type="model"`, raw `context_window`, and `cost` facts from
-`misa.model_cost_info`: `currency`, `token_unit`, `pricing`, `estimated`, and
+`misa.costs.model`: `currency`, `token_unit`, `pricing`, `estimated`, and
 `unavailable`. Rate numbers are not converted to strings by model/cost owners.
 The default preview renderer owns summary wording, currency precision, and layout.
 The picker receives both `preview.model` and rendered `preview.lines` records;
@@ -913,12 +848,12 @@ Facts and details use `values`' typed formatting; optional meters carry `used` a
 `limit`. Row action IDs refer to the dialog's action definitions, with `inline=true`
 placing their buttons in the row. `component.data` measures shared columns across
 all sections, and `component.buttons` uses the ordinary keybinding and action span
-presentation. `dialog_view` composes data with the replaceable dialog chrome.
+presentation. `dialogs.view` composes data with the replaceable dialog chrome.
 `dialog/update` replaces supplied sections as a collection while preserving open
 confirmations and scroll position. Arrow, wheel, and page keys scroll overflow.
 Usage supplies this semantic data contract and owns no rendering or input model.
 Dialog handlers return patches. Additional ordinary input kinds use
-`{type="register/dialog-input", id="my_input", value=function(dialog, event) ... end}`;
+`{["dialog-inputs"]={["my_input"]=function(dialog, event) ... end}}`;
 the pure handler returns `{patch=<application patch>, fx=<array>}`. Protected
 dialogs bypass ordinary input handlers entirely.
 A protected dialog starts `input/protected` for a waiting native operation and
@@ -926,11 +861,11 @@ correlation. Its bounded 64 KiB buffer stays native; Lua receives only length,
 submission/cancellation, and capacity-error metadata. Buffered input is held
 until capture is installed and scrubbed if the operation fails or is cancelled,
 so a pasted key cannot fall through into a conversation.
-`dialog_view` projects that state through the replaceable
+`dialogs.view` projects that state through the replaceable
 `dialog` component role. Dialog data and hints are generic—providers do not own
 UI paths or rendering. Default dialogs are compact overlays that retain the
 transcript, with clickable URLs and wrapped input. `picker` is only the overlay lifecycle adapter and
-`picker_view` renders the centralized projection. `commands` normalizes every
+`picker.view` renders the centralized projection. `commands` normalizes every
 typed, picked, or replayed command into one canonical invocation and records
 recent invocations in the generic `commands` preference scope. Canonical strings
 (such as `/model vendor/model`) are also favorite IDs. Usage is recorded once
@@ -976,7 +911,7 @@ Claude provider supplies this bridge through `--mcp-config` whenever tools are
 registered, while retaining `--tools ""` so Claude's own tools remain disabled.
 The MCP child inherits `MISA_CONFIG`; configurations selected with `--config`
 should set `config.providers.claude.mcp_arguments` to
-`["mcp", "--config", "/the/same/config.json"]`. `mcp_command` defaults to
+`["mcp", "--config", "/the/same/config.fnl"]`. `mcp_command` defaults to
 `misa` and may be set to an absolute executable path.
 `provider.fake` keeps its state under
 `db.providers.fake`; `provider.command` adapts user executables.
@@ -990,7 +925,7 @@ an optional boolean override for environments where status discovery is
 unavailable. API-backed Anthropic catalogues are
 refreshed from `GET /v1/models` for the models available to that API key.
 `editor` owns multiline UTF-8 editor state and transitions. `messages` owns
-transcript scrolling and bounded window extraction. `models`, `request_options`,
+transcript scrolling and bounded window extraction. `models`, `request-options`,
 and `messages` expose narrow read-only projections used by status and composition;
 those consumers never traverse feature-private state. `ui` owns only root
 composition. Interactive sessions return to the editor after each response;
@@ -1086,7 +1021,7 @@ is inferred from a model name or price.
 Assign models with `/role default provider/model` and
 `/role summarizer provider/model`; `/role summarizer off` removes the latter.
 Assignments persist and can be overridden by `config.models.roles`.
-Extensions resolve full available models through `misa.model_for_role(db, role)`;
+Extensions resolve full available models through `misa.models.for-role(db, role)`;
 an unassigned or unavailable background role resolves to nil.
 
 The default theme inherits terminal body text and base background. Choose
@@ -1121,7 +1056,7 @@ message, separating submissions with newlines; completion sends that message.
 Alt-E brings it back into the draft, preserving any existing draft and images.
 Alt-Enter interrupts and sends the pending message together with the draft.
 Ctrl-C interrupts while preserving the draft. Effort cycling uses Alt-F.
-`queue` owns scheduling, `queue_view` owns its dock, and the editor targets the
+`queue` owns scheduling, `queue.view` owns its dock, and the editor targets the
 installed submission capability. These plugins can be replaced independently.
 The dock renders the `pending-prompt` component role with
 `{pending=<raw text>, attachment_count=<number>}`. Draft attachment controls use
@@ -1131,9 +1066,8 @@ override either role through `config.components.roles` to change presentation.
 
 Extensions contribute lifecycle facts through named subscription queries, not
 by rewriting completion or input events. Register a subscription and expose its
-query with `{type="register/service", name="editor_lifecycle.<extension>",
-value={"<query-id>"}}`. Registration may precede or follow the editor extension;
-duplicate names are rejected by the service registry. Each query declares its
+query through `services["editor.lifecycle.<extension>"] = {"<query-id>"}`.
+The editor reads the installed lifecycle catalog after composition. Each query declares its
 normal subscription inputs and returns boolean flags: `hold_exit` prevents
 one-shot completion from quitting; `block_draft` prevents draft submit/steer
 without clearing draft text, attachments, selection, or undo state. Omitted
@@ -1194,17 +1128,17 @@ an argv array such as `["wl-copy"]`, `["xclip", "-selection", "clipboard"]`, or
 `["pbcopy"]` to send copied text to that process's stdin instead. The internal
 register always remains available for editor paste.
 
-Features return `{type="register/action", value={id,label,event,keys?,binding?,available?}}`
-in setup effects; `binding` identifies a configured `{context,action}`, and `available(db)`
+Features return `actions[id] = {label,event,keys?,binding?,available?}`
+in definition catalogs; `binding` identifies a configured `{context,action}`, and `available(db)`
 controls contextual discovery. Without `binding`, an action gets a global
 binding under its ID; `keys` supplies optional defaults. Configure it through
 `config.keybindings.global[id]`. The `actions` extension routes global action
 bindings and supplies the palette.
-`selection` accepts `{type="register/selection-source", id=id, value=function(db) ... end}`
-in setup effects, with the function returning
+`selection` accepts `{["selection-sources"]={[id]=function(db) ... end}}`
+in definition catalogs, with the function returning
 source documents with `{id,label,text,kind,first,last,children}` and unique string
 IDs across all sources. Ranges are
-zero-based, half-open byte offsets. `selection_document` derives semantic
+zero-based, half-open byte offsets. `selection.document` derives semantic
 ranges from Markdown and lazily supplies finer ranges; selection policy and
 rendering can both be replaced independently. A source may also supply
 `layout(db, document, terminal)`, returning its existing rendered rows with
@@ -1217,14 +1151,14 @@ content and continuation lines. Range offsets refer to the original source bytes
 including CRLF line endings.
 
 `v` anchors a visual range and navigation extends it across structural depths
-and documents; `v` again returns to the focused node. `selection_ranges(db)`
+and documents; `v` again returns to the focused node. `selection.ranges(db)`
 returns ordered `{id,text,kind,first,last}` slices of the frozen sources.
-`selection_projection(db, id?)` returns the selected slice for an ID, or the
+`selection.state(db, id?)` returns the selected slice for an ID, or the
 focused document when no ID is supplied. Copy preserves each slice's original
 bytes and inserts a blank line (`\n\n`) between documents. The viewport follows
 the focused document, not the beginning of the whole range.
 Selection actions are extensible through
-`{type="register/selection-action", id="my_action", value=function(state, db, event) ... end}`.
+`{["selection-actions"]={["my_action"]=function(state, db, event) ... end}}`.
 Pure handlers return `{state=<new selection state>, fx=<array>, close=<boolean>}`.
 Omitted state is unchanged; `close=true` dismisses selection. Copying is one
 action, not a requirement of navigation or range projection.
@@ -1250,22 +1184,20 @@ Grammar libraries must export their conventional `tree_sitter_<language>`
 symbol.
 
 `default.nix` exports the package, overlay, shell, modules, `lib`, and
-`standardExtensions`. Raw and Nix configurations use the same ordered list:
+`standardExtensions`. Nix can package the same configuration file:
 
 ```nix
 let p = import ./path/to/misa { inherit pkgs; }; in
 p.lib.mkMisa {
-  extensions = with p.lib.standardExtensions; [
-    values json providerFake keybindings links actions
-    themes themeDefault animations animationDefault components layout choiceLayout markdown componentMarkdown indicators dialogs componentButtons componentData dialogView componentTool componentMessage componentEditor componentPicker componentStatus componentChrome componentDialog
-    messages status usage picker pickerView models omnipicker requestOptions effort agent editor ui
-  ];
-  config = {
-    models.default = "fake/default";
-    providers.fake.responses = [ "done\n" ];
-  };
+  configuration = ./config.fnl;
 }
 ```
+
+The Home Manager, NixOS, and Darwin modules expose the same file through
+`programs.misa.configuration`. If it imports sibling modules, retain their
+whole directory in the closure with `configuration = "${./misa-config}/config.fnl"`.
+The file contains the ordinary Fennel composition above; Nix does not add a
+separate inheritance or merge language.
 
 ## Credentials
 
@@ -1306,30 +1238,31 @@ through process configuration, for example
 cannot grant themselves destinations. `misa login claude` delegates to `claude auth login`; Claude Code
 continues to own and refresh its existing subscription credentials.
 
-API provider lists include their protocol explicitly, for example
-`[ "json", "protocol.anthropic", "provider.anthropic", "components", "layout", "markdown", "component.markdown", "component.tool", "component.message", "component.editor", "component.picker", "component.status", "component.chrome",
-"messages", "models", "request_options", "effort", "agent", "commands",  "choices", "choice_layout", "editor", "ui" ]` (add `picker`, `picker_view`, and `omnipicker` when overlay choices are needed).
+When assembling a smaller application, select provider and protocol constructors
+explicitly in `modules`. HTTP adapters also need the `json` and `stream` modules;
+UI and tool presentation modules are separate choices. The default specification
+shows the complete stock composition and its named module IDs.
 OpenAI and OpenRouter use `protocol.openai`; Anthropic and Kimi use
 `protocol.anthropic`. ChatGPT subscription access is the separate
 `provider.openai-codex` extension and its Codex Responses protocol.
 OpenAI-compatible delta projections can be extended with
-`{type="register/openai-delta", id="my_delta", value=function(delta, record) ... end}`.
-Pure projections return arrays of normalized agent deltas and run in registration
-order, after the built-in text, reasoning, and tool-call projections.
-Anthropic-compatible streams expose `register/anthropic-record`,
-`register/anthropic-block-start`, and `register/anthropic-block-delta` with `id`
-and `value` fields. Pure handlers receive `(state, record, request_id, provider)`
+`{["openai-deltas"]={["my_delta"]=function(delta, record) ... end}}`.
+Pure projections return arrays of normalized agent deltas and run in deterministic catalog
+ID order alongside the built-in text, reasoning, and tool-call projections.
+Anthropic-compatible streams expose the `anthropic-records`,
+`anthropic-block-starts`, and `anthropic-block-deltas` catalogs, keyed by record
+or block type. Pure handlers receive `(state, record, request_id, provider)`
 and return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`. This keeps
 signed provider state separate from visible thinking deltas. Terminal handlers
 set `terminal=true` or `failed=true` and request `finish=true`.
 Codex record handlers are pure and extensible through
-`{type="register/codex-record", id="record.type", value=function(state, record, request_id) ... end}`.
+`{["codex-records"]={["record.type"]=function(state, record, request_id) ... end}}`.
 Handlers return `{patch=<stream-state patch>, fx=<array>, finish=<boolean>}`.
 Completion records mark `terminal=true`; failures mark `failed=true`. Either
 stops subsequent records from emitting output for that stream.
 
-Claude CLI records expose `register/claude-record` and
-`register/claude-stream-event`, with `id` and `value` fields. Pure handlers receive
+Claude CLI records expose the `claude-records` and
+`claude-stream-events` catalogs, keyed by record or stream event type. Pure handlers receive
 `(state, record, request_id)` and return `{state=<new immutable stream state>,
 fx=<array>, finish=<boolean>}`; omitted state is unchanged. Terminal handlers set
 `result=true` and request `finish=true`. Tools retain one identity across partial
@@ -1367,7 +1300,7 @@ Claude's CLI requires `mcp__misa__` names for its MCP transport and allowlist.
 Misa removes that private bridge prefix from observed tool names in canonical
 history and the transcript; names belonging to other MCP servers remain intact.
 
-The optional `tool_summary` extension (included in the default profile) uses the
+The optional `tool.summary` extension (included in the default profile) uses the
 `summarizer` model role for tool-free background summaries of successful tool
 results longer than 240 bytes. Requests run one at a time; short results and
 errors keep their direct previews. Summaries affect collapsed presentation only;

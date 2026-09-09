@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (local source "# live
 ## second
 ***both*** and ~~**gone**~~ and `x` [docs](https://example.test)
@@ -40,12 +40,12 @@ return 42
                                                 :end_byte 6
                                                 :capture :keyword}])))
                                     (local narrow
-                                           (misa.markdown_view.render document
+                                           (misa.markdown.view.render document
                                                                       {:base :assistant
                                                                        : captures
                                                                        :columns 30}))
                                     (local wide
-                                           (misa.markdown_view.render document
+                                           (misa.markdown.view.render document
                                                                       {:base :assistant
                                                                        : captures
                                                                        :columns 60}))
@@ -133,6 +133,6 @@ return 42
                                      :fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :markdown}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.markdown-rendering declarations {}))

@@ -1,18 +1,16 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:completion :invalid/loaded
                                            :namespace :integration
-                                           :type :state/load}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :invalid/loaded
-                         :handler (fn [_ event]
+                                           :type :state/load}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :invalid/loaded :handler (fn [_ event]
                                     (assert (and (= event.ok false)
                                                  (= event.message :InvalidState)))
-                                    {:fx [{:type :app/quit}]})})
+                                    {:fx [{:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.invalid-state declarations {}))

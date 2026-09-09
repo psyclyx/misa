@@ -1,6 +1,30 @@
 const Harness = @import("harness.zig").Harness;
 const options = @import("integration_options");
 
+test "selection consumes only accepted presentation geometry" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/presentation-feedback.fnl"} }, "accepted presentation feedback passed\n");
+}
+
+test "individual presentation defaults can be replaced through configuration" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/presentation-overrides.fnl"} }, "presentation overrides passed\n");
+}
+
+test "application composition replaces named definitions before one installation" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/application-composition.fnl"} }, "application composition contracts passed\n");
+}
+
+test "MCP and event effects share policy and serializers return request data" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/effect-policy.fnl"} }, "effect policy contracts passed\n");
+}
+
 test "choice preview renderers receive semantic pricing before shared geometry" {
     var h = try Harness.init();
     defer h.deinit();

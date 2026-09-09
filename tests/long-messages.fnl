@@ -9,6 +9,8 @@
 
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) context))
+(local declarations (require :misa.definitions))
 (each [_ name (ipairs [:keybindings
                        :themes
                        :theme/default
@@ -16,17 +18,15 @@
                        :layout
                        :markdown
                        :component/markdown
-                       :values :component/content :component/truncation :tool_presentations :component/tool
+                       :values :component/content :component/truncation :tool/presentations :component/tool
                        :component/group :component/message
                        :messages])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (app.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
 
 (var db nil)
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/read
-                            :handler (fn [state] (set db state))}]})
+(app.define (declarations :long-messages-1 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}}]))
 
-(misa._seal context)
+(app.install context)
 (local terminal {:interactive true :columns 80 :lines 24})
 (fn dispatch [event]
   (local pending [event])
@@ -48,7 +48,7 @@
   (table.concat text))
 
 (fn visible [marker]
-  (assert (: (text-of (misa.transcript_projection db terminal)) :find marker 1
+  (assert (: (text-of (misa.transcript.project db terminal)) :find marker 1
              true) (.. "message tail hidden: " marker)))
 
 (dispatch {:type :app/start})
@@ -81,7 +81,7 @@
   (visible :FIRST-END)
   (visible :SECOND-END))
 
-(assert (= (text-of (misa.markdown_view.plain (.. first tail))) (.. first tail)))
+(assert (= (text-of (misa.markdown.view.plain (.. first tail))) (.. first tail)))
 (dispatch {:type :transcript/user :text (.. first " USER-END")})
 (assert (= (. db.messages.blocks 2 :text) (.. first " USER-END")))
 (visible :USER-END)
@@ -92,14 +92,14 @@
 (assert (= (. db.messages.blocks 3 :text) (.. first " LEGACY-END")))
 (visible :LEGACY-END)
 ;; A hidden transcript must not invoke its potentially expensive projection.
-(let [project misa.transcript_projection]
-  (set misa.transcript_projection
+(let [project misa.transcript.project]
+  (set misa.transcript.project
        (fn [] (error "hidden transcript attempted projection")))
   (each [_ room (ipairs [0 -1])]
-    (assert (= (length (misa.transcript_window db terminal room)) 0)))
-  (set misa.transcript_projection project))
+    (assert (= (length (misa.transcript.window db terminal room)) 0)))
+  (set misa.transcript.project project))
 
-(assert (> (length (misa.transcript_window db terminal 1)) 0)
+(assert (> (length (misa.transcript.window db terminal 1)) 0)
         "visible transcript did not resume projection")
 
 ;; Formatting continues beyond the former document-size and block-count caps.
@@ -113,11 +113,11 @@
 
 (local large (.. (string.rep "ordinary text\n\n" 18000) :**BYTE-TAIL**))
 (assert (> (length large) 262144))
-(assert (has-strong (. (misa.markdown_view.project large {:columns 80}) :lines) :BYTE-TAIL)
+(assert (has-strong (. (misa.markdown.view.project large {:columns 80}) :lines) :BYTE-TAIL)
         "long source lost Markdown styling")
 
 (local many-blocks (.. (string.rep "# heading\n\n" 5000) :**BLOCK-TAIL**))
-(assert (has-strong (. (misa.markdown_view.project many-blocks {:columns 80}) :lines) :BLOCK-TAIL)
+(assert (has-strong (. (misa.markdown.view.project many-blocks {:columns 80}) :lines) :BLOCK-TAIL)
         "block count hid or flattened Markdown")
 
 ;; Tool arguments keep their independent budget and structural redaction.
@@ -135,7 +135,7 @@
 (dispatch {:type :transcript/tool-result :id :tool :text result-text})
 (assert (= (. db.messages.blocks 4 :result) result-text))
 (when db.messages.verbose (dispatch {:type :messages/toggle-verbose}))
-(local collapsed-text (text-of (misa.transcript_projection db terminal)))
+(local collapsed-text (text-of (misa.transcript.project db terminal)))
 (assert (collapsed-text:find "98 lines hidden" 1 true) "result truncation did not count all retained rows")
 (assert (not (collapsed-text:find "RESULT-END" 1 true)))
 (dispatch {:type :messages/toggle-verbose})

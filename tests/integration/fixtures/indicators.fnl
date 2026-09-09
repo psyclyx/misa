@@ -1,35 +1,30 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/keybinding
-                         :value {:action :cycle
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:action :cycle
                                  :context :test
-                                 :default [:alt+x]}})
-          (table.insert setup-fx
-                        {:type :register/indicator
-                         :value {:icon "!"
+                                 :default [:alt+x]}] {:catalog :keybindings :id (.. (. definition :context) "/" (. definition :action)) :value definition}))
+          (table.insert declarations
+                        (let [definition {:icon "!"
                                  :id :important
                                  :label :Important
-                                 :query [:test/important]}})
-          (table.insert setup-fx {:type :register/sub
-                                 :value {:id :test/important :inputs []
-                                         :compute (fn [] {:type :text :value :yes})}})
-          (table.insert setup-fx
-                        {:type :register/indicator
-                         :value {:hotkey {:action :cycle :context :test}
+                                 :query [:test/important]}] {:catalog :indicators :id (. definition :id) :value definition}))
+          (table.insert declarations (let [definition {:id :test/important :inputs []
+                                         :compute (fn [] {:type :text :value :yes})}] {:catalog :subscriptions :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        (let [definition {:hotkey {:action :cycle :context :test}
                                  :icon "?"
                                  :id :optional
                                  :label :Optional
-                                 :query [:test/optional]}})
-          (table.insert setup-fx {:type :register/sub
-                                 :value {:id :test/optional :inputs []
-                                         :compute (fn [] {:type :text :value :wide})}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+                                 :query [:test/optional]}] {:catalog :indicators :id (. definition :id) :value definition}))
+          (table.insert declarations (let [definition {:id :test/optional :inputs []
+                                         :compute (fn [] {:type :text :value :wide})}] {:catalog :subscriptions :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (local wide
-                                           (. (misa.indicators_projection db
+                                           (. (misa.status.indicators db
                                                                           {:columns 80})
                                               1 :spans))
                                     (var (labels ___values___ hotkey-text)
@@ -43,7 +38,7 @@
                                                  (= item.text :yes))
                                         (set ___values___ (+ ___values___ 1)))
                                       (local accent
-                                             (. (misa.theme_style db
+                                             (. (misa.themes.style db
                                                                   :keybinding)
                                                 :foreground))
                                       (local foreground item.style.foreground)
@@ -62,7 +57,7 @@
                                                  (= hotkey-text "⌥x"))
                                             "indicator semantic classes or structured hotkey are missing")
                                     (local narrow
-                                           (. (misa.indicators_projection db
+                                           (. (misa.status.indicators db
                                                                           {:columns 15})
                                               1 :spans))
                                     (var text "")
@@ -75,6 +70,6 @@
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :indicators}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.indicators declarations {}))

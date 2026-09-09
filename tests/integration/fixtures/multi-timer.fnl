@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     {:patch {:ticks {:a 0 :b 0}}
                                      :fx [{:completion :tick/a
                                            :id :a
@@ -12,7 +12,7 @@
                                           {:completion :tick/b
                                            :id :b
                                            :interval_ms 10
-                                           :type :timer/start}]})})
+                                           :type :timer/start}]})}})
 
           (fn tick [db name]
             (local ticks (misa.patch db.ticks {name (+ (. db.ticks name) 1)}))
@@ -26,13 +26,9 @@
                       {:type :app/quit}]}
                 {:patch {: ticks}}))
 
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :tick/a
-                         :handler (fn [db] (tick db :a))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :tick/b
-                         :handler (fn [db] (tick db :b))})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :tick/a :handler (fn [db] (tick db :a))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :tick/b :handler (fn [db] (tick db :b))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.multi-timer declarations {}))

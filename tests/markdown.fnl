@@ -1,11 +1,11 @@
+(local definitions (require :misa.definitions))
+
 ;; Regression: ordinary text must not trigger a suffix search per byte.
 
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     (fn equal [a b]
                                       (if (not= (type a) (type b))
                                           false
@@ -50,7 +50,7 @@ end"
                                             (table.concat chars)))
                                     (each [___case___ source (ipairs cases)]
                                       (local stream
-                                             (misa.markdown.new_document))
+                                             (misa.markdown.new-document))
                                       (for [size 0 (length source)]
                                         (local prefix (source:sub 1 size))
                                         (local actual (stream:update prefix))
@@ -65,7 +65,7 @@ end"
                                                      (misa.markdown.parse :replacement)))
                                       (assert (equal (stream:update source)
                                                      (misa.markdown.parse source))))
-                                    (local stream (misa.markdown.new_document))
+                                    (local stream (misa.markdown.new-document))
                                     (local before (stream:update "# stable
 
 paragraph
@@ -88,7 +88,7 @@ tail **bold**"))
                                             "updates must not mutate old trees")
                                     (local text (string.rep :x 300000))
                                     (local doc (misa.markdown.parse text))
-                                    (local large (misa.markdown.new_document))
+                                    (local large (misa.markdown.new-document))
                                     (local first (large:update text))
                                     (local extended
                                            (large:update (.. text :more)))
@@ -184,6 +184,6 @@ code
                                                  (= (. nodes 7 :text) " tail")))
                                     {:fx [{:lines [{:spans [{:text "markdown regressions"}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.markdown declarations {}))

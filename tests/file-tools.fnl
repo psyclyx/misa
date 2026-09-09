@@ -1,10 +1,13 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
-(local specs ((. (fennel.dofile :extensions/tool/files.fnl) :setup)))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(local specs ((fennel.dofile :extensions/tool/files.fnl)))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (or (= spec.type :register/fx) (= spec.type :register/event)) (tset handlers spec.name spec.handler)))
+(each [id handler (pairs specs.effects)] (tset handlers id handler))
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
 (local failure ((. handlers :tool/files-complete) {} {:id :read :ok false :message :IsDir}))
 (assert (: (. failure.fx 1 :event :text) :find "Use list_directory" 1 true))
 (assert (: (. failure.fx 1 :event :text) :find "Details: IsDir" 1 true))
@@ -23,16 +26,14 @@
 (assert (= anchored.content :replacement))
 (assert (= anchored.id :call))
 (assert (not (pcall edit {:path :file :old_text :old :new_text :new})))
-(each [_ spec (ipairs specs.fx)]
-  (when (and (= spec.type :register/tool) (= spec.value.name :edit_file))
-    (assert (= spec.value.input_schema.properties.old_text nil))
-    (assert (= (length spec.value.input_schema.required) 4))))
+(assert (= specs.tools.edit_file.input_schema.properties.old_text nil))
+(assert (= (length specs.tools.edit_file.input_schema.required) 4))
 (assert (not (pcall edit {:path :file :old_text :old :snapshot :tag :new_text :new})))
 (assert (not (pcall edit {:path :file :new_text :new})))
 (assert (not (pcall edit {:path :file :snapshot :tag :start :1#HASH :end 1 :new_text :new})))
-(local shell-specs ((. (fennel.dofile :extensions/tool/shell.fnl) :setup) {:config {}}))
-(each [_ spec (ipairs shell-specs.fx)]
-  (when (= spec.name :tool/shell-complete)
+(local shell-specs ((fennel.dofile :extensions/tool/shell.fnl) {:config {}}))
+(each [_ spec (pairs (. shell-specs :events))]
+  (when (= spec.event :tool/shell-complete)
     (local failed (spec.handler {} {:id :shell :ok false :status 2 :stderr "bad input"}))
     (assert (= (. failed.fx 1 :event :text) "Command exited with status 2.\nbad input"))
     (local timeout (spec.handler {} {:id :shell :ok false :status -1 :message :IdleTimeout}))

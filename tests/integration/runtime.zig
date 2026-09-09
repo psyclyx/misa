@@ -3,7 +3,7 @@ const Harness = @import("harness.zig").Harness;
 test "empty" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/empty.json"));
+    try h.config(@embedFile("configs/empty.fnl"));
     try h.expect(.{ .args = &.{}, .input = "" }, "");
 }
 
@@ -11,66 +11,65 @@ test "a final projected view flushes without keeping an idle session alive" {
     var h = try Harness.init();
     defer h.deinit();
     try h.write("final-view.fnl",
-        \\{:setup (fn [] {:fx [{:type :register/view
-        \\                     :handler (fn [] {:lines [{:spans [{:text "final"}]}]})}]})}
+        \\(fn [] {:views {:main (fn [] {:lines [{:spans [{:text "final"}]}]})}})
     );
-    try h.config("{\"extensions\":[\"@WORK@/final-view.fnl\"]}");
+    try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {}\n   :modules {\n    \"module-1\" {:priority 0 :build ((. (require :fennel) :dofile) \"@WORK@/final-view.fnl\")}}})\n");
     try h.expect(.{ .input = "" }, "");
 }
 
 test "contracts" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/contracts.json"));
+    try h.config(@embedFile("configs/contracts.fnl"));
     try h.expect(.{ .args = &.{"original"}, .input = "" }, "before,first:derived:ordered,second,after,before\n");
 }
 
 test "clock" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/clock.json"));
+    try h.config(@embedFile("configs/clock.fnl"));
     try h.expect(.{ .args = &.{}, .input = "" }, "clock\n");
 }
 
 test "multi timer" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/multi-timer.json"));
+    try h.config(@embedFile("configs/multi-timer.fnl"));
     try h.expect(.{ .args = &.{}, .input = "" }, "timers\n");
 }
 
 test "clear state" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/clear-state.json"));
+    try h.config(@embedFile("configs/clear-state.fnl"));
     try h.expect(.{ .args = &.{}, .input = "" }, "cleared\n");
 }
 
 test "dialog lifecycle" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/dialog-lifecycle.json"));
+    try h.config(@embedFile("configs/dialog-lifecycle.fnl"));
     try h.expect(.{ .args = &.{}, .input = "" }, "dialogs\n");
 }
 
 test "protected dialog" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/protected-dialog.json"));
+    try h.config(@embedFile("configs/protected-dialog.fnl"));
     try h.expect(.{ .args = &.{}, .input = "" }, "protected dialog\n");
 }
 
 test "empty provider composition does not request credentials" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/providers.json"));
+    try h.config(@embedFile("configs/providers.fnl"));
     try h.expect(.{}, "");
 }
 
 test "sandbox retains source loading and rejects native capability escapes" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/sandbox.json"));
+    try h.config(@embedFile("configs/sandbox.fnl"));
     try h.expect(.{}, "");
 }
 
@@ -78,8 +77,8 @@ test "animation lifecycle with motion enabled and disabled" {
     for ([_]bool{ true, false }) |enabled| {
         var h = try Harness.init();
         defer h.deinit();
-        const config = @embedFile("configs/animations.json");
-        try h.config(if (enabled) config else try @import("std").mem.replaceOwned(u8, h.allocator(), config, "\"enabled\":true", "\"enabled\":false"));
+        const config = @embedFile("configs/animations.fnl");
+        try h.config(if (enabled) config else try @import("std").mem.replaceOwned(u8, h.allocator(), config, "\"enabled\" true", "\"enabled\" false"));
         try h.expect(.{}, "animations\n");
     }
 }
@@ -89,14 +88,15 @@ test "explicit Lua extensions remain compatible beside bundled Fennel" {
     defer h.deinit();
     // This is deliberately Lua: user extension compatibility is a public contract.
     try h.write("compatibility.lua",
-        \\return {setup=function()
-        \\  return {fx={{type="register/event", name="app/start", handler=function()
+        \\return function()
+        \\  return {events={start={event="app/start", handler=function()
         \\    return {fx={{type="view/commit",lines={{spans={{text="Lua compatibility"}}}}},{type="app/quit"}}}
         \\  end}}}
-        \\end}
+        \\end
     );
     try h.config(
-        \\{"extensions":["themes","theme.default","@WORK@/compatibility.lua"]}
+        \\(local standard (require :misa.standard))
+        \\(standard.application {:modules {:fixture {:build (dofile "@WORK@/compatibility.lua")}}})
     );
     try h.expect(.{}, "Lua compatibility\n");
 }
@@ -105,17 +105,17 @@ test "syntax highlighting completes asynchronously without exposing a synchronou
     var h = try Harness.init();
     defer h.deinit();
     try h.write("syntax-effect.lua",
-        \\return {setup=function(context)
+        \\return function(context)
         \\  assert(misa.syntax == nil or misa.syntax.highlight == nil, "synchronous syntax capability remains exposed")
         \\  local source = "local answer = 42 -- comment\n"
-        \\  return {fx={
-        \\    {type="register/event",name="app/start",handler=function(db)
+        \\  return {events={
+        \\    start={event="app/start",handler=function(db)
         \\      return {patch={received=misa.replace({})},fx={
         \\        {type="syntax/highlight",id="known",language="lua",source=source,completion="fixture/highlighted"},
         \\        {type="syntax/highlight",id="unknown",language="fixture-unknown-language",source=source,completion="fixture/highlighted"},
         \\        {type="syntax/highlight",id="empty",language="lua",source="",completion="fixture/highlighted"}}}
         \\    end},
-        \\    {type="register/event",name="fixture/highlighted",handler=function(db,event)
+        \\    highlighted={event="fixture/highlighted",handler=function(db,event)
         \\      assert(event.type == "fixture/highlighted" and event.ok == true)
         \\      assert(event.id == "known" or event.id == "unknown" or event.id == "empty")
         \\      assert(not db.received[event.id], "duplicate syntax completion")
@@ -136,13 +136,13 @@ test "syntax highlighting completes asynchronously without exposing a synchronou
         \\      end
         \\      return {patch={received=received}}
         \\    end}}}
-        \\end}
+        \\end
     );
     const expect_captures = if (h.environ.get("MISA_TREE_SITTER_DIR")) |value| value.len != 0 else false;
     try h.config(if (expect_captures)
-        "{\"extensions\":[\"@WORK@/syntax-effect.lua\"],\"config\":{\"expect_captures\":true}}"
+        "(local standard (require :misa.standard))\n\n(standard.application\n  {:config {\"expect_captures\" true}\n   :modules {\n    \"module-1\" {:priority 0 :build (dofile \"@WORK@/syntax-effect.lua\")}}})\n"
     else
-        "{\"extensions\":[\"@WORK@/syntax-effect.lua\"]}");
+        "(local standard (require :misa.standard))\n\n(standard.application\n  {:config {}\n   :modules {\n    \"module-1\" {:priority 0 :build (dofile \"@WORK@/syntax-effect.lua\")}}})\n");
     try h.expect(.{ .timeout_ms = 3000 }, "async syntax\n");
 }
 
@@ -165,16 +165,16 @@ test "syntax highlighting rejects malformed requests before execution" {
         var h = try Harness.init();
         defer h.deinit();
         const source = try std.fmt.allocPrint(h.allocator(),
-            \\return {{setup=function()
-            \\  return {{fx={{{{type="register/event",name="app/start",handler=function()
+            \\return function()
+            \\  return {{events={{start={{event="app/start",handler=function()
             \\    local effect = {{type="syntax/highlight",id="bad",language="lua",source="local x=1",completion="done"}}
             \\    {s}
             \\    return {{fx={{effect}}}}
             \\  end}}}}}}
-            \\end}}
+            \\end
         , .{mutation});
         try h.write("invalid-syntax.lua", source);
-        try h.config("{\"extensions\":[\"@WORK@/invalid-syntax.lua\"]}");
+        try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {}\n   :modules {\n    \"module-1\" {:priority 0 :build (dofile \"@WORK@/invalid-syntax.lua\")}}})\n");
         const result = try h.run(.{ .timeout_ms = 3000 });
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try support.contains(result.stderr, "InvalidEffect");
@@ -185,25 +185,25 @@ test "component resolution preserves cached semantic spans across themes" {
     var h = try Harness.init();
     defer h.deinit();
     try h.write("cached-component.lua",
-        \\return {setup=function()
+        \\return function()
         \\  local cached = {lines={{spans={{text="cached",style="plain",animation={id="cached",interval_ms=40,frames={{style="bold"},{text="second"}}}}}}}}
-        \\  return {fx={
-        \\    {type="register/theme",id="second",value={palette={ink="red"},styles={plain={foreground="ink"}}}},
-        \\    {type="register/component",id="default.cached",value={render=function() return cached end}},
-        \\    {type="register/event",name="app/start",handler=function(db)
-        \\      local first = misa.render_component(db,"cached",{})
+        \\  return {
+        \\    themes={second={palette={ink="red"},styles={plain={foreground="ink"}}}},
+        \\    components={["default.cached"]={render=function() return cached end}},
+        \\    events={start={event="app/start",handler=function(db)
+        \\      local first = misa.components.render(db,"cached",{})
         \\      assert(cached.lines[1].spans[1].style == "plain")
         \\      assert(cached.lines[1].spans[1].animation.frames[1].style == "bold")
         \\      local old = first.lines[1].spans[1].style.foreground
-        \\      db = misa.swap_theme(db,"second")
-        \\      local second = misa.render_component(db,"cached",{})
+        \\      db = misa.themes.swap(db,"second")
+        \\      local second = misa.components.render(db,"cached",{})
         \\      assert(second.lines[1].spans[1].style.foreground == "red")
         \\      assert(first.lines[1].spans[1].style.foreground == old)
         \\      assert(cached.lines[1].spans[1].animation.frames[1].style == "bold")
         \\      return {fx={{type="view/commit",lines={{spans={{text="pure components"}}}}},{type="app/quit"}}}
         \\    end}}}
-        \\end}
+        \\end
     );
-    try h.config("{\"extensions\":[\"themes\",\"theme.default\",\"components\",\"@WORK@/cached-component.lua\"],\"config\":{\"themes\":{\"persist\":false},\"components\":{\"persist\":false}}}");
+    try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {\"themes\" {\"persist\" false} \"components\" {\"persist\" false}}\n   :modules {\n    \"module-1\" {:priority 0 :build (require \"themes\")}\n    \"module-2\" {:priority 1000 :build (require \"theme.default\")}\n    \"module-3\" {:priority 2000 :build (require \"components\")}\n    \"module-4\" {:priority 3000 :build (dofile \"@WORK@/cached-component.lua\")}}})\n");
     try h.expect(.{}, "pure components\n");
 }

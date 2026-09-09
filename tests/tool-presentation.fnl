@@ -2,16 +2,23 @@
 (local output print)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (each [_ name (ipairs [:json :themes :theme/default :components :layout :markdown
                        :component/markdown :values :component/content :component/truncation
-                       :tool_presentations :component/tool])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
+                       :tool/presentations :component/tool])]
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {:config {}})))
+(app.define (definitions :fixture [{:catalog :components :id :fixture.text :value {:render (fn [] {:lines [{:spans [{:text :replacement}]}]})}}]))
+(app.define (definitions :fixture [(let [definition (fn [model]
+                                    {:arguments [{:role :content.text :model {:text model.arguments.query}}]
+                                     :result {:role :content.text :model {:text model.result}}})] {:catalog :tool-presentations :id :external :value definition})]))
+(app.install)
 (local db {:components {:roles {}} :themes {:active :default}})
 (fn text [rendered]
   (table.concat (icollect [_ line (ipairs rendered.lines)]
                   (table.concat (icollect [_ part (ipairs line.spans)] part.text))) "\n"))
 (fn tool [model columns]
-  (misa.render_component db :transcript.tool_call model {:columns (or columns 80) :interactive true}))
+  (misa.components.render db :transcript.tool_call model {:columns (or columns 80) :interactive true}))
 (local model {:kind :tool_call :name :shell :description "An excessive description"
               :arguments {:command "echo hello"} :collapsed true
               :result "one\ntwo\nthree\nfour\nfive" :status :success :elapsed_ms 1250 :started_wall_ms 10000})
@@ -41,7 +48,7 @@
 (assert (= (length (. (shell-output "hello\n\n") :lines)) (+ (length terminated.lines) 1)))
 (local summary-view (tool (misa.patch model {:summary "Five output lines"})))
 (assert (= (text summary-view) (text view)) "shell preview must retain the actual output tail")
-(local command-view (misa.render_component db :content.code
+(local command-view (misa.components.render db :content.code
                       {:text "echo hello\n" :numbered false} {:columns 80}))
 (assert (= (length command-view.lines) 1))
 (assert (not (: (text command-view) :find "No newline" 1 true)))
@@ -62,7 +69,7 @@
 ;; Both ends use the same truncation component; annotations follow their
 ;; preceding content and do not count as omitted output rows.
 (each [_ tail (ipairs [false true])]
-  (local clipped (misa.render_component db :content.truncated
+  (local clipped (misa.components.render db :content.truncated
                   {:lines [{:spans [{:text "first"}]} {:spans [{:text "last"}]}
                            {:annotation true :spans [{:text "annotation" :source false}]}]
                    :limit 1 : tail} {:columns 80}))
@@ -77,8 +84,8 @@
 ;; File rows and ordinary code share geometry and surfaces, rather than
 ;; independently approximating the same appearance.
 (local code-context {:columns 60 :interactive true})
-(local code-view (misa.render_component db :content.code {:text "hello\nworld" :style :tool} code-context))
-(local rows-view (misa.render_component db :content.lines
+(local code-view (misa.components.render db :content.code {:text "hello\nworld" :style :tool} code-context))
+(local rows-view (misa.components.render db :content.lines
                    {:rows [{:number 1 :text :hello :source_start 10}
                            {:number 2 :text :world :source_start 30}] :style :tool} code-context))
 (assert (= (text code-view) (text rows-view)) "file preview diverged from code-block layout")
@@ -86,10 +93,10 @@
   (each [j part (ipairs line.spans)]
     (assert (= (misa.json.encode part.style) (misa.json.encode (. rows-view.lines i :spans j :style)))
             "file preview diverged from code-block styling")))
-(local shell-binding (misa.tool_presentation model))
+(local shell-binding (misa.tools.presentation model))
 (assert (= shell-binding.result.role :content.code))
 (assert (= shell-binding.result.model.numbered false))
-(local code-background (. (misa.theme_style db :surface.code) :background))
+(local code-background (. (misa.themes.style db :surface.code) :background))
 (var shell-output-code false)
 (each [_ line (ipairs view.lines)]
   (each [_ part (ipairs line.spans)]
@@ -98,7 +105,7 @@
               (.. "shell output lost its code surface: " (fennel.view {:actual part.style.background :expected code-background})))
       (set shell-output-code true))))
 (assert shell-output-code)
-(local pending-edit (misa.tool_presentation {:kind :tool_call :name :edit_file
+(local pending-edit (misa.tools.presentation {:kind :tool_call :name :edit_file
                       :arguments {:path :file :old_text :legacy :new_text :replacement
                                   :snapshot :HASH :start :21#HASH}}))
 (assert (= (length pending-edit.arguments) 1))
@@ -144,13 +151,12 @@
   (each [_ line (ipairs (. (tool model width) :lines))]
     (assert (<= (misa.layout.width (table.concat (icollect [_ part (ipairs line.spans)] part.text))) width))))
 ;; Generic children honor role swaps and invalidate the parent's cached source.
-(misa._setup_effects {:fx [{:type :register/component :id :fixture.text
-                           :value {:render (fn [] {:lines [{:spans [{:text :replacement}]}]})}}]})
+
 (local item {:id :tool :role :transcript.tool_call
              :model {:kind :tool_call :name :unknown :collapsed true :result :original}})
-(local before (misa.project_components db :nested [item] {:columns 80}))
-(local changed (misa.swap_component db :content.text :fixture.text))
-(local after (misa.project_components changed :nested [item] {:columns 80}))
+(local before (misa.components.project db :nested [item] {:columns 80}))
+(local changed (misa.components.swap db :content.text :fixture.text))
+(local after (misa.components.project changed :nested [item] {:columns 80}))
 (assert (: (text (. before.views 1)) :find :original 1 true))
 (assert (: (text (. after.views 1)) :find :replacement 1 true))
 ;; File wire format is decoded by its binding, never by the generic row view.
@@ -198,17 +204,14 @@
 (assert (: (text file-selected) :find "21#CAFE|hello" 1 true))
 (assert (: (text file-selected) :find "snapshot ABCD" 1 true))
 ;; External tools can bind ordinary components without changing the wrapper.
-(misa._setup_effects {:fx [{:type :register/tool-presentation :name :external
-                           :value (fn [model]
-                                    {:arguments [{:role :content.text :model {:text model.arguments.query}}]
-                                     :result {:role :content.text :model {:text model.result}}})}]})
+
 (assert (: (text (tool {:kind :tool_call :name :external :arguments {:query :query-value}
                        :collapsed true :result :answer}))
            :find :query-value 1 true))
 (assert (not (rendered:find "┌" 1 true)))
 (assert (not (rendered:find "1 │ echo" 1 true)))
 ;; Both standalone results and argument selections render frozen source text.
-(local standalone (misa.render_component db :transcript.tool_result
+(local standalone (misa.components.render db :transcript.tool_result
                     {:kind :tool_result :text :old :result :latest :collapsed false
                      :selection_source :result :selection_text "frozen\nresult"}
                     {:columns 80 :interactive true}))

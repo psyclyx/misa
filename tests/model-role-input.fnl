@@ -2,16 +2,18 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
 (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices :fuzzy :models :omnipicker
                        :themes :theme/default :components :component/editor
-                       :component/picker :values :choice_preview :choice_layout])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
-(local specs ((. (fennel.dofile :extensions/editor.fnl) :setup) context))
+                       :component/picker :values :choices/preview :choices/layout])]
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(local specs ((fennel.dofile :extensions/editor.fnl) context))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
+(each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
+(app.define specs)
+(app.install)
 (local cofx {:argv [] :terminal {:columns 80 :lines 24 :interactive true}})
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
@@ -22,8 +24,7 @@
   (values (misa.patch db (or (and result result.patch) {})) (and result result.fx)))
 (local initial (transition {:components {:roles {}} :themes {:active :default}} {:type :app/start}))
 (local model-handlers {})
-(each [_ spec (ipairs (. ((. (fennel.dofile :extensions/models.fnl) :setup) context) :fx))]
-  (when (= spec.type :register/event) (tset model-handlers spec.name spec.handler)))
+(each [_ spec (pairs (. ((fennel.dofile :extensions/models.fnl) context) :events))] (tset model-handlers spec.event spec.handler))
 (local catalogue (misa.patch initial {:models {:selected :test/main
                                               :entries [{:id :test/main :model :main :provider :test}
                                                         {:id :test/alpha :model :alpha :provider :test}

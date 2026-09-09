@@ -2,14 +2,17 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local declarations (require :misa.definitions))
 (each [_ name (ipairs [:json :themes :theme/default :components :actions :layout
-                       :markdown :component/markdown :values :component/content :component/truncation :tool_presentations :component/tool
-                       :selection_document :selection])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
+                       :markdown :component/markdown :values :component/content :component/truncation :tool/presentations :component/tool
+                       :selection/document :selection])]
+  (app.include (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
+(app.install)
 (fn line-text [line]
   (table.concat (icollect [_ item (ipairs line.spans)] item.text)))
 (fn render [source columns]
-  (misa.markdown_view.render (misa.markdown.parse source) {:columns (or columns 80)}))
+  (misa.markdown.view.render (misa.markdown.parse source) {:columns (or columns 80)}))
 (local code (render "```zig\none\ntwo\n```"))
 (assert (= (length code) 2) "code retained frame rows")
 (assert (: (line-text (. code 1)) :find "1  one" 1 true))
@@ -25,18 +28,18 @@
 (each [_ width (ipairs [1 2 4 10 20])]
   (each [_ line (ipairs (render "```diff\n-old\n+new\n```" width))]
     (assert (<= (misa.layout.width (line-text line)) width))))
-(local original-projection misa.selection_projection)
-(local original-theme misa.theme_style)
-(set misa.theme_style (fn [] {:background :selected}))
-(set misa.selection_projection (fn [] {:id :doc :first 0 :last 5 :text "- one"}))
-(local decorated (misa.selection_decorate {} :doc "- one" (render "- one")))
+(local original-projection misa.selection.state)
+(local original-theme misa.themes.style)
+(set misa.themes.style (fn [] {:background :selected}))
+(set misa.selection.state (fn [] {:id :doc :first 0 :last 5 :text "- one"}))
+(local decorated (misa.selection.decorate {} :doc "- one" (render "- one")))
 (local bullet (accumulate [found nil _ part (ipairs (. decorated 1 :spans))] (or found (when (= part.text "• ") part))))
 (assert (and bullet bullet.style.background) "list bullet was not selected")
-(set misa.selection_projection original-projection)
-(set misa.theme_style original-theme)
+(set misa.selection.state original-projection)
+(set misa.themes.style original-theme)
 ;; A successful summary exposes useful content with a bounded visual height.
 (fn tool [model context]
-  (misa.render_component {:components {:roles {}} :themes {:active :default}}
+  (misa.components.render {:components {:roles {}} :themes {:active :default}}
                         :transcript.tool_call model context))
 (local result (tool {:kind :tool_call :name :read_file :collapsed true
                      :arguments {:path :file}

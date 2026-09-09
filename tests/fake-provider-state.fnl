@@ -1,17 +1,20 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.install)
 (local config {:providers {:fake {:responses [:hello
                                               {:stream [{:type :tool_call :id :call :name :test :arguments {}}
                                                         {:type :tool_call :index 7 :arguments_json :fragment}]
                                                :usage {:output_tokens 3}}
                                               {:stream [] :error :failed}]}}})
-(local specs ((. (fennel.dofile :extensions/provider/fake.fnl) :setup) {: config}))
+(local specs ((fennel.dofile :extensions/provider/fake.fnl) {: config}))
 (var handler nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (set handler spec.handler)))
+(each [_ spec (pairs (. specs :events))]
+  (set handler spec.handler))
 (local fixture (misa.json.encode config))
 (fn request [db id]
   (local before (misa.json.encode db))

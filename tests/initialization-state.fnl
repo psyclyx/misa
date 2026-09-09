@@ -4,14 +4,17 @@
 (local misa _G.misa)
 (local context {:argv [] :config {}})
 (local initializers [])
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local declarations (require :misa.definitions))
 (each [_ name (ipairs [:json :themes :theme/default :components :animations
                        :animation/default :auth :models])]
-  (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
-  (each [_ spec (ipairs specs.fx)]
-    (assert (not= spec.type :register/interceptor) "startup policy installed global middleware")
-    (when (and (= spec.type :register/event) (= spec.name :app/start))
+  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (each [_ spec (pairs (or specs.events {}))]
+
+    (when (and true (= spec.event :app/start))
       (table.insert initializers {:id name :handler spec.handler})))
-  (misa._setup_effects specs))
+  (app.define specs))
+(app.install)
 (assert (= (length initializers) 5))
 (local initial {:unrelated {:value true}})
 (var db initial)

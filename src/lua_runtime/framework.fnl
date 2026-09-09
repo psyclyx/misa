@@ -19,8 +19,7 @@
 
 (local (keybindings keybinding-ids) (values {} {}))
 
-(local (auth-providers auth-by-id auth-by-model)
-       (values {} {} {}))
+(local (auth-providers auth-by-id auth-by-model) (values {} {} {}))
 
 (local request-serializers {})
 
@@ -38,113 +37,134 @@
 (var pending-projection-scope nil)
 (var projection-entries {})
 (var pending-projection-entries nil)
+(var presentation {})
+(var pending-presentation nil)
 (var projecting false)
+(var installed-catalogs nil)
+(var installed-catalog-entries nil)
+(local empty-catalog {})
 
 (var (view sealed dispatching db pending-db base-context)
      (values nil false false {} nil nil))
 
 (local MAX_DEPTH 128)
 
-(global misa {:json_null {}})
+(global misa {:json-null {}
+              :actions {}
+              :auth {}
+              :commands {}
+              :keybindings {}
+              :models {}
+              :projections {}
+              :request-options {}
+              :subscriptions {}
+              :time {}
+              :tools {}
+              :ui {}})
 
 ;; Format an explicit instant; current time still comes from the clock coeffect.
-(fn misa.local_datetime [seconds]
+(fn misa.time.local-datetime [seconds]
+  "Format an explicit instant using the configured locale."
   (local (ok value) (pcall locale-date "%x %X %Z" seconds))
   (when ok value))
 
-(local state-updates ((require :misa.runtime.state) misa.json_null))
+(local state-updates ((require :misa.runtime.state) misa.json-null))
 (set misa.delete state-updates.delete)
 (set misa.replace state-updates.replace)
 (set misa.patch state-updates.patch)
 
 (local registrations {})
 
-(local setup-handlers {})
-
 (fn runtime-effect [effect]
   (assert (and (and (= (type effect) :table) (= (type effect.type) :string))
                (not= effect.type "")) "effect must have a type")
-  (assert (and (not (effect.type:match :^register/))
-               (= (. setup-handlers effect.type) nil))
-          "setup effects cannot run during event dispatch")
+  (assert (not (effect.type:match :^register/))
+          "registration declarations cannot run as effects")
   effect)
 
 (fn open [] (assert (not sealed) "registrations are sealed") nil)
 
-(fn registrations.reg_event [name ___fn___]
+(fn registrations.event! [name handler]
   (open)
   (assert (and (= (type name) :string) (not= name "")))
-  (assert (= (type ___fn___) :function))
+  (assert (= (type handler) :function))
   (local handlers (or (. events name) {}))
   (tset events name handlers)
-  (tset handlers (+ (length handlers) 1) ___fn___)
+  (tset handlers (+ (length handlers) 1) handler)
   nil)
 
-(fn registrations.reg_event_route [value]
+(fn registrations.event-route! [value]
   (open)
   (assert (and (= (type value) :table) (= (type value.id) :string)
                (not= value.id "") (= (type value.event) :string)
                (not= value.event "") (= (type value.priority) :number)
                (> value.priority (- math.huge)) (< value.priority math.huge)
                (= value.priority (math.floor value.priority))
-               (= (type value.context) :table) (= (type value.resolve) :function))
+               (= (type value.context) :table)
+               (= (type value.resolve) :function))
           "invalid event route")
   (assert (not (. route-ids value.id)) "duplicate event route")
   (tset route-ids value.id true)
   (local routes (or (. event-routes value.event) []))
   (tset event-routes value.event routes)
   (table.insert routes value)
-  (table.sort routes (fn [a b] (if (= a.priority b.priority) (< a.id b.id)
-                                  (> a.priority b.priority))))
+  (table.sort routes (fn [a b]
+                       (if (= a.priority b.priority) (< a.id b.id)
+                           (> a.priority b.priority))))
   nil)
 
-(fn registrations.reg_cofx [name ___fn___]
+(fn registrations.cofx! [name handler]
   (open)
   (assert (and (= (type name) :string) (not= name "")))
   (assert (and (and (and (not= name :config) (not= name :argv))
-                    (not= name :terminal)) (not= name :clock)))
-  (assert (and (= (type ___fn___) :function) (= (. cofx-fns name) nil))
+                    (not= name :terminal)) (not= name :clock)
+               (not= name :host)))
+  (assert (and (= (type handler) :function) (= (. cofx-fns name) nil))
           "duplicate cofx")
-  (tset cofx-fns name ___fn___)
+  (tset cofx-fns name handler)
   (tset cofx-order (+ (length cofx-order) 1) name)
   nil)
 
-(fn registrations.reg_fx [name ___fn___]
+(fn registrations.fx! [name handler]
   (open)
   (assert (and (= (type name) :string) (not= name "")))
   (runtime-effect {:type name})
-  (assert (and (= (type ___fn___) :function) (= (. fx-fns name) nil))
+  (assert (and (= (type handler) :function) (= (. fx-fns name) nil))
           "duplicate fx")
-  (tset fx-fns name ___fn___)
+  (tset fx-fns name handler)
   nil)
 
-(fn registrations.reg_view [___fn___]
+(fn registrations.view! [handler]
   (open)
-  (assert (and (= (type ___fn___) :function) (= view nil))
+  (assert (and (= (type handler) :function) (= view nil))
           "view already registered")
-  (set view ___fn___)
+  (set view handler)
   nil)
 
-(fn registrations.reg_view_layer [id ___fn___]
+(fn registrations.view-layer! [id handler]
   (open)
   (assert (and (= (type id) :string) (not= id ""))
           "view layer ID must be nonempty")
-  (assert (and (= (type ___fn___) :function) (not (. view-layer-ids id)))
+  (assert (and (= (type handler) :function) (not (. view-layer-ids id)))
           "duplicate view layer")
   (tset view-layer-ids id true)
-  (tset view-layers (+ (length view-layers) 1) ___fn___)
+  (tset view-layers (+ (length view-layers) 1) handler)
   nil)
 
-(fn registrations.reg_sub [definition]
+(fn registrations.sub! [definition]
   (open)
   (subscription-registry.register definition))
 
-(fn misa.subscription_scope [capacity] (subscription-registry.scope capacity))
+(fn misa.subscriptions.scope [capacity]
+  "Create a bounded subscription cache owned by its caller."
+  (subscription-registry.scope capacity))
 
 (fn misa.sub [state query]
+  "Resolve a subscription against immutable state in the active transaction."
   ((. (or active-sub-scope subscription-scope) :query) state query))
 
-(fn misa.view_layers [state cofx]
+(fn misa.ui.layers [state cofx]
+  "Project registered layers in their declared order."
   (let [result {}]
     (each [_ project (ipairs view-layers)]
       (local layer (project state cofx))
@@ -154,11 +174,11 @@
         (tset result (+ (length result) 1) layer)))
     result))
 
-(fn scalar [value]
+(fn scalar? [value]
   (let [kind (type value)]
     (or (or (= kind :string) (= kind :number)) (= kind :boolean))))
 
-(fn registrations.reg_request_options_serializer [id serializer]
+(fn registrations.request-options-serializer! [id serializer]
   (open)
   (assert (and (= (type id) :string) (not= id ""))
           "request option serializer ID must be nonempty")
@@ -171,21 +191,27 @@
   (tset request-serializers id serializer)
   nil)
 
-(fn misa.can_serialize_request_option [id name]
+(fn misa.request-options.serializable? [id name]
+  "Report whether a serializer accepts an option name."
   (let [serializer (. request-serializers id)]
     (and (not= serializer nil) (= (serializer.accepts name) true))))
 
-(fn misa.serialize_request_options [id ___values___ target]
-  (let [serializer (assert (. request-serializers id)
-                           (.. "unknown request option serializer: "
-                               (tostring id)))]
-    (assert (= (type ___values___) :table) "request options must be a table")
-    (each [name value (pairs ___values___)]
-      (assert (= (serializer.accepts name) true)
-              (.. "request option is not serializable: " (tostring name)))
-      (assert (= (serializer.serialize target name value) true)
-              (.. "request option serializer did not consume: " (tostring name))))
-    target))
+(fn misa.request-options.serialize [id options target]
+  "Return a request assembled from serializer patches without changing TARGET."
+  (local serializer (assert (. request-serializers id)
+                            (.. "unknown request option serializer: "
+                                (tostring id))))
+  (assert (= (type options) :table) "request options must be a table")
+  (var result (or target {}))
+  (each [name value (pairs options)]
+    (assert (= (serializer.accepts name) true)
+            (.. "request option is not serializable: " (tostring name)))
+    (local patch (serializer.serialize name value))
+    (assert (= (type patch) :table)
+            (.. "request option serializer must return a patch: "
+                (tostring name)))
+    (set result (misa.patch result patch)))
+  result)
 
 (fn validate-model-api [api]
   (assert (or (= api nil) (= (type api) :table)) "model.api must be a table")
@@ -217,12 +243,12 @@
                          (<= key (length choices)))
                     "request option choices must be an array"))
           (each [_ choice (ipairs (or choices {}))]
-            (assert (scalar choice)
+            (assert (scalar? choice)
                     "request option choices must be scalar values")
             (local key (.. (type choice) ":" (tostring choice)))
             (assert (not (. seen key)) "request option choices must be unique")
             (tset seen key true))
-          (assert (or (= option.default nil) (scalar option.default))
+          (assert (or (= option.default nil) (scalar? option.default))
                   "request option default must be a scalar value")
           (when (and (not= option.default nil) choices)
             (local key (.. (type option.default) ":" (tostring option.default)))
@@ -230,7 +256,7 @@
                     "request option default must be one of its choices")))
         nil)))
 
-(fn registrations.reg_model [model]
+(fn registrations.model! [model]
   (open)
   (assert (and (and (= (type model) :table) (= (type model.id) :string))
                (not= model.id ""))
@@ -252,11 +278,15 @@
   (tset models (+ (length models) 1) model)
   nil)
 
-(fn misa.models [] models)
+(fn misa.models.all []
+  "Read the borrowed immutable model definitions."
+  models)
 
-(fn misa.model [id] (. model-by-id id))
+(fn misa.models.lookup [id]
+  "Look up a borrowed immutable model by ID."
+  (. model-by-id id))
 
-(fn registrations.reg_command [command]
+(fn registrations.command! [command]
   (open)
   (assert (and (and (and (and (= (type command) :table)
                               (= (type command.name) :string))
@@ -274,7 +304,8 @@
           "command.complete must be a function")
   (assert (or (= command.selected nil) (= (type command.selected) :function))
           "command.selected must be a function")
-  (assert (or (and (= command.choice_available nil) (= command.choice_unavailable nil))
+  (assert (or (and (= command.choice_available nil)
+                   (= command.choice_unavailable nil))
               (and (= (type command.choice_available) :function)
                    (= (type command.choice_unavailable) :string)
                    (not= command.choice_unavailable "")))
@@ -293,13 +324,17 @@
   (tset commands (+ (length commands) 1) command)
   nil)
 
-(fn misa.commands [] commands)
+(fn misa.commands.all []
+  "Read the borrowed immutable command definitions."
+  commands)
 
-(fn misa.command [name] (. command-by-name name))
+(fn misa.commands.lookup [name]
+  "Look up a borrowed immutable command by name."
+  (. command-by-name name))
 
 ;; UI actions are discoverable invocations, separate from conversational slash commands.
 
-(fn registrations.reg_action [action]
+(fn registrations.action! [action]
   (open)
   (assert (and (and (= (type action) :table) (= (type action.id) :string))
                (not= action.id "")) "action ID must be nonempty")
@@ -313,9 +348,9 @@
   (when (= action.binding nil)
     (set action.binding
          {:action action.id :context (or action.context :global)})
-    (registrations.reg_keybinding {:action action.id
-                                   :context action.binding.context
-                                   :default (or action.keys {})}))
+    (registrations.keybinding! {:action action.id
+                                :context action.binding.context
+                                :default (or action.keys {})}))
   (assert (and (and (= (type action.binding) :table)
                     (= (type action.binding.context) :string))
                (= (type action.binding.action) :string))
@@ -324,15 +359,19 @@
   (tset actions (+ (length actions) 1) action)
   nil)
 
-(fn misa.actions [] actions)
+(fn misa.actions.all []
+  "Read the borrowed immutable action definitions."
+  actions)
 
-(fn misa.action [id] (. action-by-id id))
+(fn misa.actions.lookup [id]
+  "Look up a borrowed immutable action by ID."
+  (. action-by-id id))
 
 ;; Keybinding declarations are data. The keybindings extension owns input
 
 ;; normalization and configuration policy; feature extensions only name actions.
 
-(fn registrations.reg_keybinding [binding]
+(fn registrations.keybinding! [binding]
   (open)
   (assert (and (and (= (type binding) :table)
                     (= (type binding.context) :string))
@@ -351,9 +390,11 @@
   (tset keybindings (+ (length keybindings) 1) binding)
   nil)
 
-(fn misa.keybindings [] keybindings)
+(fn misa.keybindings.all []
+  "Read the borrowed immutable keybinding declarations."
+  keybindings)
 
-(fn registrations.reg_completion [group candidate]
+(fn registrations.completion! [group candidate]
   (open)
   (assert (and (= (type group) :string) (not= group ""))
           "completion group must be nonempty")
@@ -374,7 +415,7 @@
   (tset (. completions group) (+ (length (. completions group)) 1) candidate)
   nil)
 
-(fn registrations.reg_auth_provider [provider]
+(fn registrations.auth-provider! [provider]
   (open)
   (assert (and (and (= (type provider) :table) (= (type provider.id) :string))
                (not= provider.id ""))
@@ -406,17 +447,26 @@
   (tset auth-by-id provider.id provider)
   (tset auth-by-model provider.model_provider provider)
   (tset auth-providers (+ (length auth-providers) 1) provider)
-  (registrations.reg_completion :auth-provider
-                                {:description provider.description
-                                 :label provider.label
-                                 :value provider.id})
+  (registrations.completion! :auth-provider
+                             {:description provider.description
+                              :label provider.label
+                              :value provider.id})
   nil)
 
-(fn misa.auth_providers [] auth-providers)
-(fn misa.auth_provider [id] (. auth-by-id id))
-(fn misa.auth_provider_for_model [id] (. auth-by-model id))
+(fn misa.auth.providers []
+  "Read the borrowed immutable authentication providers."
+  auth-providers)
 
-(fn misa.command_completions [command prefix state]
+(fn misa.auth.provider [id]
+  "Look up an authentication provider by ID."
+  (. auth-by-id id))
+
+(fn misa.auth.for-model [id]
+  "Look up the authentication provider for a model provider."
+  (. auth-by-model id))
+
+(fn misa.commands.completions [command prefix state]
+  "Resolve completion candidates for a command and prefix."
   (assert (and (= (type command) :table) (= (type prefix) :string))
           "invalid completion request")
   (local source (or (or (and command.complete (command.complete prefix state))
@@ -426,7 +476,7 @@
   (each [_ candidate (ipairs source)]
     (assert (and (= (type candidate) :table) (= (type candidate.value) :string))
             "invalid completion candidate"))
-  (if misa.fuzzy_choices (misa.fuzzy_choices source prefix)
+  (if (and misa.fuzzy misa.fuzzy.choices) (misa.fuzzy.choices source prefix)
       (let [result {}]
         (each [_ candidate (ipairs source)]
           (when (= (candidate.value:sub 1 (length prefix)) prefix)
@@ -434,7 +484,7 @@
         (table.sort result (fn [left right] (< left.value right.value)))
         result)))
 
-(fn registrations.reg_tool [tool]
+(fn registrations.tool! [tool]
   (open)
   (assert (and (and (= (type tool) :table) (= (type tool.name) :string))
                (not= tool.name ""))
@@ -451,93 +501,94 @@
   (tset tools (+ (length tools) 1) tool)
   nil)
 
-(fn misa.tools [] tools)
+(fn misa.tools.all []
+  "Read the borrowed immutable tool definitions."
+  tools)
 
-(fn misa.tool [name] (. tool-by-name name))
+(fn misa.tools.lookup [name]
+  "Look up a borrowed immutable tool definition by name."
+  (. tool-by-name name))
 
 ;; The MCP bridge asks Lua for schemas and translates calls through the same
 
 ;; registered tool/effect policy used by the interactive agent.
 
-(fn misa._mcp_tools [] tools)
+(fn misa._mcp_tools []
+  "Expose registered tool schemas to the native MCP bridge."
+  tools)
 
-(fn misa._mcp_tool_effect [name arguments id]
+(fn coeffects [event terminal clock state]
+  (local result {:argv base-context.argv
+                 :host base-context.host
+                 :config base-context.config
+                 : terminal
+                 : clock
+                 : presentation})
+  (each [_ name (ipairs cofx-order)]
+    (tset result name ((. cofx-fns name) result event state)))
+  result)
+
+(fn translate-effect [effect cofx state]
+  (local kind (. (runtime-effect effect) :type))
+  (local translator (. fx-fns kind))
+  (if (not translator) effect (let [tool (and effect.name
+                                              (. tool-by-name effect.name))
+                                    translated (if (and tool
+                                                        (= tool.effect kind)
+                                                        (= (type effect.tool_call_id)
+                                                           :string))
+                                                   (let [(ok value) (pcall translator
+                                                                           effect
+                                                                           cofx
+                                                                           state)]
+                                                     (if (and ok value) value
+                                                         {:type :dispatch
+                                                          :event {:type :tool/result
+                                                                  :is_error true
+                                                                  :tool_call_id effect.tool_call_id
+                                                                  :text (tostring value)}}))
+                                                   (translator effect cofx
+                                                               state))]
+                                (assert (= (type translated) :table)
+                                        "fx translator must return a table")
+                                translated)))
+
+(fn misa._mcp_tool_effect [name arguments id terminal clock]
+  "Translate an MCP tool call through the registered effect and coeffect policy."
   (assert sealed "registrations are not sealed")
   (local tool (assert (. tool-by-name name)
                       (.. "unknown tool: " (tostring name))))
   (assert (= (type arguments) :table) "tool arguments must be an object")
-  (runtime-effect {:type tool.effect})
-  (local translator
-         (assert (. fx-fns tool.effect)
-                 (.. "tool effect has no translator: " tool.effect)))
-  (local translated (translator {: arguments
-                                 : name
-                                 :request_id :mcp
-                                 :tool_call_id id
-                                 :type tool.effect}
-                                {:argv base-context.argv
-                                 :config base-context.config
-                                 :terminal {:columns 80
-                                            :interactive false
-                                            :lines 24}}
-                                db))
-  (assert (and (= (type translated) :table) (= (type translated.type) :string))
+  (assert (. fx-fns tool.effect)
+          (.. "tool effect has no translator: " tool.effect))
+  (local effect {: arguments
+                 : name
+                 :request_id :mcp
+                 :tool_call_id id
+                 :type tool.effect})
+  (local translated
+         (translate-effect effect (coeffects effect terminal clock db) db))
+  (assert (= (type translated.type) :string)
           "MCP tool translator must return one native effect")
   (runtime-effect translated))
 
-(fn finite [value]
+(fn finite? [value]
   (and (and (= value value) (not= value math.huge)) (not= value (- math.huge))))
 
-;; Copy data when handing coeffects to a projection. Application state is
-;; persistent: dispatch passes it directly and applies explicit patches.
-
-(fn clone [value active depth]
-  (set-forcibly! depth (or depth 0))
-  (assert (<= depth MAX_DEPTH) "maximum state nesting depth exceeded")
-  (local kind (type value))
-  (if (or (or (or (= value misa.json_null) (= kind :nil)) (= kind :boolean))
-          (= kind :string))
-      value
-      (if (= kind :number) (do
-                             (assert (finite value) "non-finite number")
-                             value)
-          (do
-            (assert (= kind :table) "state must contain only data")
-            (set-forcibly! active (or active {}))
-            (assert (not (. active value)) "cyclic state")
-            (tset active value true)
-            (local result {})
-            (each [key item (pairs value)]
-              (local key-kind (type key))
-              (assert (or (= key-kind :string)
-                          (and (and (and (= key-kind :number) (finite key))
-                                    (>= key 1))
-                               (= (% key 1) 0)))
-                      "invalid state key")
-              (tset result key (clone item active (+ depth 1))))
-            (tset active value nil)
-            result))))
-
-;; Public to projection infrastructure only. Projection models may contain
-
-;; registered callbacks (for example picker indexing policy), so preserve
-
-;; functions while recursively copying every table they could otherwise mutate.
-
-(fn snapshot [value active depth]
-  (set-forcibly! depth (or depth 0))
+(fn snapshot [value ancestors level]
+  (local depth (or level 0))
   (assert (<= depth MAX_DEPTH) "maximum projection nesting depth exceeded")
   (local kind (type value))
-  (if (or (or (or (or (= kind :function) (= value misa.json_null))
+  (if (or (or (or (or (= kind :function) (= value misa.json-null))
                   (= kind :nil)) (= kind :boolean)) (= kind :string))
       value
       (if (= kind :number) (do
-                             (assert (finite value) "non-finite number")
+                             (assert (finite? value) "non-finite number")
                              value)
           (do
             (assert (= kind :table)
                     "projection input must contain only data or callbacks")
-            (set-forcibly! active (or active {}))
+            (local active (or ancestors {}))
             (assert (not (. active value)) "cyclic projection input")
             (tset active value true)
             (local result {})
@@ -546,26 +597,35 @@
             (tset active value nil)
             result))))
 
-(fn misa.snapshot [value] (snapshot value))
+(fn misa.snapshot [value]
+  "Copy projection data while preserving registered callback identities."
+  (snapshot value))
 
-(fn append [destination ___values___]
-  (assert (= (type ___values___) :table) "fx must be an array")
-  (for [i 1 (length ___values___)]
-    (assert (= (type (. ___values___ i)) :table) "fx entries must be tables")
-    (tset destination (+ (length destination) 1) (. ___values___ i)))
+(fn misa.projections.publish [id value]
+  "Publish data for input handlers when the containing frame is accepted."
+  (assert projecting
+          "presentation data can only be published during projection")
+  (assert (and (= (type id) :string) (not= id ""))
+          "presentation publication requires an id")
+  (tset pending-presentation id (snapshot value))
   nil)
 
-;; Setup is an ordered effect program, interpreted before event dispatch begins.
+(fn append [destination items]
+  (assert (= (type items) :table) "fx must be an array")
+  (for [i 1 (length items)]
+    (assert (= (type (. items i)) :table) "fx entries must be tables")
+    (tset destination (+ (length destination) 1) (. items i)))
+  nil)
 
-(fn install-service [effect]
-  (assert (and (= (type effect.name) :string) (not= effect.name ""))
+(fn install-service [definition]
+  (assert (and (= (type definition.name) :string) (not= definition.name ""))
           "service name must be nonempty")
-  (assert (not= effect.value nil) "service value must be non-nil")
-  (assert (not (effect.name:match "^_")) "private service name is reserved")
+  (assert (not= definition.value nil) "service value must be non-nil")
+  (assert (not (definition.name:match "^_")) "private service name is reserved")
   (local path {})
-  (each [part (effect.name:gmatch "[^.]+")]
+  (each [part (definition.name:gmatch "[^.]+")]
     (tset path (+ (length path) 1) part))
-  (assert (= (table.concat path ".") effect.name) "invalid service path")
+  (assert (= (table.concat path ".") definition.name) "invalid service path")
   (var target misa)
   (for [index 1 (- (length path) 1)]
     (local key (. path index))
@@ -573,283 +633,351 @@
     (set target (. target key))
     (assert (= (type target) :table) "service namespace must be a table"))
   (local key (. path (length path)))
-  (assert (= (. target key) nil) (.. "service already installed: " effect.name))
-  (tset target key effect.value)
+  (assert (= (. target key) nil)
+          (.. "service already installed: " definition.name))
+  (tset target key definition.value)
   nil)
 
 ;; A projection owner declares its invalidation inputs. Its render callback may
 ;; compose other projections and subscriptions; only accepted frames retain
 ;; these immutable results. Calls from model handlers compute without publishing
 ;; speculative presentation caches.
-(fn same-fields [a b]
-  (and a b
-       (do
-         (each [key value (pairs a)] (when (not= value (. b key)) (lua "return false")))
-         (each [key value (pairs b)] (when (not= value (. a key)) (lua "return false")))
-         true)))
+(fn same-fields? [a b]
+  (and a b (do
+             (each [key value (pairs a)]
+               (when (not= value (. b key)) (lua "return false")))
+             (each [key value (pairs b)]
+               (when (not= value (. a key)) (lua "return false")))
+             true)))
 
-(fn install-projection [effect]
-  (assert (and (= (type effect.inputs) :function) (= (type effect.render) :function))
+(fn install-projection [definition]
+  (assert (and (= (type definition.inputs) :function)
+               (= (type definition.render) :function))
           "projection requires inputs and render callbacks")
-  (install-service
-    {:name effect.name
-     :value (fn [state context]
-              (local inputs (effect.inputs state context))
-              (assert (= (type inputs) :table) "projection inputs must be a table")
-              (local previous (. (if projecting pending-projection-entries projection-entries) effect.name))
-              (if (and previous (same-fields previous.inputs inputs)
-                       (same-fields previous.context (or context {}))) previous.value
-                  (let [value (effect.render state context)
-                        entry {:inputs (collect [key item (pairs inputs)] key item)
-                               :context (collect [key item (pairs (or context {}))] key item) : value}]
-                    (when projecting (tset pending-projection-entries effect.name entry))
-                    value)))}))
-
-(local builtin-setup {:register/event (fn [e]
-                                        (registrations.reg_event e.name
-                                                                 e.handler))
-                      :register/event-route (fn [e]
-                                              (registrations.reg_event_route e.value))
-                      :register/cofx (fn [e]
-                                       (registrations.reg_cofx e.name e.handler))
-                      :register/fx (fn [e]
-                                     (registrations.reg_fx e.name e.handler))
-                      :register/view (fn [e] (registrations.reg_view e.handler))
-                      :register/view-layer (fn [e]
-                                             (registrations.reg_view_layer e.id
-                                                                           e.handler))
-                      :register/sub (fn [e]
-                                      (registrations.reg_sub e.value))
-                      :register/request-options-serializer (fn [e]
-                                                             (registrations.reg_request_options_serializer e.id
-                                                                                                           e.serializer))
-                      :register/model (fn [e] (registrations.reg_model e.value))
-                      :register/command (fn [e]
-                                          (registrations.reg_command e.value))
-                      :register/action (fn [e]
-                                         (registrations.reg_action e.value))
-                      :register/keybinding (fn [e]
-                                             (registrations.reg_keybinding e.value))
-                      :register/auth-provider (fn [e]
-                                                (registrations.reg_auth_provider e.value))
-                      :register/tool (fn [e] (registrations.reg_tool e.value))
-                      :register/completion (fn [e]
-                                             (registrations.reg_completion e.group
-                                                                           e.value))
-                      :register/service install-service
-                      :register/projection install-projection
-                      :register/setup-effect (fn [e]
-                                               (assert (and (= (type e.name)
-                                                               :string)
-                                                            (not= e.name ""))
-                                                       "setup effect name must be nonempty")
-                                               (assert (e.name:match :^register/.+)
-                                                       "setup effect names must use the register/ namespace")
-                                               (assert (= (type e.handler)
-                                                          :function)
-                                                       "setup effect needs a handler")
-                                               (assert (= (. setup-handlers
-                                                             e.name)
-                                                          nil)
-                                                       "duplicate setup effect")
-                                               (assert (= (. fx-fns e.name) nil)
-                                                       "setup effect conflicts with runtime translator")
-                                               (tset setup-handlers e.name
-                                                     e.handler)
-                                               nil)})
-
-(each [name handler (pairs builtin-setup)]
-  (tset setup-handlers name handler))
+  (install-service {:name definition.name
+                    :value (fn [state context]
+                             (local inputs (definition.inputs state context))
+                             (assert (= (type inputs) :table)
+                                     "projection inputs must be a table")
+                             (local previous
+                                    (. (if projecting
+                                           pending-projection-entries
+                                           projection-entries)
+                                       definition.name))
+                             (if (and previous
+                                      (same-fields? previous.inputs inputs)
+                                      (same-fields? previous.context
+                                                    (or context {})))
+                                 previous.value
+                                 (let [value (definition.render state context)
+                                       entry {:inputs (collect [key item (pairs inputs)]
+                                                        key
+                                                        item)
+                                              :context (collect [key item (pairs (or context
+                                                                                     {}))]
+                                                         key
+                                                         item)
+                                              : value}]
+                                   (when projecting
+                                     (tset pending-projection-entries
+                                           definition.name entry))
+                                   value)))}))
 
 ;; Primitive state reads keep ordinary subscriptions declarative.  Feature
 ;; extensions should register named projections rather than reaching into
 ;; arbitrary state from their views.
-(registrations.reg_sub {:id :db
-                        :read (fn [state] state)})
-(registrations.reg_sub {:id :db/path
-                        :read (fn [state query]
-                                (var value state)
-                                (for [index 2 (length query)]
-                                  (if (= value nil)
-                                      (lua "return nil")
-                                      (set value (. value (. query index)))))
-                                value)})
+(registrations.sub! {:id :db :read (fn [state] state)})
 
-(fn misa.has_setup_effect [name] (not= (. setup-handlers name) nil))
+(registrations.sub! {:id :db/path
+                     :read (fn [state query]
+                             (var value state)
+                             (for [index 2 (length query)]
+                               (if (= value nil)
+                                   (lua "return nil")
+                                   (set value (. value (. query index)))))
+                             value)})
 
-(fn setup-result [result depth budget]
-  (assert (<= depth MAX_DEPTH) "setup effect expansion is too deep")
-  (when (not= result nil)
-    (assert (and (= (type result) :table) (= (type result.fx) :table))
-            "setup must return nil or a table with an fx array")
-    (each [key (pairs result)]
-      (assert (= key :fx) "setup result only supports fx"))
-    (local count (length result.fx))
-    (each [key (pairs result.fx)]
-      (assert (and (and (= (type key) :number) (= (% key 1) 0))
-                   (and (>= key 1) (<= key count)))
-              "setup fx must be a dense array"))
-    (for [index 1 count]
-      (assert (not= (. result.fx index) nil) "setup fx must be a dense array"))
-    (for [index 1 count]
-      (local effect (. result.fx index))
-      (assert (and (= (type effect) :table) (= (type effect.type) :string))
-              "setup effect must have a type")
-      (set budget.remaining (- budget.remaining 1))
-      (assert (>= budget.remaining 0) "too many setup effects")
-      (local handler
-             (assert (. setup-handlers effect.type)
-                     (.. "unknown setup effect: " effect.type)))
-      (setup-result (handler effect) (+ depth 1) budget)))
-  nil)
+(fn misa.catalog [kind]
+  "Read a borrowed immutable catalog from the installed application."
+  (assert installed-catalogs "application definitions are not installed")
+  (or (. installed-catalogs kind) empty-catalog))
 
-(fn misa._setup_effects [result]
+(fn misa.catalog-entries [kind]
+  "Read borrowed catalog entries in deterministic priority and ID order."
+  (assert installed-catalog-entries "application definitions are not installed")
+  (or (. installed-catalog-entries kind) empty-catalog))
+
+(fn misa.compose [applications]
+  "Compose application values; later named definitions replace earlier entries.
+
+Deleted definitions remain explicitly disabled until installation."
+  (local definitions {})
+  (local modules {})
+  (var config {})
+  (each [_ application (ipairs applications)]
+    (assert (= (type application) :table) "application must be a table")
+    (set config (misa.patch config (or application.config {})))
+    (each [id value (pairs (or application.modules {}))]
+      (tset modules id (if (= value misa.delete) nil value)))
+    (each [kind entries (pairs (or application.definitions {}))]
+      (assert (= (type entries) :table) "definition catalog must be a table")
+      (when (not (. definitions kind)) (tset definitions kind {}))
+      (each [id value (pairs entries)]
+        (tset (. definitions kind) id value))))
+  {: config : definitions : modules})
+
+(fn ordered-definitions [catalog]
+  (local rows (icollect [id value (pairs (or catalog {}))]
+                {: id : value}))
+  (table.sort rows (fn [a b]
+                     (local ap (if (= (type a.value) :table)
+                                   (or a.value.priority 0)
+                                   0))
+                     (local bp (if (= (type b.value) :table)
+                                   (or b.value.priority 0)
+                                   0))
+                     (if (= ap bp) (< a.id b.id) (< ap bp))))
+  rows)
+
+(fn misa._install [definitions context]
+  "Validate and install one composed application, then seal its definitions."
   (open)
-  (setup-result result 0 {:remaining 100000}))
-
-(fn misa._setup [extension context]
-  (open)
-  (assert (= (type extension) :table) "extension must be a table")
-  (when (not= extension.setup nil)
-    (assert (= (type extension.setup) :function)
-            "extension setup must be a function")
-    (misa._setup_effects (extension.setup context)))
+  (assert (= installed-catalogs nil) "application already installed")
+  (assert (= (type definitions) :table)
+          "application definitions must be a table")
+  (local enabled {})
+  (each [kind entries (pairs definitions)]
+    (assert (and (= (type kind) :string) (= (type entries) :table))
+            "invalid definition catalog")
+    (local catalog {})
+    (each [id value (pairs entries)]
+      (assert (and (= (type id) :string) (not= id ""))
+              "definition ID must be a nonempty string")
+      (when (not= value misa.delete) (tset catalog id value)))
+    (tset enabled kind catalog))
+  (local catalogs (snapshot enabled))
+  (each [kind validate (pairs (or catalogs.validators {}))]
+    (assert (= (type validate) :function)
+            "catalog validator must be a function")
+    (each [_ entry (ipairs (ordered-definitions (. catalogs kind)))]
+      (validate entry.id entry.value)))
+  (set installed-catalogs catalogs)
+  (set installed-catalog-entries
+       (collect [kind entries (pairs catalogs)] kind
+         (ordered-definitions entries)))
+  (local installers
+         {:services (fn [id value] (install-service {:name id : value}))
+          :projections (fn [id value]
+                         (install-projection {:name id
+                                              :inputs value.inputs
+                                              :render value.render}))
+          :subscriptions (fn [id value]
+                           (registrations.sub! (misa.patch value {: id})))
+          :coeffects registrations.cofx!
+          :effects registrations.fx!
+          :serializers registrations.request-options-serializer!
+          :events (fn [_ value]
+                    (registrations.event! value.event value.handler))
+          :routes (fn [id value]
+                    (registrations.event-route! (misa.patch value {: id})))
+          :views (fn [_ value] (registrations.view! value))
+          :view-layers (fn [id value]
+                         (registrations.view-layer! id
+                                                    (if (= (type value) :table)
+                                                        value.handler
+                                                        value)))
+          :models (fn [id value]
+                    (registrations.model! (misa.patch value {: id})))
+          :commands (fn [id value]
+                      (registrations.command! (misa.patch value {:name id})))
+          :actions (fn [id value]
+                     (registrations.action! (misa.patch value {: id})))
+          :keybindings (fn [_ value] (registrations.keybinding! value))
+          :auth-providers (fn [id value]
+                            (registrations.auth-provider! (misa.patch value
+                                                                      {: id})))
+          :tools (fn [id value]
+                   (registrations.tool! (misa.patch value {:name id})))
+          :completions (fn [_ value]
+                         (registrations.completion! value.group value.value))})
+  (each [_ kind (ipairs [:services
+                         :projections
+                         :subscriptions
+                         :coeffects
+                         :effects
+                         :serializers
+                         :events
+                         :routes
+                         :views
+                         :view-layers
+                         :models
+                         :commands
+                         :actions
+                         :keybindings
+                         :auth-providers
+                         :tools
+                         :completions])]
+    (each [_ entry (ipairs (ordered-definitions (. catalogs kind)))]
+      ((. installers kind) entry.id entry.value)))
+  (each [owner requirements (pairs (or catalogs.requirements {}))]
+    (assert (= (type requirements) :table)
+            "requirements must be an array of service paths")
+    (each [_ path (ipairs requirements)]
+      (assert (= (type path) :string) "requirement must name a service path")
+      (var value misa)
+      (each [part (path:gmatch "[^.]+")]
+        (set value (and (= (type value) :table) (. value part))))
+      (assert (not= value nil) (.. owner " requires " path))))
+  (set base-context context)
+  (set sealed true)
   nil)
-
-(fn misa._seal [context] (set sealed true) (set base-context context) nil)
 
 (fn misa._dispatch [event terminal clock]
-  (assert (and sealed (not dispatching) (not projecting) (= pending-projection-scope nil)) "invalid dispatch state")
+  "Stage one model transaction and return its native effects."
+  (assert (and sealed (not dispatching) (not projecting)
+               (= pending-projection-scope nil))
+          "invalid dispatch state")
   (assert (= pending-db nil) "previous transaction was not committed")
   (assert (and (and (= (type event) :table) (= (type event.type) :string))
                (not= event.type ""))
           "event.type must be a nonempty string")
   (set dispatching true)
   (set active-sub-scope (subscription-scope.fork))
-  (local (ok native)
-         (xpcall (fn []
-                   (assert (and (and (= (type clock) :table)
-                                     (= (type clock.wall_ms) :number))
-                                (= (type clock.monotonic_ms) :number))
-                           "native clock coeffect is missing")
-                   (local cofx {:argv base-context.argv
-                                : clock
-                                :config base-context.config
-                                : terminal})
-                   (each [_ name (ipairs cofx-order)]
-                     (tset cofx name ((. cofx-fns name) cofx event db)))
-                   ;; Routes inspect only their declared source event. A route is
-                   ;; a pure choice of semantic event, never a transaction hook.
-                   (var routed nil)
-                   (var winning-priority nil)
-                   (each [_ route (ipairs (or (. event-routes event.type) []))]
-                     (when (and winning-priority (< route.priority winning-priority))
-                       (lua :break))
-                     (local context (misa.sub db route.context))
-                     (when (not= context nil)
-                       (local candidate (route.resolve context event cofx))
-                       (when (not= candidate nil)
-                         (assert (and (= (type candidate) :table)
-                                      (= (type candidate.type) :string)
-                                      (not= candidate.type ""))
-                                 "event route must return nil or an event")
-                         (assert (= routed nil) "ambiguous event routes at winning priority")
-                         (set routed candidate)
-                         (set winning-priority route.priority))))
-                   (var tx {: cofx : db :event (or routed event) :fx []})
-                   (each [_ handler (ipairs (or (. events tx.event.type) {}))]
-                     (local result (handler tx.db tx.event tx.cofx))
-                     (assert (or (= result nil) (= (type result) :table))
-                             "event handler result must be a table")
-                     (when result
-                       (assert (= result.db nil)
-                               "handler must return patch, not db")
-                       (when (not= result.patch nil)
-                         (set tx.db (misa.patch tx.db result.patch)))
-                       (when (not= result.fx nil) (append tx.fx result.fx))))
-                   (local effects {})
-                   (each [_ effect (ipairs tx.fx)]
-                     (local kind (. (runtime-effect effect) :type))
-                     (assert (and (= (type kind) :string) (not= kind ""))
-                             "effect.type must be a nonempty string")
-                     (local translator (. fx-fns kind))
-                     (if translator
-                         (do
-                           (var translated nil)
-                           (local tool
-                                  (and effect.name (. tool-by-name effect.name)))
-                           (if (and (and tool (= tool.effect kind))
-                                    (= (type effect.tool_call_id) :string))
-                               (let [(translated-ok value) (pcall translator
-                                                                  effect tx.cofx
-                                                                  tx.db)]
-                                 (set translated
-                                      (or (and translated-ok value)
-                                          {:event {:is_error true
-                                                   :text (tostring value)
-                                                   :tool_call_id effect.tool_call_id
-                                                   :type :tool/result}
-                                           :type :dispatch})))
-                               (set translated
-                                    (translator effect tx.cofx tx.db)))
-                           (assert (= (type translated) :table)
-                                   "fx translator must return a table")
-                           (if translated.type
-                               (tset effects (+ (length effects) 1) translated)
-                               (append effects translated)))
-                         (tset effects (+ (length effects) 1) effect)))
-                   (each [_ effect (ipairs effects)] (runtime-effect effect))
-                   (set pending-sub-scope active-sub-scope)
-                   (set pending-db tx.db)
-                   effects) traceback))
+  (local (ok native) (xpcall (fn []
+                               (assert (and (and (= (type clock) :table)
+                                                 (= (type clock.wall_ms)
+                                                    :number))
+                                            (= (type clock.monotonic_ms)
+                                               :number))
+                                       "native clock coeffect is missing")
+                               (local cofx (coeffects event terminal clock db))
+                               ;; Routes inspect only their declared source event. A route is
+                               ;; a pure choice of semantic event, never a transaction hook.
+                               (var routed nil)
+                               (var winning-priority nil)
+                               (each [_ route (ipairs (or (. event-routes
+                                                             event.type)
+                                                          []))]
+                                 (when (and winning-priority
+                                            (< route.priority winning-priority))
+                                   (lua :break))
+                                 (local context (misa.sub db route.context))
+                                 (when (not= context nil)
+                                   (local candidate
+                                          (route.resolve context event cofx))
+                                   (when (not= candidate nil)
+                                     (assert (and (= (type candidate) :table)
+                                                  (= (type candidate.type)
+                                                     :string)
+                                                  (not= candidate.type ""))
+                                             "event route must return nil or an event")
+                                     (assert (= routed nil)
+                                             "ambiguous event routes at winning priority")
+                                     (set routed candidate)
+                                     (set winning-priority route.priority))))
+                               (var tx
+                                    {: cofx
+                                     : db
+                                     :event (or routed event)
+                                     :fx []})
+                               (each [_ handler (ipairs (or (. events
+                                                               tx.event.type)
+                                                            {}))]
+                                 (local result (handler tx.db tx.event tx.cofx))
+                                 (assert (or (= result nil)
+                                             (= (type result) :table))
+                                         "event handler result must be a table")
+                                 (when result
+                                   (assert (= result.db nil)
+                                           "handler must return patch, not db")
+                                   (when (not= result.patch nil)
+                                     (set tx.db (misa.patch tx.db result.patch)))
+                                   (when (not= result.fx nil)
+                                     (append tx.fx result.fx))))
+                               (local effects {})
+                               (each [_ effect (ipairs tx.fx)]
+                                 (local translated
+                                        (translate-effect effect tx.cofx tx.db))
+                                 (if translated.type
+                                     (table.insert effects translated)
+                                     (append effects translated)))
+                               (each [_ effect (ipairs effects)]
+                                 (runtime-effect effect))
+                               (set pending-sub-scope active-sub-scope)
+                               (set pending-db tx.db)
+                               effects) traceback))
   (set dispatching false)
   (when (not ok) (active-sub-scope.close))
   (set active-sub-scope nil)
   (when (not ok) (error native 0))
   native)
 
-(fn misa._commit [] (assert (not= pending-db nil) "no transaction to commit")
+(fn misa._commit []
+  "Accept the staged model transaction independently of presentation."
+  (assert (not= pending-db nil) "no transaction to commit")
   (set (db pending-db) (values pending-db nil))
   (subscription-scope.close)
   (set (subscription-scope pending-sub-scope) (values pending-sub-scope nil))
   nil)
 
 (fn misa._rollback []
+  "Discard staged model changes and subscription memoization."
   (assert (not dispatching) "cannot roll back while dispatching")
   (when pending-sub-scope (pending-sub-scope.close))
   (set (pending-db pending-sub-scope) (values nil nil))
   nil)
 
 (fn misa._project [terminal clock]
+  "Stage a frame from committed state and explicit terminal facts."
   (assert (and sealed (not dispatching) (not projecting) (= pending-db nil)
-               (= pending-projection-scope nil)) "invalid projection state")
+               (= pending-projection-scope nil))
+          "invalid projection state")
   (set projecting true)
   (set active-sub-scope (projection-scope.fork))
-  (set pending-projection-entries (collect [key entry (pairs projection-entries)] key entry))
-  (local (ok frame)
-    (xpcall (fn []
-              (local cofx {:argv base-context.argv :config base-context.config : terminal : clock})
-              (local result (if view (view db cofx) misa.json_null))
-              (assert (= (type result) :table) "view must return a table")
-              result) traceback))
+  (set pending-projection-entries (collect [key entry (pairs projection-entries)]
+                                    key
+                                    entry))
+  (set pending-presentation
+       (collect [key value (pairs presentation)] key value))
+  (local (ok frame) (xpcall (fn []
+                              (local cofx
+                                     {:argv base-context.argv
+                                      :config base-context.config
+                                      : terminal
+                                      : clock
+                                      :projecting true})
+                              (local result
+                                     (if view (view db cofx) misa.json-null))
+                              (assert (= (type result) :table)
+                                      "view must return a table")
+                              result) traceback))
   (set projecting false)
   (if ok (set pending-projection-scope active-sub-scope)
-      (do (active-sub-scope.close) (set pending-projection-entries nil)))
+      (do
+        (active-sub-scope.close)
+        (set pending-projection-entries nil)
+        (set pending-presentation nil)))
   (set active-sub-scope nil)
   (when (not ok) (error frame 0))
   frame)
 
 (fn misa._commit_projection []
+  "Accept staged presentation caches and published geometry."
   (assert pending-projection-scope "no projection to commit")
   (projection-scope.close)
-  (set (projection-scope pending-projection-scope) (values pending-projection-scope nil))
-  (set (projection-entries pending-projection-entries) (values pending-projection-entries nil))
+  (set (projection-scope pending-projection-scope)
+       (values pending-projection-scope nil))
+  (set (projection-entries pending-projection-entries)
+       (values pending-projection-entries nil))
+  (set (presentation pending-presentation) (values pending-presentation nil))
   nil)
 
 (fn misa._rollback_projection []
+  "Discard staged presentation without changing model state."
   (assert (not projecting) "cannot roll back while projecting")
   (when pending-projection-scope (pending-projection-scope.close))
   (set (pending-projection-scope pending-projection-entries) (values nil nil))
+  (set pending-presentation nil)
   nil)
 
 ;; Extensions are trusted policy. Keep ordinary Lua loading/composition, while
@@ -858,13 +986,15 @@
 
 ;; to Zig-owned effects.
 
-(when package (set package.loadlib nil)
+(when package
+  (when package.loadlib
+    (table.remove package.loaders 4)
+    (table.remove package.loaders 3))
+  (set package.loadlib nil)
   (set (package.loaded.io package.loaded.os package.loaded.debug)
        (values nil nil nil))
   (set (package.loaded.ffi package.loaded.jit) (values nil nil))
-  (set (package.preload.ffi package.preload.jit) (values nil nil))
-  (tset package.loaders 3 nil)
-  (tset package.loaders 4 nil))
+  (set (package.preload.ffi package.preload.jit) (values nil nil)))
 
 (global (os io print ffi jit debug) (values nil nil nil nil nil nil))
 

@@ -19,6 +19,9 @@ import termios
 import time
 import zlib
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 from fixture_environment import fixture_environment
 
 root = Path(__file__).resolve().parent.parent
@@ -64,8 +67,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 80, 40, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b'')
     (work / 'image.png').write_bytes(png)
     (work / 'fixture.fnl').write_text(fixture)
-    config = json.loads((root / 'config/default.json').read_text())
-    config['extensions'] = [str(work/'fixture.fnl')] + [name for name in config['extensions'] if not name.startswith(('provider.', 'protocol.')) and name != 'auth']
+    config = {'extensions': [str(work/'fixture.fnl')], 'config': {'models': {}}}
     settings = config['config']
     settings['models']['default'] = 'smoke/model'
     settings.setdefault('preferences', {}).setdefault('favorites', {})['models'] = ['smoke/model']
@@ -73,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
     settings['smoke'] = {'directory': directory, 'python': sys.executable}
     for name in ('history', 'themes', 'components', 'preferences'):
         settings.setdefault(name, {})['persist'] = False
-    (work / 'config.json').write_text(json.dumps(config))
+    (work / 'config.fnl').write_text(application(config, default=True, omit=('provider.', 'protocol.', 'auth')))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
     env = fixture_environment(work, TERM='xterm-ghostty', TERM_PROGRAM='ghostty', MISA_AUTH_FILE=str(work/'auth'), MISA_STATE_FILE=str(work/'state'))
@@ -83,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='misa-ghostty-') as directory:
         env['MISA_EXTENSION_DIR'] = str(root/'extensions')
     env.pop('TMUX', None)
     env.pop('STY', None)
-    process = subprocess.Popen([binary, '--config', str(work/'config.json')], stdin=slave, stdout=slave, stderr=slave, env=env)
+    process = subprocess.Popen([binary, '--config', str(work/'config.fnl')], stdin=slave, stdout=slave, stderr=slave, env=env)
     os.close(slave)
     output = bytearray()
     def until(predicate, timeout=5):

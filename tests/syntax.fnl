@@ -8,43 +8,37 @@
 
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) context))
+(local declarations (require :misa.definitions))
 (each [_ name (ipairs [:keybindings
                        :themes
                        :theme/default
                        :components
                        :layout
                        :markdown
-                       :tool_presentations
+                       :tool/presentations
                        :syntax
                        :component/markdown
                        :values :component/truncation :component/group :component/message :component/content :component/tool
                        :messages])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (app.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
 
 (var db nil)
 (var expected-syntax nil)
 (var syntax-input-checked false)
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/read
-                            :handler (fn [value] (set db value))}]})
+(app.define (declarations :syntax-1 [{:catalog :events  :value {:event :test/read :handler (fn [value] (set db value))}}]))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :syntax/completed
-                            :handler (fn [_ event]
+(app.define (declarations :syntax-2 [{:catalog :events  :value {:event :syntax/completed :handler (fn [_ event]
                                        (when event.reject
                                          (error "reject completion"))
                                        (when event.mutate
                                          (set (. event.data 1 :capture)
-                                              :comment)))}
-                           {:type :register/event
-                            :name :transcript/reset
-                            :handler (fn [_ event]
+                                              :comment)))}}
+                           {:catalog :events  :value {:event :transcript/reset :handler (fn [_ event]
                                        (when event.reject
-                                         (error "reject reset")))}]})
+                                         (error "reject reset")))}}]))
 
-(misa._setup_effects {:fx [{:type :register/component
-                            :id :test.syntax-input
-                            :value {:render (fn [model]
+(app.define (declarations :syntax-3 [{:catalog :components :id :test.syntax-input :value {:render (fn [model]
                                               (assert (= (type model.syntax)
                                                          :table))
                                               (local resolved model.syntax)
@@ -59,9 +53,9 @@
                                                            data)
                                                         "component boundary copied derived captures"))
                                               (set syntax-input-checked true)
-                                              {:lines []})}}]})
+                                              {:lines []})}}]))
 
-(misa._seal context)
+(app.install context)
 (local terminal {:interactive true :columns 80 :lines 24})
 (local requests [])
 (var commits 0)
@@ -108,8 +102,8 @@
 (var view nil)
 (fn render []
   (local model (. db.messages.blocks 1))
-  (local syntax (assert (misa.syntax_projection (misa.syntax_projections db) model)))
-  (set view (misa.markdown_view.project (or model.text (table.concat model.chunks))
+  (local syntax (assert (misa.syntax.for-model (misa.syntax.all db) model)))
+  (set view (misa.markdown.view.project (or model.text (table.concat model.chunks))
                                        (misa.patch syntax {:columns 80}) view))
   view.lines)
 
@@ -127,12 +121,12 @@
       document (misa.markdown.parse source)
       other-document (misa.markdown.parse source)
       options {:document document :columns 80 :revision 1}
-      plain-view (misa.markdown_view.project source options)
+      plain-view (misa.markdown.view.project source options)
       plain plain-view.lines
       colored-options {:document document :columns 80 :revision 1
                        :captures {(. document.blocks 1 :source_start)
                                   [{:start_byte 0 :end_byte 5 :capture :keyword}]}}
-      colored-view (misa.markdown_view.project source colored-options plain-view)
+      colored-view (misa.markdown.view.project source colored-options plain-view)
       colored colored-view.lines]
   (assert (not (keyword? plain)))
   (assert (keyword? colored) "equal revision hid changed capture input")
@@ -140,17 +134,17 @@
           "capture branch reused a mutable layout entry")
   (assert (= (. plain-view.entries 1 :captures) nil)
           "capture branch modified prior layout dependencies")
-  (assert (= colored-view (misa.markdown_view.project source colored-options colored-view))
+  (assert (= colored-view (misa.markdown.view.project source colored-options colored-view))
           "identical explicit dependencies discarded layout")
-  (assert (= colored-view (misa.markdown_view.project source {:document document :columns 80 :revision 2
+  (assert (= colored-view (misa.markdown.view.project source {:document document :columns 80 :revision 2
                                           :captures colored-options.captures} colored-view))
           "revision bookkeeping invalidated unchanged layout inputs")
-  (local restored (misa.markdown_view.project source options colored-view))
+  (local restored (misa.markdown.view.project source options colored-view))
   (assert (not (keyword? restored.lines))
           "retained snapshot reused another snapshot's captures")
-  (local replaced (misa.markdown_view.project source {:document other-document :columns 80 :revision 1} restored))
+  (local replaced (misa.markdown.view.project source {:document other-document :columns 80 :revision 1} restored))
   (assert (not= replaced restored) "replacement document identity was ignored")
-  (assert (= plain-view (misa.markdown_view.project source options plain-view))
+  (assert (= plain-view (misa.markdown.view.project source options plain-view))
           "branching layout changed the original projection")
   (assert (and (not (keyword? plain-view.lines)) (keyword? colored-view.lines))
           "branching layout mutated a retained projection"))
@@ -210,24 +204,25 @@
 (dispatch {:type :ui/redraw})
 (assert (= (length requests) 2) "projection or redraw scheduled syntax work")
 (assert (= colored (render)) "unrelated transaction discarded cached rendering")
-(set expected-syntax (misa.syntax_projection (misa.syntax_projections db) (. db.messages.blocks 1)))
+(set expected-syntax (misa.syntax.for-model (misa.syntax.all db) (. db.messages.blocks 1)))
 (set (. db.components.roles :transcript.assistant) :test.syntax-input)
-(misa.transcript_projection db terminal)
+(misa.transcript.project db terminal)
 (assert syntax-input-checked "syntax component failed before validating its shared inputs")
 (set (. db.components.roles :transcript.assistant) nil)
 ;; Real component models preserve the explicit input and require no
 ;; synchronous native capability during projection.
-(assert (> (length (misa.transcript_projection db terminal)) 0))
+(assert (> (length (misa.transcript.project db terminal)) 0))
 (local frozen-text (table.concat (. db.messages.blocks 1 :chunks)))
 (delta "\nlocal b")
 (assert (= (length requests) 3))
 (assert (not (keyword? (render))) "new source retained stale captures")
-(local previous-selection misa.selection_projection)
+(local previous-selection (and misa.selection misa.selection.state))
+(when (not misa.selection) (set misa.selection {}))
 (local live-block (. db.messages.blocks 1))
-(set misa.selection_projection (fn [_ id]
+(set misa.selection.state (fn [_ id]
                                  (when (= id "5:replybody")
                                    {: id :text frozen-text :first 0 :last (length frozen-text)})))
-(local frozen-lines (misa.transcript_projection db terminal))
+(local frozen-lines (misa.transcript.project db terminal))
 (local frozen-output (table.concat (icollect [_ line (ipairs frozen-lines)]
                                     (table.concat (icollect [_ span (ipairs line.spans)] span.text))) "\n"))
 (assert (frozen-output:find "local a" 1 true))
@@ -236,8 +231,8 @@
 (assert (= live-block (. db.messages.blocks 1)))
 (assert (= (table.concat live-block.chunks) (.. frozen-text "\nlocal b"))
         "selection changed canonical stream chunks")
-(set misa.selection_projection previous-selection)
-(local live-lines (misa.transcript_projection db terminal))
+(set misa.selection.state previous-selection)
+(local live-lines (misa.transcript.project db terminal))
 (local live-output (table.concat (icollect [_ line (ipairs live-lines)]
                                   (table.concat (icollect [_ span (ipairs line.spans)] span.text))) "\n"))
 (assert (live-output:find "local b" 1 true) "leaving selection did not restore live syntax")
@@ -271,22 +266,22 @@
         "highlight completion duplicated noninteractive output")
 
 ;; Collection consumers resolve the subscription once, not once per block.
-(local snapshot-service misa.syntax_projections)
+(local snapshot-service misa.syntax.all)
 (var snapshots 0)
-(set misa.syntax_projections (fn [state]
+(set misa.syntax.all (fn [state]
                               (set snapshots (+ snapshots 1))
                               (snapshot-service state)))
 (local many (misa.patch db {:messages {:blocks (misa.replace
                                                (fcollect [index 1 300]
                                                  {:id (tostring index) :kind :assistant :text "plain"}))}}))
-(misa.transcript_projection many terminal)
+(misa.transcript.project many terminal)
 (assert (= snapshots 1) "transcript repeated syntax subscription lookups per block")
 (local snapshot (snapshot-service db))
 (local saved-sub misa.sub)
 (set misa.sub (fn [] (error "pure syntax lookup entered subscription engine")))
-(misa.syntax_projection snapshot (. db.messages.blocks 1))
+(misa.syntax.for-model snapshot (. db.messages.blocks 1))
 (set misa.sub saved-sub)
-(set misa.syntax_projections snapshot-service)
+(set misa.syntax.all snapshot-service)
 (set terminal.interactive true)
 (local before-shell (length requests))
 (dispatch {:type :transcript/response-start :response_id :shell-reply})

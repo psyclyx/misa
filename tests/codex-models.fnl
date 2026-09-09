@@ -1,13 +1,16 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.install)
 (local feature (fennel.dofile :extensions/provider/openai-codex.fnl))
 (fn handlers [config]
   (local result {})
-  (each [_ effect (ipairs (. (feature.setup {:config {:providers {:openai_codex (or config {})}}}) :fx))]
-    (when (= effect.type :register/event) (tset result effect.name effect.handler)))
+  (each [_ effect (pairs (. (feature {:config {:providers {:openai_codex (or config {})}}}) :events))]
+  (tset result effect.event effect.handler))
   result)
 (local events (handlers))
 (assert (= ((. events :models/discover) {} {:provider :other}) nil))
@@ -50,8 +53,7 @@
 (output "Codex model discovery contracts passed\n")
 
 (fn auth-declaration [config]
-  (accumulate [found nil _ effect (ipairs (. (feature.setup {:config {:providers {:openai_codex config}}}) :fx))]
-    (or found (when (= effect.type :register/auth-provider) effect.value))))
+  (. (feature {:config {:providers {:openai_codex config}}}) :auth-providers :openai-codex))
 (assert (. (auth-declaration {}) :discover_models)
         "authenticated startup did not schedule Codex discovery")
 (assert (not (. (auth-declaration {:models []}) :discover_models))

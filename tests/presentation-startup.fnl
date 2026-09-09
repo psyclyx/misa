@@ -3,22 +3,23 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {:config {}})
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(app.define ((fennel.dofile :extensions/json.fnl) {:config {}}))
+(app.add :animation/default)
+(app.install)
 
 (each [_ persist (ipairs [false true])]
   (each [_ name (ipairs [:themes :components :animations])]
     (local config {: persist})
     (when (= name :components) (tset config :message :custom.message))
     (when (= name :animations) (tset config :roles {:status :default}))
-    (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup)
+    (local specs ((fennel.dofile (.. :extensions/ name :.fnl))
                  {:config {name config}}))
     (var start nil)
-    (each [_ spec (ipairs specs.fx)]
-      (assert (not= spec.type :register/interceptor)
-              "presentation startup must not install middleware")
-      (when (and (= name :animations) (= spec.name :register/animation))
-        (spec.handler {:id :default :value {:frames ["."]}}))
-      (when (and (= spec.type :register/event) (= spec.name :app/start))
+    (assert (= specs.interceptors nil) "startup must not install middleware")
+    (each [_ spec (pairs specs.events)]
+      (when (= spec.event :app/start)
         (assert (not start) "startup must have a single owner handler")
         (set start spec.handler)))
     (assert start)

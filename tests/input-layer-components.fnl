@@ -3,23 +3,22 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}}})
 (local layers {})
-(each [_ name (ipairs [:json :themes :theme/default :components :layout :queue_view :attachments])]
-  (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
-  (each [_ spec (ipairs specs.fx)]
-    (when (= spec.type :register/view-layer) (tset layers spec.id spec.handler)))
-  (misa._setup_effects specs))
+(each [_ name (ipairs [:json :themes :theme/default :components :layout :queue/view :attachments])]
+  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (each [id spec (pairs (or specs.view-layers {}))]
+    (tset layers id spec.handler))
+  (app.define specs))
 (var observed nil)
 (var received nil)
-(misa._setup_effects
- {:fx [{:type :register/event :name :test/read :handler (fn [db] (set observed db) nil)}
-       {:type :register/component :id :default.attachment.fixture
-        :value {:render (fn [] {:lines []})}}
-       {:type :register/component :id :custom.controls
-        :value {:render (fn [model] (set received model)
-                         {:lines [{:spans [{:text :custom :style :plain}]}]})}}]})
-(misa._seal context)
+(app.define (definitions :fixture [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}
+       {:catalog :components :id :default.attachment.fixture :value {:render (fn [] {:lines []})}}
+       {:catalog :components :id :custom.controls :value {:render (fn [model] (set received model)
+                         {:lines [{:spans [{:text :custom :style :plain}]}]})}}]))
+(app.install)
 (each [_ event (ipairs [{:type :app/start} {:type :test/read}])]
   (misa._dispatch event {:columns 80 :lines 24 :interactive true} {:wall_ms 0 :monotonic_ms 0})
   (misa._commit))
@@ -40,12 +39,12 @@
   (local rest (layer db cofx))
   (local encoded (misa.json.encode rest))
   (local normal (action-span rest spec.action))
-  (assert (= (misa.json.encode normal.style) (misa.json.encode (misa.theme_style db :keybinding)))
+  (assert (= (misa.json.encode normal.style) (misa.json.encode (misa.themes.style db :keybinding)))
           "resting appearance changed")
   (local hovered (layer (misa.patch db {:hover_action spec.action}) cofx))
   (local highlighted (action-span hovered spec.action))
   (assert (= (misa.json.encode highlighted.style.background)
-             (misa.json.encode (. (misa.theme_style db :hover) :background))))
+             (misa.json.encode (. (misa.themes.style db :hover) :background))))
   (assert (not= highlighted.style.background normal.style.background))
   (assert (= (misa.json.encode highlighted.style.foreground)
              (misa.json.encode normal.style.foreground)))
@@ -58,11 +57,11 @@
 (local attachments ((. layers :draft-attachments) db cofx))
 (assert (= (. attachments.lines 1 :spans 1 :text) "Loading image…"))
 (local custom-queue ((. layers :pending-prompt)
-                    (misa.swap_component db :pending-prompt :custom.controls) cofx))
+                    (misa.components.swap db :pending-prompt :custom.controls) cofx))
 (assert (= received.pending "first\nsecond") "view layer pre-rendered queue text")
 (assert (= received.attachment_count 1))
 (assert (= (. custom-queue.lines 1 :spans 1 :text) :custom))
-((. layers :draft-attachments) (misa.swap_component db :attachment-controls :custom.controls) cofx)
+((. layers :draft-attachments) (misa.components.swap db :attachment-controls :custom.controls) cofx)
 (assert (= received.count 1))
 (assert (= received.pending true))
 (assert (= ((. layers :pending-prompt) observed cofx) nil))

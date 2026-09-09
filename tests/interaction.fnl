@@ -1,34 +1,28 @@
+(local definitions (require :misa.definitions))
+
 ;; Drives real framework transactions, including input routing and rollback
 
 ;; cloning, rather than mutating a fake UI model between assertions.
 
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:completion :fixture-values
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:completion :fixture-values
                                  :description "Choice action fixture"
                                  :event :test/fixture
-                                 :name :/fixture}})
-          (table.insert setup-fx
-                        {:type :register/completion
-                         :group :fixture-values
-                         :value {:value :one}})
-          (table.insert setup-fx
-                        {:type :register/completion
-                         :group :fixture-values
-                         :value {:value :two}})
-          (table.insert setup-fx
-                        {:type :register/action
-                         :value {:event {:type :test/custom}
+                                 :name :/fixture}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        {:catalog :completions :id (.. :fixture-values "/" (. {:value :one} :value)) :value {:group :fixture-values :value {:value :one}}})
+          (table.insert declarations
+                        {:catalog :completions :id (.. :fixture-values "/" (. {:value :two} :value)) :value {:group :fixture-values :value {:value :two}}})
+          (table.insert declarations
+                        (let [definition {:event {:type :test/custom}
                                  :id :test.custom
                                  :keys [:alt+z]
-                                 :label "Custom action"}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/custom
-                         :handler (fn [db]
-                                    {:patch {:custom_action true} :fx [{:type :terminal/read}]})})
+                                 :label "Custom action"}] {:catalog :actions :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/custom :handler (fn [db]
+                                    {:patch {:custom_action true} :fx [{:type :terminal/read}]})}})
           (local steps {})
 
           (fn step [event check]
@@ -263,17 +257,13 @@ A paragraph.
                               nil))
           (step (input :escape))
           (step (input :escape) (fn [db] (assert (not db.selection)) nil))
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:index 1
                                                    :type :interaction/step}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :interaction/step
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :interaction/step :handler (fn [db event]
                                     (local current (. steps event.index))
                                     (if (not current)
                                         {:fx [{:lines [{:spans [{:text :interaction}]}]
@@ -283,20 +273,16 @@ A paragraph.
                                                :type :dispatch}
                                               {:event {:index event.index
                                                        :type :interaction/check}
-                                               :type :dispatch}]}))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :interaction/check
-                         :handler (fn [db event]
+                                               :type :dispatch}]}))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :interaction/check :handler (fn [db event]
                                     ;; Follow-up effects (clipboard/copy, picker/open) are queued after this
                                     ;; transaction; an extra event places the check behind those effects.
                                     {:fx [{:event {:index event.index
                                                    :type :interaction/assert}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :interaction/assert
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :interaction/assert :handler (fn [db event]
                                     (local check (. steps event.index :check))
                                     (when check
                                       (local (ok err) (pcall check db))
@@ -306,6 +292,6 @@ A paragraph.
                                                   (tostring err))))
                                     {:fx [{:event {:index (+ event.index 1)
                                                    :type :interaction/step}
-                                           :type :dispatch}]})})
+                                           :type :dispatch}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.interaction declarations {}))

@@ -1,6 +1,7 @@
 ;; Root layout contracts across short/tall terminals, wrapped inputs, docks,
 ;; and modal layers. Completion targets must match the rows users can see.
 (local fennel (require :fennel))
+(require :tests.application)
 (fn lines [count label]
   (let [result []]
     (for [_ 1 count]
@@ -11,28 +12,35 @@
 (var layers [])
 (var inputs 0)
 (var completion-count 0)
-(set _G.misa {:render_component (fn [] {:lines (lines 2 :header)})
-              :status_projection (fn [] (lines 1 :status))
-              :view_layers (fn [] layers)
-              :editor_projection (fn []
+(var editor-layout nil)
+(set _G.misa {:components {:render (fn [] {:lines (lines 2 :header)})}
+              :status {:model (fn [] (lines 1 :status))}
+              :ui {:layers (fn [] layers)}
+              :editor {:layout (fn [_ context]
+                                   (set editor-layout context.layout)
                                    {:input (lines inputs :input)
                                     :completions (lines completion-count
                                                         :completion)
                                     :row inputs
-                                    :byte 0})
-              :transcript_window (fn [_db _context count]
-                                   (lines count :transcript))})
+                                    :byte 0})}
+              :transcript {:window (fn [_db _context count]
+                                   (lines count :transcript))}})
 
 (fn setup [extension]
-  (each [_ effect (ipairs (. (extension.setup) :fx))]
-    (match effect.type
-      :register/service (tset _G.misa effect.name effect.value)
-      :register/view (set view effect.handler)
-      _ (error (.. "unexpected layout setup effect: " effect.type)))))
+  (local definitions (extension {}))
+  (each [name value (pairs (or definitions.services {}))]
+    (local parts (icollect [part (name:gmatch "[^.]+") ] part))
+    (var target _G.misa)
+    (for [index 1 (- (length parts) 1)]
+      (local part (. parts index))
+      (when (not (. target part)) (tset target part {}))
+      (set target (. target part)))
+    (tset target (. parts (length parts)) value))
+  (each [_ render (pairs (or definitions.views {}))] (set view render)))
 
 (setup (fennel.dofile :extensions/layout.fnl))
 (setup (fennel.dofile :extensions/ui.fnl))
-(assert (> (_G.misa.inline_choice_room {} {:lines 48 :columns 80} 1) 9)
+(assert (> (_G.misa.ui.completion-room {} {:lines 48 :columns 80} 1) 9)
         "tall terminals should have room for more than nine completion candidates")
 
 (for [height 1 60]
@@ -42,7 +50,7 @@
       (set completion-count 100)
       (set layers [{:dock :input :lines (lines dock :dock)}])
       (let [terminal {:lines height :columns 80}
-            room (_G.misa.inline_choice_room {} terminal count)
+            room (_G.misa.ui.completion-room {} terminal count)
             frame (view {} {: terminal})]
         (assert (<= (length frame.lines) height) "frame exceeds viewport")
         (assert (<= 1 frame.cursor.row (length frame.lines))
@@ -52,7 +60,10 @@
           (when (= (. line.spans 1 :text) :completion)
             (set completions (+ completions 1))))
         (assert (= completions room)
-                "positional keys disagree with visible completion rows")))))
+                "positional keys disagree with visible completion rows")
+        (assert (= editor-layout.dock_count dock))
+        (assert (= (. (_G.misa.ui.input-budgets editor-layout count dock) :completions) room)
+                "editor did not receive the root layout budget")))))
 
 (for [height 1 30]
   (for [count 0 40]
@@ -73,8 +84,8 @@
 
 (let [animation {:id :clip :interval_ms 100 :frames [{:text :xx} {:text :yy}]}
       source [{:spans [{:text :xx : animation}]}]
-      full (_G.misa.ui_bound_frame source 2)
-      clipped (_G.misa.ui_bound_frame source 1)]
+      full (_G.misa.ui.bound-frame source 2)
+      clipped (_G.misa.ui.bound-frame source 1)]
   (assert (= (. full.lines 1 :spans 1 :animation) animation)
           "root clipping lost a fully visible animation")
   (assert (= (. clipped.lines 1 :spans 1 :text) :x))
@@ -83,10 +94,10 @@
   (assert (= (. source 1 :spans 1 :animation) animation)
           "root clipping mutated the source animation"))
 
-(each [_ effect (ipairs (. ((. (fennel.dofile :extensions/component/editor.fnl) :setup)) :fx))]
-  (when (= effect.id :default.editor.input)
+(each [id component (pairs (. ((fennel.dofile :extensions/component/editor.fnl) {}) :components))]
+  (when (= id :default.editor.input)
     (each [_ mode (ipairs [:insert :normal :visual])]
-      (local input (effect.value.render {:text "hello" :cursor 2 : mode} {:columns 20}))
+      (local input (component.render {:text "hello" :cursor 2 : mode} {:columns 20}))
       (assert (= input.cursor.shape (if (= mode :insert) :bar :block))
               "editor mode must choose the native cursor shape"))))
 

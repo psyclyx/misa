@@ -1,9 +1,11 @@
+(local definitions (require :misa.definitions))
+
 ;; Exercise the real transaction pipeline while intercepting native timers so
 
 ;; lifecycle assertions do not depend on wall-clock scheduling.
 
-{:setup (fn [context]
-          (local setup-fx [])
+(fn [context]
+          (local declarations [])
           (local enabled (not= context.config.animations.enabled false))
           (local steps {})
 
@@ -13,27 +15,22 @@
 
           ;; Observe native effect boundaries without running real timers.
           (local observed {:starts 0 :stops 0 :redraws 0})
-          (table.insert setup-fx
-                        {:type :register/fx :name :timer/start
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :timer/start :value (fn [effect]
                                     (assert (and (= effect.id :animation/service)
                                                  (= effect.interval_ms 160)))
                                     (set observed.starts (+ observed.starts 1))
                                     {})})
-          (table.insert setup-fx
-                        {:type :register/fx :name :timer/stop
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :effects :id :timer/stop :value (fn []
                                     (set observed.stops (+ observed.stops 1))
                                     {})})
-          (table.insert setup-fx
-                        {:type :register/event :name :ui/redraw
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :events  :value {:event :ui/redraw :handler (fn []
                                     (set observed.redraws (+ observed.redraws 1))
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :default.test-animation
-                         :value {:render (fn []
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :components :id :default.test-animation :value {:render (fn []
                                            {:lines [{:surface :plain
                                                      :spans [{:text :x
                                                               :style :value
@@ -43,7 +40,7 @@
                                                                                    {}]}}]}]})}})
 
           (fn check-projection [db busy]
-            (local spans (. (misa.status_projection db {:columns 80}) 1 :spans))
+            (local spans (. (misa.status.model db {:columns 80}) 1 :spans))
             (assert (= (. spans 3 :text) (or (and busy :thinking) :ready)))
             (if busy
                 (do
@@ -55,22 +52,22 @@
             nil)
 
           (fn check-theme-layout [db]
-            (local projected (. (misa.render_component db :test-animation {} {})
+            (local projected (. (misa.components.render db :test-animation {} {})
                                 :lines 1 :spans 1))
             (local override (. projected.animation.frames 1 :style))
             (assert (= (type override) :table))
             (assert (= (. projected.animation.frames 2 :style) nil)
                     "unspecified frame style should inherit its span")
-            (each [key value (pairs (misa.theme_style db :bold))]
+            (each [key value (pairs (misa.themes.style db :bold))]
               (assert (= (tostring (. override key)) (tostring value))))
             (local source
                    {:text :xx
                     :animation {:id :clip
                                 :interval_ms 100
                                 :frames [{:text :xx} {:text :yy}]}})
-            (assert (not= (. (misa.layout.flow_spans [source] 2) 1 :spans 1
+            (assert (not= (. (misa.layout.flow-spans [source] 2) 1 :spans 1
                              :animation) nil))
-            (assert (= (. (misa.layout.flow_spans [source] 1) 1 :spans 1
+            (assert (= (. (misa.layout.flow-spans [source] 1) 1 :spans 1
                           :animation) nil))
             nil)
 
@@ -89,7 +86,7 @@
                 (fn [db]
                   (counts db 0 0)
                   (check-projection db true)
-                  (local span (misa.animation_span db :status))
+                  (local span (misa.animations.span db :status))
                   (assert (= span.text (or (and enabled "·") "…")))
                   (assert (= (not= span.animation nil) enabled))
                   (when enabled
@@ -97,7 +94,7 @@
                     (assert (= span.animation.interval_ms 160))
                     (assert (= (. span.animation.frames 2 :text) "•"))
                     (local phased
-                           (misa.animation_span db :status
+                           (misa.animations.span db :status
                                                 {:id :shared
                                                  :phase 1
                                                  :style :accent}))
@@ -105,7 +102,7 @@
                     (assert (= phased.animation.phase 1))
                     (assert (= phased.animation.id :shared))
                     (assert (= phased.style :accent)))
-                  (assert (= (misa.animation_frame db :status)
+                  (assert (= (misa.animations.frame db :status)
                              (or (and enabled "·") "…")))
                   nil))
           (step {:status :streaming :type :agent/status}
@@ -116,7 +113,7 @@
                 (fn [db] (assert (= db.animations.ticks.status 0)) nil))
           (step {:id :animation/service :type :animations/tick}
                 (fn [db]
-                  (assert (= (misa.animation_frame db :status)
+                  (assert (= (misa.animations.frame db :status)
                              (or (and enabled "•") "…")))
                   (assert (= observed.redraws (or (and enabled 1) 0)))
                   nil))
@@ -139,7 +136,7 @@
           (step {:role :status :type :animations/start}
                 (fn [db]
                   (counts db 1 1)
-                  (assert (= (. (misa.animation_span db :status) :animation)
+                  (assert (= (. (misa.animations.span db :status) :animation)
                              nil))
                   nil))
           (step {:animation :default :type :animations/swap}
@@ -161,17 +158,13 @@
                   nil))
           (step {:role :status :type :animations/stop}
                 (fn [db] (counts db 4 4) nil))
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:index 1
                                                    :type :test/animation-step}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/animation-step
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/animation-step :handler (fn [db event]
                                     (local current (. steps event.index))
                                     (if (not current)
                                         {:fx [{:lines [{:spans [{:text :animations}]}]
@@ -181,21 +174,18 @@
                                                :type :dispatch}
                                               {:event {:index event.index
                                                        :type :test/animation-settle}
-                                               :type :dispatch}]}))})
+                                               :type :dispatch}]}))}})
           ;; Let queued redraw observations complete before checking the step.
-          (table.insert setup-fx
-                        {:type :register/event :name :test/animation-settle
-                         :handler (fn [_ event]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/animation-settle :handler (fn [_ event]
                                     {:fx [{:type :dispatch
-                                           :event {:type :test/animation-check :index event.index}}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/animation-check
-                         :handler (fn [db event]
+                                           :event {:type :test/animation-check :index event.index}}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/animation-check :handler (fn [db event]
                                     (local check (. steps event.index :check))
                                     (when check (check db))
                                     {:fx [{:event {:index (+ event.index 1)
                                                    :type :test/animation-step}
-                                           :type :dispatch}]})})
+                                           :type :dispatch}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.animations declarations {}))

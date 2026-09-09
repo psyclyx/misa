@@ -3,56 +3,48 @@
 (local runtime-debug debug)
 (local runtime-os os)
 
-;; Real transactions and FIFO dispatch effects; native I/O is captured, never run.
-;; Stop the simulated event loop at app/quit, as native does with no active worker.
 (fn fixture [order interactive]
-  ;; A fresh trusted runtime must recapture the host libraries hidden by the previous instance.
   (set _G.debug runtime-debug)
   (set _G.os runtime-os)
   (fennel.dofile :src/lua_runtime/framework.fnl)
   (local app _G.misa)
   (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
+  (local construction ((require :tests.application) context))
   (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices
                          :themes :theme/default :components :component/editor
-                         :component/picker :values :choice_preview :choice_layout :agent])]
-    (app._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
-  ;; An unrelated extension contributes before editor; another contributes after it.
-  (app._setup_effects
-   {:fx [{:type :register/sub :value {:id :test/lifecycle :inputs [[:db/path :test_lifecycle]]
-                                     :compute (fn [inputs] (or (. inputs 1) {}))}}
-         {:type :register/service :name :editor_lifecycle.test :value [:test/lifecycle]}]})
+                         :component/picker :values :choices/preview :choices/layout :agent])]
+    (construction.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (construction.define
+   {:subscriptions {:test/lifecycle {:inputs [[:db/path :test_lifecycle]]
+                                    :compute (fn [inputs] (or (. inputs 1) {}))}}
+    :services {:editor.lifecycle.test [:test/lifecycle]}})
   (each [_ name (ipairs order)]
-    (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
-    (each [_ spec (ipairs specs.fx)]
-      (assert (not= spec.type :register/interceptor) "domain lifecycle installed middleware"))
-    (app._setup_effects specs))
+    (local description ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+    (assert (= description.interceptors nil) "domain lifecycle declared middleware")
+    (construction.define description))
   (each [_ name (ipairs [:editing :dialogs :picker])]
-    (app._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
+    (construction.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
   (var db nil)
   (local requests [])
   (local submissions [])
   (var native [])
-  (app._setup_effects
-   {:fx [{:type :register/sub :value {:id :test/other :inputs [[:db/path :test_other]]
-                                     :compute (fn [inputs] (or (. inputs 1) {}))}}
-         {:type :register/service :name :editor_lifecycle.other :value [:test/other]}
-         {:type :register/event :name :test/read :handler (fn [state] (set db state) nil)}
-         {:type :register/event :name :test/state :handler (fn [_ event] {:patch event.patch})}
-         {:type :register/event :name :agent/submit
-          :handler (fn [_ event] (table.insert submissions event.prompt) nil)}
-         {:type :register/event :name :test/chosen
-          :handler (fn [_ event] {:patch {:chosen (app.replace event)}})}
-         {:type :register/command :value {:name :/ping :description :Ping :event :test/chosen}}
-         {:type :register/event :name :app/start
-          :handler (fn [] {:patch {:agent {:exit_after_response true}
-                                  :models {:selected :capture/model
-                                           :entries [{:id :capture/model :model :model :provider :capture}]}}})}
-         {:type :register/fx :name :provider.capture
-          :handler (fn [effect] (table.insert requests effect) [])}]})
-  (assert (not (pcall app._setup_effects
-                      {:fx [{:type :register/service :name :editor_lifecycle.other :value [:test/other]}]}))
+  (construction.define
+   {:subscriptions {:test/other {:inputs [[:db/path :test_other]]
+                                :compute (fn [inputs] (or (. inputs 1) {}))}}
+    :services {:editor.lifecycle.other [:test/other]}
+    :events {:test/read {:event :test/read :handler (fn [state] (set db state))}
+             :test/state {:event :test/state :handler (fn [_ event] {:patch event.patch})}
+             :test/submit {:event :agent/submit :handler (fn [_ event] (table.insert submissions event.prompt) nil)}
+             :test/chosen {:event :test/chosen :handler (fn [_ event] {:patch {:chosen (app.replace event)}})}
+             :test/start {:event :app/start
+                          :handler (fn [] {:patch {:agent {:exit_after_response true}
+                                                  :models {:selected :capture/model
+                                                           :entries [{:id :capture/model :model :model :provider :capture}]}}})}}
+    :commands {:/ping {:description :Ping :event :test/chosen}}
+    :effects {:provider.capture (fn [effect] (table.insert requests effect) [])}})
+  (assert (not (pcall construction.define {:services {:editor.lifecycle.other [:test/other]}}))
           "duplicate contributor was accepted")
-  (app._seal context)
+  (construction.install)
   (local terminal {:columns 80 :lines 24 : interactive})
   (local clock {:wall_ms 0 :monotonic_ms 0})
   (fn read-state []

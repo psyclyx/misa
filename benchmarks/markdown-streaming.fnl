@@ -32,7 +32,7 @@
 
 (local samples (or (tonumber (. arg 3)) 10))
 
-(print (.. "baseline_api," (if baseline.new_document :incremental :full)))
+(print (.. "baseline_api," (if baseline.new-document :incremental :full)))
 
 (local workloads
        [{:name :paragraph :text (string.rep "ordinary words " 1100)}
@@ -62,8 +62,8 @@ ordinary **bold** [link](https://example.test) and `code`
   (fn run [name verify]
     (var (result checksum) (values nil 0))
     (local stream
-           (if (= name :candidate) (candidate.new_document)
-               (and (= name :baseline) baseline.new_document) (baseline.new_document)))
+           (if (= name :candidate) (candidate.new-document)
+               (and (= name :baseline) baseline.new-document) (baseline.new-document)))
     (each [i text (ipairs inputs)]
       (set result (or (and stream (stream:update text))
                       (or (and (= name :full) (candidate.parse text))

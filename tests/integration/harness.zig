@@ -88,8 +88,8 @@ pub const Harness = struct {
     }
 
     pub fn config(self: *Harness, value: []const u8) !void {
-        try self.write("config.json", value);
-        try self.environ.put("MISA_CONFIG", try self.path("config.json"));
+        try self.write("config.fnl", value);
+        try self.environ.put("MISA_CONFIG", try self.path("config.fnl"));
     }
 
     pub const Invocation = struct {

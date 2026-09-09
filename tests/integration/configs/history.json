@@ -1,1 +1,0 @@
-{"extensions": ["values","keybindings", "choices", "layout", "choice_preview","choice_layout", "picker", "history", "@ROOT@/tests/history.fnl"], "config": {"themes": {"persist": false}, "components": {"persist": false}, "history": {"persist": false}, "clipboard": {}, "messages": {"max_string": 20000}}}

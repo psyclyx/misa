@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/completed
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
                                     (assert (= (length db.agent.messages) 1)
                                             "interrupted assistant response entered provider history")
                                     (local transcript db.messages.blocks)
@@ -16,6 +16,6 @@
                                                        :text)
                                                     :partial))
                                             "partial transcript was not retained")
-                                    nil)})
+                                    nil)}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.interrupted-check declarations {}))

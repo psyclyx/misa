@@ -3,15 +3,16 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(local specs ((. (fennel.dofile :extensions/agent.fnl) :setup) {:config {}}))
-(local handlers {})
-(var fold-stream nil)
-(var register nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.name :agent_stream_effects) (set fold-stream spec.value))
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (when (= spec.name :register/agent-delta) (set register spec.handler)))
+(local definitions (require :misa.definitions))
+(local specs ((fennel.dofile :extensions/agent.fnl) {:config {}}))
+(local application (misa.compose
+ [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+  (misa.compose [{:definitions specs}])
+  {:definitions (definitions :test [{:catalog :agent-deltas :id :custom :value (fn [_ value] {:patch {:custom value.value}})}])}]))
+(misa._install application.definitions {:argv [] :config {}})
+(local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
+(local fold-stream misa.stream.effects)
 (fn text-effect [kind text id]
   {:type :dispatch :event {:type :agent/stream-delta :id (or id :request) :delta {:type kind : text}}})
 (local pieces [(text-effect :text "hel") (text-effect :text "lo")
@@ -96,7 +97,7 @@
   (assert (= (transition observed {: type :id :stale}) observed))
   (local cancelled (misa.patch observed {:agent {:cancel_requested true}}))
   (assert (= (transition cancelled {: type :id :request}) cancelled)))
-(register {:id :custom :value (fn [_ value] {:patch {:custom value.value}})})
+
 (assert (. (delta started {:type :custom :value true}) :agent :stream :custom))
 (local (boot boot-fx) (transition {} {:type :app/start} {:argv [:hello :world]}))
 (assert (= (. boot-fx 1 :event :type) :agent/startup))
@@ -153,8 +154,8 @@
                       (assert (= db.agent.active_request_id nil))))
                   {:cases 500 :size 20}))
 (assert (not lifecycle-failure) (and lifecycle-failure (fennel.view lifecycle-failure)))
-(set misa.tools (fn [] []))
-(set misa.tool (fn [name] (when (= name :known) {:effect :tool.test})))
+(set misa.tools.all (fn [] []))
+(set misa.tools.lookup (fn [name] (when (= name :known) {:effect :tool.test})))
 (local available (misa.patch boot {:models {:selected :test :entries [{:id :test :model :test :provider :test}]}}))
 (local (submitted submit-fx) (transition available {:type :agent/submit :prompt :hello}))
 (assert (= (. submitted.agent.messages 1 :content 1 :text) :hello))
@@ -211,7 +212,7 @@
 (each [_ effect (ipairs observed-fx)]
   (assert (not= (and effect.event effect.event.type) :transcript/tool-result)
           "provider result was emitted again when the response ended"))
-(set misa.prepare_request_options (fn [] (values nil {:message :blocked})))
+(set misa.request-options.prepare (fn [] (values nil {:message :blocked})))
 (local blocked (transition available {:type :agent/submit :prompt :hello}))
 (assert (= (length blocked.agent.messages) 0))
 (assert (= blocked.agent.request_seq 0))

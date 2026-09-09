@@ -14,6 +14,9 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 from fixture_environment import fixture_environment
 
 
@@ -23,8 +26,8 @@ def main():
     fixture = Path(__file__).with_name('threaded-terminal.fnl').resolve()
     with tempfile.TemporaryDirectory(prefix='misa-terminal-failure-') as directory:
         work = Path(directory)
-        config = work / 'config.json'
-        config.write_text(json.dumps({'extensions': [str(fixture)]}))
+        config = work / 'config.fnl'
+        config.write_text(application({'extensions': [str(fixture)]}))
         for sig in (signal.SIGABRT, signal.SIGTERM):
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))

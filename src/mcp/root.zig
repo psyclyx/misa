@@ -7,6 +7,7 @@ const process = @import("misa_process");
 const max_line = 1024 * 1024;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, runtime: *lua.Runtime) !void {
+    runtime.setTerminalInfo(.{ .interactive = false, .columns = 80, .lines = 24 });
     var sequence: usize = 0;
     while (try readLine(allocator, io)) |line| {
         defer allocator.free(line);
@@ -53,7 +54,10 @@ fn callTool(allocator: std.mem.Allocator, io: std.Io, runtime: *lua.Runtime, req
     if (arguments != .object) return writeProtocolError(allocator, io, id, -32602, "Invalid params");
     const call_id = try std.fmt.allocPrint(allocator, "mcp-{d}", .{sequence});
     defer allocator.free(call_id);
-    var translated = runtime.mcpToolEffect(name, arguments, call_id) catch {
+    var translated = runtime.mcpToolEffect(name, arguments, call_id, .{
+        .wall_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
+        .monotonic_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds(),
+    }) catch {
         return writeToolResult(allocator, io, id, runtime.lastError(), true);
     };
     defer translated.deinit();

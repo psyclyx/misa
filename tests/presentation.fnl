@@ -1,11 +1,11 @@
+(local definitions (require :misa.definitions))
+
 ;; Projection contracts: surfaces survive rich spans, and popups retain context.
 
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (fn equal [a b]
                                       (if (not= (type a) (type b))
                                           false
@@ -22,7 +22,7 @@
                                     (fn render-component [state role model render-context]
                                       (local before-model (misa.snapshot model))
                                       (local before-context (misa.snapshot render-context))
-                                      (local result (misa.render_component state role model render-context))
+                                      (local result (misa.components.render state role model render-context))
                                       (assert (equal before-model model) "default component mutated model input")
                                       (assert (equal before-context render-context) "default component mutated context input")
                                       result)
@@ -35,7 +35,7 @@
                                       (table.concat parts))
 
                                     (local words
-                                           (misa.layout.flow_spans [{:action :test
+                                           (misa.layout.flow-spans [{:action :test
                                                                      :style :plain
                                                                      :text "alpha be"}
                                                                     {:link "https://example.test"
@@ -57,7 +57,7 @@
                                                     "https://example.test"))
                                             "word wrapping discarded semantic metadata")
                                     (local explicit
-                                           (misa.layout.flow_spans [{:style :plain
+                                           (misa.layout.flow-spans [{:style :plain
                                                                      :text "a\n\nb"}]
                                                                    8))
                                     (assert (and (= (length explicit) 3)
@@ -67,7 +67,7 @@
                                     (local long
                                            (.. (string.rep :a 10000) "é界"))
                                     (local long-lines
-                                           (misa.layout.flow_spans [{:style :plain
+                                           (misa.layout.flow-spans [{:style :plain
                                                                      :text long}]
                                                                    7))
                                     (local pieces {})
@@ -79,7 +79,7 @@
                                     (assert (= (table.concat pieces) long)
                                             "long-token fallback split a grapheme or lost text")
                                     (local input-words
-                                           (misa.layout.wrap_input "alpha beta"
+                                           (misa.layout.wrap-input "alpha beta"
                                                                    10 6 "│ "
                                                                    :plain
                                                                    :accent))
@@ -95,7 +95,7 @@
                                                     (length (. input-words.lines
                                                                2 :spans 1 :text))))
                                             "editor word-wrap cursor did not follow its source byte")
-                                    (local palette (. (misa.theme db) :palette))
+                                    (local palette (. (misa.themes.lookup db) :palette))
                                     (assert (and (and (= palette.text :default)
                                                       (= (type palette.accent)
                                                          :table))
@@ -116,7 +116,7 @@ print('hello')
 
 last [link](https://example.test)")
                                     (fn stream-lines [text options]
-                                      (set stream (misa.markdown_view.project text options stream))
+                                      (set stream (misa.markdown.view.project text options stream))
                                       stream.lines)
                                     (for [size 0 (length source) 3]
                                       (local text (source:sub 1 size))
@@ -126,7 +126,7 @@ last [link](https://example.test)")
                                         (local lines
                                                (stream-lines text options))
                                         (assert (equal lines
-                                                       (misa.markdown_view.render (misa.markdown.parse text)
+                                                       (misa.markdown.view.render (misa.markdown.parse text)
                                                                                   options))
                                                 "incremental layout differs from full layout")
                                         (assert (= (stream-lines text options)
@@ -137,7 +137,7 @@ last [link](https://example.test)")
                                             :columns 40})
                                     (assert (equal (stream-lines source
                                                                   options)
-                                                   (misa.markdown_view.render (misa.markdown.parse source)
+                                                   (misa.markdown.view.render (misa.markdown.parse source)
                                                                               options))
                                             "style change left stale layout")
                                     (local model-cached
@@ -183,7 +183,7 @@ last [link](https://example.test)")
                                                   "body color did not inherit terminal text")))
                                       (assert (= (misa.layout.width text) 40)
                                               "message surface did not fill its row"))
-                                    (each [_ line (ipairs (misa.markdown_view.render (misa.markdown.parse "```lua
+                                    (each [_ line (ipairs (misa.markdown.view.render (misa.markdown.parse "```lua
 local x = 1
 ```")
                                                                                      {:columns 32}))]
@@ -210,7 +210,7 @@ local x = 1
                                                            :text body}]
                                                 :source_start 0
                                                 :source_end (length body)})
-                                        (each [_ line (ipairs (misa.markdown_view.render {:blocks [block]}
+                                        (each [_ line (ipairs (misa.markdown.view.render {:blocks [block]}
                                                                                          {: columns}))]
                                           (assert (<= (misa.layout.width (line-text line))
                                                       columns)
@@ -229,7 +229,7 @@ local x = 1
                                     ;; Captures and plain gaps may both cross line boundaries.
                                     (local code-source "alpha\nbeta\n\ngamma\n")
                                     (local code-lines
-                                           (misa.markdown_view.render {:blocks [{:kind :code_block
+                                           (misa.markdown.view.render {:blocks [{:kind :code_block
                                                                                  :language :test
                                                                                  :text code-source
                                                                                  :source_start 0
@@ -262,7 +262,7 @@ local x = 1
                                     (local long-language
                                            (string.rep :language 20))
                                     (local long-language-lines
-                                           (misa.markdown_view.render {:blocks [{:kind :code_block
+                                           (misa.markdown.view.render {:blocks [{:kind :code_block
                                                                                  :language long-language
                                                                                  :text "retained body"
                                                                                  :source_start 0
@@ -314,14 +314,14 @@ local x = 1
                                       (when (>= columns 16)
                                         (assert (and top bottom)
                                                 "bordered table unexpectedly disappeared")))
-                                    (assert (and (= (misa.keybinding_text :g)
+                                    (assert (and (= (misa.keybindings.text :g)
                                                     :g)
-                                                 (= (misa.keybinding_text :G)
+                                                 (= (misa.keybindings.text :G)
                                                     :G))
                                             "Vim hints collapse case-sensitive motions")
-                                    (assert (and (= (misa.keybinding_text :alt+g)
+                                    (assert (and (= (misa.keybindings.text :alt+g)
                                                     "⌥g")
-                                                 (= (misa.keybinding_text :f1)
+                                                 (= (misa.keybindings.text :f1)
                                                     :f1))
                                             "chord/function hints lost display convention")
                                     (local model
@@ -382,6 +382,6 @@ c"}
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :presentation}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.presentation declarations {}))

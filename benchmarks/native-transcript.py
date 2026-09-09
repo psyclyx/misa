@@ -10,7 +10,6 @@ stream contents and unrelated block identities on every input.
 import argparse
 import fcntl
 import hashlib
-import json
 import os
 import pty
 import re
@@ -23,6 +22,9 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary', type=Path)
@@ -54,19 +56,16 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
     for mode in ((args.mode,) if args.mode else ('redraw', 'stream')):
         with tempfile.TemporaryDirectory(prefix='misa-native-transcript-') as directory:
             work = Path(directory)
-            config = json.loads((root / 'config/default.json').read_text())
-            config['extensions'] = [name for name in config['extensions']
-                                    if not name.startswith(('provider.', 'protocol.')) and name != 'auth']
-            config['extensions'].insert(0, str(root / 'benchmarks/native-transcript.fnl'))
+            config = {'extensions': [str(root / 'benchmarks/native-transcript.fnl')],
+                      'config': {'models': {'default': 'bench/model'}}}
             if args.transport:
-                config['extensions'].insert(0, 'protocol.openai')
+                config['extensions'].append('protocol.openai')
             settings = config['config']
-            settings['models']['default'] = 'bench/model'
             settings['benchmark'] = {'blocks': count, 'scenario': args.scenario, 'burst': args.burst, 'transport': args.transport}
             for name in ('history', 'themes', 'components', 'preferences'):
                 settings.setdefault(name, {})['persist'] = False
-            path = work / 'config.json'
-            path.write_text(json.dumps(config))
+            path = work / 'config.fnl'
+            path.write_text(application(config, default=True, omit=('provider.', 'protocol.', 'auth')))
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
             env = dict(os.environ, TERM='xterm-256color', MISA_AUTH_FILE=str(work / 'auth'),

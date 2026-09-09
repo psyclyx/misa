@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:response_id :metadata
                                                    :model :metadata/model
                                                    :role :assistant
@@ -61,21 +61,17 @@
                                           {:completion :test/metadata-finish
                                            :id :metadata-delay
                                            :interval_ms 20
-                                           :type :timer/start}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/metadata-finish
-                         :handler (fn []
+                                           :type :timer/start}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/metadata-finish :handler (fn []
                                     {:fx [{:id :metadata-delay
                                            :type :timer/stop}
                                           {:event {:response_id :metadata
                                                    :type :transcript/response-end
                                                    :usage {:output_tokens 12 :cost_usd 0.125}}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/response-end
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/response-end :handler (fn [db event]
                                     (if (not= event.response_id :metadata) nil
                                         (do
                                           (local tool (. db.messages.blocks 2))
@@ -84,13 +80,13 @@
                                                        (= tool.argument_text
                                                           "{\"value\":1}"))
                                                   "final tool argument chunks were not compacted")
-                                          (local cost (misa.group_cost_projection db :metadata))
+                                          (local cost (misa.costs.group db :metadata))
                                           (assert (= cost.type :money))
                                           (assert (= cost.amount 0.125))
                                           (assert (= cost.text nil))
-                                          (local project misa.project_components)
+                                          (local project misa.components.project)
                                           (var metadata-count 0)
-                                          (set misa.project_components
+                                          (set misa.components.project
                                                (fn [state id items context]
                                                  (each [_ item (ipairs items)]
                                                    (assert (= item.model.timestamp nil) "timestamp was formatted upstream")
@@ -102,10 +98,10 @@
                                                      (set metadata-count (+ metadata-count 1))))
                                                  (project state id items context)))
                                           (local lines
-                                                 (misa.transcript_projection db
+                                                 (misa.transcript.project db
                                                                              {:columns 80
                                                                               :interactive true}))
-                                          (set misa.project_components project)
+                                          (set misa.components.project project)
                                           (assert (= metadata-count 1))
                                           (var (rates costs) (values 0 0))
                                           (each [_ line (ipairs lines)]
@@ -120,6 +116,6 @@
                                           (assert (= costs 1) "response cost was missing or rendered more than once")
                                           {:fx [{:lines [{:spans [{:text :metadata}]}]
                                                  :type :view/commit}
-                                                {:type :app/quit}]})))})
+                                                {:type :app/quit}]})))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.response-metadata declarations {}))

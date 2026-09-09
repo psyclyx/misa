@@ -12,8 +12,6 @@ const subscriptions = @embedFile("misa_core_subscriptions");
 const fennel = @embedFile("vendor/fennel.lua");
 pub const max_nesting_depth: usize = 128;
 
-const Extension = struct { ref: c_int, path: []u8 };
-
 pub const TerminalInfo = struct {
     interactive: bool,
     images: bool = false,
@@ -52,10 +50,10 @@ pub const Runtime = struct {
     state: *c.lua_State,
     allocator: std.mem.Allocator,
     context_ref: c_int = c.LUA_NOREF,
+    configuration_ref: c_int = c.LUA_NOREF,
     json_null_ref: c_int = c.LUA_NOREF,
     traceback_ref: c_int = c.LUA_NOREF,
     fennel_dofile_ref: c_int = c.LUA_NOREF,
-    extensions: std.ArrayList(Extension) = .empty,
     terminal_info: ?TerminalInfo = null,
     error_buffer: [2048]u8 = undefined,
     error_len: usize = 0,
@@ -69,7 +67,7 @@ pub const Runtime = struct {
         try self.initializeFennel();
         self.assertStack(0);
         c.lua_getfield(state, c.LUA_GLOBALSINDEX, "misa");
-        c.lua_getfield(state, -1, "json_null");
+        c.lua_getfield(state, -1, "json-null");
         c.lua_remove(state, -2);
         self.json_null_ref = c.luaL_ref(state, c.LUA_REGISTRYINDEX);
         try self.setContext(config, argv);
@@ -153,13 +151,109 @@ pub const Runtime = struct {
 
     pub fn deinit(self: *Runtime) void {
         c.lua_close(self.state);
-        for (self.extensions.items) |extension| self.allocator.free(extension.path);
-        self.extensions.deinit(self.allocator);
     }
 
-    pub fn loadExtension(self: *Runtime, path: []const u8) !void {
+    /// Add ordinary Lua/Fennel module lookup under a caller-owned directory.
+    /// Installed standard modules use translated Lua; explicit source roots
+    /// and user configuration directories may also contain Fennel modules.
+    pub fn addModuleDirectory(self: *Runtime, directory: []const u8, fennel_source: bool) !void {
         self.assertStack(0);
-        if (std.mem.indexOfScalar(u8, path, 0) != null) return error.ExtensionLoadFailed;
+        errdefer c.lua_settop(self.state, 0);
+        if (std.mem.indexOfAny(u8, directory, ";?\x00") != null) return error.InvalidModuleDirectory;
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "package");
+        try self.prependModulePath(directory, "lua");
+        if (fennel_source) {
+            c.lua_getfield(self.state, -1, "loaded");
+            c.lua_getfield(self.state, -1, "fennel");
+            try self.prependModulePath(directory, "fnl");
+            self.pop(2);
+        }
+        self.pop(1);
+    }
+
+    fn prependModulePath(self: *Runtime, directory: []const u8, suffix: []const u8) !void {
+        c.lua_getfield(self.state, -1, "path");
+        const previous_pointer = c.lua_tolstring(self.state, -1, null);
+        const previous: []const u8 = if (previous_pointer != null) std.mem.span(previous_pointer) else "";
+        const path = try std.fmt.allocPrint(self.allocator, "{s}/?.{s};{s}/?/init.{s};{s}", .{ directory, suffix, directory, suffix, previous });
+        defer self.allocator.free(path);
+        self.pop(1);
+        _ = c.lua_pushlstring(self.state, path.ptr, path.len);
+        c.lua_setfield(self.state, -2, "path");
+    }
+
+    /// Evaluate a configuration value without translating its callback tables
+    /// through JSON. Only the native configuration data leaves this VM.
+    pub fn loadConfiguration(self: *Runtime, path: []const u8) !OwnedValue {
+        self.assertStack(0);
+        errdefer c.lua_settop(self.state, 0);
+        if (self.configuration_ref != c.LUA_NOREF) return error.ConfigurationAlreadyLoaded;
+        try self.loadTable(path);
+        c.lua_pushnil(self.state);
+        while (c.lua_next(self.state, -2) != 0) {
+            const key = if (c.lua_type(self.state, -2) == c.LUA_TSTRING) std.mem.span(c.lua_tolstring(self.state, -2, null)) else "";
+            if (!std.mem.eql(u8, key, "config") and !std.mem.eql(u8, key, "definitions")) {
+                self.setError("{s}: configuration must return only config and definitions; compile module selections before installation", .{path});
+                return error.ConfigurationLoadFailed;
+            }
+            self.pop(1);
+        }
+        c.lua_getfield(self.state, -1, "definitions");
+        if (c.lua_type(self.state, -1) != c.LUA_TTABLE) {
+            self.setError("{s}: configuration must contain a definitions table", .{path});
+            return error.ConfigurationLoadFailed;
+        }
+        self.pop(1);
+        c.lua_getfield(self.state, -1, "config");
+        if (c.lua_type(self.state, -1) == c.LUA_TNIL) {
+            self.pop(1);
+            c.lua_createtable(self.state, 0, 0);
+        }
+        var result: OwnedValue = .{ .arena = .init(self.allocator), .value = undefined };
+        errdefer result.deinit();
+        var active: std.ArrayList(?*const anyopaque) = .empty;
+        defer active.deinit(self.allocator);
+        result.value = self.readLuaValue(result.arena.allocator(), -1, 0, &active) catch |err| {
+            if (err == error.MaximumNestingDepth)
+                self.setError("{s}: config nesting exceeds maximum depth of {d}", .{ path, max_nesting_depth })
+            else
+                self.setError("{s}: config must contain only JSON values: {s}", .{ path, @errorName(err) });
+            return error.ConfigurationLoadFailed;
+        };
+        _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.context_ref);
+        c.lua_pushvalue(self.state, -2);
+        c.lua_setfield(self.state, -2, "config");
+        self.pop(2);
+        self.configuration_ref = c.luaL_ref(self.state, c.LUA_REGISTRYINDEX);
+        return result;
+    }
+
+    pub fn installConfiguration(self: *Runtime) !void {
+        self.assertStack(0);
+        if (self.configuration_ref == c.LUA_NOREF) return error.ConfigurationNotLoaded;
+        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_getfield(self.state, -1, "_install");
+        c.lua_remove(self.state, -2);
+        self.pushTraceback();
+        c.lua_insert(self.state, -2);
+        const error_handler = c.lua_gettop(self.state) - 1;
+        _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.configuration_ref);
+        c.lua_getfield(self.state, -1, "definitions");
+        c.lua_remove(self.state, -2);
+        _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.context_ref);
+        if (c.lua_pcall(self.state, 2, 0, error_handler) != 0) {
+            self.failLua("installing configuration");
+            c.lua_settop(self.state, 0);
+            return error.ConfigurationInstallFailed;
+        }
+        self.pop(1);
+        c.luaL_unref(self.state, c.LUA_REGISTRYINDEX, self.configuration_ref);
+        self.configuration_ref = c.LUA_NOREF;
+    }
+
+    fn loadTable(self: *Runtime, path: []const u8) !void {
+        self.assertStack(0);
+        if (std.mem.indexOfScalar(u8, path, 0) != null) return error.ConfigurationLoadFailed;
         const path_z = try self.allocator.dupeZ(u8, path);
         defer self.allocator.free(path_z);
 
@@ -175,50 +269,14 @@ pub const Runtime = struct {
         if (status != 0) {
             self.failLua(path);
             c.lua_settop(self.state, 0);
-            return error.ExtensionLoadFailed;
+            return error.ConfigurationLoadFailed;
         }
         c.lua_remove(self.state, 1);
         if (c.lua_type(self.state, -1) != c.LUA_TTABLE) {
-            self.setError("{s}: extension must return a table", .{path});
+            self.setError("{s}: file must return a table", .{path});
             self.pop(1);
-            return error.ExtensionLoadFailed;
+            return error.ConfigurationLoadFailed;
         }
-        _ = c.lua_pushstring(self.state, "run");
-        _ = c.lua_rawget(self.state, -2);
-        if (c.lua_type(self.state, -1) != c.LUA_TNIL) {
-            self.setError("{s}: extension field 'run' is obsolete; register events during setup", .{path});
-            self.pop(2);
-            return error.ExtensionLoadFailed;
-        }
-        self.pop(1);
-        const copy = try self.allocator.dupe(u8, path);
-        errdefer self.allocator.free(copy);
-        try self.extensions.append(self.allocator, .{ .ref = c.luaL_ref(self.state, c.LUA_REGISTRYINDEX), .path = copy });
-        self.assertStack(0);
-    }
-
-    pub fn setup(self: *Runtime) !void {
-        try self.callSetup();
-        c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
-        c.lua_getfield(self.state, -1, "_seal");
-        c.lua_remove(self.state, -2);
-        self.pushTraceback();
-        c.lua_insert(self.state, -2);
-        const error_handler = c.lua_gettop(self.state) - 1;
-        _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.context_ref);
-        if (c.lua_pcall(self.state, 1, 0, error_handler) != 0) {
-            self.failLua("sealing registrations");
-            c.lua_settop(self.state, 0);
-            return error.ExtensionRunFailed;
-        }
-        self.pop(1);
-        self.assertStack(0);
-        for (self.extensions.items) |extension| {
-            c.luaL_unref(self.state, c.LUA_REGISTRYINDEX, extension.ref);
-            self.allocator.free(extension.path);
-        }
-        self.extensions.deinit(self.allocator);
-        self.extensions = .empty;
     }
 
     pub fn setTerminalInfo(self: *Runtime, info: TerminalInfo) void {
@@ -337,14 +395,14 @@ pub const Runtime = struct {
     }
 
     pub fn mcpTools(self: *Runtime) !OwnedValue {
-        return self.callMcp("_mcp_tools", null, null, null);
+        return self.callMcp("_mcp_tools", null, null, null, null);
     }
 
-    pub fn mcpToolEffect(self: *Runtime, name: []const u8, arguments: std.json.Value, id: []const u8) !OwnedValue {
-        return self.callMcp("_mcp_tool_effect", name, arguments, id);
+    pub fn mcpToolEffect(self: *Runtime, name: []const u8, arguments: std.json.Value, id: []const u8, clock: ClockInfo) !OwnedValue {
+        return self.callMcp("_mcp_tool_effect", name, arguments, id, clock);
     }
 
-    fn callMcp(self: *Runtime, function: []const u8, name: ?[]const u8, arguments: ?std.json.Value, id: ?[]const u8) !OwnedValue {
+    fn callMcp(self: *Runtime, function: []const u8, name: ?[]const u8, arguments: ?std.json.Value, id: ?[]const u8, clock: ?ClockInfo) !OwnedValue {
         self.assertStack(0);
         c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
         c.lua_getfield(self.state, -1, function.ptr);
@@ -355,7 +413,9 @@ pub const Runtime = struct {
             _ = c.lua_pushlstring(self.state, tool_name.ptr, tool_name.len);
             try self.pushJson(arguments.?, 0);
             _ = c.lua_pushlstring(self.state, id.?.ptr, id.?.len);
-            break :blk 3;
+            self.pushTerminalInfo(self.terminal_info orelse return error.TerminalInfoMissing);
+            self.pushClockInfo(clock.?);
+            break :blk 5;
         } else 0;
         if (c.lua_pcall(self.state, argument_count, 1, 1) != 0) {
             self.setError("MCP policy: {s}", .{self.stackError()});
@@ -455,7 +515,7 @@ pub const Runtime = struct {
         switch (value) {
             .null => {
                 c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
-                c.lua_getfield(self.state, -1, "json_null");
+                c.lua_getfield(self.state, -1, "json-null");
                 c.lua_remove(self.state, -2);
             },
             .bool => |item| c.lua_pushboolean(self.state, @intFromBool(item)),
@@ -554,25 +614,6 @@ pub const Runtime = struct {
         return c.lua_rawequal(self.state, index, -1) != 0;
     }
 
-    fn callSetup(self: *Runtime) !void {
-        for (self.extensions.items, 0..) |extension, index| {
-            c.lua_getfield(self.state, c.LUA_GLOBALSINDEX, "misa");
-            c.lua_getfield(self.state, -1, "_setup");
-            c.lua_remove(self.state, -2);
-            self.pushTraceback();
-            c.lua_insert(self.state, -2);
-            const error_handler = c.lua_gettop(self.state) - 1;
-            _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, extension.ref);
-            _ = c.lua_rawgeti(self.state, c.LUA_REGISTRYINDEX, self.context_ref);
-            if (c.lua_pcall(self.state, 2, 0, error_handler) != 0) {
-                self.setError("extension {d} ({s}) setup: {s}", .{ index + 1, extension.path, self.stackError() });
-                c.lua_settop(self.state, 0);
-                return error.ExtensionRunFailed;
-            }
-            self.pop(1);
-        }
-    }
-
     fn absoluteIndex(self: *Runtime, index: c_int) c_int {
         return if (index > 0 or index <= c.LUA_REGISTRYINDEX) index else c.lua_gettop(self.state) + index + 1;
     }
@@ -603,20 +644,76 @@ pub const Runtime = struct {
     }
 };
 
+test "Fennel configuration imports ordinary modules and retains callback values" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const directory = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const path = try std.fs.path.join(allocator, &.{ directory, "config.fnl" });
+    defer allocator.free(path);
+    try temporary.dir.writeFile(io, .{ .sub_path = "profile_helper.fnl", .data =
+        \\(fn [label]
+        \\  {:config {:label label}
+        \\   :definitions {:events {:start {:event :app/start
+        \\                                  :handler (fn [_ _ cofx] {:patch {:label cofx.config.label}})}}
+        \\                 :views {:main (fn [db] {:lines [{:spans [{:text db.label}]}]})}}})
+    });
+    try temporary.dir.writeFile(io, .{ .sub_path = "config.fnl", .data = "(local make (require :profile_helper))\n(make :retained)\n" });
+    var runtime = try Runtime.init(allocator, .null, &[_][]const u8{});
+    defer runtime.deinit();
+    try runtime.addModuleDirectory(directory, true);
+    var configuration = try runtime.loadConfiguration(path);
+    defer configuration.deinit();
+    try std.testing.expectEqualStrings("retained", configuration.value.object.get("label").?.string);
+    try runtime.installConfiguration();
+    runtime.setTerminalInfo(.{ .interactive = true, .columns = 80, .lines = 24, .images = false });
+    const clock: ClockInfo = .{ .wall_ms = 0, .monotonic_ms = 0 };
+    var transaction = try runtime.dispatch("{\"type\":\"app/start\"}", clock);
+    defer transaction.deinit();
+    try runtime.commitTransaction();
+    var projection = try runtime.project(clock);
+    defer projection.deinit();
+    try std.testing.expectEqualStrings("retained", projection.value.object.get("lines").?.array.items[0].object.get("spans").?.array.items[0].object.get("text").?.string);
+    try runtime.commitProjection();
+}
+
+test "configuration data rejects callbacks without retaining a failed application" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const directory = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const path = try std.fs.path.join(allocator, &.{ directory, "config.lua" });
+    defer allocator.free(path);
+    try temporary.dir.writeFile(io, .{ .sub_path = "config.lua", .data = "return {config={bad=function() end},definitions={}}" });
+    var runtime = try Runtime.init(allocator, .null, &[_][]const u8{});
+    defer runtime.deinit();
+    try std.testing.expectError(error.ConfigurationLoadFailed, runtime.loadConfiguration(path));
+    runtime.assertStack(0);
+    try temporary.dir.writeFile(io, .{ .sub_path = "config.lua", .data = "return {definitions={},modules={}}" });
+    try std.testing.expectError(error.ConfigurationLoadFailed, runtime.loadConfiguration(path));
+    try temporary.dir.writeFile(io, .{ .sub_path = "config.lua", .data = "return {definitions={}}" });
+    var configuration = try runtime.loadConfiguration(path);
+    defer configuration.deinit();
+    try runtime.installConfiguration();
+}
+
 test "model dispatches settle independently of projection" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     const source =
         \\local projections = 0
-        \\misa._setup_effects({fx = {
-        \\  {type="register/event", name="increment", handler=function(db)
+        \\misa._install({events = {
+        \\  increment = {event="increment", handler=function(db)
         \\    assert(projections == 0, "dispatch eagerly projected an intermediate state")
-        \\    return {patch={count=(db.count or 0)+1}} end},
-        \\  {type="register/view", handler=function(db)
+        \\    return {patch={count=(db.count or 0)+1}} end}},
+        \\  views = {main=function(db)
         \\    projections = projections + 1
         \\    return {lines={{spans={{text=tostring(db.count)}}}}} end}
-        \\}})
-        \\misa._seal({argv={}, config={}})
+        \\}, {argv={}, config={}})
     ;
     try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@independent-projection.lua"));
     try std.testing.expectEqual(@as(c_int, 0), c.lua_pcall(runtime.state, 0, 0, 0));
@@ -638,13 +735,13 @@ test "projection decoding rejection preserves committed model and prior projecti
     defer runtime.deinit();
     const source =
         \\local original
-        \\misa._setup_effects({fx = {
-        \\  {type="register/sub", value={id="probe", inputs=function() return {{"db/path", "value"}} end,
+        \\misa._install({subscriptions = {
+        \\  probe = {inputs=function() return {{"db/path", "value"}} end,
         \\    compute=function(inputs) return {value=inputs[1]} end}},
-        \\  {type="register/event", name="set", handler=function(db, event)
+        \\  events = {set = {event="set", handler=function(db, event)
         \\    if event.previous then assert(db.value == event.previous, "projection rejection rolled back model") end
-        \\    return {patch={value=event.value, invalid=event.invalid or false}} end},
-        \\  {type="register/view", handler=function(db)
+        \\    return {patch={value=event.value, invalid=event.invalid or false}} end}},
+        \\  views = {main=function(db)
         \\    local current = misa.sub(db, {"probe"})
         \\    if db.value == 1 then
         \\      if original then assert(current == original, "rejected native view replaced cache") end
@@ -652,8 +749,7 @@ test "projection decoding rejection preserves committed model and prior projecti
         \\    end
         \\    return {lines={}, invalid=db.invalid and function() end or nil}
         \\  end}
-        \\}})
-        \\misa._seal({argv={}, config={}})
+        \\}, {argv={}, config={}})
     ;
     try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@subscription-rejection.lua"));
     try std.testing.expectEqual(@as(c_int, 0), c.lua_pcall(runtime.state, 0, 0, 0));
@@ -690,90 +786,52 @@ test "translated core retains source locations and leaves bootstrap stack empty"
     try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "patch state must be a table") != null);
 }
 
-test "bundled Fennel loads extensions after framework restrictions" {
+test "bundled Fennel loads applications after framework restrictions" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
-    try runtime.loadExtension("src/lua_runtime/fixtures/extension.fnl");
-    try runtime.setup();
+    var configuration = try runtime.loadConfiguration("src/lua_runtime/fixtures/extension.fnl");
+    defer configuration.deinit();
+    try runtime.installConfiguration();
 }
 
 test "Fennel loading reports source location and restores stack after failure" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
-    try std.testing.expectError(error.ExtensionLoadFailed, runtime.loadExtension("src/lua_runtime/fixtures/failure.fnl"));
+    try std.testing.expectError(error.ConfigurationLoadFailed, runtime.loadConfiguration("src/lua_runtime/fixtures/failure.fnl"));
     try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "failure.fnl:2") != null);
     try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "Fennel fixture failed") != null);
-    try std.testing.expectError(error.ExtensionLoadFailed, runtime.loadExtension("src/lua_runtime/fixtures/missing.fnl"));
+    try std.testing.expectError(error.ConfigurationLoadFailed, runtime.loadConfiguration("src/lua_runtime/fixtures/missing.fnl"));
     try std.testing.expect(std.mem.indexOf(u8, runtime.lastError(), "missing.fnl") != null);
-    try runtime.loadExtension("src/lua_runtime/fixtures/extension.fnl");
-    try runtime.setup();
+    var configuration = try runtime.loadConfiguration("src/lua_runtime/fixtures/extension.fnl");
+    defer configuration.deinit();
+    try runtime.installConfiguration();
 }
 
-test "setup effects expand in order and remain outside event dispatch" {
+test "composed application definitions install once without constructor callbacks" {
     var runtime = try Runtime.init(std.testing.allocator, .null, &[_][]const u8{});
     defer runtime.deinit();
     const source =
-        \\local producer = {setup = function()
-        \\  local result = {fx = {{type = "register/service", name = "deferred", value = 7}}}
-        \\  assert(misa.deferred == nil)
-        \\  return result
-        \\end}
-        \\local declaration = producer.setup()
-        \\assert(misa.deferred == nil)
-        \\misa._setup_effects(declaration)
-        \\misa._setup({setup = function()
-        \\  assert(misa.deferred == 7)
-        \\  return {fx = {{type = "register/service", name = "ordered", value = 8}}}
-        \\end}, {})
-        \\misa._setup({setup = function()
-        \\  assert(misa.ordered == 8)
-        \\end}, {})
-        \\assert(misa.reg_event == nil)
-        \\misa._setup({setup = function(context)
-        \\  assert(context.marker == true)
-        \\  return {fx = {
-        \\    {type = "register/setup-effect", name = "register/fixture-expand", handler = function(effect)
-        \\      return {fx = {{type = "register/service", name = "fixture.value", value = effect.value}}}
-        \\    end},
-        \\    {type = "register/fixture-expand", value = 42},
-        \\    {type = "register/action", value = {id = "fixture", label = "Fixture", event = {type = "fixture"}}},
-        \\    {type = "register/fx", name = "fixture/translate", handler = function()
-        \\      return {type = "register/fixture-expand", value = 0}
-        \\    end},
-        \\    {type = "register/event", name = "fixture", handler = function(db)
-        \\      return {fx = {{type = "fixture/translate"}}}
-        \\    end}
-        \\  }}
-        \\end}, {marker = true})
-        \\assert(misa.fixture.value == 42)
-        \\assert(misa.action("fixture").binding.action == "fixture")
-        \\assert(misa.has_setup_effect("register/fixture-expand"))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "unknown"}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {[2] = {type = "unknown"}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/service", name = "fixture.value", value = 0}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/fx", name = "register/fixture-expand", handler = function() end}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/fx", name = "register/future", handler = function() end}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/setup-effect", name = "fixture/translate", handler = function() end}}}))
-        \\local namespace_ok, namespace_error = pcall(misa._setup_effects, {fx = {{type = "register/setup-effect", name = "dispatch", handler = function() end}}})
-        \\assert(not namespace_ok and tostring(namespace_error):match("register/ namespace"), tostring(namespace_error))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/setup-effect", name = "register/", handler = function() end}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {}, db = {}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {oops = {}}}))
-        \\assert(not pcall(misa._setup_effects, {fx = {{type = "register/service", name = "invalid..path", value = 1}}}))
-        \\misa._setup_effects({fx = {{type = "register/setup-effect", name = "register/fixture-recurse", handler = function()
-        \\  return {fx = {{type = "register/fixture-recurse"}}}
-        \\end}}})
-        \\local recursive_ok, recursive_error = pcall(misa._setup_effects, {fx = {{type = "register/fixture-recurse"}}})
-        \\assert(not recursive_ok and tostring(recursive_error):match("too deep"), tostring(recursive_error))
-        \\misa._seal({config = {}, argv = {}})
-        \\assert(not pcall(misa._setup_effects, {fx = {}}))
-        \\local ok, err = pcall(misa._dispatch, {type = "fixture"}, {}, {monotonic_ms = 0, wall_ms = 0})
-        \\assert(not ok and tostring(err):match("setup effects cannot run during event dispatch"), tostring(err))
+        \\local function producer(value) return {definitions={services={deferred=value}}} end
+        \\local first = producer(7)
+        \\local application = misa.compose({first, producer(8), {definitions={
+        \\  services={["fixture.value"]=42},
+        \\  actions={fixture={label="Fixture", event={type="fixture"}}},
+        \\  effects={["fixture/translate"]=function() return {type="register/obsolete"} end},
+        \\  events={fixture={event="fixture",handler=function() return {fx={{type="fixture/translate"}}} end}},
+        \\  requirements={fixture={"deferred", "fixture.value"}}
+        \\}}})
+        \\assert(misa.deferred == nil and first.definitions.services.deferred == 7)
+        \\misa._install(application.definitions, {argv={},config={}})
+        \\assert(misa.deferred == 8 and misa.fixture.value == 42)
+        \\assert(misa.actions.lookup("fixture").binding.action == "fixture")
+        \\assert(not pcall(misa._install, application.definitions, {}))
+        \\local ok, err = pcall(misa._dispatch, {type="fixture"}, {}, {monotonic_ms=0,wall_ms=0})
+        \\assert(not ok and tostring(err):match("registration declarations cannot run as effects"), tostring(err))
     ;
-    try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@setup-effects-test.lua"));
+    try std.testing.expectEqual(@as(c_int, 0), c.luaL_loadbuffer(runtime.state, source.ptr, source.len, "@application-definitions-test.lua"));
     if (c.lua_pcall(runtime.state, 0, 0, 0) != 0) {
-        std.debug.print("setup effects test: {s}\n", .{runtime.stackError()});
-        return error.SetupEffectsTestFailed;
+        std.debug.print("application definitions test: {s}\n", .{runtime.stackError()});
+        return error.ApplicationDefinitionsTestFailed;
     }
     runtime.assertStack(0);
 }

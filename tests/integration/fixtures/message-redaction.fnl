@@ -1,19 +1,17 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:arguments {:token :secret
                                                                :value :abcdef}
                                                    :id :call
                                                    :name :demo
                                                    :type :transcript/tool-call}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/tool-call
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/tool-call :handler (fn [db]
                                     (local args
                                            (. db.messages.blocks
                                               (length db.messages.blocks)
@@ -24,6 +22,6 @@
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :redacted}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.message-redaction declarations {}))

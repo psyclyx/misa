@@ -2,13 +2,17 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(local specs ((. (fennel.dofile :extensions/dialogs.fnl) :setup)))
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(local specs ((fennel.dofile :extensions/dialogs.fnl)))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
+(app.define specs)
+(app.define (definitions :test [{:catalog :dialog-inputs :id :clear :value (fn [] {:patch {:dialog {:input ""}}})}]))
+(app.install)
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
   (local result ((. handlers event.type) db event))
@@ -64,7 +68,6 @@
 (assert (= (. cancel-fx 1 :event :protected) true))
 (assert (= (. cancel-fx 1 :event :value) ""))
 (assert (= (. cancel-fx 1 :event :cancelled) true))
-(misa._setup_effects {:fx [{:type :register/dialog-input :id :clear
-                          :value (fn [] {:patch {:dialog {:input ""}}})}]})
+
 (assert (= (transition protected {:type :dialog/input :kind :clear}) protected))
 (output "dialog state properties passed\n")

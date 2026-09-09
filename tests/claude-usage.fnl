@@ -1,14 +1,17 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.install)
 (local feature (fennel.dofile :extensions/provider/claude.fnl))
 ;; Inspect declarations and invoke handlers only: never execute process effects.
 (fn handlers-for [config]
   (local handlers {})
-  (each [_ spec (ipairs (. (feature.setup {:config {:providers {:claude (or config {})}}}) :fx))]
-    (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+  (each [_ spec (pairs (. (feature {:config {:providers {:claude (or config {})}}}) :events))]
+  (tset handlers spec.event spec.handler))
   handlers)
 (local handlers (handlers-for nil))
 (fn apply [db event]
@@ -130,7 +133,7 @@
 (unavailable queued request.id [] false true)
 (unavailable refreshing next-id [] false)
 ;; Invalid quota values must never become zero-use or clamped quota windows.
-(each [_ utilization (ipairs [misa.json_null math.huge (- math.huge) (/ 0 0) 101 -1])]
+(each [_ utilization (ipairs [misa.json-null math.huge (- math.huge) (/ 0 0) 101 -1])]
   (local (invalid fx) (completed pending request.id
                                 (records request.id {:rate_limits_available true
                                                      :rate_limits {:five_hour {: utilization}}})))
@@ -155,17 +158,17 @@
 (local mixed-ready (completed pending request.id mixed))
 (assert (= (length mixed-ready.providers.claude.usage.windows) 3))
 ;; Scalar/null records and malformed control envelopes must be ignored safely.
-(each [_ data (ipairs [false :garbage misa.json_null
-                       [false 7 :garbage misa.json_null {}]
+(each [_ data (ipairs [false :garbage misa.json-null
+                       [false 7 :garbage misa.json-null {}]
                        [{:type :control_response :response false}]
                        [{:type :control_response :response {:subtype :success :request_id request.id :response false}}]
-                       [{:type :control_response :response {:subtype :success :request_id request.id :response misa.json_null}}]])]
+                       [{:type :control_response :response {:subtype :success :request_id request.id :response misa.json-null}}]])]
   (unavailable pending request.id data true))
-(local noise [false 7 :garbage misa.json_null {:type :control_response :response false}
+(local noise [false 7 :garbage misa.json-null {:type :control_response :response false}
               (. (records request.id payload) 1)])
 (assert (= (length (. (completed pending request.id noise) :providers :claude :usage :windows)) 3))
 (each [_ malformed (ipairs [{:rate_limits_available true :rate_limits false}
-                            {:rate_limits_available true :rate_limits misa.json_null}
+                            {:rate_limits_available true :rate_limits misa.json-null}
                             {:rate_limits_available true :rate_limits {:five_hour false
                                                                        :seven_day 3
                                                                        :model_scoped [false 9 {} {:display_name false}]}}])]
@@ -191,7 +194,7 @@
 (assert (= extra.used 0))
 (assert (= extra.unlimited false))
 (assert (= extra.manage_url "https://claude.ai/settings/usage"))
-(each [_ decimals (ipairs [misa.json_null -1 1.5 10 math.huge])]
+(each [_ decimals (ipairs [misa.json-null -1 1.5 10 math.huge])]
   (local minor (completed pending request.id
                           (records request.id {:rate_limits_available true
                                                :rate_limits {:extra_usage {:is_enabled true :currency :USD

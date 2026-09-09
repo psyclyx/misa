@@ -1,14 +1,16 @@
+(local definitions (require :misa.definitions))
+
 ;; Reasoning-effort affordances over the generic request-options policy.
 
 (local option-name :reasoning_effort)
 
 (fn choices [db]
-  (or (and misa.request_option_choices
-           (misa.request_option_choices db option-name)) {}))
+  (or (and misa.request-options misa.request-options.choices
+           (misa.request-options.choices db option-name)) {}))
 
 (fn unavailable [db]
   (let [model (or (and db.models db.models.selected) "selected model")]
-    {     :fx [{:event {:level :info
+    {:fx [{:event {:level :info
                    :problem {:code :unsupported
                              :kind :request_option
                              : model
@@ -18,58 +20,66 @@
            :type :dispatch}
           {:type :terminal/read}]}))
 
-{:setup (fn []
-          (local setup-fx [])
-          (assert misa.request_option_choices
-                  "effort requires request_options first")
-          (table.insert setup-fx
-                        {:type :register/keybinding
-                         :value {:action :cycle_effort
-                                 :context :global
-                                 :default [:alt+f]}})
-          (when (misa.has_setup_effect :register/indicator)
-            (table.insert setup-fx
-                          {:type :register/indicator
-                           :value {:hotkey {:action :cycle_effort
+(fn []
+  "Build the declarations for effort."
+  (local declarations [])
+  (table.insert declarations
+                (let [definition {:action :cycle_effort
+                                  :context :global
+                                  :default [:alt+f]}]
+                  {:catalog :keybindings
+                   :id (.. (. definition :context) "/" (. definition :action))
+                   :value definition}))
+  (do
+    (table.insert declarations
+                  (let [definition {:hotkey {:action :cycle_effort
+                                             :context :global}
+                                    :icon "◈"
+                                    :id :effort
+                                    :label :effort
+                                    :query [:request-options/indicator
+                                            option-name]}]
+                    {:catalog :indicators
+                     :id (. definition :id)
+                     :value definition})))
+  (table.insert declarations
+                (let [definition {:choice_purpose :command
+                                  :choice_available (fn [db]
+                                                      (> (length (choices db))
+                                                         0))
+                                  :choice_unavailable :effort/unsupported
+                                  :complete (fn [_ db]
+                                              (local result {})
+                                              (each [_ value (ipairs (choices db))]
+                                                (tset result
+                                                      (+ (length result) 1)
+                                                      {:label (tostring value)
+                                                       :value (tostring value)}))
+                                              result)
+                                  :description "Choose model reasoning effort"
+                                  :event :effort/select
+                                  :name :/effort
+                                  :preference_scope :request-options/effort
+                                  :selected (fn [db]
+                                              (misa.request-options.value db
+                                                                          option-name))}]
+                  {:catalog :commands
+                   :id (. definition :name)
+                   :value definition}))
+  (table.insert declarations
+                (let [definition {:binding {:action :cycle_effort
                                             :context :global}
-                                   :icon "◈"
-                                   :id :effort
-                                   :label :effort
-                                   :query [:request-options/indicator option-name]}}))
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:choice_purpose :command
-                                 :choice_available (fn [db] (> (length (choices db)) 0))
-                                 :choice_unavailable :effort/unsupported
-                                 :complete (fn [_ db]
-                                             (local result {})
-                                             (each [_ value (ipairs (choices db))]
-                                               (tset result
-                                                     (+ (length result) 1)
-                                                     {:label (tostring value)
-                                                      :value (tostring value)}))
-                                             result)
-                                 :description "Choose model reasoning effort"
-                                 :event :effort/select
-                                 :name :/effort
-                                 :preference_scope :request-options/effort
-                                 :selected (fn [db]
-                                             (misa.request_option_value db
-                                                                        option-name))}})
-          (table.insert setup-fx
-                        {:type :register/action
-                         :value {:binding {:action :cycle_effort
-                                           :context :global}
-                                 :event {:type :effort/cycle}
-                                 :id :effort.cycle
-                                 :label "Cycle reasoning effort"}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :effort/unsupported
-                         :handler (fn [db] (unavailable db))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :effort/select
+                                  :event {:type :effort/cycle}
+                                  :id :effort.cycle
+                                  :label "Cycle reasoning effort"}]
+                  {:catalog :actions :id (. definition :id) :value definition}))
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :effort/unsupported
+                         :handler (fn [db] (unavailable db))}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :effort/select
                          :handler (fn [db event]
                                     (local available (choices db))
                                     (if (= (length available) 0)
@@ -80,22 +90,30 @@
                                                              :string)
                                                           (event.arguments:match "^%s*(%S+)%s*$"))
                                                      nil))
-                                          (local found (accumulate [selected nil _ value (ipairs available) &until selected]
-                                                         (when (= (tostring value) requested) {: value})))
-                                          (assert found "unsupported reasoning effort for the selected model")
-                                          {:fx [{:type :dispatch :event {:type :request-options/select :name option-name :value found.value}}
-                                                {:type :terminal/read}]})))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :effort/cycle
+                                          (local found
+                                                 (accumulate [selected nil _ value (ipairs available)
+                                                              &until selected]
+                                                   (when (= (tostring value)
+                                                            requested)
+                                                     {: value})))
+                                          (assert found
+                                                  "unsupported reasoning effort for the selected model")
+                                          {:fx [{:type :dispatch
+                                                 :event {:type :request-options/select
+                                                         :name option-name
+                                                         :value found.value}}
+                                                {:type :terminal/read}]})))}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :effort/cycle
                          :handler (fn [db]
                                     (local available (choices db))
                                     (if (= (length available) 0)
                                         {:fx [{:type :terminal/read}]}
                                         (do
                                           (local current
-                                                 (misa.request_option_value db
-                                                                            option-name))
+                                                 (misa.request-options.value db
+                                                                             option-name))
                                           (var index 0)
                                           (each [i value (ipairs available)]
                                             (when (= value current)
@@ -106,9 +124,11 @@
                                                     (+ (% index
                                                           (length available))
                                                        1)))
-                                          {                                           :fx [{:event {:name option-name
+                                          {:fx [{:event {:name option-name
                                                          :type :request-options/select
                                                          : value}
                                                  :type :dispatch}
-                                                {:type :terminal/read}]})))})
-          {:fx setup-fx})}
+                                                {:type :terminal/read}]})))}})
+  (definitions :effort
+    declarations
+    {:requirements {:effort [:request-options.choices]}}))

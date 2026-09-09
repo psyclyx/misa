@@ -2,39 +2,39 @@
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(set misa.request_option_choices (fn [db] (or db.options [])))
-(set misa.request_option_value (fn [db] db.selected))
-(set misa.keybinding_action (fn [_ event] event.action))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(set misa.request-options.choices (fn [db] (or db.options [])))
+(set misa.request-options.value (fn [db] db.selected))
+(set misa.keybindings.action (fn [_ event] event.action))
 (local specs {})
 (each [_ name (ipairs [:effort :images :queue])]
-  (tset specs name ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) {:config {}})))
-(each [_ spec (ipairs specs.effort.fx)]
-  (when (= spec.type :register/command)
-    (assert (= spec.value.choice_unavailable :effort/unsupported))
-    (assert (not (spec.value.choice_available {})))
-    (assert (spec.value.choice_available {:options [:low]}))))
+  (tset specs name ((fennel.dofile (.. :extensions/ name :.fnl)) {:config {}})))
+(each [_ command (pairs specs.effort.commands)]
+  (assert (= command.choice_unavailable :effort/unsupported))
+  (assert (not (command.choice_available {})))
+  (assert (command.choice_available {:options [:low]})))
 (each [_ name (ipairs [:queue :images])]
-  (each [_ spec (ipairs (. specs name :fx))]
-    (assert (not= spec.type :register/interceptor) "lifecycle policy still installs middleware")
-    (when (or (= spec.type :register/sub) (= spec.type :register/service))
-      (misa._setup_effects {:fx [spec]})))
+  (app.define {:subscriptions (. specs name :subscriptions) :services (. specs name :services)}))
+(app.install)
+(each [_ name (ipairs [:queue :images])]
+  (assert (= (. specs name :interceptors) nil) "lifecycle policy must not install middleware")
   (local db {:queue {:pending :queued :sending false :attachments []}
              :images {:pending {:request true}}})
   (local before (misa.json.encode db))
-  (local query (. misa.editor_lifecycle name))
+  (local query (. misa.editor.lifecycle name))
   (local result (misa.sub db query))
   (assert result.hold_exit)
   (assert (= (= result.block_draft true) (= name :images)))
   (assert (= before (misa.json.encode db)))
   (assert (not (. (misa.sub {} query) :hold_exit))))
 (assert (. (misa.sub {:queue {:pending "" :sending true :attachments []}}
-                    misa.editor_lifecycle.queue) :hold_exit))
+                    misa.editor.lifecycle.queue) :hold_exit))
 (assert (. (misa.sub {:queue {:pending "" :sending false :attachments [{}]}}
-                    misa.editor_lifecycle.queue) :hold_exit))
+                    misa.editor.lifecycle.queue) :hold_exit))
 (local handlers {})
-(each [_ spec (ipairs specs.effort.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(each [_ spec (pairs specs.effort.events)] (tset handlers spec.event spec.handler))
 (fn event [db type fields]
   (local before (misa.json.encode db))
   (local result ((. handlers type) db (or fields {})))

@@ -1,19 +1,17 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:description "test generic picker"
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:description "test generic picker"
                                  :event :test/choose
-                                 :name :/choose}})
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:description "test picker panels"
+                                 :name :/choose}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        (let [definition {:description "test picker panels"
                                  :event :test/panels
-                                 :name :/panels}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/choose
-                         :handler (fn [db]
+                                 :name :/panels}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/choose :handler (fn [db]
                                     {
                                      :fx [{:event {:completion :test/chosen
                                                    :id :test
@@ -25,11 +23,9 @@
                                                    :title :choice
                                                    :token "test:1"
                                                    :type :picker/open}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/panels
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/panels :handler (fn [db]
                                     {
                                      :fx [{:event {:completion :test/chosen
                                                    :id :panels
@@ -45,11 +41,9 @@
                                                    :title :panels
                                                    :token "panels:1"
                                                    :type :picker/open}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/chosen
-                         :handler (fn [_ event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/chosen :handler (fn [_ event]
                                     (local text
                                            (or (and event.cancelled
                                                     (.. "cancelled "
@@ -57,6 +51,6 @@
                                                event.value))
                                     {:fx [{:lines [{:spans [{: text}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.generic-picker declarations {}))

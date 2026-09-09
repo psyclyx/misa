@@ -1,25 +1,32 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:config {}})
-(misa._setup (fennel.dofile :extensions/json.fnl) context)
-(misa._setup (fennel.dofile :extensions/preferences.fnl) context)
-(local specs ((. (fennel.dofile :extensions/commands.fnl) :setup) context))
+(app.define ((fennel.dofile :extensions/json.fnl) context))
+(app.define ((fennel.dofile :extensions/preferences.fnl) context))
+(local specs ((fennel.dofile :extensions/commands.fnl) context))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (assert (not= spec.type :register/interceptor))
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
-(misa._setup_effects
- {:fx [{:type :register/command
-        :value {:name :/choose :description "Choose an option" :event :test/choose
-                :completion :options :preference_scope :options}}
-       {:type :register/command
-        :value {:name :/guarded :description "Unavailable choice" :event :test/guarded
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
+(app.define specs)
+(app.define (definitions :test [(let [definition {:name :/choose :description "Choose an option" :event :test/choose
+                :completion :options :preference_scope :options}] {:catalog :commands :id (. definition :name) :value definition})
+       (let [definition {:name :/guarded :description "Unavailable choice" :event :test/guarded
                 :completion :options :choice_available (fn [db] db.available)
-                :choice_unavailable :test/unavailable}}
-       {:type :register/completion :group :options :value {:id :first :value :one}}]})
+                :choice_unavailable :test/unavailable}] {:catalog :commands :id (. definition :name) :value definition})
+       {:catalog :completions :id (.. :options "/" (. {:id :first :value :one} :value)) :value {:group :options :value {:id :first :value :one}}}]))
+(var observed nil)
+(var state nil)
+(var executions 0)
+(app.define (definitions :test [{:catalog :events  :value {:event :test/choose :handler (fn [db event]
+                   (set observed event)
+                   (set state db)
+                   (set executions (+ executions 1))
+                   nil)}}]))
+(app.install)
 (local db {:preferences {:clock 0 :scopes {}} :unrelated {:value true}})
 (fn transition [event]
   (local before (misa.json.encode {: db : event}))
@@ -28,7 +35,7 @@
   (local next (misa.patch db (or result.patch {})))
   (assert (= next.unrelated db.unrelated))
   (values result next))
-(local event (misa.patch (misa.command_invocation "/choose  one  ")
+(local event (misa.patch (misa.commands.invocation "/choose  one  ")
                          {:correlation {:id :retained}}))
 (assert (= event.type :commands/invoke))
 (local (normalized next) (transition event))
@@ -43,29 +50,18 @@
 (assert (= (. normalized.fx 1 :type) :state/save))
 (assert (= (misa.json.encode (. normalized.fx 1 :data))
            (misa.json.encode next.preferences)))
-(local (opened unchanged) (transition (misa.command_invocation "/choose")))
+(local (opened unchanged) (transition (misa.commands.invocation "/choose")))
 (assert (= (. opened.fx 1 :event :type) :choices/command-open))
 (assert (= unchanged db))
 (local (resumed resumed-db)
-       (transition (misa.patch (misa.command_invocation "/choose") {:resumed_choice true})))
+       (transition (misa.patch (misa.commands.invocation "/choose") {:resumed_choice true})))
 (assert (= (. resumed.fx 2 :event :type) :test/choose))
 (assert (= (. resumed-db.preferences.scopes.commands :/choose :uses) 1))
 (local guarded (handlers.choices/command-open db {:command :/guarded}))
 (assert (= (. guarded.fx 1 :event :type) :test/unavailable))
 (assert (= guarded.patch nil))
-(assert (= (misa.command_invocation "/missing") nil))
+(assert (= (misa.commands.invocation "/missing") nil))
 (assert (not (pcall handlers.commands/invoke db {:command :/missing})))
-(var observed nil)
-(var state nil)
-(var executions 0)
-(misa._setup_effects
- {:fx [{:type :register/event :name :test/choose
-        :handler (fn [db event]
-                   (set observed event)
-                   (set state db)
-                   (set executions (+ executions 1))
-                   nil)}]})
-(misa._seal context)
 (fn step [event]
   (local effects (misa._dispatch event {:columns 80 :lines 24 :interactive false}
                                 {:wall_ms 0 :monotonic_ms 0}))
@@ -77,7 +73,7 @@
 (step direct)
 (assert (= observed.arguments "  direct  "))
 (assert (= state.preferences nil))
-(local effects (step (misa.command_invocation "/choose one")))
+(local effects (step (misa.commands.invocation "/choose one")))
 (assert (= executions 1) "execution bypassed the event queue")
 (each [_ effect (ipairs effects)]
   (when (= effect.type :dispatch) (step effect.event)))

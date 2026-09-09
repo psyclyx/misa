@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     {:patch {:agent {:status :tools :pending_tools {:stale {:name :shell}}
                                                      :pending_tool_count 1}}
                                      :fx [{:event {:type :agent/reset}
@@ -13,16 +13,14 @@
                                                    :type :tool/result}
                                            :type :dispatch}
                                           {:event {:type :check/reset}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :check/reset
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :check/reset :handler (fn [db]
                                     (assert (and (and (= db.agent.status :ready)
                                                       (= (length db.agent.messages)
                                                          0))
                                                  (= db.agent.pending_tool_count
                                                     0)))
-                                    {:fx [{:type :app/quit}]})})
+                                    {:fx [{:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.runtime-regressions-reset declarations {}))

@@ -15,6 +15,7 @@ with tempfile.TemporaryDirectory(prefix="misa-startup-") as directory:
     paths = sorted((root / "extensions").rglob("*.fnl"))
     paths += [root / "src/lua_runtime" / name for name in
               ["state.fnl", "subscriptions.fnl", "framework.fnl"]]
+    paths.append(root / "config/default.fnl")
     for path in paths:
         relative = path.relative_to(root)
         output = Path(directory) / relative.with_suffix(".lua")
@@ -43,7 +44,7 @@ for mode, group in samples.items():
     summary[mode] = {
         phase: {"median_ms": statistics.median(s[phase] for s in group) * 1000,
                 "best_ms": min(s[phase] for s in group) * 1000}
-        for phase in ["compile", "load", "setup", "dispatch", "total", "wall"]
+        for phase in ["compile", "load", "construct", "install", "dispatch", "total", "wall"]
     }
 print(json.dumps({"summary": summary,
                   "oracle_sha256": hashlib.sha256(next(iter(oracles)).encode()).hexdigest(),

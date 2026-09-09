@@ -3,15 +3,18 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(each [_ name (ipairs [:json :protocol/openai])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
-(local specs (misa.protocols.openai {:id :test :url "https://example.invalid/chat"
+(local definitions (require :misa.definitions))
+(local protocol (require :protocol.openai))
+(local specs (protocol.configure {:id :test :url "https://example.invalid/chat"
                                    :models [] :models_url "https://example.invalid/models"
                                    :models_credential false :credential :test}))
-(local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
+(local application (misa.compose
+ [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+  (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
+  {:definitions (definitions :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}])}]))
+(misa._install application.definitions {:argv [] :config {}})
+(local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local discovery ((. handlers :models/discover) {} {:provider :test}))
 (assert (= (. discovery.fx 1 :credential) nil) "disabled discovery credentials were still attached")
 (fn transition [db event]
@@ -50,7 +53,7 @@
                       (set split next)
                       (each [_ effect (ipairs effects)] (table.insert collected effect)))
                     (assert (= (misa.json.encode whole) (misa.json.encode split)))
-                    (assert (= (misa.json.encode fx) (misa.json.encode collected)) "record batching changed output"))
+                    (assert (= (misa.json.encode fx) (misa.json.encode (misa.stream.effects collected))) "record batching changed output"))
                   {:cases 1000 :size 25}))
 (assert (not failure) (and failure (fennel.view failure)))
 (local (_ tool-fx) (transition initial {:id :request :phase :data :records [(. records 4) (. records 5)]}))
@@ -71,8 +74,7 @@
 (assert (= (. missing-fx 1 :event :message) "OpenAI stream ended without [DONE]"))
 (local (_ http-fx) (transition initial {:id :request :phase :end :ok false :status 429 :body :limited}))
 (assert (= (. http-fx 1 :event :message) "HTTP 429: limited"))
-(misa._setup_effects {:fx [{:type :register/openai-delta :id :custom
-                          :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}]})
+
 (local (_ custom-fx) (transition initial {:id :request :phase :data :records [{:choices [{:delta {:custom :custom}}]}]}))
 (assert (= (. custom-fx 1 :event :delta :text) :custom))
 (output "OpenAI stream state properties passed\n")

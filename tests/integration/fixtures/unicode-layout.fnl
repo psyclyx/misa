@@ -1,14 +1,14 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (assert (= (misa.layout.width "é界😀")
                                                5)
                                             "cell width disagrees with terminal semantics")
                                     (local wrapped
-                                           (misa.layout.wrap_spans [{:spans [{:style :plain
+                                           (misa.layout.wrap-spans [{:spans [{:style :plain
                                                                               :text "é界x"}]}]
                                                                    3))
                                     (assert (and (and (= (length wrapped) 2)
@@ -22,36 +22,36 @@
                                                                                    4))
                                                4)
                                             "cell fitting did not pad by cells")
-                                    (assert (and (= (misa.layout.previous_boundary "éx"
+                                    (assert (and (= (misa.layout.previous-boundary "éx"
                                                                                    3)
                                                     0)
-                                                 (= (misa.layout.next_boundary "éx"
+                                                 (= (misa.layout.next-boundary "éx"
                                                                                0)
                                                     3))
                                             "combining grapheme boundaries diverged")
-                                    (assert (and (= (misa.layout.previous_boundary "👩‍💻x"
+                                    (assert (and (= (misa.layout.previous-boundary "👩‍💻x"
                                                                                    11)
                                                     0)
-                                                 (= (misa.layout.next_boundary "👩‍💻x"
+                                                 (= (misa.layout.next-boundary "👩‍💻x"
                                                                                0)
                                                     11))
                                             "ZWJ grapheme boundaries diverged")
-                                    (assert (and (= (misa.layout.previous_boundary "क्x"
+                                    (assert (and (= (misa.layout.previous-boundary "क्x"
                                                                                    6)
                                                     0)
-                                                 (= (misa.layout.next_boundary "क्x"
+                                                 (= (misa.layout.next-boundary "क्x"
                                                                                0)
                                                     6))
                                             "virama grapheme boundaries diverged")
-                                    (assert (and (= (misa.layout.previous_boundary "क्षx"
+                                    (assert (and (= (misa.layout.previous-boundary "क्षx"
                                                                                    9)
                                                     0)
-                                                 (= (misa.layout.next_boundary "क्षx"
+                                                 (= (misa.layout.next-boundary "क्षx"
                                                                                0)
                                                     9))
                                             "Devanagari conjunct boundaries diverged")
                                     (local input
-                                           (misa.render_component db
+                                           (misa.components.render db
                                                                   :editor.input
                                                                   {:cursor 5
                                                                    :text "ab界é👩‍💻क्ष
@@ -68,7 +68,7 @@ z"}
                                                                :spans 1 :text))))
                                             "logical cursor did not map across a prompt-prefixed soft wrap")
                                     (local narrow
-                                           (misa.render_component db
+                                           (misa.components.render db
                                                                   :editor.input
                                                                   {:cursor 3
                                                                    :text "界é"}
@@ -82,7 +82,7 @@ z"}
                                                  (= narrow.cursor.byte 0))
                                             "narrow input wrapping lost its cursor or prompt budget")
                                     (local cjk
-                                           (misa.render_component db
+                                           (misa.components.render db
                                                                   :editor.input
                                                                   {:cursor 3
                                                                    :text "界"}
@@ -93,7 +93,7 @@ z"}
                                                  (= cjk.cursor.byte 3))
                                             "narrow prompt hid a wide grapheme")
                                     (local crlf
-                                           (misa.layout.wrap_input "a\r\nb\rc"
+                                           (misa.layout.wrap-input "a\r\nb\rc"
                                                                    6 3 "> "
                                                                    :plain
                                                                    :accent))
@@ -105,17 +105,17 @@ z"}
                                                 crlf.cursor.row ","
                                                 crlf.cursor.byte))
                                     (local inside-crlf
-                                           (misa.layout.wrap_input "a\r\nb" 6 2
+                                           (misa.layout.wrap-input "a\r\nb" 6 2
                                                                    "> " :plain
                                                                    :accent))
                                     (assert (and (= inside-crlf.cursor.row 2)
                                                  (= inside-crlf.cursor.byte 2))
                                             "cursor inside CRLF was not normalized coherently")
                                     (local picker
-                                           (misa.render_component db :picker
+                                           (misa.components.render db :picker
                                                                   {:columns [{:active true
                                                                               :id :all
-                                                                              :lines (misa.choice_row_lines {:active true
+                                                                              :lines (misa.choices.row-lines {:active true
                                                                                                              :description :option
                                                                                                              :hotkey :alt+1
                                                                                                              :label "界界界界 wrapped tail"
@@ -144,6 +144,6 @@ z"}
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text "unicode layout"}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.unicode-layout declarations {}))

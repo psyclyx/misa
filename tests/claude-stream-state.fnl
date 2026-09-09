@@ -3,12 +3,16 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(local specs ((. (fennel.dofile :extensions/provider/claude.fnl) :setup) {:config {}}))
-(local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
+(local definitions (require :misa.definitions))
+(local specs ((fennel.dofile :extensions/provider/claude.fnl) {:config {}}))
+(local application (misa.compose
+ [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+  (misa.compose [{:definitions specs}])
+  {:definitions (definitions :test [{:catalog :claude-records :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}
+                         {:catalog :claude-stream-events :id :custom :value (fn [state] {:state (misa.patch state {:custom_partial true})})}])}]))
+(misa._install application.definitions {:argv [] :config {}})
+(local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (fn transition [db records phase]
   (local event {:id :request :phase (or phase :data) : records :ok true})
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
@@ -43,7 +47,7 @@
                       (set split next)
                       (each [_ effect (ipairs effects)] (table.insert collected effect)))
                     (assert (= (misa.json.encode whole) (misa.json.encode split)))
-                    (assert (= (misa.json.encode fx) (misa.json.encode collected)) "batching changed Claude output"))
+                    (assert (= (misa.json.encode fx) (misa.json.encode (misa.stream.effects collected))) "batching changed Claude output"))
                   {:cases 1000 :size 20}))
 (assert (not failure) (and failure (fennel.view failure)))
 (fn tool-count [fx]
@@ -69,7 +73,7 @@
 (each [_ effect (ipairs texts)]
   (local value (and effect.event effect.event.delta))
   (when (and value (= value.type :text)) (table.insert content value.text)))
-(assert (= (table.concat content " ") "hello world"))
+(assert (= (table.concat content) "helloworld"))
 (local (_ metadata) (transition initial [start
                                         {:type :stream_event :event {:type :content_block_start :index 0
                                                                      :content_block {:type :thinking :thinking ""}}}
@@ -92,15 +96,12 @@
 (local meta ((. handlers :models/provider-availability) initial {:provider :claude :subscription_type :max}))
 (assert (= initial.providers.claude nil))
 (assert (= (. (misa.patch initial meta.patch) :providers :claude :subscription_type) :max))
-(misa._setup_effects {:fx [{:type :register/claude-record :id :custom
-                          :value (fn [state] {:state (misa.patch state {:custom true})})}
-                         {:type :register/claude-stream-event :id :custom
-                          :value (fn [state] {:state (misa.patch state {:custom_partial true})})}]})
+
 (local extended (transition initial [{:type :custom} {:type :stream_event :event {:type :custom}}]))
 (assert extended.providers.claude_streams.request.custom)
 (assert extended.providers.claude_streams.request.custom_partial)
 ;; CLI quota events are account facts, not response token counts or transcript text.
-(each [_ utilization (ipairs [0 0.8 1 -1 2 misa.json_null "0.5"])]
+(each [_ utilization (ipairs [0 0.8 1 -1 2 misa.json-null "0.5"])]
   (local valid (and (= (type utilization) :number) (>= utilization 0) (<= utilization 1)))
   (local (_ quota-fx) (transition initial
                                  [{:type :rate_limit_event :uuid :private-id :session_id :private-session

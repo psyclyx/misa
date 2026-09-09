@@ -1,1 +1,0 @@
-{"extensions":["json","provider.claude","tool.shell","models","agent","@ROOT@/tests/integration/fixtures/runtime-regressions-check.fnl"],"config":{"models":{"default":"claude/claude-sonnet-5"},"providers":{"claude":{"executable":"@WORK@/claude"}}}}

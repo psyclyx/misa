@@ -1,20 +1,29 @@
+(local definitions (require :misa.definitions))
+
 ;; ChatGPT subscription provider using the Codex Responses SSE protocol.
 
 (fn quota-number [value]
   (local number (tonumber value))
-  (when (and number (= number number) (>= number 0) (< number math.huge)) number))
+  (when (and number (= number number) (>= number 0) (< number math.huge))
+    number))
 
-(fn quota-label [value] (when (= (type value) :string) value))
+(fn quota-label [value]
+  (when (= (type value) :string) value))
 
 (fn window-label [seconds fallback]
   (if (and seconds (> seconds 0))
-      (let [unit (or (accumulate [found nil _ item (ipairs [[86400 :d] [3600 :h] [60 :m]]) &until found]
-                       (when (= (% seconds (. item 1)) 0) item)) [1 :s])]
+      (let [unit (or (accumulate [found nil _ item (ipairs [[86400 :d]
+                                                            [3600 :h]
+                                                            [60 :m]])
+                                  &until found]
+                       (when (= (% seconds (. item 1)) 0)
+                         item)) [1 :s])]
         (.. (/ seconds (. unit 1)) (. unit 2)))
       fallback))
 
 (fn usage-windows [payload]
   (local windows [])
+
   (fn add [bucket label]
     (when (= (type bucket) :table)
       (each [_ slot (ipairs [{:key :primary_window :label :primary}
@@ -24,38 +33,55 @@
           (local used (quota-number window.used_percent))
           (when used
             (local seconds (quota-number window.limit_window_seconds))
-            (table.insert windows {:label (.. label " · " (window-label seconds slot.label))
-                                   :unit :percent :limit 100 : used :remaining (math.max 0 (- 100 used))
-                                   :window_seconds seconds
-                                   :reset_at_unix (quota-number window.reset_at)
-                                   :reset_after_seconds (quota-number window.reset_after_seconds)}))))))
+            (table.insert windows
+                          {:label (.. label " · "
+                                      (window-label seconds slot.label))
+                           :unit :percent
+                           :limit 100
+                           : used
+                           :remaining (math.max 0 (- 100 used))
+                           :window_seconds seconds
+                           :reset_at_unix (quota-number window.reset_at)
+                           :reset_after_seconds (quota-number window.reset_after_seconds)}))))))
+
   (when (= (type payload) :table)
     (add payload.rate_limit "Codex")
     (add payload.code_review_rate_limit "Code review")
-    (each [index item (ipairs (if (= (type payload.additional_rate_limits) :table)
-                                payload.additional_rate_limits []))]
+    (each [index item (ipairs (if (= (type payload.additional_rate_limits)
+                                     :table)
+                                  payload.additional_rate_limits
+                                  []))]
       (when (= (type item) :table)
-        (add item.rate_limit (or (quota-label item.limit_name) (quota-label item.metered_feature)
-                                 (.. "Additional quota " index))))))
+        (add item.rate_limit
+             (or (quota-label item.limit_name)
+                 (quota-label item.metered_feature)
+                 (.. "Additional quota " index))))))
   windows)
 
 (fn reset-count [payload]
-  (local summary (and (= (type payload) :table) payload.rate_limit_reset_credits))
+  (local summary (and (= (type payload) :table)
+                      payload.rate_limit_reset_credits))
   (when (= (type summary) :table) (quota-number summary.available_count)))
 
 ;; The usage endpoint carries only a count. Detail rows come from the separate
 ;; read-only reset-credit endpoint; keep wire dates out of display code.
 (fn reset-credits [payload]
-  (when (and (= (type payload) :table) (= (type payload.credits) :table) (not= payload.credits misa.json_null))
+  (when (and (= (type payload) :table) (= (type payload.credits) :table)
+             (not= payload.credits misa.json-null))
     (icollect [_ credit (ipairs payload.credits)]
       (when (and (= (type credit) :table) (= (type credit.id) :string)
                  (= (type credit.status) :string)
-                 (or (quota-label credit.granted_at) (quota-number credit.granted_at)))
-        {:id credit.id :label (or (quota-label credit.title) "Quota reset")
+                 (or (quota-label credit.granted_at)
+                     (quota-number credit.granted_at)))
+        {:id credit.id
+         :label (or (quota-label credit.title) "Quota reset")
          :status (quota-label credit.status)
-         :granted_at (quota-label credit.granted_at) :granted_at_unix (quota-number credit.granted_at)
-         :expires_at (quota-label credit.expires_at) :expires_at_unix (quota-number credit.expires_at)
-         :expires_never (or (= credit.expires_at nil) (= credit.expires_at misa.json_null))}))))
+         :granted_at (quota-label credit.granted_at)
+         :granted_at_unix (quota-number credit.granted_at)
+         :expires_at (quota-label credit.expires_at)
+         :expires_at_unix (quota-number credit.expires_at)
+         :expires_never (or (= credit.expires_at nil)
+                            (= credit.expires_at misa.json-null))}))))
 
 (fn input [messages]
   (let [result {}]
@@ -98,9 +124,9 @@
               (tset result (+ (length result) 1) {: content :role message.role})))))
     result))
 
-(fn tools [___values___]
+(fn tools [items]
   (let [result {}]
-    (each [_ tool (ipairs ___values___)]
+    (each [_ tool (ipairs items)]
       (tset result (+ (length result) 1)
             {:description tool.description
              :name tool.name
@@ -108,7 +134,6 @@
              :strict false
              :type :function}))
     result))
-
 
 (fn delta [id value]
   {:type :dispatch :event {:type :agent/stream-delta : id :delta value}})
@@ -120,370 +145,539 @@
 
 (fn reasoning-record [_ record id]
   (when (= (type record.delta) :string)
-    {:patch {:reasoning {(tostring (or record.output_index record.item_id :current)) true}}
+    {:patch {:reasoning {(tostring (or record.output_index record.item_id
+                                        :current)) true}}
      :fx [(delta id {:type :thinking :text record.delta})]}))
 
 (fn function-record [record id fallback]
-  {:fx [(delta id {:type :tool_call :arguments_json (or record.item.arguments fallback)
-                  :id record.item.call_id :index record.output_index :name record.item.name})]})
+  {:fx [(delta id {:type :tool_call
+                   :arguments_json (or record.item.arguments fallback)
+                   :id record.item.call_id
+                   :index record.output_index
+                   :name record.item.name})]})
 
 (fn done-record [state record id]
   (when (= (type record.item) :table)
     (if (= record.item.type :function_call) (function-record record id "{}")
         (= record.item.type :reasoning)
-        (let [fx [{:type :dispatch :event {:type :agent/stream-state : id
-                                         :provider :openai-codex :value record.item}}]
+        (let [fx [{:type :dispatch
+                   :event {:type :agent/stream-state
+                           : id
+                           :provider :openai-codex
+                           :value record.item}}]
               key (tostring (or record.output_index record.item.id :current))]
           (when (not (. state.reasoning key))
             (each [_ summary (ipairs (or record.item.summary {}))]
               (when (and (= (type summary.text) :string) (not= summary.text ""))
-                (table.insert fx (delta id {:type :thinking :text summary.text})))))
+                (table.insert fx
+                              (delta id {:type :thinking :text summary.text})))))
           {:patch {:reasoning {key true}} : fx}))))
 
 (fn completed-record [_ record id]
   (when (= (type record.response) :table)
-    (local usage (if (= (type record.response.usage) :table) record.response.usage {}))
-    (local details (if (= (type usage.input_tokens_details) :table) usage.input_tokens_details {}))
-    {:patch {:terminal true} :finish true
-     :fx [{:type :dispatch :event {:type :agent/stream-usage : id
-                                   :usage {:cache_read_tokens (or details.cached_tokens 0)
-                                           :cache_write_tokens 0 :cost_usd usage.cost
-                                           :input_includes_cache true
-                                           :input_tokens (or usage.input_tokens 0)
-                                           :output_tokens (or usage.output_tokens 0)}}}]}))
+    (local usage (if (= (type record.response.usage) :table)
+                     record.response.usage
+                     {}))
+    (local details (if (= (type usage.input_tokens_details) :table)
+                       usage.input_tokens_details
+                       {}))
+    {:patch {:terminal true}
+     :finish true
+     :fx [{:type :dispatch
+           :event {:type :agent/stream-usage
+                   : id
+                   :usage {:cache_read_tokens (or details.cached_tokens 0)
+                           :cache_write_tokens 0
+                           :cost_usd usage.cost
+                           :input_includes_cache true
+                           :input_tokens (or usage.input_tokens 0)
+                           :output_tokens (or usage.output_tokens 0)}}}]}))
 
 (fn failed-record [_ record id]
-  {:patch {:failed true} :finish true
+  {:patch {:failed true}
+   :finish true
    :fx [{:type :dispatch
-         :event {:type :agent/stream-error : id
+         :event {:type :agent/stream-error
+                 : id
                  :message (tostring (or record.message
-                                        (and record.response record.response.error record.response.error.message)
+                                        (and record.response
+                                             record.response.error
+                                             record.response.error.message)
                                         "Codex request did not complete"))}}]})
 
-(local records
-       {:response.output_text.delta (text-record :text)
-        :response.reasoning_summary_text.delta reasoning-record
-        :response.reasoning_text.delta reasoning-record
-        :response.output_item.added (fn [_ record id]
-                                     (when (and (= (type record.item) :table) (= record.item.type :function_call))
-                                       (function-record record id "")))
-        :response.function_call_arguments.delta
-        (fn [_ record id]
-          (when (= (type record.delta) :string)
-            {:fx [(delta id {:type :tool_call :arguments_json_delta record.delta
-                            :index record.output_index})]}))
-        :response.output_item.done done-record
-        :response.completed completed-record
-        :error failed-record :response.failed failed-record :response.incomplete failed-record})
+(local records {:response.output_text.delta (text-record :text)
+                :response.reasoning_summary_text.delta reasoning-record
+                :response.reasoning_text.delta reasoning-record
+                :response.output_item.added (fn [_ record id]
+                                              (when (and (= (type record.item)
+                                                            :table)
+                                                         (= record.item.type
+                                                            :function_call))
+                                                (function-record record id "")))
+                :response.function_call_arguments.delta (fn [_ record id]
+                                                          (when (= (type record.delta)
+                                                                   :string)
+                                                            {:fx [(delta id
+                                                                         {:type :tool_call
+                                                                          :arguments_json_delta record.delta
+                                                                          :index record.output_index})]}))
+                :response.output_item.done done-record
+                :response.completed completed-record
+                :error failed-record
+                :response.failed failed-record
+                :response.incomplete failed-record})
 
 (fn stream-update [id state fx]
   {:patch {:providers {:codex_streams {id (misa.replace state)}}}
-   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
+   :fx (misa.stream.effects fx)})
 
 (fn stream [db event]
   (local streams (or (and db.providers db.providers.codex_streams) {}))
   (local state (or (. streams event.id) {:reasoning {}}))
   (if (= event.phase :start)
       (stream-update event.id {:reasoning {}}
-                     [{:type :dispatch :event {:type :agent/stream-start :id event.id}}])
+                     [{:type :dispatch
+                       :event {:type :agent/stream-start :id event.id}}])
       (= event.phase :end)
       (let [successful (and event.ok state.terminal)
             next-event (if successful {:id event.id :type :agent/stream-end}
-                           {:id event.id :type :agent/stream-error
+                           {:id event.id
+                            :type :agent/stream-error
                             :message (or event.message
-                                         (when (not state.terminal) "Codex stream ended without response.completed")
-                                         event.body (.. "HTTP " (tostring event.status)))})]
-        (stream-update event.id nil (if state.failed [] [{:type :dispatch :event next-event}])))
-      (or state.terminal state.failed) nil
+                                         (when (not state.terminal)
+                                           "Codex stream ended without response.completed")
+                                         event.body
+                                         (.. "HTTP " (tostring event.status)))})]
+        (stream-update event.id nil
+                       (if state.failed []
+                           [{:type :dispatch :event next-event}])))
+      (or state.terminal state.failed)
+      nil
       (do
         (var next-state state)
         (local fx [])
         (var finished false)
         (each [_ record (ipairs (or event.records {})) &until finished]
-          (local handler (. records record.type))
+          (local handler (. (misa.catalog :codex-records) record.type))
           (local result (and handler (handler next-state record event.id)))
           (when result
             (set next-state (misa.patch next-state (or result.patch {})))
-            (each [_ effect (ipairs (or result.fx []))] (table.insert fx effect))
+            (each [_ effect (ipairs (or result.fx []))]
+              (table.insert fx effect))
             (when result.finish
               (set finished true)
               (table.insert fx {:id event.id :type :operation/finish}))))
         (stream-update event.id next-state fx))))
 
-{:setup (fn [context]
-          (local setup-fx [])
-          (local providers (or (and (= (type context.config) :table)
-                                    context.config.providers)
-                               nil))
-          (var config (or (and (= (type providers) :table)
-                               providers.openai_codex)
-                          nil))
-          (set config (or (and (= (type config) :table) config) {}))
-          (table.insert setup-fx
-                        {:type :register/auth-provider
-                         :value {:description "ChatGPT subscription OAuth"
-                                 :id :openai-codex
-                                 :label "OpenAI Codex"
-                                 :model_provider :openai-codex
-                                 :discover_models (not config.models)
-                                 :profile {:authorization_url "https://auth.openai.com/api/accounts/deviceauth/usercode"
-                                           :id :default
-                                           :token_url "https://auth.openai.com/oauth/token"}
-                                 :strategy :device_oauth}})
-          (table.insert setup-fx
-                        {:type :register/event :name :usage/refresh
+(fn [context]
+  "Describe openai codex policies for the supplied application settings."
+  (local declarations [])
+  (local providers (or (and (= (type context.config) :table)
+                            context.config.providers)
+                       nil))
+  (var config (or (and (= (type providers) :table) providers.openai_codex) nil))
+  (set config (or (and (= (type config) :table) config) {}))
+  (table.insert declarations
+                (let [definition {:description "ChatGPT subscription OAuth"
+                                  :id :openai-codex
+                                  :label "OpenAI Codex"
+                                  :model_provider :openai-codex
+                                  :discover_models (not config.models)
+                                  :profile {:authorization_url "https://auth.openai.com/api/accounts/deviceauth/usercode"
+                                            :id :default
+                                            :token_url "https://auth.openai.com/oauth/token"}
+                                  :strategy :device_oauth}]
+                  {:catalog :auth-providers
+                   :id (. definition :id)
+                   :value definition}))
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :usage/refresh
                          :handler (fn [db event]
-                                    (when (or (not event.provider) (= event.provider :openai-codex))
-                                      (local provider (and db.providers db.providers.openai-codex))
+                                    (when (or (not event.provider)
+                                              (= event.provider :openai-codex))
+                                      (local provider
+                                             (and db.providers
+                                                  db.providers.openai-codex))
                                       (if (and provider provider.usage_request)
                                           {:patch {:providers {:openai-codex {:usage_again true}}}}
-                                          (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
+                                          (let [sequence (+ (or (and provider
+                                                                     provider.usage_sequence)
+                                                                0)
+                                                            1)
                                                 id (.. "codex-usage-" sequence)]
-                                            {:patch {:providers {:openai-codex {:usage_sequence sequence :usage_request id}}}
-                                             :fx [{:type :http/request :method :GET : id
-                                                   :url (or config.usage_url "https://chatgpt.com/backend-api/wham/usage")
-                                                   :credential {:id :openai-codex :header :authorization :prefix "Bearer "
-                                                                :metadata_field :account_id :metadata_header :chatgpt-account-id}
-                                                   :response_format :json :completion :provider/codex-usage
-                                                   :timeouts config.timeouts}]}))))})
-          (table.insert setup-fx
-                        {:type :register/event :name :provider/codex-usage
+                                            {:patch {:providers {:openai-codex {:usage_sequence sequence
+                                                                                :usage_request id}}}
+                                             :fx [{:type :http/request
+                                                   :method :GET
+                                                   : id
+                                                   :url (or config.usage_url
+                                                            "https://chatgpt.com/backend-api/wham/usage")
+                                                   :credential {:id :openai-codex
+                                                                :header :authorization
+                                                                :prefix "Bearer "
+                                                                :metadata_field :account_id
+                                                                :metadata_header :chatgpt-account-id}
+                                                   :response_format :json
+                                                   :completion :provider/codex-usage
+                                                   :timeouts config.timeouts}]}))))}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :provider/codex-usage
                          :handler (fn [db event cofx]
-                                    (local provider (and db.providers db.providers.openai-codex))
-                                    (when (and provider provider.usage_request (= provider.usage_request event.id))
-                                      (local windows (if event.ok (usage-windows event.data) []))
+                                    (local provider
+                                           (and db.providers
+                                                db.providers.openai-codex))
+                                    (when (and provider provider.usage_request
+                                               (= provider.usage_request
+                                                  event.id))
+                                      (local windows
+                                             (if event.ok
+                                                 (usage-windows event.data)
+                                                 []))
                                       (each [_ window (ipairs windows)]
-                                        (when (and (not window.reset_at_unix) window.reset_after_seconds)
-                                          (tset window :reset_at_unix (+ (/ cofx.clock.wall_ms 1000)
-                                                                        window.reset_after_seconds))))
-                                      (local plan (when (and event.ok (= (type event.data) :table))
-                                                    (quota-label event.data.plan_type)))
-                                      (local count (when event.ok (reset-count event.data)))
-                                      (local details-id (when (and count (> count 0)) (.. event.id "-resets")))
-                                      (local updated {:type :dispatch :event {:type :usage/updated}})
+                                        (when (and (not window.reset_at_unix)
+                                                   window.reset_after_seconds)
+                                          (tset window :reset_at_unix
+                                                (+ (/ cofx.clock.wall_ms 1000)
+                                                   window.reset_after_seconds))))
+                                      (local plan
+                                             (when (and event.ok
+                                                        (= (type event.data)
+                                                           :table))
+                                               (quota-label event.data.plan_type)))
+                                      (local count
+                                             (when event.ok
+                                               (reset-count event.data)))
+                                      (local details-id
+                                             (when (and count (> count 0))
+                                               (.. event.id "-resets")))
+                                      (local updated
+                                             {:type :dispatch
+                                              :event {:type :usage/updated}})
                                       (local fx [updated])
                                       (when details-id
-                                        (table.insert fx {:type :http/request :method :GET :id details-id
-                                                          :url (or config.reset_credits_url "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
-                                                          :credential {:id :openai-codex :header :authorization :prefix "Bearer "
-                                                                       :metadata_field :account_id :metadata_header :chatgpt-account-id}
-                                                          :response_format :json :completion :provider/codex-reset-credits
-                                                          :timeouts config.timeouts}))
+                                        (table.insert fx
+                                                      {:type :http/request
+                                                       :method :GET
+                                                       :id details-id
+                                                       :url (or config.reset_credits_url
+                                                                "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
+                                                       :credential {:id :openai-codex
+                                                                    :header :authorization
+                                                                    :prefix "Bearer "
+                                                                    :metadata_field :account_id
+                                                                    :metadata_header :chatgpt-account-id}
+                                                       :response_format :json
+                                                       :completion :provider/codex-reset-credits
+                                                       :timeouts config.timeouts}))
                                       (when provider.usage_again
-                                        (table.insert fx {:type :dispatch :event {:type :usage/refresh :provider :openai-codex}}))
+                                        (table.insert fx
+                                                      {:type :dispatch
+                                                       :event {:type :usage/refresh
+                                                               :provider :openai-codex}}))
                                       {:patch {:providers {:openai-codex {:usage_request misa.delete
                                                                           :usage_again misa.delete
                                                                           :reset_count (misa.replace count)
-                                                                          :reset_credits_request (or details-id misa.delete)
+                                                                          :reset_credits_request (or details-id
+                                                                                                     misa.delete)
                                                                           :reset_credits misa.delete
-                                                                          :reset_refresh (if provider.usage_again provider.reset_refresh misa.delete)
-                                                                          :subscription_type (if event.ok (misa.replace plan) provider.subscription_type)
+                                                                          :reset_refresh (if provider.usage_again
+                                                                                             provider.reset_refresh
+                                                                                             misa.delete)
+                                                                          :subscription_type (if event.ok
+                                                                                                 (misa.replace plan)
+                                                                                                 provider.subscription_type)
                                                                           :usage (misa.replace {: windows
-                                                                                               :unavailable (= (length windows) 0)})}}}
-                                       : fx}))})
-          (table.insert setup-fx
-                        {:type :register/event :name :provider/codex-reset-credits
+                                                                                                :unavailable (= (length windows)
+                                                                                                                0)})}}}
+                                       : fx}))}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :provider/codex-reset-credits
                          :handler (fn [db event]
-                                    (local provider (and db.providers db.providers.openai-codex))
-                                    (when (and provider provider.reset_credits_request
-                                               (= event.id provider.reset_credits_request))
-                                      {:patch {:providers {:openai-codex
-                                                          {:reset_credits_request misa.delete
-                                                           :reset_credits (misa.replace (when event.ok (reset-credits event.data)))}}}
-                                       :fx [{:type :dispatch :event {:type :usage/updated}}]}))})
-          ;; The Codex backend client maps account/rateLimitResetCredit/consume
-          ;; to this WHAM endpoint with redeem_request_id as its idempotency key.
-          ;; Never send this request from setup, usage refresh, or a retry timer.
-          (table.insert setup-fx
-                        {:type :register/event :name :provider/codex-reset
+                                    (local provider
+                                           (and db.providers
+                                                db.providers.openai-codex))
+                                    (when (and provider
+                                               provider.reset_credits_request
+                                               (= event.id
+                                                  provider.reset_credits_request))
+                                      {:patch {:providers {:openai-codex {:reset_credits_request misa.delete
+                                                                          :reset_credits (misa.replace (when event.ok
+                                                                                                         (reset-credits event.data)))}}}
+                                       :fx [{:type :dispatch
+                                             :event {:type :usage/updated}}]}))}})
+  ;; The Codex backend client maps account/rateLimitResetCredit/consume
+  ;; to this WHAM endpoint with redeem_request_id as its idempotency key.
+  ;; Never send this request from setup, usage refresh, or a retry timer.
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :provider/codex-reset
                          :handler (fn [db _ cofx]
-                                    (local provider (and db.providers db.providers.openai-codex))
-                                    (when (and provider (not provider.reset_request) (not provider.reset_refresh)
+                                    (local provider
+                                           (and db.providers
+                                                db.providers.openai-codex))
+                                    (when (and provider
+                                               (not provider.reset_request)
+                                               (not provider.reset_refresh)
                                                (or provider.reset_attempt
-                                                   (> (or provider.reset_count 0) 0)))
-                                      (local sequence (+ (or provider.reset_sequence 0) 1))
-                                      (local attempt (or provider.reset_attempt
-                                                         (.. "misa-codex-reset-" cofx.clock.wall_ms "-"
-                                                             cofx.clock.monotonic_ms "-" sequence)))
+                                                   (> (or provider.reset_count
+                                                          0)
+                                                      0)))
+                                      (local sequence
+                                             (+ (or provider.reset_sequence 0)
+                                                1))
+                                      (local attempt
+                                             (or provider.reset_attempt
+                                                 (.. "misa-codex-reset-"
+                                                     cofx.clock.wall_ms "-"
+                                                     cofx.clock.monotonic_ms "-"
+                                                     sequence)))
                                       (local id (.. "codex-reset-" sequence))
-                                      {:patch {:providers {:openai-codex {:reset_sequence sequence :reset_request id
-                                                                         :reset_attempt attempt
-                                                                         :reset_message "Resetting Codex quota…"}}}
-                                       :fx [{:type :http/request :method :POST : id
+                                      {:patch {:providers {:openai-codex {:reset_sequence sequence
+                                                                          :reset_request id
+                                                                          :reset_attempt attempt
+                                                                          :reset_message "Resetting Codex quota…"}}}
+                                       :fx [{:type :http/request
+                                             :method :POST
+                                             : id
                                              :url "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
-                                             :credential {:id :openai-codex :header :authorization :prefix "Bearer "
-                                                          :metadata_field :account_id :metadata_header :chatgpt-account-id}
-                                             :headers [{:name :content-type :value :application/json}]
+                                             :credential {:id :openai-codex
+                                                          :header :authorization
+                                                          :prefix "Bearer "
+                                                          :metadata_field :account_id
+                                                          :metadata_header :chatgpt-account-id}
+                                             :headers [{:name :content-type
+                                                        :value :application/json}]
                                              :json {:redeem_request_id attempt}
-                                             :response_format :json :completion :provider/codex-reset-complete
+                                             :response_format :json
+                                             :completion :provider/codex-reset-complete
                                              :timeouts config.timeouts}
-                                            {:type :dispatch :event {:type :usage/updated}}]}))})
-          (table.insert setup-fx
-                        {:type :register/event :name :provider/codex-reset-complete
+                                            {:type :dispatch
+                                             :event {:type :usage/updated}}]}))}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :provider/codex-reset-complete
                          :handler (fn [db event]
-                                    (local provider (and db.providers db.providers.openai-codex))
-                                    (when (and provider provider.reset_request (= event.id provider.reset_request))
-                                      (local outcome (and event.ok (= (type event.data) :table) event.data.outcome))
-                                      (local messages {:reset "Codex quota reset used."
-                                                       :already_redeemed "Codex quota reset already applied."
-                                                       :nothing_to_reset "No Codex quota window is eligible for a reset."
-                                                       :no_credit "No Codex quota resets are available."})
-                                      (local message (and outcome (. messages outcome)))
+                                    (local provider
+                                           (and db.providers
+                                                db.providers.openai-codex))
+                                    (when (and provider provider.reset_request
+                                               (= event.id
+                                                  provider.reset_request))
+                                      (local outcome
+                                             (and event.ok
+                                                  (= (type event.data) :table)
+                                                  event.data.outcome))
+                                      (local messages
+                                             {:reset "Codex quota reset used."
+                                              :already_redeemed "Codex quota reset already applied."
+                                              :nothing_to_reset "No Codex quota window is eligible for a reset."
+                                              :no_credit "No Codex quota resets are available."})
+                                      (local message
+                                             (and outcome (. messages outcome)))
                                       {:patch {:providers {:openai-codex {:reset_request misa.delete
-                                                                         :reset_attempt (if message misa.delete provider.reset_attempt)
-                                                                         :reset_refresh true
-                                                                         :reset_message (or message
-                                                                                           "Could not confirm the Codex reset. Retry to check the same redemption.")}}}
-                                       :fx [{:type :dispatch :event {:type :usage/refresh :provider :openai-codex}}
-                                            {:type :dispatch :event {:type :usage/updated}}]}))})
-          (local serializer-id :openai.responses.codex)
-          (table.insert setup-fx
-                        {:type :register/request-options-serializer
-                         :id serializer-id
-                         :serializer {:accepts (fn [name]
-                                                 (= name :reasoning_effort))
-                                      :serialize (fn [body name value]
-                                                   (if (not= name
-                                                             :reasoning_effort)
-                                                       false
-                                                       (do
-                                                         (set body.reasoning
-                                                              {:effort value
-                                                               :summary :auto})
-                                                         true)))}})
-          (local reasoning-api
-                 {:request_options {:reasoning_effort {:choices [:low
-                                                                 :medium
-                                                                 :high
-                                                                 :xhigh]
-                                                       :default :medium}}
-                  :request_options_serializer serializer-id})
-          ;; ChatGPT's catalogue uses Codex slugs and reasoning metadata, rather
-          ;; than the public API's /v1/models shape. Explicit catalogues stay static.
-          (when (not config.models)
-            (table.insert setup-fx
-                          {:type :register/event :name :models/discover
+                                                                          :reset_attempt (if message
+                                                                                             misa.delete
+                                                                                             provider.reset_attempt)
+                                                                          :reset_refresh true
+                                                                          :reset_message (or message
+                                                                                             "Could not confirm the Codex reset. Retry to check the same redemption.")}}}
+                                       :fx [{:type :dispatch
+                                             :event {:type :usage/refresh
+                                                     :provider :openai-codex}}
+                                            {:type :dispatch
+                                             :event {:type :usage/updated}}]}))}})
+  (local serializer-id :openai.responses.codex)
+  (table.insert declarations
+                {:catalog :serializers
+                 :id serializer-id
+                 :value {:accepts (fn [name]
+                                    (= name :reasoning_effort))
+                         :serialize (fn [name value]
+                                      "Describe Codex request fields for a supported option."
+                                      (when (= name :reasoning_effort)
+                                        {:reasoning {:effort value
+                                                     :summary :auto}}))}})
+  (local reasoning-api
+         {:request_options {:reasoning_effort {:choices [:low
+                                                         :medium
+                                                         :high
+                                                         :xhigh]
+                                               :default :medium}}
+          :request_options_serializer serializer-id})
+  ;; ChatGPT's catalogue uses Codex slugs and reasoning metadata, rather
+  ;; than the public API's /v1/models shape. Explicit catalogues stay static.
+  (when (not config.models)
+    (table.insert declarations
+                  {:catalog :events
+                   :value {:event :models/discover
                            :handler (fn [_ event]
-                                      (when (or (not event.provider) (= event.provider :openai-codex))
-                                        {:fx [{:type :http/request :id :models-openai-codex :method :GET
+                                      (when (or (not event.provider)
+                                                (= event.provider :openai-codex))
+                                        {:fx [{:type :http/request
+                                               :id :models-openai-codex
+                                               :method :GET
                                                :url (or config.models_url
                                                         (.. "https://chatgpt.com/backend-api/codex/models?client_version="
-                                                            (or config.client_version "0.153.4")))
-                                               :credential {:id :openai-codex :header :authorization :prefix "Bearer "
-                                                            :metadata_field :account_id :metadata_header :chatgpt-account-id}
-                                               :response_format :json :completion :provider/codex-models
-                                               :timeouts config.timeouts}]}))})
-            (table.insert setup-fx
-                          {:type :register/event :name :provider/codex-models
+                                                            (or config.client_version
+                                                                "0.153.4")))
+                                               :credential {:id :openai-codex
+                                                            :header :authorization
+                                                            :prefix "Bearer "
+                                                            :metadata_field :account_id
+                                                            :metadata_header :chatgpt-account-id}
+                                               :response_format :json
+                                               :completion :provider/codex-models
+                                               :timeouts config.timeouts}]}))}})
+    (table.insert declarations
+                  {:catalog :events
+                   :value {:event :provider/codex-models
                            :handler (fn [_ event]
                                       (local fx [])
-                                      (when (and event.ok (= (type event.data) :table)
-                                                 (= (type event.data.models) :table))
+                                      (when (and event.ok
+                                                 (= (type event.data) :table)
+                                                 (= (type event.data.models)
+                                                    :table))
                                         (local models [])
                                         (each [_ item (ipairs event.data.models)]
-                                          (when (and (= (type item) :table) (= (type item.slug) :string)
-                                                     (not= item.slug "") (= item.visibility :list))
-                                            (local choices (icollect [_ level (ipairs (or item.supported_reasoning_levels []))]
-                                                             (when (and (= (type level) :table)
-                                                                        (= (type level.effort) :string)) level.effort)))
-                                            (local default (or item.default_reasoning_level (. choices 1)))
-                                            (local api (when (> (length choices) 0)
-                                                         {:request_options {:reasoning_effort {: choices : default}}
-                                                          :request_options_serializer serializer-id}))
-                                            (table.insert models {:id (.. :openai-codex/ item.slug) :model item.slug
-                                                                  :label (or item.display_name item.slug)
-                                                                  :context_window item.context_window : api
-                                                                  :created (when (= (type item.created) :number) item.created)
-                                                                  :recommended (not= item.recommended false)
-                                                                  :recommendation_rank item.priority
-                                                                  :popularity_rank (when (= (type item.popularity_rank) :number) item.popularity_rank)})))
+                                          (when (and (= (type item) :table)
+                                                     (= (type item.slug)
+                                                        :string)
+                                                     (not= item.slug "")
+                                                     (= item.visibility :list))
+                                            (local choices
+                                                   (icollect [_ level (ipairs (or item.supported_reasoning_levels
+                                                                                  []))]
+                                                     (when (and (= (type level)
+                                                                   :table)
+                                                                (= (type level.effort)
+                                                                   :string))
+                                                       level.effort)))
+                                            (local default
+                                                   (or item.default_reasoning_level
+                                                       (. choices 1)))
+                                            (local api
+                                                   (when (> (length choices) 0)
+                                                     {:request_options {:reasoning_effort {: choices
+                                                                                           : default}}
+                                                      :request_options_serializer serializer-id}))
+                                            (table.insert models
+                                                          {:id (.. :openai-codex/
+                                                                   item.slug)
+                                                           :model item.slug
+                                                           :label (or item.display_name
+                                                                      item.slug)
+                                                           :context_window item.context_window
+                                                           : api
+                                                           :created (when (= (type item.created)
+                                                                             :number)
+                                                                      item.created)
+                                                           :recommended (not= item.recommended
+                                                                              false)
+                                                           :recommendation_rank item.priority
+                                                           :popularity_rank (when (= (type item.popularity_rank)
+                                                                                     :number)
+                                                                              item.popularity_rank)})))
                                         ;; Invalid or entirely hidden responses should not erase the
                                         ;; usable fallback catalogue (nor a prior successful discovery).
                                         (when (> (length models) 0)
-                                          (table.sort models (fn [a b] (< (or a.recommendation_rank math.huge)
-                                                                        (or b.recommendation_rank math.huge))))
-                                          (table.insert fx {:type :dispatch :event {:type :models/replace-provider
-                                                                                    :provider :openai-codex
-                                                                                    :authoritative true : models}})))
-                                      (table.insert fx {:type :dispatch :event {:type :models/discovery-complete
-                                                                                :provider :openai-codex}})
-                                      {: fx})}))
-          (each [_ model (ipairs (or config.models
-                                     [{:api reasoning-api
-                                       :context_window 1000000
-                                       :id :openai-codex/gpt-5.4
-                                       :label "GPT-5.4 (ChatGPT)"
-                                       :model :gpt-5.4}
-                                      {:api reasoning-api
-                                       :context_window 400000
-                                       :id :openai-codex/gpt-5.3-codex
-                                       :label "GPT-5.3 Codex"
-                                       :model :gpt-5.3-codex}]))]
-            (local api (if (and (= (type model.api) :table)
-                                (= (type model.api.request_options) :table))
-                           (misa.patch model.api {:request_options_serializer serializer-id})
-                           model.api))
-            (table.insert setup-fx
-                          {:type :register/model
-                           :value {: api
-                                   :context_window model.context_window
-                                   :id model.id
-                                   :label (or model.label model.id)
-                                   :model model.model
-                                   :provider :openai-codex}}))
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.openai-codex
-                         :handler (fn [effect]
-                                    (local body
-                                           {:include [:reasoning.encrypted_content]
-                                            :input (input effect.messages)
-                                            :instructions (or effect.system_prompt
-                                                              "You are a helpful coding assistant.")
-                                            :model effect.model
-                                            :parallel_tool_calls true
-                                            :reasoning {:summary :auto}
-                                            :store false
-                                            :stream true
-                                            :text {:verbosity :low}
-                                            :tool_choice :auto})
-                                    (misa.serialize_request_options serializer-id
-                                                                    (or effect.request_options
-                                                                        {})
-                                                                    body)
-                                    (local definitions (tools effect.tools))
-                                    (when (> (length definitions) 0)
-                                      (set body.tools definitions))
-                                    {:completion :provider/openai-codex-complete
-                                     :credential {:header :authorization
-                                                  :id :openai-codex
-                                                  :metadata_field :account_id
-                                                  :metadata_header :chatgpt-account-id
-                                                  :prefix "Bearer "}
-                                     :headers [{:name :content-type
-                                                :value :application/json}
-                                               {:name :accept
-                                                :value :text/event-stream}
-                                               {:name :openai-beta
-                                                :value :responses=experimental}
-                                               {:name :originator :value :misa}
-                                               {:name :user-agent
-                                                :value :misa/0.1}]
-                                     :id effect.id
-                                     :json body
-                                     :method :POST
-                                     :response_format :sse_json_stream
-                                     :timeouts config.timeouts
-                                     :type :http/request
-                                     :url (or config.url
-                                              "https://chatgpt.com/backend-api/codex/responses")})})
-          (table.insert setup-fx
-                        {:type :register/setup-effect :name :register/codex-record
-                         :handler (fn [effect]
-                                    (assert (and (= (type effect.id) :string) (not= effect.id "")
-                                                 (= (type effect.value) :function) (not (. records effect.id)))
-                                            "invalid or duplicate Codex record handler")
-                                    (tset records effect.id effect.value))})
-          (table.insert setup-fx
-                        {:type :register/event :name :provider/openai-codex-complete :handler stream})
-          {:fx setup-fx})}
+                                          (table.sort models
+                                                      (fn [a b]
+                                                        (< (or a.recommendation_rank
+                                                               math.huge)
+                                                           (or b.recommendation_rank
+                                                               math.huge))))
+                                          (table.insert fx
+                                                        {:type :dispatch
+                                                         :event {:type :models/replace-provider
+                                                                 :provider :openai-codex
+                                                                 :authoritative true
+                                                                 : models}})))
+                                      (table.insert fx
+                                                    {:type :dispatch
+                                                     :event {:type :models/discovery-complete
+                                                             :provider :openai-codex}})
+                                      {: fx})}}))
+  (each [_ model (ipairs (or config.models
+                             [{:api reasoning-api
+                               :context_window 1000000
+                               :id :openai-codex/gpt-5.4
+                               :label "GPT-5.4 (ChatGPT)"
+                               :model :gpt-5.4}
+                              {:api reasoning-api
+                               :context_window 400000
+                               :id :openai-codex/gpt-5.3-codex
+                               :label "GPT-5.3 Codex"
+                               :model :gpt-5.3-codex}]))]
+    (local api (if (and (= (type model.api) :table)
+                        (= (type model.api.request_options) :table))
+                   (misa.patch model.api
+                               {:request_options_serializer serializer-id})
+                   model.api))
+    (table.insert declarations
+                  (let [definition {: api
+                                    :context_window model.context_window
+                                    :id model.id
+                                    :label (or model.label model.id)
+                                    :model model.model
+                                    :provider :openai-codex}]
+                    {:catalog :models :id (. definition :id) :value definition})))
+  (table.insert declarations
+                {:catalog :effects
+                 :id :provider.openai-codex
+                 :value (fn [effect]
+                          (local body
+                                 {:include [:reasoning.encrypted_content]
+                                  :input (input effect.messages)
+                                  :instructions (or effect.system_prompt
+                                                    "You are a helpful coding assistant.")
+                                  :model effect.model
+                                  :parallel_tool_calls true
+                                  :reasoning {:summary :auto}
+                                  :store false
+                                  :stream true
+                                  :text {:verbosity :low}
+                                  :tool_choice :auto})
+                          (local request-options
+                                 (misa.request-options.serialize serializer-id
+                                                                 (or effect.request_options
+                                                                     {})))
+                          (local definitions (tools effect.tools))
+                          (when (> (length definitions) 0)
+                            (set body.tools definitions))
+                          {:completion :provider/openai-codex-complete
+                           :credential {:header :authorization
+                                        :id :openai-codex
+                                        :metadata_field :account_id
+                                        :metadata_header :chatgpt-account-id
+                                        :prefix "Bearer "}
+                           :headers [{:name :content-type
+                                      :value :application/json}
+                                     {:name :accept :value :text/event-stream}
+                                     {:name :openai-beta
+                                      :value :responses=experimental}
+                                     {:name :originator :value :misa}
+                                     {:name :user-agent :value :misa/0.1}]
+                           :id effect.id
+                           :json (misa.patch body request-options)
+                           :method :POST
+                           :response_format :sse_json_stream
+                           :timeouts config.timeouts
+                           :type :http/request
+                           :url (or config.url
+                                    "https://chatgpt.com/backend-api/codex/responses")})})
+  (each [id value (pairs records)]
+    (table.insert declarations {:catalog :codex-records : id : value}))
+  (table.insert declarations
+                {:catalog :validators
+                 :id :codex-records
+                 :value (fn [_ value]
+                          (assert (= (type value) :function)
+                                  "codex-records requires function definitions"))})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :provider/openai-codex-complete
+                         :handler stream}})
+  (definitions :provider.openai-codex declarations {}))

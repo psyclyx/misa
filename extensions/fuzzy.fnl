@@ -1,3 +1,5 @@
+(local definitions (require :misa.definitions))
+
 ;; Shared orderless fuzzy matching for every choice surface.
 (fn words [value]
   (let [result []]
@@ -25,6 +27,7 @@
   result)
 
 (fn score [query text]
+  "Score a query against text, returning nil when it does not match."
   (let [lower (text:lower)]
     (var total 0)
     (each [_ word (ipairs (words query))]
@@ -34,52 +37,52 @@
           (set total (when part (+ total part))))))
     total))
 
-(fn rank-before [left right]
+(fn rank-before? [left right]
   (let [lv (or left.item.value left.item.name "")
         rv (or right.item.value right.item.name "")]
     (if (not= left.score right.score) (< left.score right.score)
         (not= lv rv) (< lv rv)
         (< left.ordinal right.ordinal))))
 
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/service
-                         :name :fuzzy_score
-                         :value score})
-          (table.insert setup-fx
-                        {:type :register/service
-                         :name :fuzzy_choices
-                         :value (fn [source query text]
-                                  (let [ranked []
-                                        result []]
-                                    (each [ordinal item (ipairs source)]
-                                      (let [extra (if (= (type item.search)
-                                                         :string)
-                                                      item.search
-                                                      (= (type item.search)
-                                                         :table)
-                                                      (table.concat item.search
-                                                                    " ")
-                                                      "")
-                                            searchable (or (and text
-                                                                (text item))
-                                                           (.. item.value " "
-                                                               (or item.label
-                                                                   "")
-                                                               " "
-                                                               (or item.description
-                                                                   "")
-                                                               " " extra))
-                                            rank (if (= query "") 0
-                                                     (score query searchable))]
-                                        (when rank
-                                          (table.insert ranked
-                                                        {: item
-                                                         : ordinal
-                                                         :score rank}))))
-                                    (table.sort ranked rank-before)
-                                    (each [_ value (ipairs ranked)]
-                                      (table.insert result value.item))
-                                    result))})
-          {:fx setup-fx})}
+(fn []
+  "Build the declarations for fuzzy."
+  (local declarations [])
+  (table.insert declarations {:catalog :services :id :fuzzy.score :value score})
+  (table.insert declarations {:catalog :services
+                              :id :fuzzy.choices
+                              :value (fn [source query text]
+                                       "Return matching choices ordered by match quality."
+                                       (let [ranked []
+                                             result []]
+                                         (each [ordinal item (ipairs source)]
+                                           (let [extra (if (= (type item.search)
+                                                              :string)
+                                                           item.search
+                                                           (= (type item.search)
+                                                              :table)
+                                                           (table.concat item.search
+                                                                         " ")
+                                                           "")
+                                                 searchable (or (and text
+                                                                     (text item))
+                                                                (.. item.value
+                                                                    " "
+                                                                    (or item.label
+                                                                        "")
+                                                                    " "
+                                                                    (or item.description
+                                                                        "")
+                                                                    " " extra))
+                                                 rank (if (= query "") 0
+                                                          (score query
+                                                                 searchable))]
+                                             (when rank
+                                               (table.insert ranked
+                                                             {: item
+                                                              : ordinal
+                                                              :score rank}))))
+                                         (table.sort ranked rank-before?)
+                                         (each [_ value (ipairs ranked)]
+                                           (table.insert result value.item))
+                                         result))})
+  (definitions :fuzzy declarations {}))

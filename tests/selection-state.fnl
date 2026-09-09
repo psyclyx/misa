@@ -3,17 +3,26 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(each [_ name (ipairs [:json :layout :markdown :selection_document])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {}))
-(local specs ((. (fennel.dofile :extensions/selection.fnl) :setup)))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(each [_ name (ipairs [:json :layout :markdown :selection/document])]
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {})))
+(local specs ((fennel.dofile :extensions/selection.fnl) {}))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
+(each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
+
 (local document {:id :doc :kind :document :label :doc :text "one two three"
                  :first 0 :last 13 :children []})
-(misa._setup_effects {:fx [{:type :register/selection-source :id :test
-                          :value (fn [db] (if db.empty [] (or db.documents [(or db.document document)])))}]})
+
+(app.define specs)
+(app.define (definitions :fixture [{:catalog :selection-sources :id :test :value {:documents (fn [db] (if db.empty [] (or db.documents [(or db.document document)])))}}]))
+(app.define ((fennel.dofile :extensions/component/markdown.fnl) {}))
+(app.define (definitions :fixture [{:catalog :selection-actions :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}]))
+(app.define (definitions :fixture [{:catalog :selection-actions :id :inspect-ranges :value (fn [_ db]
+                 {:fx [{:type :dispatch :event {:type :test/selection-consumer
+                                               :ranges (misa.selection.ranges db)}}]})}]))
+(app.define ((fennel.dofile :extensions/keybindings.fnl) {:config {}}))
+(app.install)
 (fn transition [db type action]
   (local before (misa.json.encode db))
   (local event {: type : action})
@@ -31,7 +40,7 @@
                       (var db (opened empty))
                       (each [_ action (ipairs actions)]
                         (set db (act db action))
-                        (local projection (misa.selection_projection db))
+                        (local projection (misa.selection.state db))
                         (when projection
                           (assert (<= 0 projection.first projection.last (length document.text)))))))
                   {:cases 500 :size 20}))
@@ -40,32 +49,33 @@
 (local children [{:kind :word :label :one :first 0 :last 3}
                  {:kind :word :label :two :first 4 :last 7}
                  {:kind :word :label :three :first 8 :last 13}])
-(local original-children misa.selection_children)
-(set misa.selection_children (fn [] children))
+(local original-children misa.selection.children)
+(set misa.selection.children (fn [] children))
 (local leaf (act (opened false) :child))
 (local selected (act (act leaf :visual) :next))
-(local range (misa.selection_projection selected))
+(local range (misa.selection.state selected))
 (assert (= range.first 0))
 (assert (= range.last 7))
 (local (_ effects) (act selected :copy))
 (assert (= (. effects 2 :event :text) "one two"))
 (local parent-selected (act selected :parent))
-(assert (= (. (misa.selection_projection parent-selected) :last) 13))
+(assert (= (. (misa.selection.state parent-selected) :last) 13))
 (local visual-off (act selected :visual))
-(assert (= (. (misa.selection_projection visual-off) :first) 4))
+(assert (= (. (misa.selection.state visual-off) :first) 4))
 (assert (= (. (act selected :close) :selection) nil))
-(set misa.selection_children original-children)
-(set misa.theme_style (fn [] {:background :red}))
+(set misa.selection.children original-children)
+(set misa.themes (or misa.themes {}))
+(set misa.themes.style (fn [] {:background :red}))
 (local lines [{:source_start 0 :source_end 13 :spans [{:text document.text :source true :link :target}]}])
 (local before (misa.json.encode lines))
-(local decorated (misa.selection_decorate selected :doc document.text lines))
+(local decorated (misa.selection.decorate selected :doc document.text lines))
 (assert (= before (misa.json.encode lines)) "highlighting mutated render input")
 (assert (. decorated 1 :selected))
 (assert (= (. decorated 1 :spans 1 :link) :target))
 (local chrome-lines [{:spans [{:text "Title" :style {:bold true}}]}
                      {:spans [{:text "│ " :style {}} {:text document.text :source true :style {}}
                               {:text "   " :style {}}]}])
-(local whole-decorated (misa.selection_decorate (opened false) :doc document.text chrome-lines))
+(local whole-decorated (misa.selection.decorate (opened false) :doc document.text chrome-lines))
 (assert (= (. whole-decorated 1 :spans 1 :style :background) nil)
         "whole-document selection highlighted title chrome")
 (assert (= (. whole-decorated 2 :spans 1 :style :background) nil)
@@ -73,39 +83,38 @@
 (assert (= (. whole-decorated 2 :spans 2 :style :background) :red))
 (assert (= (. whole-decorated 2 :spans 3 :style :background) nil)
         "whole-document selection highlighted padding")
-(assert (= (misa.selection_decorate selected :other document.text chrome-lines) chrome-lines)
+(assert (= (misa.selection.decorate selected :other document.text chrome-lines) chrome-lines)
         "unselected document lost identity or gained highlighting")
-(misa._setup (fennel.dofile :extensions/component/markdown.fnl) {})
-(local plain-lines (misa.markdown_view.plain document.text {}))
-(local plain-decorated (misa.selection_decorate selected :doc document.text plain-lines))
+
+(local plain-lines (misa.markdown.view.plain document.text {}))
+(local plain-decorated (misa.selection.decorate selected :doc document.text plain-lines))
 (assert (. plain-decorated 1 :selected) "plain transcript text cannot display a partial range")
 (assert (= (. plain-decorated 1 :spans 1 :text) "one two"))
 (assert (= (. plain-decorated 1 :spans 2 :text) " three"))
-(local rule (. (misa.markdown_view.project "---" {:columns 8}) :lines))
+(local rule (. (misa.markdown.view.project "---" {:columns 8}) :lines))
 (assert (. rule 1 :spans 1 :source) "thematic rule lost its content identity")
 (local rule-text "---\n\nparagraph")
-(local rule-selection (act (transition {:document (misa.selection_document :rule :Rule rule-text)}
+(local rule-selection (act (transition {:document (misa.selection.document :rule :Rule rule-text)}
                                       :selection/open) :child))
-(local rule-lines (. (misa.markdown_view.project rule-text {:columns 8}) :lines))
-(local rule-decorated (misa.selection_decorate rule-selection :rule rule-text rule-lines))
+(local rule-lines (. (misa.markdown.view.project rule-text {:columns 8}) :lines))
+(local rule-decorated (misa.selection.decorate rule-selection :rule rule-text rule-lines))
 (assert (. rule-decorated 1 :selected) "selected rule inside a document was not highlighted")
 (local blank-document {:id :blank :text "\n" :kind :document :label :Blank
                        :first 0 :last 1 :children []})
 (local blank-selection (transition {:document blank-document} :selection/open))
 (local blank-lines [{:spans [{:text "Blank title" :style {}}]}
                     {:spans [{:text "" :style {} :source true}]}])
-(local blank-decorated (misa.selection_decorate blank-selection :blank "\n" blank-lines))
+(local blank-decorated (misa.selection.decorate blank-selection :blank "\n" blank-lines))
 (assert (. blank-decorated 1 :selection_anchor)
         "selection with no visible source lost its navigation anchor")
 (assert (= (. blank-decorated 1 :selection_id) :blank))
 (assert (= (. blank-decorated 1 :spans 1 :style :background) nil))
 (assert (= (. blank-lines 1 :selection_anchor) nil) "anchor mutated retained output")
-(misa._setup_effects {:fx [{:type :register/selection-action :id :custom
-                          :value (fn [state] {:state (misa.patch state {:custom true})})}]})
+
 (assert (. (act selected :custom) :selection :custom))
 (each [_ newline (ipairs ["\n" "\r\n"])]
   (local text (table.concat ["- parent é" "  - nested 🙂" "    continued" "- sibling" "" "paragraph"] newline))
-  (local tree (misa.selection_document :list :List text))
+  (local tree (misa.selection.document :list :List text))
   (local list (. tree.children 1))
   (assert (= list.kind :list))
   (assert (= (length list.children) 2))
@@ -119,7 +128,7 @@
   (assert (= (. tree.children 2 :kind) :paragraph))
   (local item (act (act (transition {:document tree} :selection/open) :child) :child))
   (local range-db (act (act item :visual) :next))
-  (local selected-range (misa.selection_projection range-db))
+  (local selected-range (misa.selection.state range-db))
   (assert (= selected-range.first list.first))
   (assert (= selected-range.last list.last))
   (local (_ copied) (act range-db :copy))
@@ -130,46 +139,42 @@
                    (<= child.last node.last)))
       (bounds child)))
   (bounds tree))
-(local documents [(misa.selection_document :a :A "alpha\r\n\r\nomega")
-                  (misa.selection_document :b :B "middle 🙂")
-                  (misa.selection_document :c :C "last é")])
+(local documents [(misa.selection.document :a :A "alpha\r\n\r\nomega")
+                  (misa.selection.document :b :B "middle 🙂")
+                  (misa.selection.document :c :C "last é")])
 (local multi (transition {: documents} :selection/open))
 (local backwards (act (act multi :visual) :previous))
-(local slices (misa.selection_ranges backwards))
+(local slices (misa.selection.ranges backwards))
 (assert (= (length slices) 2))
 (assert (and (= (. slices 1 :id) :b) (= (. slices 2 :id) :c)))
-(assert (= (misa.selection_projection backwards :a) nil))
+(assert (= (misa.selection.state backwards :a) nil))
 (local (_ copied) (act backwards :copy))
 (assert (= (. copied 2 :event :text) "middle 🙂\n\nlast é"))
 (local all (act backwards :first))
-(assert (= (length (misa.selection_ranges all)) 3))
+(assert (= (length (misa.selection.ranges all)) 3))
 (local (_ copied-all) (act all :copy))
 (assert (= (. copied-all 2 :event :text) "alpha\r\n\r\nomega\n\nmiddle 🙂\n\nlast é"))
 (local first-doc (act multi :first))
 (local second-paragraph (act (act first-doc :child) :next))
 (local partial-range (act (act (act second-paragraph :visual) :parent) :next))
-(local partial-range-slices (misa.selection_ranges partial-range))
+(local partial-range-slices (misa.selection.ranges partial-range))
 (assert (= (. partial-range-slices 1 :first) 9))
 (local (_ copied-partial-range) (act partial-range :copy))
 (assert (= (. copied-partial-range 2 :event :text) "omega\n\nmiddle 🙂"))
-(local selected-b (misa.selection_projection partial-range :b))
+(local selected-b (misa.selection.state partial-range :b))
 (assert (and (= selected-b.first 0) (= selected-b.last (length "middle 🙂"))))
-(local highlighted (misa.selection_decorate partial-range :b "middle 🙂"
+(local highlighted (misa.selection.decorate partial-range :b "middle 🙂"
                                            [{:spans [{:text "middle 🙂" :source true}]}]))
 (assert (. highlighted 1 :selected) "nonfocused selected document was not highlighted")
 (local frozen (misa.patch partial-range {:documents (misa.replace [])}))
-(assert (= (misa.json.encode (misa.selection_ranges frozen))
+(assert (= (misa.json.encode (misa.selection.ranges frozen))
            (misa.json.encode partial-range-slices)) "live document changes moved frozen selection")
 (local reversed (act partial-range :previous))
-(assert (= (length (misa.selection_ranges reversed)) 1))
-(assert (= (length (misa.selection_ranges (act partial-range :visual))) 1))
+(assert (= (length (misa.selection.ranges reversed)) 1))
+(assert (= (length (misa.selection.ranges (act partial-range :visual))) 1))
 ;; A non-clipboard consumer gets the same frozen source ranges through the
 ;; public action registry. Navigation does not prescribe what consumes them.
-(misa._setup_effects
- {:fx [{:type :register/selection-action :id :inspect-ranges
-        :value (fn [_ db]
-                 {:fx [{:type :dispatch :event {:type :test/selection-consumer
-                                               :ranges (misa.selection_ranges db)}}]})}]})
+
 (local (consumed consumer-fx) (act frozen :inspect-ranges))
 (assert (= (length consumer-fx) 2))
 (assert (= (. consumer-fx 2 :event :type) :test/selection-consumer))
@@ -184,7 +189,7 @@
                     (each [_ action (ipairs actions)]
                       (set state (act state action))
                       (var previous-index 0)
-                      (each [_ slice (ipairs (misa.selection_ranges state))]
+                      (each [_ slice (ipairs (misa.selection.ranges state))]
                         (local index (. state.selection.indices slice.id))
                         (assert (> index previous-index) "range slices lost document order")
                         (assert (<= 0 slice.first slice.last (length slice.text))
@@ -194,16 +199,16 @@
 (assert (not multi-failure) (and multi-failure (fennel.view multi-failure)))
 (output "selection state properties passed\n")
 ;; Legacy terminals emit shifted letters as uppercase text; Kitty emits a key.
-(misa._setup (fennel.dofile :extensions/keybindings.fnl) {:config {}})
-(assert (= (misa.keybinding_action :selection {:kind :text :text :J}) :child))
-(assert (= (misa.keybinding_action :selection {:kind :key :key :shift+j}) :child))
-(assert (= (misa.keybinding_action :selection {:kind :text :text :K}) :parent))
-(assert (= (misa.keybinding_action :selection {:kind :key :key :shift+k}) :parent))
+
+(assert (= (misa.keybindings.action :selection {:kind :text :text :J}) :child))
+(assert (= (misa.keybindings.action :selection {:kind :key :key :shift+j}) :child))
+(assert (= (misa.keybindings.action :selection {:kind :text :text :K}) :parent))
+(assert (= (misa.keybindings.action :selection {:kind :key :key :shift+k}) :parent))
 ;; Directional motions use source rows and retain the desired display column.
 (fn selected-source [db]
-  (local selected (misa.selection_projection db))
+  (local selected (misa.selection.state db))
   (selected.text:sub (+ selected.first 1) selected.last))
-(local multiline (misa.selection_document :geometry :geometry "one    two\nx\nthree  four"))
+(local multiline (misa.selection.document :geometry :geometry "one    two\nx\nthree  four"))
 (local at-one (act (act (act (transition {:document multiline} :selection/open) :child) :child) :child))
 (assert (= (selected-source at-one) :one))
 (local at-two (act at-one :right))
@@ -215,7 +220,7 @@
 (assert (= (selected-source at-four) :four) "vertical motion forgot its preferred column")
 (assert (= (selected-source (act (act at-four :up) :up)) :two))
 (assert (= (selected-source (act at-four :left)) :three))
-(local list-document (misa.selection_document :list-geometry :list "- first\n- second"))
+(local list-document (misa.selection.document :list-geometry :list "- first\n- second"))
 (local first-item (act (act (transition {:document list-document} :selection/open) :child) :child))
 (assert (= (selected-source (act first-item :right)) "- first") "right moved a list item vertically")
 (assert (= (selected-source (act first-item :down)) "- second"))

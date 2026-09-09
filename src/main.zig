@@ -2,7 +2,6 @@
 const std = @import("std");
 const auth = @import("misa_auth");
 const provider_auth = @import("misa_provider_auth");
-const config_module = @import("misa_config");
 const lua = @import("misa_lua_runtime");
 const mcp = @import("misa_mcp");
 const standard_extensions = @import("misa_standard_extensions");
@@ -69,24 +68,8 @@ pub fn main(init: std.process.Init) !void {
     if (config_path == null) config_path = init.environ_map.get("MISA_CONFIG");
     const path = config_path orelse standard_extensions.default_config_path;
 
-    const source = std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(16 * 1024 * 1024)) catch |err| {
-        std.debug.print("misa: cannot read config '{s}': {s}\n", .{ path, @errorName(err) });
-        std.process.exit(2);
-    };
-    defer allocator.free(source);
-
-    var config = config_module.parse(allocator, source) catch |err| {
-        std.debug.print("misa: invalid config '{s}': {s}\n", .{ path, @errorName(err) });
-        std.process.exit(2);
-    };
-    defer config.deinit();
-
     const grammar_dir = init.environ_map.get("MISA_TREE_SITTER_DIR") orelse syntax_module.default_grammar_dir;
-    var runtime = lua.Runtime.init(allocator, config.config_value, extension_argv.items) catch |err| {
-        if (err == error.MaximumNestingDepth) {
-            std.debug.print("misa: invalid config '{s}': nesting exceeds maximum depth of {d}\n", .{ path, lua.max_nesting_depth });
-            std.process.exit(2);
-        }
+    var runtime = lua.Runtime.init(allocator, .{ .object = .{} }, extension_argv.items) catch |err| {
         std.debug.print("misa: cannot initialize LuaJIT: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -98,29 +81,19 @@ pub fn main(init: std.process.Init) !void {
 
     const extension_dir = init.environ_map.get("MISA_EXTENSION_DIR");
 
-    for (0..config.extensions.len) |extension_index| {
-        const configured = config.extensionPath(extension_index);
-        const resolved = standard_extensions.resolve(allocator, configured, extension_dir) catch |err| switch (err) {
-            error.UnknownStandardExtension => {
-                std.debug.print(
-                    "misa: invalid config '{s}': unknown standard extension ID '{s}' (use a documented standard ID, or a path containing '/' or ending in .lua for a custom extension)\n",
-                    .{ path, configured },
-                );
-                std.process.exit(2);
-            },
-            error.ExtensionPathContainsNul => {
-                std.debug.print("misa: invalid config '{s}': extension path contains NUL\n", .{path});
-                std.process.exit(2);
-            },
-            else => return err,
-        };
-        defer allocator.free(resolved);
-        runtime.loadExtension(resolved) catch {
-            std.debug.print("misa: {s}\n", .{runtime.lastError()});
-            std.process.exit(1);
-        };
-    }
-    runtime.setup() catch {
+    try runtime.addModuleDirectory(extension_dir orelse standard_extensions.default_extension_dir, extension_dir != null);
+    const absolute_path = std.Io.Dir.cwd().realPathFileAlloc(init.io, path, allocator) catch |err| {
+        std.debug.print("misa: cannot read config '{s}': {s}\n", .{ path, @errorName(err) });
+        std.process.exit(2);
+    };
+    defer allocator.free(absolute_path);
+    try runtime.addModuleDirectory(std.fs.path.dirname(absolute_path).?, true);
+    var evaluated_config = runtime.loadConfiguration(absolute_path) catch {
+        std.debug.print("misa: {s}\n", .{runtime.lastError()});
+        std.process.exit(1);
+    };
+    defer evaluated_config.deinit();
+    runtime.installConfiguration() catch {
         std.debug.print("misa: {s}\n", .{runtime.lastError()});
         std.process.exit(1);
     };
@@ -133,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    runSession(init, allocator, &runtime, grammar_dir, config.config_value) catch |err| {
+    runSession(init, allocator, &runtime, grammar_dir, evaluated_config.value) catch |err| {
         if (err == error.LuaTransactionFailed)
             std.debug.print("misa: {s}\n", .{runtime.lastError()})
         else

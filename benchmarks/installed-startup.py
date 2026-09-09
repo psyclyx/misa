@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="misa-installed-startup-") as directory:
             if mode == "source":
                 environment["MISA_EXTENSION_DIR"] = str(root / "extensions")
             start = time.perf_counter()
-            result = subprocess.run([str(executables[mode]), "--config", str(root / "config/default.json")],
+            result = subprocess.run([str(executables[mode])],
                                     env=environment, input=b"", capture_output=True,
                                     check=True, timeout=30)
             samples[mode].append(time.perf_counter() - start)

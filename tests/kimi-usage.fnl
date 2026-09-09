@@ -1,14 +1,17 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.install)
 (set misa.protocols {:anthropic (fn [] {:fx []})})
 (local feature (fennel.dofile :extensions/provider/kimi.fnl))
 (fn handlers-for [region]
   (local result {})
-  (each [_ spec (ipairs (. (feature.setup {:config {:providers {:kimi {: region}}}}) :fx))]
-    (when (= spec.type :register/event) (tset result spec.name spec.handler)))
+  (each [_ spec (pairs (. (feature {:config {:providers {:kimi {: region}}}}) :events))]
+  (tset result spec.event spec.handler))
   result)
 (local handlers (handlers-for :global))
 (fn apply [db event]

@@ -1,3 +1,5 @@
+(local definitions (require :misa.definitions))
+
 (fn same-data [a b]
   (if (= a b) true
       (or (not= (type a) :table) (not= (type b) :table)) false
@@ -8,57 +10,43 @@
         (each [key _ (pairs b)] (when (= (. a key) nil) (set same false)))
         same)))
 
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:description "first positional command"
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:description "first positional command"
                                  :event :test/alpha
-                                 :name :/alpha}})
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:description "nested one"
+                                 :name :/alpha}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        (let [definition {:description "nested one"
                                  :event :test/team
-                                 :name :/team/one}})
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:description "nested two"
+                                 :name :/team/one}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        (let [definition {:description "nested two"
                                  :event :test/team
-                                 :name :/team/two}})
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:completion :test-values
+                                 :name :/team/two}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        (let [definition {:completion :test-values
                                  :description "inline overlay"
                                  :event :test/choose
-                                 :name :/choose}})
-          (table.insert setup-fx
-                        {:type :register/completion
-                         :group :test-values
-                         :value {:value :alpha}})
-          (table.insert setup-fx
-                        {:type :register/completion
-                         :group :test-values
-                         :value {:label :Beta :value :beta}})
+                                 :name :/choose}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        {:catalog :completions :id (.. :test-values "/" (. {:value :alpha} :value)) :value {:group :test-values :value {:value :alpha}}})
+          (table.insert declarations
+                        {:catalog :completions :id (.. :test-values "/" (. {:label :Beta :value :beta} :value)) :value {:group :test-values :value {:label :Beta :value :beta}}})
 
           (fn done [text]
             {:fx [{:lines [{:spans [{:style {:foreground :default} : text}]}]
                    :type :view/commit}
                   {:type :app/quit}]})
 
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/alpha
-                         :handler (fn [] (done "inline hotkey"))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/choose
-                         :handler (fn [_ event]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/alpha :handler (fn [] (done "inline hotkey"))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/choose :handler (fn [_ event]
                                     (assert (= event.arguments :beta))
-                                    (done "promoted inline"))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :picker/open
-                         :handler (fn [db event]
+                                    (done "promoted inline"))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :picker/open :handler (fn [db event]
                                     (if (and (= event.id :inline-choice)
                                              event.choose_view)
                                         (do
@@ -67,15 +55,13 @@
                                                        (same-data db.picker.parent.session event.session))
                                                   "inline replace_view did not preserve its session in picker-picker")
                                           (done "inline view picker"))
-                                        nil))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :terminal/input
-                         :handler (fn [db event]
+                                        nil))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :terminal/input :handler (fn [db event]
                                     (when (and (= event.kind :text)
                                                (= event.text "/"))
                                       (local projection
-                                             (misa.editor_projection db))
+                                             (misa.editor.layout db))
                                       (var hinted false)
                                       (each [_ line (ipairs projection.completions)]
                                         (var text "")
@@ -85,6 +71,6 @@
                                           (set hinted true)))
                                       (assert hinted
                                               "inline configured positional hint disappeared"))
-                                    nil)})
+                                    nil)}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.inline-choices declarations {}))

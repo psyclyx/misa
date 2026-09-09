@@ -167,8 +167,8 @@ facts into an open preview renderer. The shared `values` extension owns formatti
 without a status dependency. Response metadata appears only on its designated
 block; pending, estimated, partial unknown, and reported costs remain distinct.
 
-`choice_preview` owns preview rendering and configurable type-to-renderer dispatch.
-`choice_layout` measures its semantic lines once; picker rendering and input share
+`choices.preview` owns preview rendering and configurable type-to-renderer dispatch.
+`choices.layout` measures its semantic lines once; picker rendering and input share
 the resulting geometry. The geometry retains the raw preview model as well.
 `tests/choice-preview.fnl` verifies compact/full pricing, zero rates, overrides,
 narrow geometry, and action/link/animation metadata preservation. Models and costs

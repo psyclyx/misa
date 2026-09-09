@@ -1,33 +1,24 @@
-{:setup (fn []
-          (local setup-fx [])
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
           (var received nil)
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :test.immutable
-                         :value {:render (fn [model]
+          (table.insert declarations
+                        {:catalog :components :id :test.immutable :value {:render (fn [model]
                                            (set received model)
                                            {:lines [{:spans [{:style :plain
                                                               :text "plain then **bold** and é界"}]}]})}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (local failures
                                            [(pcall (fn []
-                                                     (misa._setup_effects {:fx [{:type :register/component
-                                                                                 :id :late.component
-                                                                                 :value {:render (fn []
-                                                                                                   {:lines {}})}}]})
+                                                     (misa._install {} {})
                                                      nil))
                                             (pcall (fn []
-                                                     (misa._setup_effects {:fx [{:type :register/theme
-                                                                                 :id :late
-                                                                                 :value {}}]})
+                                                     (misa._install {} {})
                                                      nil))
                                             (pcall (fn []
-                                                     (misa._setup_effects {:fx [{:type :register/animation
-                                                                                 :id :late
-                                                                                 :value {:frames [:x]}}]})
+                                                     (misa._install {} {})
                                                      nil))])
                                     (assert (and (and (not (. failures 1))
                                                       (not (. failures 2)))
@@ -35,7 +26,7 @@
                                             "semantic registries did not seal at app/start")
                                     (local render-db (misa.patch db {:marker :original}))
                                     (local model {:text :original})
-                                    (misa.render_component render-db :test.role model
+                                    (misa.components.render render-db :test.role model
                                                            {})
                                     (assert (= received model)
                                             "component boundary copied immutable input")
@@ -43,7 +34,7 @@
                                                  (= model.text :original))
                                             "component projection mutated canonical input")
                                     (local clipped
-                                           (misa.ui_bound_frame [{:spans [{:text :a}
+                                           (misa.ui.bound-frame [{:spans [{:text :a}
                                                                           {:link "https://one"
                                                                            :style {:bold true}
                                                                            :text "👩‍"}
@@ -75,7 +66,7 @@
                                     (assert (= clipped.cursor.byte 12)
                                             "final clipping produced an invalid grapheme cursor")
                                     (local omitted
-                                           (misa.ui_bound_frame [{:spans [{:text :a}
+                                           (misa.ui.bound-frame [{:spans [{:text :a}
                                                                           {:text "👩‍"}
                                                                           {:text "💻z"}]}]
                                                                 2
@@ -97,16 +88,14 @@
                                                    :type :terminal/input}
                                            :type :dispatch}
                                           {:event {:type :test/busy-done}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/busy-done
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/busy-done :handler (fn [db event]
                                     (assert (= db.editor.text :ignored)
                                             "busy input was discarded")
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text "review regressions"}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.review-regressions declarations {}))

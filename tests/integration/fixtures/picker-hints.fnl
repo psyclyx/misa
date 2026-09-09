@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:completion :hints/done
                                                    :id :hints
                                                    :items [{:label :One
@@ -11,13 +11,11 @@
                                                    :title :Hints
                                                    :token "hints:1"
                                                    :type :picker/open}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :picker/open
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :picker/open :handler (fn [db]
                                     (local layers
-                                           (misa.view_layers db
+                                           (misa.ui.layers db
                                                              {:available_lines 18
                                                               :terminal {:columns 80
                                                                          :lines 20}}))
@@ -33,6 +31,6 @@
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :hints}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.picker-hints declarations {}))

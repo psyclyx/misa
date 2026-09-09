@@ -1,47 +1,37 @@
-{:setup (fn []
-          (local setup-fx [])
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
           (local lifecycle {:block_end 0
                             :block_start 0
                             :delta 0
                             :finish 0
                             :start 0})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/response-start
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/response-start :handler (fn []
                                     (set lifecycle.start (+ lifecycle.start 1))
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/block-start
-                         :handler (fn []
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/block-start :handler (fn []
                                     (set lifecycle.block_start
                                          (+ lifecycle.block_start 1))
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/block-delta
-                         :handler (fn []
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/block-delta :handler (fn []
                                     (set lifecycle.delta (+ lifecycle.delta 1))
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/block-end
-                         :handler (fn []
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/block-end :handler (fn []
                                     (set lifecycle.block_end
                                          (+ lifecycle.block_end 1))
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/response-end
-                         :handler (fn []
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/response-end :handler (fn []
                                     (set lifecycle.finish
                                          (+ lifecycle.finish 1))
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/completed
-                         :handler (fn [db]
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
                                     (assert (and (= db.agent.usage.input_tokens
                                                     2)
                                                  (= db.agent.usage.output_tokens
@@ -80,6 +70,6 @@
                                                        :chunks)
                                                     nil))
                                             "stream chunks were not compacted once")
-                                    nil)})
+                                    nil)}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.stream-check declarations {}))

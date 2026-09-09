@@ -10,35 +10,31 @@
   (fennel.dofile :src/lua_runtime/framework.fnl)
   (local app _G.misa)
   (local context {:argv [] :config {}})
+  (local construction ((require :tests.application) context))
   (local routes [])
   (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices :values
-                         :choice_preview :choice_layout :dialogs :picker :omnipicker
+                         :choices/preview :choices/layout :dialogs :picker :omnipicker
                          :history :editor :editing :selection :messages :models])]
-    (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
-    (each [_ spec (ipairs specs.fx)]
-      (assert (not= spec.type :register/interceptor))
-      (if (= spec.type :register/event-route) (table.insert routes spec)
-          (not= spec.type :register/event) (app._setup_effects {:fx [spec]}))))
-  (app._setup_effects
-   {:fx [{:type :register/action
-          :value {:id :test.custom :label "Custom" :keys [:alt+z]
-                  :event {:type :custom :payload {:value 1}}
-                  :available (fn [db] db.allow_custom)}}]})
-  (if reverse
-      (for [i (length routes) 1 -1] (app._setup_effects {:fx [(. routes i)]}))
-      (each [_ route (ipairs routes)] (app._setup_effects {:fx [route]})))
+    (local description ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+    (assert (= description.interceptors nil))
+    (each [id value (pairs (or description.routes {}))] (table.insert routes {: id : value}))
+    (construction.define (collect [kind entries (pairs description)]
+                           (when (and (not= kind :routes) (not= kind :events)) (values kind entries)))))
+  (construction.define {:actions {:test.custom {:label "Custom" :keys [:alt+z]
+                                                :event {:type :custom :payload {:value 1}}
+                                                :available (fn [db] db.allow_custom)}}})
+  (fn add-route [entry] (construction.define {:routes {entry.id entry.value}}))
+  (if reverse (for [i (length routes) 1 -1] (add-route (. routes i)))
+      (each [_ route (ipairs routes)] (add-route route)))
   (var observed nil)
   (var state nil)
   (each [_ name (ipairs [:terminal/input :actions/open :dialog/input :picker/input
                          :choices/dispatch :choices/ignored :omnipicker/open :custom :history/previous :history/next
                          :history/search :editing/action :editing/interrupt :selection/action
                          :selection/open :messages/scroll :messages/toggle-verbose :model/picker-open])]
-    (app._setup_effects
-     {:fx [{:type :register/event : name
-            :handler (fn [db event] (set observed event) (set state db) nil)}]}))
-  (app._setup_effects
-   {:fx [{:type :register/event :name :test/state :handler (fn [_ event] {:patch event.patch})}]})
-  (app._seal context)
+    (construction.define {:events {name {:event name :handler (fn [db event] (set observed event) (set state db) nil)}}}))
+  (construction.define {:events {:test/state {:event :test/state :handler (fn [_ event] {:patch event.patch})}}})
+  (construction.install)
   (fn dispatch [event]
     (set _G.misa app)
     (local fx (app._dispatch event {:columns 80 :lines 24 :interactive true}
@@ -120,50 +116,43 @@
                   {:cases 500}))
 (assert (not failure) (and failure (fennel.view failure)))
 
-;; The route primitive is event-scoped, not terminal-specific middleware.
+;; Routes inspect only their named source event.
 (set _G.debug runtime-debug)
-  (set _G.os runtime-os)
+(set _G.os runtime-os)
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app _G.misa)
-(app._setup (fennel.dofile :extensions/json.fnl) {})
-(app._setup (fennel.dofile :extensions/keybindings.fnl) {:config {}})
+(local construction ((require :tests.application) {:argv [] :config {}}))
+(construction.include (fennel.dofile :extensions/json.fnl) {})
+(construction.include (fennel.dofile :extensions/keybindings.fnl) {:config {}})
 (local calls {})
 (var observed nil)
 (var saved nil)
 (each [_ id (ipairs [:left :right])]
-  (app._setup_effects
-   {:fx [{:type :register/event-route
-          :value {: id :event :test/source :priority 10 :context [:db/path id]
-                  :resolve (fn [context event]
-                             (tset calls id (+ (or (. calls id) 0) 1))
-                             (if (= context :invalid) false
-                                 {:type :test/target : context :payload event.payload}))}}
-         {:type :register/keybinding
-          :value {:context :test/collision :action id :default [:x]}}]}))
-(assert (not (pcall app.keybinding_action :test/collision {:kind :text :text :x}))
-        "keybinding collision used registration order")
-(app._setup_effects
- {:fx [{:type :register/event-route
-        :value {:id :fallback :event :test/source :priority 0 :context [:db]
-                :resolve (fn [] (tset calls :fallback (+ (or calls.fallback 0) 1)) nil)}}
-       {:type :register/event-route
-        :value {:id :target-route :event :test/target :priority 0 :context [:db]
-                :resolve (fn [] (error "routed event was recursively routed"))}}
-       {:type :register/event :name :test/state :handler (fn [_ event] {:patch event.patch})}
-       {:type :register/event :name :test/read :handler (fn [db] (set saved db) nil)}]})
+  (construction.define
+   {:routes {id {:event :test/source :priority 10 :context [:db/path id]
+                 :resolve (fn [context event]
+                            (tset calls id (+ (or (. calls id) 0) 1))
+                            (if (= context :invalid) false
+                                {:type :test/target : context :payload event.payload}))}}
+    :keybindings {id {:context :test/collision :action id :default [:x]}}}))
+(construction.define
+ {:routes {:fallback {:event :test/source :priority 0 :context [:db]
+                      :resolve (fn [] (tset calls :fallback (+ (or calls.fallback 0) 1)) nil)}
+           :target-route {:event :test/target :priority 0 :context [:db]
+                          :resolve (fn [] (error "routed event was recursively routed"))}}
+  :events {:test/state {:event :test/state :handler (fn [_ event] {:patch event.patch})}
+           :test/read {:event :test/read :handler (fn [db] (set saved db) nil)}}})
 (each [_ name (ipairs [:test/source :test/target :test/unrelated])]
-  (app._setup_effects
-   {:fx [{:type :register/event : name
-          :handler (fn [_ event] (set observed event)
-                     {:fx [{:type :dispatch :event {:type :test/one-effect}}]})}]}))
-(assert (not (pcall app._setup_effects
-                    {:fx [{:type :register/interceptor :value {:id :legacy :before (fn [tx] tx)}}]}))
-        "legacy global hook is still accepted")
-(assert (not (pcall app._setup_effects
-                    {:fx [{:type :register/event-route
-                           :value {:id :left :event :other :priority 0 :context [:db] :resolve (fn [])}}]}))
-        "duplicate route id was accepted")
-(app._seal {:argv [] :config {}})
+  (construction.define
+   {:events {name {:event name :handler (fn [_ event] (set observed event)
+                                         {:fx [{:type :dispatch :event {:type :test/one-effect}}]})}}}))
+(assert (= app.reg_interceptor nil) "legacy global hook is still exposed")
+(assert (not (pcall construction.define
+                    {:routes {:left {:event :other :priority 0 :context [:db] :resolve (fn [])}}}))
+        "duplicate route ID was accepted")
+(construction.install)
+(assert (not (pcall app.keybindings.action :test/collision {:kind :text :text :x}))
+        "keybinding collision used declaration order")
 (fn step [event]
   (local fx (app._dispatch event {:columns 80 :lines 24 :interactive false}
                           {:wall_ms 0 :monotonic_ms 0}))

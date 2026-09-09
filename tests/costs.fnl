@@ -1,31 +1,29 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :priced/model
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:id :priced/model
                                  :label "Friendly hidden name"
                                  :model :model
                                  :pricing {:cache_read 0.5
                                            :cache_write 3
                                            :input 2
                                            :output 8}
-                                 :provider :priced}})
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :unknown/model
+                                 :provider :priced}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        (let [definition {:id :unknown/model
                                  :model :model
-                                 :provider :unknown}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+                                 :provider :unknown}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (fn close [a b]
                                       (assert (< (math.abs (- a b)) 1e-09)
                                               (.. (tostring a) " ~= " b))
                                       nil)
 
                                     (local inclusive
-                                           (misa.cost_estimate {:cache_read 0.5
+                                           (misa.costs.estimate {:cache_read 0.5
                                                                 :input 2
                                                                 :output 8}
                                                                {:cache_read_tokens 600
@@ -36,7 +34,7 @@
                                     (assert (and inclusive.estimated
                                                  (not inclusive.unknown)))
                                     (local exclusive
-                                           (misa.cost_estimate {:cache_read 0.5
+                                           (misa.costs.estimate {:cache_read 0.5
                                                                 :input 2
                                                                 :output 8}
                                                                {:cache_read_tokens 600
@@ -44,19 +42,19 @@
                                                                 :input_tokens 400
                                                                 :output_tokens 100}))
                                     (close exclusive.usd inclusive.usd)
-                                    (assert (. (misa.cost_estimate {:input 2
+                                    (assert (. (misa.costs.estimate {:input 2
                                                                     :output 8}
                                                                    {:cache_read_tokens 20
                                                                     :input_tokens 100})
                                                :unknown)
                                             "missing cache prices invented a cost")
-                                    (assert (= (. (misa.cost_estimate nil
+                                    (assert (= (. (misa.costs.estimate nil
                                                                       {:cost_usd 0})
                                                   :usd)
                                                0)
                                             "free reported usage was treated as unknown")
                                     (local matches
-                                           (misa.command_completions (misa.command :/model)
+                                           (misa.commands.completions (misa.commands.lookup :/model)
                                                                      "" db))
                                     (assert (and (= (. matches 1 :display
                                                        :label)
@@ -66,7 +64,7 @@
                                                     nil))
                                             "friendly model name leaked into display")
                                     (local session
-                                           (misa.choice_session {:items matches
+                                           (misa.choices.session {:items matches
                                                                  :query "friendly hidden"
                                                                  :title :Models}
                                                                 db))
@@ -77,9 +75,9 @@
                                                        1 :id)
                                                     :priced/model))
                                             "friendly name stopped matching search")
-                                    (assert (= (. (misa.model_cost_info db :priced/model) :pricing :input) 2)
+                                    (assert (= (. (misa.costs.model db :priced/model) :pricing :input) 2)
                                             "model info lost configured rates")
-                                    (assert (= (. (misa.model_cost_info db
+                                    (assert (= (. (misa.costs.model db
                                                                         :unknown/model)
                                                   :unavailable)
                                                true))
@@ -112,13 +110,11 @@
                                                :type :transcript/response-end
                                                :usage {:cost_usd 0.012}})
                                     (dispatch {:type :test/costs-check})
-                                    { : fx})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/costs-check
-                         :handler (fn [db]
+                                    { : fx})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/costs-check :handler (fn [db]
                                     (local first
-                                           (misa.response_cost_projection db :a))
+                                           (misa.costs.response db :a))
                                     (assert (= first.type :money))
                                     (assert (= first.currency :USD))
                                     (assert (= first.text nil))
@@ -128,7 +124,7 @@
                                     (assert (and first.estimated
                                                  (not first.unknown)))
                                     (local second
-                                           (misa.response_cost_projection db :b))
+                                           (misa.costs.response db :b))
                                     (assert (and (and (= second.amount 0.012)
                                                       (not second.estimated))
                                                  (not second.unknown))
@@ -143,11 +139,9 @@
                                      :fx [{:event {:type :transcript/reset}
                                            :type :dispatch}
                                           {:event {:type :test/costs-reset}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/costs-reset
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/costs-reset :handler (fn [db]
                                     (assert (and (= (. (misa.sub db [:costs/total])
                                                        :usd)
                                                     0)
@@ -158,6 +152,6 @@
                                     {
                                      :fx [{:lines [{:spans [{:text :costs}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.costs declarations {}))

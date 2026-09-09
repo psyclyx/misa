@@ -3,15 +3,19 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local declarations (require :misa.definitions))
 (each [_ name (ipairs [:json :protocol/anthropic])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
-(local specs (misa.protocols.anthropic {:id :test :url "https://example.invalid/messages"
+  (app.include (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
+(local protocol (require :protocol.anthropic))
+(local specs (protocol.configure {:id :test :url "https://example.invalid/messages"
                                       :models_url "https://example.invalid/models?region=test"
                                       :models [] :credential :test :catalogue_authoritative true
                                       :model_filter (fn [model] (not= model.id :skip))}))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(each [_ spec (pairs specs.events)]
+  (tset handlers spec.event spec.handler))
+(app.install)
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
   (local result ((. handlers event.type) db event))

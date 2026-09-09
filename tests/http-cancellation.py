@@ -9,6 +9,9 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 from fixture_environment import fixture_environment
 
 
@@ -51,16 +54,16 @@ def main():
                 thread.start()
                 fixture = work / 'fixture.lua'
                 fixture.write_text('''
-return {setup=function(ctx)
-  return {fx={
-    {type='register/event', name='app/start', handler=function()
+return function(ctx)
+  return {events={
+    start={event='app/start', handler=function()
       return {fx={{type='http/request', id='request', completion='test/http',
         url=ctx.config.url, method=ctx.config.mode == 'gzip' and 'POST' or 'GET',
         json=ctx.config.mode == 'gzip' and {hello='world'} or nil,
         response_format=ctx.config.format,
         timeouts={first_byte_ms=2000, idle_ms=100, overall_ms=5000}}}}
     end},
-    {type='register/event', name='test/http', handler=function(db,event)
+    http={event='test/http', handler=function(db,event)
       if event.phase == 'start' then return nil end
       if ctx.config.mode == 'gzip' then
         assert(event.ok and event.status == 200 and event.data.answer == 42)
@@ -79,11 +82,11 @@ return {setup=function(ctx)
                   {type='app/quit'}}}
     end}
   }}
-end}
+end
 ''')
                 expected = 'gzip' if mode == 'gzip' else 'Canceled' if mode == 'cancel' else 'IdleTimeout'
-                config = work / 'config.json'
-                config.write_text(json.dumps({'extensions': [str(fixture)], 'config': {
+                config = work / 'config.fnl'
+                config.write_text(application({'extensions': [str(fixture)], 'config': {
                     'url': f'http://127.0.0.1:{server.server_address[1]}/{mode}',
                     'mode': mode, 'expected': expected,
                     'format': 'json' if mode == 'gzip' else 'text' if mode == 'buffered' else 'sse_json_stream'}}))

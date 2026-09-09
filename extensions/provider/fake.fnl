@@ -1,90 +1,94 @@
+(local definitions (require :misa.definitions))
+
 ;; Deterministic provider. Its cursor lives in its own model namespace.
 
-{:setup (fn [context]
-          (local setup-fx [])
-          (local providers (or (and (= (type context.config) :table)
-                                    context.config.providers)
-                               nil))
-          (local fake (or (and (= (type providers) :table) providers.fake) nil))
-          (local responses (or (and (= (type fake) :table) fake.responses) nil))
-          (assert (= (type responses) :table)
-                  "config.providers.fake.responses must be an array of strings")
-          (for [i 1 (length responses)]
-            (assert (or (= (type (. responses i)) :string)
-                        (= (type (. responses i)) :table))
-                    "fake responses must be strings or content arrays"))
-          (local serializer-id :fake.options)
-          (table.insert setup-fx
-                        {:type :register/request-options-serializer
-                         :id serializer-id
-                         :serializer {:accepts (fn [] true)
-                                      :serialize (fn [target name value]
-                                                   (tset target name value)
-                                                   true)}})
-          (local configured-models
-                 (or (and (= (type fake.models) :table) fake.models)
-                     [(or (and (= (type fake.model) :table) fake.model)
-                          {:id :fake/default :label :Fake :model :default})]))
-          (each [_ model (ipairs configured-models)]
-            (local api (if (and (= (type model.api) :table)
-                                (= (type model.api.request_options) :table))
-                           (misa.patch model.api {:request_options_serializer serializer-id})
-                           model.api))
-            (table.insert setup-fx
-                          {:type :register/model
-                           :value {: api
-                                   :context_window model.context_window
-                                   :id model.id
-                                   :label (or model.label model.id)
-                                   :model model.model
-                                   :provider :fake}}))
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.fake
-                         :handler (fn [effect]
-                                    (assert (and (= (type effect.messages)
-                                                    :table)
-                                                 (> (length effect.messages) 0))
-                                            "fake messages must be nonempty")
-                                    (assert (and (= (type effect.id) :string)
-                                                 (not= effect.id ""))
-                                            "fake id must be a nonempty string")
-                                    (local transported
-                                           (misa.serialize_request_options serializer-id
-                                                                           (or effect.request_options
-                                                                               {})
-                                                                           {}))
-                                    (when (= (type fake.expect_request_options)
-                                             :table)
-                                      (var count 0)
-                                      (each [name value (pairs fake.expect_request_options)]
-                                        (set count (+ count 1))
-                                        (assert (= (. transported name) value)
-                                                (.. "unexpected fake request option: "
-                                                    name)))
-                                      (when (= fake.expect_request_options_exact
-                                               true)
-                                        (var actual 0)
-                                        (each [_ (pairs transported)]
-                                          (set actual (+ actual 1)))
-                                        (assert (= actual count)
-                                                "unexpected additional fake request options")))
-                                    {:event {:id effect.id
-                                             :type :provider/fake}
-                                     :type :dispatch})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :provider/fake
+(fn [context]
+  "Describe fake policies for the supplied application settings."
+  (local declarations [])
+  (local providers (or (and (= (type context.config) :table)
+                            context.config.providers)
+                       nil))
+  (local fake (or (and (= (type providers) :table) providers.fake) nil))
+  (local responses (or (and (= (type fake) :table) fake.responses) nil))
+  (assert (= (type responses) :table)
+          "config.providers.fake.responses must be an array of strings")
+  (for [i 1 (length responses)]
+    (assert (or (= (type (. responses i)) :string)
+                (= (type (. responses i)) :table))
+            "fake responses must be strings or content arrays"))
+  (local serializer-id :fake.options)
+  (table.insert declarations
+                {:catalog :serializers
+                 :id serializer-id
+                 :value {:accepts (fn []
+                                    true)
+                         :serialize (fn [name value]
+                                      "Return the requested option as data."
+                                      {name value})}})
+  (local configured-models
+         (or (and (= (type fake.models) :table) fake.models)
+             [(or (and (= (type fake.model) :table) fake.model)
+                  {:id :fake/default :label :Fake :model :default})]))
+  (each [_ model (ipairs configured-models)]
+    (local api (if (and (= (type model.api) :table)
+                        (= (type model.api.request_options) :table))
+                   (misa.patch model.api
+                               {:request_options_serializer serializer-id})
+                   model.api))
+    (table.insert declarations
+                  (let [definition {: api
+                                    :context_window model.context_window
+                                    :id model.id
+                                    :label (or model.label model.id)
+                                    :model model.model
+                                    :provider :fake}]
+                    {:catalog :models :id (. definition :id) :value definition})))
+  (table.insert declarations
+                {:catalog :effects
+                 :id :provider.fake
+                 :value (fn [effect]
+                          (assert (and (= (type effect.messages) :table)
+                                       (> (length effect.messages) 0))
+                                  "fake messages must be nonempty")
+                          (assert (and (= (type effect.id) :string)
+                                       (not= effect.id ""))
+                                  "fake id must be a nonempty string")
+                          (local transported
+                                 (misa.request-options.serialize serializer-id
+                                                                 (or effect.request_options
+                                                                     {})
+                                                                 {}))
+                          (when (= (type fake.expect_request_options) :table)
+                            (var count 0)
+                            (each [name value (pairs fake.expect_request_options)]
+                              (set count (+ count 1))
+                              (assert (= (. transported name) value)
+                                      (.. "unexpected fake request option: "
+                                          name)))
+                            (when (= fake.expect_request_options_exact true)
+                              (var actual 0)
+                              (each [_ (pairs transported)]
+                                (set actual (+ actual 1)))
+                              (assert (= actual count)
+                                      "unexpected additional fake request options")))
+                          {:event {:id effect.id :type :provider/fake}
+                           :type :dispatch})})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :provider/fake
                          :handler (fn [db event]
                                     (assert (and (= (type event.id) :string)
                                                  (not= event.id ""))
                                             "fake id must be a nonempty string")
                                     (local state
-                                           (or (and db.providers db.providers.fake)
+                                           (or (and db.providers
+                                                    db.providers.fake)
                                                {:next_response 1}))
                                     (local response
                                            (. responses state.next_response))
-                                    (local patch {:providers {:fake {:next_response (+ state.next_response 1)}}})
+                                    (local patch
+                                           {:providers {:fake {:next_response (+ state.next_response
+                                                                                 1)}}})
                                     (if (= response nil)
                                         {: patch
                                          :fx [{:event {:id event.id
@@ -115,9 +119,13 @@
                                                          (= (type chunk.type)
                                                             :string))
                                                     "fake stream chunks must be normalized deltas")
-                                            (local delta (if (and (= chunk.type :tool_call)
-                                                                  (= chunk.index nil))
-                                                             (misa.patch chunk {: index}) chunk))
+                                            (local delta
+                                                   (if (and (= chunk.type
+                                                               :tool_call)
+                                                            (= chunk.index nil))
+                                                       (misa.patch chunk
+                                                                   {: index})
+                                                       chunk))
                                             (tset fx (+ (length fx) 1)
                                                   {:event {: delta
                                                            :id event.id
@@ -132,5 +140,5 @@
                                                              :type :agent/stream-end
                                                              : usage})
                                                  :type :dispatch})
-                                          {: patch : fx})))})
-          {:fx setup-fx})}
+                                          {: patch : fx})))}})
+  (definitions :provider.fake declarations {}))

@@ -1,24 +1,22 @@
-{:setup (fn []
-          (local setup-fx [])
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
           (var (provider-calls cancel-started) (values 0 false))
           (each [_ name (ipairs [:slow_one :slow_two])]
-            (table.insert setup-fx
-                          {:type :register/tool
-                           :value {:description name
+            (table.insert declarations
+                          (let [definition {:description name
                                    :effect :test/slow
                                    :input_schema {:additionalProperties false
                                                   :properties {}
                                                   :type :object}
-                                   : name}}))
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :cancel/model
+                                   : name}] {:catalog :tools :id (. definition :name) :value definition})))
+          (table.insert declarations
+                        (let [definition {:id :cancel/model
                                  :model :model
-                                 :provider :cancel}})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.cancel
-                         :handler (fn [effect]
+                                 :provider :cancel}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :effects :id :provider.cancel :value (fn [effect]
                                     (set provider-calls (+ provider-calls 1))
                                     (assert (= provider-calls 1)
                                             "cancelled tools continued the model request")
@@ -33,28 +31,22 @@
                                              :id effect.id
                                              :type :agent/result}
                                      :type :dispatch})})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :test/slow
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :test/slow :value (fn [effect]
                                     {:argv [:sh :-c "sleep 10"]
                                      :completion :test/slow-complete
                                      :id effect.tool_call_id
                                      :type :process/run})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/slow-complete
-                         :handler (fn [_ event]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/slow-complete :handler (fn [_ event]
                                     {:fx [{:event {:is_error (not event.ok)
                                                    :text (or event.message
                                                              :done)
                                                    :tool_call_id event.id
                                                    :type :tool/result}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/status
-                         :handler (fn [_ event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :agent/status :handler (fn [_ event]
                                     (if (and (= event.status :tools)
                                              (not cancel-started))
                                         (do
@@ -63,31 +55,25 @@
                                                  :id :cancel-delay
                                                  :interval_ms 50
                                                  :type :timer/start}]})
-                                        nil))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/cancel
-                         :handler (fn []
+                                        nil))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/cancel :handler (fn []
                                     {:fx [{:id :cancel-delay :type :timer/stop}
                                           {:event {:type :agent/cancel-active}
-                                           :type :dispatch}]})})
+                                           :type :dispatch}]})}})
           (local cancelled {})
-          (table.insert setup-fx
-                        {:type :register/fx :name :operation/cancel
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :operation/cancel :value (fn [effect]
                                     (tset cancelled effect.id true)
                                     effect)})
-          (table.insert setup-fx
-                        {:type :register/event :name :agent/cancel-active
-                         :handler (fn [db]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :agent/cancel-active :handler (fn [db]
                                     (assert (and db.agent.cancel_requested
                                                  (= db.agent.status :cancelling))
                                             "tool cancellation intent was not recorded")
-                                    nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/completed
-                         :handler (fn [db]
+                                    nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
                                     (if (not cancel-started) nil
                                         (do
                                           (assert (and (. cancelled :slow-1) (. cancelled :slow-2))
@@ -134,6 +120,6 @@
                                                   "cancelled tool-section state was not visible")
                                           {:fx [{:lines [{:spans [{:text "cancel tools"}]}]
                                                  :type :view/commit}
-                                                {:type :app/quit}]})))})
+                                                {:type :app/quit}]})))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.cancel-tools declarations {}))

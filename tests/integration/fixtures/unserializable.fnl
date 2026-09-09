@@ -1,25 +1,20 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/request-options-serializer
-                         :id :test.transport
-                         :serializer {:accepts (fn [name]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :serializers :id :test.transport :value {:accepts (fn [name]
                                                  (= name :known))
-                                      :serialize (fn [target name value]
-                                                   (tset target name value)
-                                                   true)}})
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:api {:request_options {:unknown {:default :selected}}
+                                      :serialize (fn [name value] {name value})}})
+          (table.insert declarations
+                        (let [definition {:api {:request_options {:unknown {:default :selected}}
                                        :request_options_serializer :test.transport}
                                  :id :test/model
                                  :model :model
-                                 :provider :test}})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.test
-                         :handler (fn []
+                                 :provider :test}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :effects :id :provider.test :value (fn []
                                     (error "blocked request reached provider")
                                     nil)})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.unserializable declarations {}))

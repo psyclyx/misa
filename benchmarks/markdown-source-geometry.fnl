@@ -9,7 +9,7 @@
   (set misa.markdown nil)
   (setup (fennel.dofile parser))
   (setup (fennel.dofile component))
-  {:parser misa.markdown :view misa.markdown_view})
+  {:parser misa.markdown :view misa.markdown.view})
 (local baseline (load (assert (. arg 1)) (assert (. arg 2))))
 (local candidate (load :extensions/markdown.fnl :extensions/component/markdown.fnl))
 (local source (string.rep "# Heading\n\nordinary **bold** and [link](https://example.test) with escaped \\* text\n  continuing on another source line\n\n- first second third fourth\n- next item\n\n| key | value |\n| --- | --- |\n| one | **two** |\n\n" 30))

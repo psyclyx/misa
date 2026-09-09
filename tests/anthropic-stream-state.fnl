@@ -3,12 +3,19 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(each [_ name (ipairs [:json :protocol/anthropic])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
-(local specs (misa.protocols.anthropic {:id :test :url "https://example.invalid/messages" :models []}))
-(var handler nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (set handler spec.handler)))
+(local definitions (require :misa.definitions))
+(local protocol (require :protocol.anthropic))
+(local specs (protocol.configure {:id :test :url "https://example.invalid/messages" :models []}))
+(local application (misa.compose
+ [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+  (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
+  {:definitions (definitions :test [{:catalog :anthropic-block-deltas :id :custom :value (fn [_ record] {:patch {:custom record.delta.value}})}
+                         {:catalog :anthropic-block-starts :id :custom :value (fn [] {:patch {:custom_started true}})}
+                         {:catalog :anthropic-records :id :custom :value (fn [] {:patch {:custom_record true}})}])}]))
+(misa._install application.definitions {:argv [] :config {}})
+(local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
+(local handler (. handlers :provider/test-complete))
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
   (local result (handler db event))
@@ -45,7 +52,7 @@
                       (set split next)
                       (each [_ effect (ipairs effects)] (table.insert collected effect)))
                     (assert (= (misa.json.encode whole) (misa.json.encode split)))
-                    (assert (= (misa.json.encode fx) (misa.json.encode collected)) "record batching changed output"))
+                    (assert (= (misa.json.encode fx) (misa.json.encode (misa.stream.effects collected))) "record batching changed output"))
                   {:cases 1000 :size 25}))
 (assert (not failure) (and failure (fennel.view failure)))
 (local begun (transition initial {:id :request :phase :data :records [(. records 1)]}))
@@ -55,7 +62,7 @@
 (local value (. signed-fx 2 :event :value))
 (assert (= value.signature :signature))
 (assert (= value.thinking "plan next"))
-(local replay (misa.protocols.serialize_anthropic_messages
+(local replay (misa.protocols.anthropic-messages
                [{:role :assistant :content [{:type :thinking :text :discarded}]
                  :provider_state [{:provider :test : value}]}] :test))
 (assert (= (. replay 1 :content 1) value))
@@ -90,12 +97,7 @@
 (assert (= (. usage-fx 1 :event :usage :input_includes_cache) false))
 (assert (= (. usage-fx 2 :event :usage :output_tokens) 4))
 (assert (= (. usage-fx 2 :event :stop_reason) :end_turn))
-(misa._setup_effects {:fx [{:type :register/anthropic-block-delta :id :custom
-                          :value (fn [_ record] {:patch {:custom record.delta.value}})}
-                         {:type :register/anthropic-block-start :id :custom
-                          :value (fn [] {:patch {:custom_started true}})}
-                         {:type :register/anthropic-record :id :custom
-                          :value (fn [] {:patch {:custom_record true}})}]})
+
 (assert (= (. (transition initial {:id :request :phase :data
                                   :records [{:type :content_block_delta :delta {:type :custom :value :test}}]})
               :providers :anthropic_streams :request :custom) :test))

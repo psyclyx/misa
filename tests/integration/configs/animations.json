@@ -1,1 +1,0 @@
-{"extensions":["keybindings","values","layout","themes","theme.default","components","animations","animation.default","indicators","component.status","status","@ROOT@/tests/animations.fnl"],"config":{"animations":{"persist":false,"enabled":true},"themes":{"persist":false},"components":{"persist":false},"status":{"indicators":["activity"]}}}

@@ -1,6 +1,7 @@
 ;; Persistent updates over ordinary Lua tables. Callers treat state as immutable.
 ;; Empty patches merge; clearing a collection requires explicit replacement.
 (fn factory [json-null]
+  "Create persistent update operations with an explicit JSON null sentinel."
   (local delete {})
   (local replacements (setmetatable {} {:__mode :k}))
   (local max-depth 128)
@@ -15,32 +16,39 @@
 
   (fn key! [key]
     (assert (or (= (type key) :string)
-                (and (= (type key) :number) (finite? key)
-                     (>= key 1) (= (% key 1) 0)))
-            "invalid state key"))
+                (and (= (type key) :number) (finite? key) (>= key 1)
+                     (= (% key 1) 0))) "invalid state key"))
 
   (fn enter! [value active depth]
     (assert (<= depth max-depth) "maximum state nesting depth exceeded")
     (assert (not (. active value)) "cyclic state or patch")
-    (assert (= (getmetatable value) nil) "state and patches must be ordinary tables")
+    (assert (= (getmetatable value) nil)
+            "state and patches must be ordinary tables")
     (tset active value true))
 
   ;; Materialize a replacement, validating its entire shape and retaining old
   ;; branches where equal. Allocate only after finding a difference; identity
   ;; never skips validation. Control values are never application data.
+
   (fn materialize [old value active depth]
     (assert (<= depth max-depth) "maximum state nesting depth exceeded")
     (assert (and (not= value delete) (not (. replacements value)))
             "patch control inside replacement data")
     (local kind (type value))
-    (if (or (= value json-null) (= kind :nil)
-            (= kind :string) (= kind :boolean)) value
-        (= kind :number) (do (assert (finite? value) "non-finite state number") value)
+    (if (or (= value json-null) (= kind :nil) (= kind :string)
+            (= kind :boolean))
+        value
+        (= kind :number)
+        (do
+          (assert (finite? value) "non-finite state number")
+          value)
         (do
           (assert (= kind :table) "state must contain only data")
           (enter! value active depth)
-          (local base (if (and (= (type old) :table) (not= old json-null)) old {}))
-          (var result (when (or (not= (type old) :table) (= old json-null)) {}))
+          (local base (if (and (= (type old) :table) (not= old json-null)) old
+                          {}))
+          (var result (when (or (not= (type old) :table) (= old json-null))
+                        {}))
           (each [key item (pairs value)]
             (key! key)
             (local next (materialize (. base key) item active (+ depth 1)))
@@ -71,14 +79,15 @@
   (fn merge [old patch active depth]
     (assert (<= depth max-depth) "maximum patch nesting depth exceeded")
     (local replacement (. replacements patch))
-    (if (= patch delete) nil
-        replacement (materialize old replacement.value active depth)
+    (if (= patch delete) nil replacement
+        (materialize old replacement.value active depth)
         (or (not= (type patch) :table) (= patch json-null))
+        (materialize old patch active depth) (sequence? patch)
         (materialize old patch active depth)
-        (sequence? patch) (materialize old patch active depth)
         (do
           (enter! patch active depth)
-          (local base (if (and (= (type old) :table) (not= old json-null)) old {}))
+          (local base (if (and (= (type old) :table) (not= old json-null)) old
+                          {}))
           (var result nil)
           (each [key value (pairs patch)]
             (local next (merge (. base key) value active (+ depth 1)))
@@ -93,10 +102,12 @@
 
   {: delete
    :replace (fn [value]
+              "Mark a value for replacement instead of recursive map merging."
               (local token {})
               (tset replacements token {: value})
               token)
    :patch (fn [state patch]
+            "Apply a validated patch while sharing unchanged state branches."
             (assert (and (= (type state) :table) (not= state json-null))
                     "patch state must be a table")
             (assert (and (= (type patch) :table) (not= patch delete)

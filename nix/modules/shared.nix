@@ -8,10 +8,8 @@
 let
   cfg = config.programs.misa;
   mkMisa = pkgs.callPackage ../mk-misa.nix { misa = cfg.package; };
-  standardExtensions = import ../standard-extensions.nix;
-  standardIds = builtins.attrValues standardExtensions;
   configured = mkMisa {
-    inherit (cfg) extensions config;
+    inherit (cfg) configuration;
     package = cfg.package;
   };
 in
@@ -24,15 +22,10 @@ in
       defaultText = lib.literalExpression "pkgs.callPackage ./path/to/misa/nix/packages/misa.nix { }";
       description = "Unwrapped misa package to configure; no overlay is required.";
     };
-    extensions = lib.mkOption {
-      type = lib.types.listOf (lib.types.either (lib.types.enum standardIds) lib.types.path);
-      default = [ ];
-      description = "Ordered standard extension IDs and custom Fennel or Lua extension path values.";
-    };
-    config = lib.mkOption {
-      type = lib.types.json;
-      default = { };
-      description = "Free-form JSON-serializable configuration exposed to Fennel policy.";
+    configuration = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Fennel or Lua file returning the complete composed application. Keep config data and module composition in this file.";
     };
   };
 

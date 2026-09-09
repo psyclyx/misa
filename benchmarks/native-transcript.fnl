@@ -1,13 +1,15 @@
+(local definitions (require :misa.definitions))
+
 ;; Exercise the default UI. Only input generation and initial transcript are fixtures.
-{:setup (fn [context]
+(fn [context]
           (local count context.config.benchmark.blocks)
           (local burst (or context.config.benchmark.burst 1))
           (local transport context.config.benchmark.transport)
           (var stream-handler nil)
           (when transport
-            (local specs (misa.protocols.openai {:id :bench :url "https://example.invalid" :models [] :credential :bench}))
-            (each [_ spec (ipairs specs.fx)]
-              (when (and (= spec.type :register/event) (= spec.name :provider/bench-complete))
+            (local specs ((. (require :protocol.openai) :configure) {:id :bench :url "https://example.invalid" :models [] :credential :bench}))
+            (each [_ spec (pairs specs.events)]
+              (when (= spec.event :provider/bench-complete)
                 (set stream-handler spec.handler)))
             (assert stream-handler))
           (local mixed (= context.config.benchmark.scenario :mixed))
@@ -67,21 +69,18 @@
             (set covered (+ covered owner.block_count)))
           (assert (= covered count))
           (fn ready-check [] {:fx [{:type :dispatch :event {:type :bench/ready}}]})
-          {:fx [{:type :register/model :value {:id :bench/model :model :model :provider :bench}}
-                {:type :register/event :name :bench/transport
-                 :handler (fn [db event] (assert stream-handler) (stream-handler db event))}
-                {:type :register/event-route
-                 :value {:id :bench/input :event :terminal/input :priority 2000
+          (definitions :benchmarks.native-transcript [(let [definition {:id :bench/model :model :model :provider :bench}] {:catalog :models :id (. definition :id) :value definition})
+                {:catalog :events  :value {:event :bench/transport :handler (fn [db event] (assert stream-handler) (stream-handler db event))}}
+                (let [definition {:id :bench/input :event :terminal/input :priority 2000
                          :context [:db]
                          :resolve (fn [_ event]
                                     (when (and (= event.kind :alt)
                                                (or (= event.text :r) (= event.text :s) (= event.text :q)))
                                       {:type (if (= event.text :q) :bench/quit :bench/frame)
-                                       :stream (= event.text :s)}))}}
-                {:type :register/event :name :transcript/updated :handler ready-check}
-                {:type :register/event :name :syntax/completed :handler ready-check}
-                {:type :register/event :name :bench/ready
-                 :handler (fn [db]
+                                       :stream (= event.text :s)}))}] {:catalog :routes :id (. definition :id) :value definition})
+                {:catalog :events  :value {:event :transcript/updated :handler ready-check}}
+                {:catalog :events  :value {:event :syntax/completed :handler ready-check}}
+                {:catalog :events  :value {:event :bench/ready :handler (fn [db]
                             ;; Follow-up dispatch observes settled owner state in either setup order.
                             (when (and db.benchmark (= db.benchmark.step 0)
                                        (= db.editor.text "WAIT:0000")
@@ -97,13 +96,10 @@
                                                     (+ n (if (= block.kind :assistant) 1 0))) 0))
                               (assert (= highlighted expected) "missing highlighted documents")
                               (set checked-highlights true)
-                              {:patch {:editor {:text "FRAME:0000" :cursor 10}}}))}
-                {:type :register/event :name :app/start
-                 :handler (fn [] {:fx [{:type :dispatch :event {:type :bench/seed}}]})}
-                {:type :register/event :name :bench/quit
-                 :handler (fn [] {:fx [{:type :app/quit}]})}
-                {:type :register/event :name :bench/seed
-                 :handler (fn []
+                              {:patch {:editor {:text "FRAME:0000" :cursor 10}}}))}}
+                {:catalog :events  :value {:event :app/start :handler (fn [] {:fx [{:type :dispatch :event {:type :bench/seed}}]})}}
+                {:catalog :events  :value {:event :bench/quit :handler (fn [] {:fx [{:type :app/quit}]})}}
+                {:catalog :events  :value {:event :bench/seed :handler (fn []
                             {:patch {:messages {:blocks (misa.replace blocks) :by_response (misa.replace by-response)
                                                 :responses (misa.replace responses) :verbose (when mixed true)}
                                      :editor {:text "WAIT:0000" :cursor 10}
@@ -111,9 +107,8 @@
                                                              :stream {:id tail-owner.id :block_seq 1 :tools {}
                                                                       :blocks [{:type :text :transcript_id (tostring count) :chunks [source]}]}})
                                      :benchmark {:step 0 :streamed 0}}
-                             :fx [{:type :dispatch :event {:type :transcript/updated}}]})}
-                {:type :register/event :name :bench/frame
-                 :handler (fn [db event]
+                             :fx [{:type :dispatch :event {:type :transcript/updated}}]})}}
+                {:catalog :events  :value {:event :bench/frame :handler (fn [db event]
                             (assert (= (length db.messages.blocks) count))
                             (assert (or (not mixed) checked-highlights))
                             (for [index 1 (- count 1)]
@@ -143,4 +138,4 @@
                                                                          :block_id (tostring count) :text "x"}}))]
                                        (table.insert fx {:type :terminal/read})
                                        fx)
-                                     [{:type :terminal/read}])})}]})}
+                                     [{:type :terminal/read}])})}}] {}))

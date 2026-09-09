@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [state]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [state]
                                     (local db (misa.patch state
                                          {:preferences (misa.replace {:scopes {:models {:one {:last 3
                                                                   :uses 3}
@@ -26,14 +26,14 @@
                                                        :title id}
                                              :value id}))
                                     (var session
-                                           (misa.choice_session {: items
+                                           (misa.choices.session {: items
                                                                  :preference_scope :models
                                                                  :title :Models
                                                                  :views [:browse
                                                                          :favorites]}
                                                                 db))
                                     (var geometry
-                                         (misa.choice_completion_layout session
+                                         (misa.choices.completion-layout session
                                                                         db 80 6))
                                     (assert (and (and geometry.input.hidden
                                                       (= geometry.panel_count 2))
@@ -52,16 +52,16 @@
                                                  (= geometry.targets.option_2_1.value
                                                     :two))
                                             "compact panel hotkeys disagreed with visible rows")
-                                    (set session (. (misa.choice_input session {:action :next}
+                                    (set session (. (misa.choices.input session {:action :next}
                                                        db) :session))
                                     (set geometry
-                                         (misa.choice_completion_layout session
+                                         (misa.choices.completion-layout session
                                                                         db 80 6))
                                     (assert (= geometry.targets.option_1_1.value
                                                :one)
                                             "Recent rows scrolled implicitly when focus moved")
                                     (local rendered
-                                           (misa.render_component db :picker
+                                           (misa.components.render db :picker
                                                                   geometry))
                                     (assert (and (<= (length rendered.lines) 6)
                                                  (= rendered.cursor nil))
@@ -75,26 +75,26 @@
                                     (assert button
                                             "semantic choice button disappeared during rendering")
                                     (set geometry
-                                         (misa.choice_completion_layout session
+                                         (misa.choices.completion-layout session
                                                                         db 40 6))
                                     (assert (and (= geometry.panel_count 1)
                                                  (not geometry.targets.option_2_1))
                                             "hidden panel retained a positional target")
                                     (set session.query :two)
-                                    (set session (misa.choice_refresh session db))
+                                    (set session (misa.choices.refresh session db))
                                     (each [_ item (ipairs (. session.panels 1
                                                              :items))]
                                       (assert (= item.section nil)
                                               "search retained recent grouping"))
                                     (local tall
-                                           (misa.choice_session {:items [{:label (string.rep "very long model "
+                                           (misa.choices.session {:items [{:label (string.rep "very long model "
                                                                                              20)
                                                                           :value :long}]
                                                                  :title :Long
                                                                  :views [:all]}
                                                                 db))
                                     (local short
-                                           (misa.choice_completion_layout tall
+                                           (misa.choices.completion-layout tall
                                                                           db 32
                                                                           4))
                                     (assert (and short.targets.option_1_1
@@ -113,13 +113,13 @@
                                                     {:label (tostring index)
                                                      :value index}))
                                     (var expanded
-                                           (misa.choice_session {:items many
+                                           (misa.choices.session {:items many
                                                                  :title :Many
                                                                  :views [:all]}
                                                                 db))
                                     (for [_ 1 40]
                                       (local layout
-                                             (misa.choice_completion_layout expanded
+                                             (misa.choices.completion-layout expanded
                                                                             db
                                                                             80
                                                                             22))
@@ -143,16 +143,16 @@
                                           (set focused true)))
                                       (assert focused
                                               "expanded completion focus scrolled out of view")
-                                      (assert (<= (length (. (misa.render_component db
+                                      (assert (<= (length (. (misa.components.render db
                                                                                     :picker
                                                                                     layout)
                                                              :lines))
                                                   22)
                                               "expanded completions exceeded the screen budget")
-                                      (set expanded (. (misa.choice_input expanded
+                                      (set expanded (. (misa.choices.input expanded
                                                          {:action :next} db) :session)))
                                     {:fx [{:lines [{:spans [{:text "compact choices"}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.choice-compact declarations {}))

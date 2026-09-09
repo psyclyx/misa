@@ -1,7 +1,7 @@
+(local definitions (require :misa.definitions))
+
 ;; Semantic terminal flow for documents produced by the markdown extension.
-
 ;; It owns layout, but only emits theme tokens; theme resolution remains at the
-
 ;; component registry boundary.
 
 (local syntax-classes {:attribute true
@@ -69,20 +69,24 @@
                 (tset style (+ (length style) 1) :code))
               (when link
                 (tset style (+ (length style) 1) :link))
+
               (fn emit [text first last]
                 (local item (span text style link))
                 (set item.source true)
                 (set (item.source_start item.source_end) (values first last))
                 (table.insert result item))
+
               (if (or (= origin nil) (= node.source_start nil))
                   (emit (or node.text "") nil nil)
                   (= (type origin) :number)
-                  (emit (or node.text "") (+ origin node.source_start) (+ origin node.source_end))
+                  (emit (or node.text "") (+ origin node.source_start)
+                        (+ origin node.source_end))
                   (do
                     (var (low high) (values 1 (length origin)))
                     (while (<= low high)
                       (local middle (math.floor (/ (+ low high) 2)))
-                      (if (<= (. origin middle :last) node.source_start) (set low (+ middle 1))
+                      (if (<= (. origin middle :last) node.source_start)
+                          (set low (+ middle 1))
                           (set high (- middle 1))))
                     (for [index low (length origin)]
                       (local run (. origin index))
@@ -90,8 +94,10 @@
                       (local first (math.max run.first node.source_start))
                       (local last (math.min run.last node.source_end))
                       (when (< first last)
-                        (emit (node.text:sub (+ (- first node.source_start) 1) (- last node.source_start))
-                              (+ run.source (- first run.first)) (+ run.source (- last run.first))))))))))
+                        (emit (node.text:sub (+ (- first node.source_start) 1)
+                                             (- last node.source_start))
+                              (+ run.source (- first run.first))
+                              (+ run.source (- last run.first))))))))))
       nil)
 
     (visit nodes nil)
@@ -100,7 +106,7 @@
     result))
 
 (fn flow [spans columns first-prefix rest-prefix options]
-  (misa.layout.flow_spans spans columns first-prefix rest-prefix options))
+  (misa.layout.flow-spans spans columns first-prefix rest-prefix options))
 
 (fn append [target lines]
   (each [_ line (ipairs lines)]
@@ -114,7 +120,7 @@
   (local gap (math.max 0 (- width used)))
   (local left
          (or (and (= alignment :right) gap)
-             (or (and (= alignment :center) (math.floor (/ gap 2))) 0)))
+             (and (= alignment :center) (math.floor (/ gap 2))) 0))
   (local right (- gap left))
   (local result {})
   (when (> left 0)
@@ -126,8 +132,8 @@
   result)
 
 (fn cell-lines [nodes width base header origin]
-  (flow (inline-spans nodes base (or (and header :markdown.table.header) nil) origin)
-        (math.max 1 width) {} {}))
+  (flow (inline-spans nodes base (or (and header :markdown.table.header) nil)
+                      origin) (math.max 1 width) {} {}))
 
 (fn allocate-columns [table-block available]
   (let [count (length table-block.align)
@@ -166,7 +172,8 @@
       (tset pieces (+ (length pieces) 1) (string.rep "─" (+ width 2)))
       (tset pieces (+ (length pieces) 1)
             (or (and (= index (length widths)) right) middle)))
-    {:content false :spans [(span (table.concat pieces) (compose base :markdown.table.border))]}))
+    {:content false
+     :spans [(span (table.concat pieces) (compose base :markdown.table.border))]}))
 
 (fn render-table [block columns base]
   ;; A complete table needs borders, padding, and room for a wide grapheme
@@ -176,16 +183,22 @@
             header (or (. block.rows 1) {})]
         (for [row-index 2 (length block.rows)]
           (when (> row-index 2)
-            (tset result (+ (length result) 1) {:content false :spans [(span "" base)]}))
+            (tset result (+ (length result) 1)
+                  {:content false :spans [(span "" base)]}))
           (for [column 1 (length block.align)]
             (local spans
                    (inline-spans (or (. header column) {}) base
-                                 :markdown.table.header (and block.cell_positions (. block.cell_positions 1 column))))
+                                 :markdown.table.header
+                                 (and block.cell_positions
+                                      (. block.cell_positions 1 column))))
             (tset spans (+ (length spans) 1) (span ": " base))
             (each [_ item (ipairs (inline-spans (or (. block.rows row-index
                                                        column)
                                                     {})
-                                                base nil (and block.cell_positions (. block.cell_positions row-index column))))]
+                                                base nil
+                                                (and block.cell_positions
+                                                     (. block.cell_positions
+                                                        row-index column))))]
               (tset spans (+ (length spans) 1) item))
             (append result (flow spans columns))))
         (when (= (length block.rows) 1)
@@ -199,7 +212,9 @@
           (var (cells height) (values {} 1))
           (each [column width (ipairs widths)]
             (tset cells column
-                  (cell-lines (or (. row column) {}) width base (= row-index 1) (and block.cell_positions (. block.cell_positions row-index column))))
+                  (cell-lines (or (. row column) {}) width base (= row-index 1)
+                              (and block.cell_positions
+                                   (. block.cell_positions row-index column))))
             (set height (math.max height (length (. cells column)))))
           (for [line-index 1 height]
             (local pieces [(span "│" (compose base :markdown.table.border))])
@@ -223,14 +238,13 @@
 
 (fn highlighted-lines [block base captures]
   (let [source (or block.text "")]
-    (set-forcibly! captures (or captures {}))
+    (local captures (or captures {}))
     (var (spans at) (values {} 1))
     (each [_ capture (ipairs captures)]
       (local first (+ (or (tonumber capture.start_byte) 0) 1))
       (local after (+ (or (tonumber capture.end_byte) 0) 1))
       (local class capture.capture)
-      (when (and (and (and (. syntax-classes class) (>= first at))
-                      (> after first))
+      (when (and (. syntax-classes class) (>= first at) (> after first)
                  (<= after (+ (length source) 1)))
         (when (> first at)
           (tset spans (+ (length spans) 1)
@@ -273,108 +287,152 @@
 (fn code-block [block columns base captures outer-inset]
   (let [language (or (and (not= block.language "") block.language) :plain)
         result {}]
-    (local source-lines (if block.rows
-                           (icollect [_ row (ipairs block.rows)]
-                             {:spans [{:text row.text :style (compose base :code)
-                                       :source (not= row.source_start nil) :source_start row.source_start
-                                       :source_end (when row.source_start (+ row.source_start (length row.text)))}]})
-                           (highlighted-lines block base captures)))
+    (local source-lines
+           (if block.rows
+               (icollect [_ row (ipairs block.rows)]
+                 {:spans [{:text row.text
+                           :style (compose base :code)
+                           :source (not= row.source_start nil)
+                           :source_start row.source_start
+                           :source_end (when row.source_start
+                                         (+ row.source_start (length row.text)))}]})
+               (highlighted-lines block base captures)))
     ;; A terminal newline ends the last line; only additional newlines are
     ;; blank content. Keep this policy shared by all tool code views.
-    (when (and block.terminated (not block.rows) (= (: (or block.text "") :sub -1) "\n"))
+    (when (and block.terminated (not block.rows)
+               (= (: (or block.text "") :sub -1) "\n"))
       (table.remove source-lines))
-    (when (and block.missing_newline (not block.rows) (not= (or block.text "") "")
-               (not= (block.text:sub -1) "\n"))
-      (table.insert source-lines {:annotation true
-                                 :spans [{:text block.missing_newline :style (compose base :code :dim) :source false}]}))
+    (when (and block.missing_newline (not block.rows)
+               (not= (or block.text "") "") (not= (block.text:sub -1) "\n"))
+      (table.insert source-lines
+                    {:annotation true
+                     :spans [{:text block.missing_newline
+                              :style (compose base :code :dim)
+                              :source false}]}))
     (var digits (length (tostring (length source-lines))))
     (each [_ row (ipairs (or block.rows []))]
       (set digits (math.max digits (length (tostring (or row.number ""))))))
     (local diff (= language :diff))
     (when diff
       (each [_ line (ipairs source-lines)]
-        (local raw (table.concat (icollect [_ part (ipairs line.spans)] part.text)))
-        (local (old count-old new count-new) (raw:match "^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@"))
+        (local raw (table.concat (icollect [_ part (ipairs line.spans)]
+                                   part.text)))
+        (local (old count-old new count-new)
+               (raw:match "^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@"))
         (when old
-          (set digits (math.max digits
-            (length (tostring (+ (tonumber old) (or (tonumber count-old) 1))))
-            (length (tostring (+ (tonumber new) (or (tonumber count-new) 1)))))))))
+          (set digits
+               (math.max digits
+                         (length (tostring (+ (tonumber old)
+                                              (or (tonumber count-old) 1))))
+                         (length (tostring (+ (tonumber new)
+                                              (or (tonumber count-new) 1)))))))))
     (var (old-line new-line) (values 1 1))
     (each [index line (ipairs source-lines)]
-      (local raw (table.concat (icollect [_ item (ipairs line.spans)] item.text)))
-      (local (old-start new-start) (raw:match "^@@ %-(%d+)[^ ]* %+(%d+)[^ ]* @@"))
+      (local raw
+             (table.concat (icollect [_ item (ipairs line.spans)] item.text)))
+      (local (old-start new-start)
+             (raw:match "^@@ %-(%d+)[^ ]* %+(%d+)[^ ]* @@"))
       (local marker (raw:sub 1 1))
       (local metadata (or old-start (raw:match "^diff ") (raw:match "^index ")
                           (raw:match "^%-%-%- ") (raw:match "^%+%+%+ ")
                           (= marker "\\")))
-      (when old-start (set (old-line new-line) (values (tonumber old-start) (tonumber new-start))))
-      (var number (if block.rows (tostring (or (. block.rows index :number) "")) (tostring index)))
+      (when old-start
+        (set (old-line new-line)
+             (values (tonumber old-start) (tonumber new-start))))
+      (var number (if block.rows
+                      (tostring (or (. block.rows index :number) ""))
+                      (tostring index)))
       (when line.annotation (set number ""))
       (when diff
         ;; One gutter: removed lines refer to the old file; context and
         ;; additions refer to the new file. The diff marker supplies the side.
-        (set number (if metadata "" (tostring (if (= marker "-") old-line new-line))))
+        (set number
+             (if metadata "" (tostring (if (= marker "-") old-line new-line))))
         (when (not metadata)
           (each [_ item (ipairs line.spans)]
-            (set item.style (compose base :code (if (= marker "+") :diff.added
-                                                    (= marker "-") :diff.removed :plain))))
+            (set item.style (compose base :code
+                                     (if (= marker "+") :diff.added
+                                         (= marker "-") :diff.removed
+                                         :plain))))
           (when (not= marker "+") (set old-line (+ old-line 1)))
           (when (not= marker "-") (set new-line (+ new-line 1)))))
       ;; Surrounding margins inherit the parent; gutter and code share a surface.
-      (set number (.. (string.rep " " (math.max 0 (- digits (length number)))) number))
+      (set number (.. (string.rep " " (math.max 0 (- digits (length number))))
+                      number))
       (local numbered (not= block.numbered false))
       (local requested-left (math.max 0 (- 3 (or outer-inset 0))))
       (local left (if (> columns (+ requested-left 4)) requested-left 0))
       (local right (if (> columns (+ requested-left 4)) 3 0))
-      (local gutter (if (and numbered (> (- columns left right) (+ (length number) 3)))
-                        (.. number "  ") ""))
+      (local gutter (if (and numbered
+                             (> (- columns left right) (+ (length number) 3)))
+                        (.. number "  ")
+                        ""))
       (local body-width (math.max 1 (- columns left right (length gutter))))
-      (each [wrapped-index row (ipairs (flow line.spans body-width nil nil {:trim false :words false}))]
+      (each [wrapped-index row (ipairs (flow line.spans body-width nil nil
+                                             {:trim false :words false}))]
         (local parts [{:text (string.rep " " left) :style base :source false}
-                      {:text (if (= wrapped-index 1) gutter (string.rep " " (length gutter)))
-                       :style [:dim :surface.code] :source false}])
+                      {:text (if (= wrapped-index 1) gutter
+                                 (string.rep " " (length gutter)))
+                       :style [:dim :surface.code]
+                       :source false}])
         (var used 0)
         (each [_ item (ipairs row.spans)]
           (set used (+ used (misa.layout.width item.text)))
-          (table.insert parts (misa.patch item {:style (compose item.style :surface.code)})))
+          (table.insert parts
+                        (misa.patch item
+                                    {:style (compose item.style :surface.code)})))
         (when (< used body-width)
-          (table.insert parts {:text (string.rep " " (- body-width used)) :style :surface.code :source false}))
+          (table.insert parts {:text (string.rep " " (- body-width used))
+                               :style :surface.code
+                               :source false}))
         (when (> right 0)
-          (table.insert parts {:text (string.rep " " right) :style base :source false}))
-        (table.insert result (misa.patch row {:spans (misa.replace parts) :annotation line.annotation}))))
+          (table.insert parts {:text (string.rep " " right)
+                               :style base
+                               :source false}))
+        (table.insert result
+                      (misa.patch row
+                                  {:spans (misa.replace parts)
+                                   :annotation line.annotation}))))
     result))
 
 (fn render-block [block columns base captures outer-inset]
   (let [result {}
         origin (or block.inline_map block.inline_start block.source_start)]
     (if (= block.kind :blank)
-        (tset result (+ (length result) 1) {:content false :spans [(span "" base)]})
+        (tset result (+ (length result) 1)
+              {:content false :spans [(span "" base)]})
         (= block.kind :paragraph)
-        (append result (flow (inline-spans block.inlines base nil origin) columns))
+        (append result (flow (inline-spans block.inlines base nil origin)
+                             columns))
         (= block.kind :heading)
         (let [token (or (. heading-marks block.level) (. heading-marks 6))
               prefix [{:text (or (. heading-prefix block.level) "· ")
-                       :style (compose base token) :selection_marker true
-                       :source_start block.source_start :source_end block.inline_start}]]
+                       :style (compose base token)
+                       :selection_marker true
+                       :source_start block.source_start
+                       :source_end block.inline_start}]]
           (append result
-                  (flow (inline-spans block.inlines base token origin) columns prefix
-                        [(span "  " base)])))
+                  (flow (inline-spans block.inlines base token origin) columns
+                        prefix [(span "  " base)])))
         (= block.kind :quote)
         (let [rails {}]
           ;; Preserve semantic depth while leaving room for a wide grapheme.
           (for [_ 1 (math.min (math.max 1 (or block.depth 1))
                               (math.max 0 (math.floor (/ (- columns 2) 2))))]
             (tset rails (+ (length rails) 1)
-                  {:text "▏ " :style (compose base :quote) :selection_marker true
-                   :source_start block.source_start :source_end block.inline_start}))
-          (append result (flow (inline-spans block.inlines base :quote origin) columns
-                               rails rails)))
+                  {:text "▏ "
+                   :style (compose base :quote)
+                   :selection_marker true
+                   :source_start block.source_start
+                   :source_end block.inline_start}))
+          (append result (flow (inline-spans block.inlines base :quote origin)
+                               columns rails rails)))
         (= block.kind :list_item)
         (let [raw-marker (or (and (not= block.checked nil)
                                   (or (and block.checked "☑ ") "☐ "))
-                             (or (and block.ordered
-                                      (.. (tostring (or block.number :1.)) " "))
-                                 "• "))
+                             (and block.ordered
+                                  (.. (tostring (or block.number :1.)) " "))
+                             "• ")
               marker (if (> columns 2)
                          (misa.layout.take raw-marker (- columns 2))
                          "")
@@ -387,13 +445,16 @@
                                                         (misa.layout.width marker)
                                                         2))))
               first [(span indent base)
-                     {:text marker :style (compose base :markdown.list.marker) :selection_marker true
-                      :source_start block.source_start :source_end block.inline_start}]
+                     {:text marker
+                      :style (compose base :markdown.list.marker)
+                      :selection_marker true
+                      :source_start block.source_start
+                      :source_end block.inline_start}]
               rest [(span (.. indent
                               (string.rep " " (misa.layout.width marker)))
                           base)]]
-          (append result (flow (inline-spans block.inlines base nil origin) columns first
-                               rest)))
+          (append result (flow (inline-spans block.inlines base nil origin)
+                               columns first rest)))
         (= block.kind :list_continuation)
         (let [prefix [(span (string.rep " "
                                         (math.min (* 2
@@ -402,13 +463,15 @@
                                                                    1)))
                                                   (math.max 0 (- columns 2))))
                             base)]]
-          (append result (flow (inline-spans block.inlines base nil origin) columns prefix
-                               prefix)))
+          (append result (flow (inline-spans block.inlines base nil origin)
+                               columns prefix prefix)))
         (= block.kind :thematic_rule)
         (tset result (+ (length result) 1)
               {:spans [{:text (string.rep "─" columns)
-                        :style (compose base :markdown.rule) :source true
-                        :source_start block.source_start :source_end block.source_end}]})
+                        :style (compose base :markdown.rule)
+                        :source true
+                        :source_start block.source_start
+                        :source_end block.source_end}]})
         (= block.kind :table)
         (append result (render-table block columns base))
         (= block.kind :code_block)
@@ -419,7 +482,7 @@
     result))
 
 (fn layout [document options previous]
-  (set-forcibly! options (or options {}))
+  (local options (or options {}))
   (local base (or options.base :plain))
   (local columns (math.max 1
                            (math.min 512
@@ -434,12 +497,14 @@
     (var entry (and previous (. previous index)))
     (when (or (not entry) (not= entry.block block) (not= entry.columns columns)
               (not= entry.outer_inset options.outer_inset)
-              (or (not= entry.base base-key) (not= entry.captures captures)))
-      (set entry
-           {: block :base base-key
-            : columns
-            : captures :outer_inset options.outer_inset
-            :lines (render-block block columns base captures options.outer_inset)}))
+              (not= entry.base base-key) (not= entry.captures captures))
+      (set entry {: block
+                  :base base-key
+                  : columns
+                  : captures
+                  :outer_inset options.outer_inset
+                  :lines (render-block block columns base captures
+                                       options.outer_inset)}))
     (tset entries index entry)
     (append result entry.lines))
   (when (= (length result) 0)
@@ -447,43 +512,55 @@
   (values result entries))
 
 (fn render [document options]
+  "Render a Markdown document into terminal lines."
   (local lines (layout document options))
   lines)
 
 ;; Reuse is explicit immutable input/output, not a hidden mutable document.
 (fn project [text options previous]
+  "Project a Markdown document while reusing unchanged block geometry."
   (local opts (or options {}))
-  (local document (or opts.document
-                      (and previous (= text previous.source) previous.document)
-                      (misa.markdown.parse text (and previous previous.document))))
+  (local document
+         (or opts.document (and previous (= text previous.source)
+                                previous.document)
+             (misa.markdown.parse text (and previous previous.document))))
   (local base (style-key opts.base))
   (if (and previous (= document previous.document) (= text previous.source)
            (= opts.captures previous.captures) (= opts.columns previous.columns)
-           (= opts.outer_inset previous.outer_inset)
-           (= base previous.base))
+           (= opts.outer_inset previous.outer_inset) (= base previous.base))
       previous
-      (let [(lines entries) (layout document opts (and previous previous.entries))]
-        {:source text : document :base base :columns opts.columns
-         :captures opts.captures :outer_inset opts.outer_inset : entries : lines})))
+      (let [(lines entries) (layout document opts
+                                    (and previous previous.entries))]
+        {:source text
+         : document
+         :base base
+         :columns opts.columns
+         :captures opts.captures
+         :outer_inset opts.outer_inset
+         : entries
+         : lines})))
 
 (fn plain [text base]
+  "Render text as plain terminal lines with source coordinates."
   (var source (: (: (tostring (or text "")) :gsub "\r\n" "\n") :gsub "\r" "\n"))
   (when (= (source:sub -1) "\n") (set source (source:sub 1 -2)))
   (var offset 0)
   (icollect [line (: (.. source "\n") :gmatch "(.-)\n")]
     (let [first offset]
       (set offset (+ offset (length line) 1))
-      {:spans [{:text line :style base :source true :source_start first :source_end (- offset 1)}]})))
+      {:spans [{:text line
+                :style base
+                :source true
+                :source_start first
+                :source_end (- offset 1)}]})))
 
-{:setup (fn []
-          (local setup-fx [])
-          (assert (and misa.markdown (= (type misa.markdown.parse) :function))
-                  "component.markdown requires markdown")
-          (assert misa.layout "component.markdown requires layout")
-          (table.insert setup-fx
-                        {:type :register/service
-                         :name :markdown_view
-                         :value {: project
-                                 : plain
-                                 : render}})
-          {:fx setup-fx})}
+(fn []
+  "Build the declarations for component markdown."
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :services
+                 :id :markdown.view
+                 :value {: project : plain : render}})
+  (definitions :component.markdown
+    declarations
+    {:requirements {:component.markdown [:layout :markdown :markdown.parse]}}))

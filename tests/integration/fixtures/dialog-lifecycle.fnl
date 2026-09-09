@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:cancellable true
                                                    :completion :dialog/done
                                                    :correlation :a
@@ -12,11 +12,9 @@
                                                    :message :waiting
                                                    :title :Work
                                                    :type :dialog/open}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :dialog/done
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :dialog/done :handler (fn [db event]
                                     (if (= event.correlation :a)
                                         (do
                                           (assert (and event.cancelled
@@ -52,26 +50,21 @@
                                           {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                                    :text :dialogs}]}]
                                                  :type :view/commit}
-                                                {:type :app/quit}]})))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :dialog/opened-test
-                         :handler (fn [] nil)})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :dialog/begin-cancel
-                         :handler (fn []
+                                                {:type :app/quit}]})))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :dialog/opened-test :handler (fn [] nil)}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :dialog/begin-cancel :handler (fn []
                                     {:fx [{:event {:kind :escape
                                                    :type :dialog/input}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event :name :dialog/open
-                         :handler (fn [_ event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :dialog/open :handler (fn [_ event]
                                     (when (= event.id :one)
                                       {:fx [{:type :dispatch
                                              :event {:type :dialog/update :id :one
                                                      :correlation :stale :message :bad}}
                                             {:type :dispatch
-                                             :event {:type :dialog/begin-cancel}}]}))})
+                                             :event {:type :dialog/begin-cancel}}]}))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.dialog-lifecycle declarations {}))

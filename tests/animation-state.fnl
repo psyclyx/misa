@@ -2,16 +2,19 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {:animations {:persist false}}})
-(misa._setup (fennel.dofile :extensions/json.fnl) context)
-(local specs ((. (fennel.dofile :extensions/animations.fnl) :setup) context))
+(app.define ((fennel.dofile :extensions/json.fnl) context))
+(local specs ((fennel.dofile :extensions/animations.fnl) context))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
-(misa._setup_effects {:fx [{:type :register/animation :id :moving :value {:frames ["a" "b"]}}
-                          {:type :register/animation :id :still :value {:frames ["a"]}}]})
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
+(app.define specs)
+(app.define (definitions :test [{:catalog :animations :id :moving :value {:frames ["a" "b"]}}
+                          {:catalog :animations :id :still :value {:frames ["a"]}}]))
+(app.install)
 (local actions [{:type :animations/start :role :status}
                 {:type :animations/stop :role :status}
                 {:type :animations/tick :id :animation/service}

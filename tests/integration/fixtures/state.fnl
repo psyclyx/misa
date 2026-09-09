@@ -1,18 +1,16 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:completion :state/loaded
                                            :namespace :integration
-                                           :type :state/load}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :state/loaded
-                         :handler (fn [_ event]
+                                           :type :state/load}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :state/loaded :handler (fn [_ event]
                                     (assert (= event.namespace :integration))
-                                    (if (= event.data misa.json_null)
+                                    (if (= event.data misa.json-null)
                                         {:fx [{:data {:count 7
                                                       :nested {:ok true}}
                                                :namespace :integration
@@ -24,6 +22,6 @@
                                                           true)))
                                           {:fx [{:lines [{:spans [{:text "state loaded"}]}]
                                                  :type :view/commit}
-                                                {:type :app/quit}]})))})
+                                                {:type :app/quit}]})))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.state declarations {}))

@@ -1,16 +1,15 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:context_window 10
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:context_window 10
                                  :id :dynamic/old
                                  :label :Old
                                  :model :old
-                                 :provider :dynamic}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+                                 :provider :dynamic}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:authoritative true
                                                    :models [{:context_window 20
                                                              :id :dynamic/new
@@ -18,11 +17,9 @@
                                                              :model :new}]
                                                    :provider :dynamic
                                                    :type :models/replace-provider}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.dynamic
-                         :handler (fn [effect]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :effects :id :provider.dynamic :value (fn [effect]
                                     (assert (= effect.model :new))
                                     {:event {:content [{:text "dynamic model"
                                                         :type :text}]
@@ -30,4 +27,4 @@
                                              :type :agent/result}
                                      :type :dispatch})})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.dynamic-models declarations {}))

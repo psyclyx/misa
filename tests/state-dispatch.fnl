@@ -10,42 +10,32 @@
 (var borrowed-db nil)
 (local before-effect {:type :dispatch :event {:type :test/before}})
 (local handler-effect {:type :dispatch :event {:type :test/handler}})
-(misa._setup_effects
- {:fx [{:type :register/event :name :test/update
-        :handler (fn [db]
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local declarations (require :misa.definitions))
+(app.define (declarations :state-dispatch-0 [{:catalog :events  :value {:event :test/update :handler (fn [db]
                    (set borrowed-db db)
                    (set borrowed {:patch {:ownership {:value :retained}} :fx [before-effect]})
-                   borrowed)}
-       {:type :register/event :name :test/start
-        :handler (fn [_]
-                   {:patch {:value {:a 1 :b 2}}})}
-       {:type :register/event :name :test/update
-        :handler (fn [_]
-                   {:patch {:value {:a 3 :b misa.delete}} :fx [handler-effect]})}
-       {:type :register/event :name :test/update
-        :handler (fn [db]
+                   borrowed)}}
+       {:catalog :events  :value {:event :test/start :handler (fn [_]
+                   {:patch {:value {:a 1 :b 2}}})}}
+       {:catalog :events  :value {:event :test/update :handler (fn [_]
+                   {:patch {:value {:a 3 :b misa.delete}} :fx [handler-effect]})}}
+       {:catalog :events  :value {:event :test/update :handler (fn [db]
                    (assert (= borrowed-db.value.a 1) "dispatch mutated handler input")
                    (assert (= borrowed.patch.ownership.value :retained))
                    (assert (= (length borrowed.fx) 1) "dispatch mutated handler effects")
                    (assert (= (. borrowed.fx 1) before-effect))
                    (assert (= db.value.a 3) "handler did not see preceding patch")
                    (assert (= db.value.b nil) "deletion control reached state")
-                   {:patch {:value {:c 4}}})}
-       {:type :register/event :name :test/fail
-        :handler (fn [_] {:patch {:value {:a 100}}})}
-       {:type :register/event :name :test/fail
-        :handler (fn [db] {: db :patch {:value {:a 200}}})}
-       {:type :register/event :name :test/legacy
-        :handler (fn [db] {: db})}
-       {:type :register/event :name :test/invalid
-        :handler (fn [] {:patch {:bad (fn [])}})}
-       {:type :register/cofx :name :identity
-        :handler (fn [_ _ db] (set derived db) nil)}
-       {:type :register/view
-        :handler (fn [db] (set projected db) {:lines []})}
-       {:type :register/event :name :test/read
-        :handler (fn [db] (set observed db) nil)}]})
-(misa._seal context)
+                   {:patch {:value {:c 4}}})}}
+       {:catalog :events  :value {:event :test/fail :handler (fn [_] {:patch {:value {:a 100}}})}}
+       {:catalog :events  :value {:event :test/fail :handler (fn [db] {: db :patch {:value {:a 200}}})}}
+       {:catalog :events  :value {:event :test/legacy :handler (fn [db] {: db})}}
+       {:catalog :events  :value {:event :test/invalid :handler (fn [] {:patch {:bad (fn [])}})}}
+       {:catalog :coeffects :id :identity :value (fn [_ _ db] (set derived db) nil)}
+       {:catalog :views :id :main :value (fn [db] (set projected db) {:lines []})}
+       {:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
+(app.install context)
 (fn dispatch [event]
   (local effects (misa._dispatch {:type event} {:columns 80 :lines 24 :interactive false}
                                 {:wall_ms 0 :monotonic_ms 0}))

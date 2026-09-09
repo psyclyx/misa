@@ -1,9 +1,9 @@
-{:setup (fn [context]
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn [context]
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     {:patch {:phase :INTERMEDIATE_START :count 0 :typed ""}
                                      :fx [{:event {:type :fixture/settle}
                                            :type :dispatch}
@@ -14,11 +14,9 @@
                                            :completion :fixture/stream
                                            :id :producer
                                            :stdout_format :json_lines_stream
-                                           :type :process/run}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :fixture/stream
-                         :handler (fn [db event]
+                                           :type :process/run}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :fixture/stream :handler (fn [db event]
                                     (if event.records
                                         (do
                                           {:patch {:phase :INTERMEDIATE_STREAM
@@ -27,15 +25,11 @@
                                                  :type :dispatch}]})
                                         (= event.phase :end)
                                         {:patch {:done true}}
-                                        nil))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :fixture/settle
-                         :handler (fn [_] {:patch {:phase :SETTLED}})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :terminal/input
-                         :handler (fn [db event]
+                                        nil))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :fixture/settle :handler (fn [_] {:patch {:phase :SETTLED}})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :terminal/input :handler (fn [db event]
                                     (if (= event.kind :ctrl_d)
                                         {:fx [{:type :app/quit}]}
                                         (if (= event.kind :text)
@@ -44,10 +38,9 @@
                                                :fx [{:event {:type :fixture/settle}
                                                      :type :dispatch}
                                                     {:type :terminal/read}]})
-                                            {:fx [{:type :terminal/read}]})))})
-          (table.insert setup-fx
-                        {:type :register/view
-                         :handler (fn [db]
+                                            {:fx [{:type :terminal/read}]})))}})
+          (table.insert declarations
+                        {:catalog :views :id :main :value (fn [db]
                                     {:lines [{:spans [{:text (.. (or db.phase
                                                                      "")
                                                                  " "
@@ -60,4 +53,4 @@
                                                                           " DONE")
                                                                      ""))}]}]})})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.settled-frames declarations {}))

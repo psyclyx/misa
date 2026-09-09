@@ -2,21 +2,26 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
 (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices
                        :themes :theme/default :components :component/editor
-                       :component/picker :values :choice_preview :choice_layout])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
-(local specs ((. (fennel.dofile :extensions/editor.fnl) :setup) context))
+                       :component/picker :values :choices/preview :choices/layout])]
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(local specs ((fennel.dofile :extensions/editor.fnl) context))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(misa._setup_effects specs)
-(misa._setup_effects {:fx [{:type :register/command :value {:name :/ping :description :Ping :event :test/ping}}
-                          {:type :register/command :value {:name :/choose :description :Choose :event :test/choose :completion :test}}
-                          {:type :register/completion :group :test :value {:value :alpha}}
-                          {:type :register/completion :group :test :value {:value :beta}}]})
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
+(app.define specs)
+(app.define (definitions :test [(let [definition {:name :/ping :description :Ping :event :test/ping}] {:catalog :commands :id (. definition :name) :value definition})
+                          (let [definition {:name :/choose :description :Choose :event :test/choose :completion :test}] {:catalog :commands :id (. definition :name) :value definition})
+                          {:catalog :completions :id (.. :test "/" (. {:value :alpha} :value)) :value {:group :test :value {:value :alpha}}}
+                          {:catalog :completions :id (.. :test "/" (. {:value :beta} :value)) :value {:group :test :value {:value :beta}}}]))
+(app.define (definitions :test [{:catalog :editor-edits :id :test_edit :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]))
+(app.define ((fennel.dofile :extensions/editing.fnl) context))
+(app.install)
 (local cofx {:argv [] :terminal {:columns 80 :lines 24 :interactive true}})
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
@@ -45,7 +50,7 @@
                     (each [_ event (ipairs events)]
                       (set db (transition db event))
                       (assert (and (>= db.editor.cursor 0) (<= db.editor.cursor (length db.editor.text))))
-                      (assert (= db.editor.cursor (misa.layout.boundary_at_or_before db.editor.text db.editor.cursor)))))
+                      (assert (= db.editor.cursor (misa.layout.boundary-at-or-before db.editor.text db.editor.cursor)))))
                   {:cases 1000 :size 25}))
 (assert (not failure) (and failure (fennel.view failure)))
 (local attached (transition initial {:type :editor/attach :attachment {:path :old.png}}))
@@ -74,14 +79,13 @@
   (local bounded (transition initial {:type :editor/restore :replace true :text "é" : cursor}))
   (assert (= bounded.editor.cursor (if (>= cursor 2) 2 0))))
 (local before (misa.json.encode picked))
-(misa.editor_projection picked {:terminal cofx.terminal})
+(misa.editor.layout picked {:terminal cofx.terminal})
 (assert (= before (misa.json.encode picked)) "editor projection mutated state")
-(misa._setup_effects {:fx [{:type :register/editor-edit :id :test_edit
-                          :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]})
+
 (assert (= (. (transition initial {:type :terminal/input :kind :test_edit}) :editor :text) :custom))
 
 ;; The optional modal policy accounts inside these direct editor handlers too.
-(misa._setup (fennel.dofile :extensions/editing.fnl) context)
+
 (local command-draft (transition initial {:type :terminal/input :kind :text :text "/choose"}))
 (assert (= (. command-draft.editing.undo 1 :text) ""))
 (local command-args (transition command-draft {:type :terminal/input :kind :enter}))

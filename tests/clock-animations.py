@@ -20,6 +20,9 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 from fixture_environment import fixture_environment
 
 
@@ -33,8 +36,8 @@ def main():
         work = Path(directory)
         gate = work / 'gate.fifo'
         os.mkfifo(gate)
-        config = work / 'config.json'
-        config.write_text(json.dumps({'extensions': [fixture], 'config': {'gate': str(gate)}}))
+        config = work / 'config.fnl'
+        config.write_text(application({'extensions': [fixture], 'config': {'gate': str(gate)}}))
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
         original = termios.tcgetattr(slave)
@@ -127,7 +130,7 @@ def main():
             os.close(master)
             os.close(slave)
 
-        config.write_text(json.dumps({'extensions': [fixture], 'config': {'headless': True}}))
+        config.write_text(application({'extensions': [fixture], 'config': {'headless': True}}))
         result = subprocess.run([binary, '--config', str(config)], input=b'',
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, timeout=3)

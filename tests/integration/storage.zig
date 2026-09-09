@@ -5,7 +5,7 @@ const Harness = support.Harness;
 test "state saves privately and reloads in a fresh process" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/state.json"));
+    try h.config(@embedFile("configs/state.fnl"));
     try h.expect(.{}, "");
     const stat = try h.temporary.dir.statFile(support.io, "application-state.json", .{});
     try std.testing.expectEqual(@as(u32, 0o600), stat.permissions.toMode() & 0o777);
@@ -17,7 +17,7 @@ test "invalid persistence reaches the asynchronous completion event" {
     var h = try Harness.init();
     defer h.deinit();
     try h.write("application-state.json", @embedFile("configs/invalid-state.json"));
-    try h.config(@embedFile("configs/invalid-state-config.json"));
+    try h.config(@embedFile("configs/invalid-state-config.fnl"));
     try h.expect(.{}, "");
 }
 
@@ -58,7 +58,7 @@ test "Claude authentication delegates to the CLI without copying credentials" {
 test "favoriting a command choice persists its state" {
     var h = try Harness.init();
     defer h.deinit();
-    try h.config(@embedFile("configs/generic-command-choice.json"));
+    try h.config(@embedFile("configs/generic-command-choice.fnl"));
     try h.expect(.{ .input = "/choose\ntwo beta\x1bv\n" }, "beta-two\n");
     try support.contains(try h.read("application-state.json"), "\"favorite\": true");
 }

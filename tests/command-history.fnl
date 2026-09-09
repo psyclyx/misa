@@ -1,30 +1,24 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:description "terminal command"
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:description "terminal command"
                                  :event :test/alpha
-                                 :name :/alpha}})
-          (table.insert setup-fx
-                        {:type :register/command
-                         :value {:completion :history-arguments
+                                 :name :/alpha}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        (let [definition {:completion :history-arguments
                                  :description "argument command"
                                  :event :test/zulu
                                  :name :/zulu
-                                 :preference_scope :history-arguments}})
-          (table.insert setup-fx
-                        {:type :register/completion
-                         :group :history-arguments
-                         :value {:id :one-id :value :one}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/alpha
-                         :handler (fn [db]
-                                    {:fx [{:type :terminal/read}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/zulu
-                         :handler (fn [db event]
+                                 :preference_scope :history-arguments}] {:catalog :commands :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        {:catalog :completions :id (.. :history-arguments "/" (. {:id :one-id :value :one} :value)) :value {:group :history-arguments :value {:id :one-id :value :one}}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/alpha :handler (fn [db]
+                                    {:fx [{:type :terminal/read}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/zulu :handler (fn [db event]
                                     (assert (= event.arguments :one))
                                     (local used
                                            (. db.preferences.scopes.commands
@@ -47,11 +41,9 @@
                                           {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                                    :text "command history"}]}]
                                                  :type :view/commit}
-                                                {:type :app/quit}]})))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/history
-                         :handler (fn [db]
+                                                {:type :app/quit}]})))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/history :handler (fn [db]
                                     (assert (= (. db.preferences.scopes.commands
                                                   :/alpha :uses)
                                                2)
@@ -62,8 +54,8 @@
                                                1)
                                             "typed argument usage was lost")
                                     (var session
-                                           (misa.omnipicker_session db ""))
-                                    (local rows (misa.choice_rows session db))
+                                           (misa.picker.session db ""))
+                                    (local rows (misa.choices.rows session db))
                                     (assert (and (and (= session.preference_scope
                                                          :commands)
                                                       (= (. rows 1 :rows 1 :id)
@@ -83,11 +75,11 @@
                                                  (= (. counts "/zulu one") 1))
                                             "command source duplicated a canonical invocation")
                                     (local parent
-                                         (misa.choice_session {:items [{:value :parent}]
+                                         (misa.choices.session {:items [{:value :parent}]
                                                                :purpose :generic
                                                                :title :Parent}
                                                               db))
-                                    (local frame (. (misa.choice_accept parent
+                                    (local frame (. (misa.choices.accept parent
                                                         {:narrow {:items [{:value :child}]
                                                                   :preference_scope :child
                                                                   :purpose :generic
@@ -96,12 +88,10 @@
                                                         db) :session))
                                     {:patch {:history_frame (misa.replace frame)}
                                      :fx [{:event {:type :test/restored}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/restored
-                         :handler (fn [db]
-                                    (local frame (. (misa.choice_input db.history_frame
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/restored :handler (fn [db]
+                                    (local frame (. (misa.choices.input db.history_frame
                                                        {:action :cancel} db) :session))
                                     (assert (and (and (= frame.selected
                                                          nil)
@@ -113,7 +103,7 @@
                                     {:patch {:history_frame (misa.replace frame)}
                                      :fx [{:event {:completion :omnipicker/selected
                                                    :id :omnipicker
-                                                   :session (misa.omnipicker_session db
+                                                   :session (misa.picker.session db
                                                                                      "zulu one")
                                                    :title :Commands
                                                    :token :history
@@ -122,6 +112,6 @@
                                           {:event {:kind :alt
                                                    :text :j
                                                    :type :picker/input}
-                                           :type :dispatch}]})})
+                                           :type :dispatch}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.command-history declarations {}))

@@ -1,3 +1,5 @@
+(local definitions (require :misa.definitions))
+
 ;; Raw native descriptors isolate presentation clocks from Fennel timer policy.
 (fn view [db]
   (local active (= db.mode :active))
@@ -29,24 +31,18 @@
                                (or db.ticks 0) " gates=" (or db.gates 0))}]}]
    :cursor {:row 1 :byte 0}})
 
-{:setup (fn [context]
-          {:fx [{:type :register/event
-                 :name :app/start
-                 :handler (fn [db]
+(fn [context]
+          (definitions :tests.clock-animations [{:catalog :events  :value {:event :app/start :handler (fn [db]
                             (local initial {:mode :active :ticks 0 :gates 0})
                             {:patch initial
                              :fx (if context.config.headless
                                      [{:type :view/commit
                                        :lines (. (view (misa.patch db initial)) :lines)}
                                       {:type :app/quit}]
-                                     [{:type :terminal/read}])})}
-                {:type :register/event
-                 :name :animations/tick
-                 :handler (fn [db]
-                            {:patch {:ticks (+ db.ticks 1)}})}
-                {:type :register/event
-                 :name :terminal/input
-                 :handler (fn [db event]
+                                     [{:type :terminal/read}])})}}
+                {:catalog :events  :value {:event :animations/tick :handler (fn [db]
+                            {:patch {:ticks (+ db.ticks 1)}})}}
+                {:catalog :events  :value {:event :terminal/input :handler (fn [db event]
                             (if (= event.kind :ctrl_d)
                                 {:fx [{:type :app/quit}]}
                                 (do
@@ -58,5 +54,5 @@
                                     :tab {:mode :static}
                                     :backspace {:mode :removed}
                                     _ {}))
-                                  {: patch :fx [{:type :terminal/read}]})))}
-                {:type :register/view :handler view}]})}
+                                  {: patch :fx [{:type :terminal/read}]})))}}
+                {:catalog :views :id :main :value view}] {}))

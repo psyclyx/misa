@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:response_id :rate
                                                    :role :assistant
                                                    :type :transcript/response-start}
@@ -21,11 +21,9 @@
                                           {:completion :rate/finish
                                            :id :rate
                                            :interval_ms 10
-                                           :type :timer/start}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :rate/finish
-                         :handler (fn []
+                                           :type :timer/start}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :rate/finish :handler (fn []
                                     {:fx [{:id :rate :type :timer/stop}
                                           {:event {:block_id :rate/1
                                                    :response_id :rate
@@ -34,11 +32,9 @@
                                           {:event {:response_id :rate
                                                    :type :transcript/response-end
                                                    :usage {:output_tokens 20}}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/response-end
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/response-end :handler (fn [db event]
                                     (if (not= event.response_id :rate) nil
                                         (do
                                           (local response
@@ -51,6 +47,6 @@
                                                           (/ 20000
                                                              response.elapsed_ms)))
                                                   "completion rate did not use reported output tokens and monotonic elapsed time")
-                                          {:fx [{:type :app/quit}]})))})
+                                          {:fx [{:type :app/quit}]})))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.rate-check declarations {}))

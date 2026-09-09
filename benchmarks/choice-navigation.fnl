@@ -7,22 +7,24 @@
 (local baseline (os.getenv :MISA_CHOICE_BASELINE))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(each [_ name (ipairs [:json :layout :keybindings :choices :values :choice_preview :choice_layout])]
-  (local path (if (and baseline (or (= name :choices) (= name :choice_layout)))
-                  (.. baseline "/" name :.fnl) (.. :extensions/ name :.fnl)))
-  (misa._setup (fennel.dofile path) {:config {} :argv []}))
+(local app ((require :tests.application) {:config {} :argv []}))
+(each [_ name (ipairs [:json :layout :keybindings :choices :values :choices/preview :choices/layout])]
+  (local path (if (and baseline (or (= name :choices) (= name :choices/layout)))
+                  (.. baseline "/" (if (= name :choices/layout) :choice_layout name) :.fnl) (.. :extensions/ name :.fnl)))
+  (app.define ((fennel.dofile path) {:config {} :argv []})))
+(app.install)
 (each [_ count (ipairs [100 1000 3000])]
   (local items (fcollect [index 1 count]
                  {:id (.. :provider/model- index) :label (.. :provider/model- index)
                   :description "A sample model with enough detail to wrap"}))
-  (local initial (misa.choice_session {:title :Models :items items :views [:browse]} {}))
+  (local initial (misa.choices.session {:title :Models :items items :views [:browse]} {}))
   (local terminal {:columns 100 :lines 32})
   (fn run []
     (var session initial)
     (var frame nil)
     (for [_ 1 12]
-      (set session (. (misa.choice_input session {:action :next} {}) :session))
-      (set frame (misa.choice_picker_layout session {} terminal)))
+      (set session (. (misa.choices.input session {:action :next} {}) :session))
+      (set frame (misa.choices.picker-layout session {} terminal)))
     frame)
   (local oracle (misa.json.encode (run)))
   (for [_ 1 6]

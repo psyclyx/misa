@@ -1,11 +1,11 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (var ordered
-                                           (misa.choice_session {:items [{:value :vendor/one}]
+                                           (misa.choices.session {:items [{:value :vendor/one}]
                                                                  :purpose :models
                                                                  :title :Models}
                                                                 db))
@@ -13,11 +13,11 @@
                                                     :frecency)
                                                  (= (. ordered.view_ids 2) :all))
                                             "purpose view order was ignored")
-                                    (each [_ item (ipairs (misa.choice_registered_views ordered))]
+                                    (each [_ item (ipairs (misa.choices.registered-views ordered))]
                                       (assert (not= item.value :slash-prefix)
                                               "removed tree view is still registered"))
                                     (local flat
-                                           (misa.choice_session {:items [{:description :vendor/model
+                                           (misa.choices.session {:items [{:description :vendor/model
                                                                           :label :vendor/model
                                                                           :search ["Hidden Label"]
                                                                           :value :vendor/model}]
@@ -27,7 +27,7 @@
                                                                  :views [:all]}
                                                                 db))
                                     (local flat-rows
-                                           (. (misa.choice_rows flat db) 1
+                                           (. (misa.choices.rows flat db) 1
                                               :rows))
                                     (assert (and (= (length flat-rows) 1)
                                                  (= (. flat-rows 1 :description)
@@ -39,7 +39,7 @@
                                                                             :two {:last 20
                                                                                   :uses 2}}}}})
                                     (var browse
-                                           (misa.choice_session {:items [{:value :one}
+                                           (misa.choices.session {:items [{:value :one}
                                                                          {:value :two}
                                                                          {:value :three}]
                                                                  :preference_scope :models
@@ -47,7 +47,7 @@
                                                                  :views [:browse]}
                                                                 history))
                                     (local browse-rows
-                                           (. (misa.choice_rows browse history)
+                                           (. (misa.choices.rows browse history)
                                               1 :rows))
                                     (assert (and (and (= (. browse-rows 1
                                                             :value)
@@ -59,38 +59,38 @@
                                                     :All))
                                             "browse lost recent ordering or all section")
                                     (set browse.query :t)
-                                    (set browse (misa.choice_refresh browse history))
-                                    (each [_ row (ipairs (. (misa.choice_rows browse
+                                    (set browse (misa.choices.refresh browse history))
+                                    (each [_ row (ipairs (. (misa.choices.rows browse
                                                                               history)
                                                             1 :rows))]
                                       (assert (= row.section nil)
                                               "search kept recent grouping"))
                                     (local panels
-                                           (misa.choice_session {:purpose :generic
+                                           (misa.choices.session {:purpose :generic
                                                                  :title :Panels
                                                                  :view_definitions [{:id :one
                                                                                      :items [{:value :first}]}
                                                                                     {:id :two
                                                                                      :items [{:value :second}]}]}
                                                                 db))
-                                    (assert (= (misa.choice_positional panels
+                                    (assert (= (misa.choices.positional panels
                                                                        :option_2_1
                                                                        1 5)
                                                nil)
                                             "hidden positional bank activated")
-                                    (assert (= (misa.choice_positional panels
+                                    (assert (= (misa.choices.positional panels
                                                                        :option_1_2
                                                                        1 1)
                                                nil)
                                             "hidden positional slot activated")
-                                    (assert (= (. (misa.choice_positional panels
+                                    (assert (= (. (misa.choices.positional panels
                                                                           :option_2_1
                                                                           2 5)
                                                   :value)
                                                :second)
                                             "visible positional bank did not activate")
                                     (local narrow
-                                           (misa.choice_picker_layout panels db
+                                           (misa.choices.picker-layout panels db
                                                                       {:columns 57
                                                                        :lines 8}))
                                     (assert (and (= narrow.panel_count 1)
@@ -98,7 +98,7 @@
                                                     nil))
                                             "nonrendered picker panel retained an active hotkey")
                                     (local wrapped
-                                           (misa.choice_session {:items [{:label (string.rep "long "
+                                           (misa.choices.session {:items [{:label (string.rep "long "
                                                                                              20)
                                                                           :value :one}
                                                                          {:value :two}]
@@ -106,7 +106,7 @@
                                                                  :views [:all]}
                                                                 db))
                                     (local visible
-                                           (misa.choice_picker_layout wrapped
+                                           (misa.choices.picker-layout wrapped
                                                                       db
                                                                       {:columns 30
                                                                        :lines 6}))
@@ -120,7 +120,7 @@
                                                      (- visible.panel_height 1)))
                                             "oversized choice lost its visible target or escaped the panel budget")
                                     (var selected
-                                           (misa.choice_session {:items [{:label (string.rep "long "
+                                           (misa.choices.session {:items [{:label (string.rep "long "
                                                                                              8)
                                                                           :value :one}
                                                                          {:label (string.rep "selected "
@@ -131,10 +131,10 @@
                                                                  :title :Selected
                                                                  :views [:all]}
                                                                 db))
-                                    (set selected (. (misa.choice_input selected {:action :next}
+                                    (set selected (. (misa.choices.input selected {:action :next}
                                                        db) :session))
                                     (local measured
-                                           (misa.choice_picker_layout selected
+                                           (misa.choices.picker-layout selected
                                                                       db
                                                                       {:columns 40
                                                                        :lines 8}))
@@ -155,7 +155,7 @@
                                                 (tostring (. measured.columns 1
                                                              :overflow))))
                                     (local styled
-                                           (misa.choice_row_lines {:hotkey :alt+1
+                                           (misa.choices.row-lines {:hotkey :alt+1
                                                                    :label (string.rep "selected "
                                                                                       5)
                                                                    :marker " "
@@ -174,7 +174,7 @@
                                       (assert (= width 20)
                                               "selected row did not fill its width"))
                                     (local no-budget
-                                           (misa.choice_picker_layout flat db
+                                           (misa.choices.picker-layout flat db
                                                                       {:available_lines 2
                                                                        :columns 30}))
                                     (assert (and (= (length (. no-budget.columns
@@ -184,14 +184,14 @@
                                                     nil))
                                             "zero panel budget exposed a row or target")
                                     (local prefixed
-                                           (misa.choice_session {:input_prefix "/model "
+                                           (misa.choices.session {:input_prefix "/model "
                                                                  :items [{:value :vendor/model}]
                                                                  :query :vendor/
                                                                  :title :Arguments
                                                                  :views [:all]}
                                                                 db))
                                     (local prefixed-layout
-                                           (misa.choice_picker_layout prefixed
+                                           (misa.choices.picker-layout prefixed
                                                                       db
                                                                       {:columns 40
                                                                        :lines 8}))
@@ -201,7 +201,7 @@
                                                     (length prefixed-layout.input.text)))
                                             "narrowed picker omitted its canonical command prefix")
                                     (var parent
-                                           (misa.choice_session {:purpose :generic
+                                           (misa.choices.session {:purpose :generic
                                                                  :title :Parent
                                                                  :view_definitions [{:id :parent
                                                                                      :items [{:value :parent}]}]}
@@ -210,7 +210,7 @@
                                                       (= parent.preference_scope
                                                          nil))
                                                  (not= parent.custom_views nil)))
-                                    (set parent (. (misa.choice_accept parent
+                                    (set parent (. (misa.choices.accept parent
                                                         {:narrow {:items [{:value :child}]
                                                                   :preference_scope :child-scope
                                                                   :purpose :generic
@@ -222,7 +222,7 @@
                                                          :child-scope))
                                                  (= parent.custom_views nil))
                                             "parent-only narrowing state leaked into child")
-                                    (set parent (. (misa.choice_input parent {:action :cancel}
+                                    (set parent (. (misa.choices.input parent {:action :cancel}
                                                        db) :session))
                                     (assert (and (and (and (= parent.selected
                                                               nil)
@@ -233,17 +233,17 @@
                                                  (= (. parent.view_ids 1)
                                                     :parent))
                                             "narrow frame did not restore absent and custom state exactly")
-                                    (assert (= (misa.choice_action {:key :alt+x
+                                    (assert (= (misa.choices.action {:key :alt+x
                                                                     :kind :key})
                                                :open_overlay)
                                             "configured shared action was not resolved")
-                                    (assert (= (misa.choice_hint :option_1_1)
+                                    (assert (= (misa.choices.hint :option_1_1)
                                                :alt+z)
                                             "configured shared positional hint was not resolved")
-                                    (set ordered (misa.choice_replace_view ordered :browse
+                                    (set ordered (misa.choices.replace-view ordered :browse
                                                               db))
                                     (local fresh
-                                           (misa.choice_session {:items [{:value :vendor/one}]
+                                           (misa.choices.session {:items [{:value :vendor/one}]
                                                                  :purpose :models
                                                                  :title :Models}
                                                                 db))
@@ -252,6 +252,6 @@
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text "choice contracts"}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.choice-contracts declarations {}))

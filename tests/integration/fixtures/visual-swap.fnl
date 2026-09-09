@@ -1,37 +1,31 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :test.status
-                         :value {:render (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :components :id :test.status :value {:render (fn []
                                            {:lines [{:spans [{:style :plain
                                                               :text "independent status"}]}]})}})
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :test.chrome
-                         :value {:render (fn []
+          (table.insert declarations
+                        {:catalog :components :id :test.chrome :value {:render (fn []
                                            {:lines [{:spans [{:style :plain
                                                               :text "independent chrome"}]}]})}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:implementation :test.status
                                                    :role :status.indicators
                                                    :type :components/swap}
                                            :type :dispatch}
                                           {:event {:type :test/status-swapped}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/status-swapped
-                         :handler (fn [db]
-                                    (assert (= (. (misa.render_component db
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/status-swapped :handler (fn [db]
+                                    (assert (= (. (misa.components.render db
                                                                          :status.indicators
                                                                          {:indicators {}})
                                                   :lines 1 :spans 1 :text)
                                                "independent status"))
-                                    (assert (= (. (misa.render_component db
+                                    (assert (= (. (misa.components.render db
                                                                          :root.header
                                                                          {})
                                                   :lines 1 :spans 1 :text)
@@ -42,22 +36,20 @@
                                                    :type :components/swap}
                                            :type :dispatch}
                                           {:event {:type :test/chrome-swapped}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/chrome-swapped
-                         :handler (fn [db]
-                                    (assert (= (. (misa.render_component db
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/chrome-swapped :handler (fn [db]
+                                    (assert (= (. (misa.components.render db
                                                                          :status.indicators
                                                                          {:indicators {}})
                                                   :lines 1 :spans 1 :text)
                                                "independent status")
                                             "chrome swap changed status")
-                                    {:fx [{:lines (. (misa.render_component db
+                                    {:fx [{:lines (. (misa.components.render db
                                                                             :root.header
                                                                             {})
                                                      :lines)
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.visual-swap declarations {}))

@@ -1,23 +1,20 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :alpha/model
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:id :alpha/model
                                  :model :model
-                                 :provider :alpha}})
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :beta/model :model :model :provider :beta}})
-          (table.insert setup-fx
-                        {:type :register/tool
-                         :value {:description "switch providers"
+                                 :provider :alpha}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        (let [definition {:id :beta/model :model :model :provider :beta}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        (let [definition {:description "switch providers"
                                  :effect :tool.switch
                                  :input_schema {:type :object}
-                                 :name :switch}})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.alpha
-                         :handler (fn [effect]
+                                 :name :switch}] {:catalog :tools :id (. definition :name) :value definition}))
+          (table.insert declarations
+                        {:catalog :effects :id :provider.alpha :value (fn [effect]
                                     [{:event {:id effect.id
                                               :type :agent/stream-start}
                                       :type :dispatch}
@@ -32,31 +29,25 @@
                                      {:event {:id effect.id
                                               :type :agent/stream-end}
                                       :type :dispatch}])})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :tool.switch
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :tool.switch :value (fn [effect]
                                     (assert (and (= effect.arguments.value 7)
                                                  (= effect.arguments.nested.ok
                                                     true)))
                                     {:event {:type :cross/switch}
                                      :type :dispatch})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :cross/switch
-                         :handler (fn []
+          (table.insert declarations
+                        {:catalog :events  :value {:event :cross/switch :handler (fn []
                                     {:fx [{:event {:id :beta/model
                                                    :type :model/select}
                                            :type :dispatch}
                                           {:event {:text :switched
                                                    :tool_call_id :known
                                                    :type :tool/result}
-                                           :type :dispatch}]})})
+                                           :type :dispatch}]})}})
           (var beta-calls 0)
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.beta
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :provider.beta :value (fn [effect]
                                     (set beta-calls (+ beta-calls 1))
                                     (local known
                                            (. effect.messages 2 :content 1))
@@ -66,9 +57,9 @@
                                     (assert (= (misa.json.encode known.arguments)
                                                "{\"nested\":{\"ok\":true},\"value\":7}"))
                                     (local openai
-                                           (misa.protocols.serialize_openai_messages effect.messages))
+                                           (misa.protocols.openai-messages effect.messages))
                                     (local anthropic
-                                           (misa.protocols.serialize_anthropic_messages effect.messages))
+                                           (misa.protocols.anthropic-messages effect.messages))
                                     (assert (= (. openai 2 :tool_calls 1
                                                   :function :arguments)
                                                "{\"nested\":{\"ok\":true},\"value\":7}"))
@@ -105,4 +96,4 @@
                                                    :type :agent/result}
                                            :type :dispatch})))})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.cross-provider declarations {}))

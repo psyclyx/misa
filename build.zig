@@ -15,11 +15,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const config = b.createModule(.{
-        .root_source_file = b.path("src/config/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     const syntax_options = b.addOptions();
     syntax_options.addOption([]const u8, "default_grammar_dir", b.option([]const u8, "tree-sitter-dir", "Directory containing tree-sitter <language>.so grammars") orelse "");
     const syntax = b.createModule(.{
@@ -42,7 +37,7 @@ pub fn build(b: *std.Build) void {
 
     const standard_extension_options = b.addOptions();
     standard_extension_options.addOption([]const u8, "default_extension_dir", b.getInstallPath(.{ .custom = "share/misa" }, "extensions"));
-    standard_extension_options.addOption([]const u8, "default_config_path", b.getInstallPath(.{ .custom = "share/misa" }, "default.json"));
+    standard_extension_options.addOption([]const u8, "default_config_path", b.getInstallPath(.{ .custom = "share/misa" }, "default.fnl"));
     const standard_extensions = b.createModule(.{
         .root_source_file = b.path("src/standard_extensions/root.zig"),
         .target = target,
@@ -140,7 +135,6 @@ pub fn build(b: *std.Build) void {
     });
     main_module.addImport("misa_auth", auth);
     main_module.addImport("misa_provider_auth", auth);
-    main_module.addImport("misa_config", config);
     main_module.addImport("misa_lua_runtime", lua_runtime);
     main_module.addImport("misa_mcp", mcp);
     main_module.addImport("misa_standard_extensions", standard_extensions);
@@ -198,7 +192,7 @@ pub fn build(b: *std.Build) void {
         const install = b.addInstallFileWithDir(output, .{ .custom = "share/misa/extensions" }, generated);
         b.getInstallStep().dependOn(&install.step);
     }
-    b.installFile("config/default.json", "share/misa/default.json");
+    b.installFile("config/default.fnl", "share/misa/default.fnl");
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
@@ -234,7 +228,6 @@ pub fn build(b: *std.Build) void {
     operation_test_module.addImport("misa_state", state);
     const operation_unit = b.addTest(.{ .root_module = operation_test_module });
     const runtime_unit = b.addTest(.{ .root_module = lua_runtime });
-    const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const process_unit = b.addTest(.{ .root_module = process_effect });
     const file_unit = b.addTest(.{ .root_module = file_effect });
@@ -248,7 +241,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(oauth_unit).step);
     test_step.dependOn(&b.addRunArtifact(operation_unit).step);
     test_step.dependOn(&b.addRunArtifact(runtime_unit).step);
-    test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
     test_step.dependOn(&b.addRunArtifact(process_unit).step);
     test_step.dependOn(&b.addRunArtifact(file_unit).step);

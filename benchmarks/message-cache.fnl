@@ -5,20 +5,16 @@
 (local baseline-path (assert (. arg 1) "baseline source required"))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:config {}}))
 (local context {:config {}})
 (each [_ name (ipairs [:json :layout :markdown :component/markdown])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
-(fn renderer [specs]
-  (var result nil)
-  (each [_ spec (ipairs specs.fx)]
-    (when (= spec.id :default.transcript.assistant) (set result spec.value.render)))
-  (assert result))
-(local baseline (renderer ((. (fennel.dofile baseline-path) :setup) context)))
-(local specs ((. (fennel.dofile :extensions/component/message.fnl) :setup) context))
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(fn renderer [specs] (assert (. specs :components :default.transcript.assistant :render)))
+(local baseline (renderer ((fennel.dofile baseline-path) context)))
+(local specs ((fennel.dofile :extensions/component/message.fnl) context))
 (local candidate (renderer specs))
-;; Only the component's derived subscriptions need registration in this probe.
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]})))
+(app.define {:subscriptions (or specs.subscriptions {})})
+(app.install)
 (local render-context {:columns 80 :interactive true})
 (local source (string.rep "ordinary **bold** and [link](https://example.test)\n\n" 20))
 (each [_ count (ipairs [1 16 300])]

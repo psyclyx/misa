@@ -1,12 +1,17 @@
 (local fennel (require :fennel))
 (local output print)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(local status ((fennel.dofile :extensions/status.fnl)))
+(app.define {:subscriptions status.subscriptions})
+(app.install)
 (local feature (fennel.dofile :extensions/provider/openai-codex.fnl))
 (local handlers {})
-(each [_ spec (ipairs (. (feature.setup {:config {}}) :fx))]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(each [_ spec (pairs (. (feature {:config {}}) :events))]
+  (tset handlers spec.event spec.handler))
 (fn apply [db event]
   (local before (misa.json.encode db))
   (local result ((. handlers event.type) db event {:clock {:wall_ms 0 :monotonic_ms 0}}))
@@ -29,11 +34,11 @@
 (assert (= queued (apply queued {:type :usage/refresh})))
 ;; Field structure observed from a successful native GET; values are synthetic.
 (local payload {:account_id :private-account :email :private-email :user_id :private-user
-                :plan_type :pro :code_review_rate_limit misa.json_null
+                :plan_type :pro :code_review_rate_limit misa.json-null
                 :rate_limit {:allowed true :limit_reached false
                              :primary_window {:used_percent 25 :limit_window_seconds 604800
                                               :reset_at 1800000000 :reset_after_seconds 3600}
-                             :secondary_window misa.json_null}
+                             :secondary_window misa.json-null}
                 :additional_rate_limits [{:limit_name "Extra model" :metered_feature :extra
                                           :rate_limit {:primary_window {:used_percent 0 :limit_window_seconds 18000}
                                                        :secondary_window {:used_percent 100 :limit_window_seconds 604800}}}]})
@@ -75,17 +80,12 @@
 (assert (= (. malformed.providers.openai-codex.usage.windows 1 :remaining) 0))
 (assert (= (. malformed.providers.openai-codex.usage.windows 1 :label) "Additional quota 2 · primary"))
 ;; The shared dashboard consumes normalized facts without provider-specific text.
-(set misa.has_setup_effect (fn [] true))
-(set misa.selected_model_projection (fn [] {:provider :openai-codex}))
-(local status ((. (fennel.dofile :extensions/status.fnl) :setup)))
+(set misa.models.selected (fn [] {:provider :openai-codex}))
 (var (open-usage plan-query) (values nil nil))
-(each [_ spec (ipairs (. ((. (fennel.dofile :extensions/usage.fnl) :setup)) :fx))]
-  (when (= spec.name :usage/open) (set open-usage spec.handler)))
-(each [_ spec (ipairs status.fx)]
-  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]}))
-  (when (and (= spec.type :register/indicator) (= spec.value.id :plan))
-    (assert (= spec.value.value nil))
-    (set plan-query spec.value.query)))
+(each [_ spec (pairs (. ((fennel.dofile :extensions/usage.fnl)) :events))]
+  (when (= spec.event :usage/open) (set open-usage spec.handler)))
+(assert (= status.indicators.plan.value nil))
+(set plan-query status.indicators.plan.query)
 (fn plan-value [db]
   (misa.sub (misa.patch db {:models {:selected :codex
                                     :entries [{:id :codex :provider :openai-codex}]}}) plan-query))

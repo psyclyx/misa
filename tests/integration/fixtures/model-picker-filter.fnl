@@ -1,21 +1,19 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :picker/vendor/first
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:id :picker/vendor/first
                                  :label :First
                                  :model :vendor/first
-                                 :provider :picker}})
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :picker/vendor/second
+                                 :provider :picker}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        (let [definition {:id :picker/vendor/second
                                  :label :Second
                                  :model :vendor/second
-                                 :provider :picker}})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.picker
-                         :handler (fn [effect]
+                                 :provider :picker}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :effects :id :provider.picker :value (fn [effect]
                                     (assert (= effect.model :vendor/second))
                                     {:event {:content [{:text (.. "picked "
                                                                   effect.model)
@@ -24,4 +22,4 @@
                                              :type :agent/result}
                                      :type :dispatch})})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.model-picker-filter declarations {}))

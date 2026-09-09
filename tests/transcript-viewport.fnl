@@ -3,19 +3,25 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) {:config {}}))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(local specs ((fennel.dofile :extensions/messages.fnl) {:config {}}))
 (var (viewport scroll) nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.name :transcript_viewport) (set viewport spec.value))
-  (when (= spec.name :messages/scroll) (set scroll spec.handler)))
+(set viewport (. specs.services :transcript.viewport))
+(set scroll (. specs.events :messages/messages/scroll :handler))
+(each [_ name (ipairs [:layout :markdown :component/markdown])]
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {})))
+(app.install)
+(set misa.transcript {})
+(set misa.selection {})
 (var projections 0)
-(set misa.transcript_projection
+(set misa.transcript.project
      (fn [db]
        (set projections (+ projections 1))
        (icollect [index (ipairs db.rows)]
          {:spans [{:text (tostring index)}] :selected (= index db.selected_row)})))
-(set misa.selection_projection (fn [db] db.selected))
+(set misa.selection.state (fn [db] db.selected))
 (fn snapshot [count selected-row]
   {:messages {} :rows (fcollect [i 1 count] i) :selected_row selected-row
    :selected (when selected-row {:id :doc :first selected-row :last (+ selected-row 1)})})
@@ -32,7 +38,7 @@
         "a different speculative render changed the viewport")
 (local selected (snapshot 100 12))
 (assert (= (. (project selected 10) :first) 12))
-(set misa.ui_regions (fn [db terminal]
+(set misa.ui.regions (fn [db terminal]
                       [{:id :transcript :viewport (viewport db {:columns terminal.columns} (- terminal.lines 4))}]))
 (fn move [db delta]
   (local before (misa.json.encode db))
@@ -66,8 +72,8 @@
 (set projections 0)
 (move original 3)
 (assert (= projections 1) "scroll measured the transcript more than once")
-(local original-projection misa.transcript_projection)
-(set misa.transcript_projection
+(local original-projection misa.transcript.project)
+(set misa.transcript.project
      (fn [db]
        (local lines (original-projection db))
        (set (. lines 1 :selected) true)
@@ -76,8 +82,8 @@
        lines))
 (assert (= (. (project selected 10) :first) 12)
         "cross-document range revealed the anchor instead of the focused document")
-(set misa.transcript_projection original-projection)
-(set misa.transcript_projection
+(set misa.transcript.project original-projection)
+(set misa.transcript.project
      (fn [db]
        (local lines (original-projection db))
        (set (. lines 12 :selected) false)
@@ -88,9 +94,9 @@
        lines))
 (assert (= (. (project selected 10) :first) 12)
         "an unpainted selection anchor was not revealed")
-(set misa.transcript_projection original-projection)
+(set misa.transcript.project original-projection)
 ;; Width/detail changes alter row counts before the anchor, not its identity.
-(set misa.transcript_projection
+(set misa.transcript.project
      (fn [db context]
        (local lines [])
        (for [block 1 30]
@@ -105,10 +111,10 @@
         "resize lost the scrolled content block")
 (local followed (viewport original {:columns 40} 10))
 (assert (= followed.first 111) "tail-following acquired a content anchor")
-(set misa.transcript_projection original-projection)
+(set misa.transcript.project original-projection)
 ;; A broad source range (such as a block heading) can contain the source byte
 ;; of a later row. It must not steal that row's explicit scroll anchor.
-(set misa.transcript_projection
+(set misa.transcript.project
      (fn [db]
        (local lines (fcollect [i 1 30]
          {:transcript_id :block :source_part :body
@@ -130,14 +136,14 @@
   (set walking (move walking -1))
   (assert (= (. (project walking 10) :first) (+ 15 i))
           "reflow anchoring overrode explicit downward scrolling"))
-(set misa.transcript_projection original-projection)
+(set misa.transcript.project original-projection)
 ;; Streaming and scroll events share the same rule: preserve the visible
 ;; content first, then apply the requested row delta exactly once.
 (fn row [id source last]
   {:transcript_id id :spans [{:text id :source true :source_start (or source 0)
                               :source_end (or last 10)}]})
 (local base-rows (fcollect [i 1 40] (row (.. :row- i))))
-(set misa.transcript_projection (fn [db] db.layout))
+(set misa.transcript.project (fn [db] db.layout))
 (local following {:messages {} :layout base-rows})
 (local browsing (move following 15))
 (assert (= (. (project browsing 10) :first) 16))
@@ -182,15 +188,14 @@
 (local empty-view (project (misa.patch browsing {:layout (misa.replace [])}) 10))
 (assert (= empty-view.first 1))
 (assert (= (length empty-view.lines) 0))
-(set misa.transcript_projection original-projection)
+(set misa.transcript.project original-projection)
 ;; A resize reveals the physical row containing the previously visible source
 ;; byte, even when the following row starts closer to that byte numerically.
-(each [_ name (ipairs [:layout :markdown :component/markdown])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {}))
+
 (local source (table.concat (fcollect [i 1 80] (.. "word" i)) " "))
-(set misa.transcript_projection
+(set misa.transcript.project
      (fn [_ context]
-       (icollect [_ line (ipairs (misa.markdown_view.render (misa.markdown.parse source) {:columns context.columns}))]
+       (icollect [_ line (ipairs (misa.markdown.view.render (misa.markdown.parse source) {:columns context.columns}))]
          (misa.patch line {:transcript_id :long-block}))))
 (local scrolled (scroll {:messages {}} {:delta 3} {:terminal {:lines 7 :columns 80}}))
 (local anchored-db (misa.patch {:messages {}} scrolled.patch))
@@ -209,6 +214,6 @@
 (assert (<= wide-visible.source source-anchor) (fennel.view {:anchor source-anchor :visible wide-visible}))
 (assert (> wide-visible.last source-anchor))
 (assert (= (. (viewport {:messages {}} {:columns 31} 3) :first)
-           (+ (- (length (misa.transcript_projection {} {:columns 31})) 3) 1)))
-(set misa.transcript_projection original-projection)
+           (+ (- (length (misa.transcript.project {} {:columns 31})) 3) 1)))
+(set misa.transcript.project original-projection)
 (output "transcript viewport contracts passed\n")

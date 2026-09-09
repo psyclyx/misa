@@ -1,3 +1,5 @@
+(local definitions (require :misa.definitions))
+
 ;; Provider-neutral JSON values used at Lua protocol boundaries.
 (fn utf8 [codepoint]
   (if (<= codepoint 127) (string.char codepoint) (<= codepoint 2047)
@@ -21,6 +23,7 @@
                        :t "\t"})
 
 (fn decode [source]
+  "Decode JSON into values, preserving null with misa.json-null."
   (assert (= (type source) :string) "JSON source must be a string")
   (var at 1)
 
@@ -146,11 +149,14 @@
        (fn []
          (whitespace)
          (let [first (source:sub at at)]
-           (if (= first "\"") (string-value) (= first "[") (array-value)
-               (= first "{") (object-value) (= (source:sub at (+ at 3)) :true)
-               (literal-value :true true) (= (source:sub at (+ at 4)) :false)
-               (literal-value :false false) (= (source:sub at (+ at 3)) :null)
-               (literal-value :null misa.json_null) (number-value)))))
+           (if (= first "\"") (string-value)
+               (= first "[") (array-value)
+               (= first "{") (object-value)
+               (= (source:sub at (+ at 3)) :true) (literal-value :true true)
+               (= (source:sub at (+ at 4)) :false) (literal-value :false false)
+               (= (source:sub at (+ at 3)) :null) (literal-value :null
+                                                                 misa.json-null)
+               (number-value)))))
   (let [result (value)]
     (whitespace)
     (when (<= at (length source)) (fail "trailing JSON data"))
@@ -165,6 +171,7 @@
                 "\\" "\\\\"})
 
 (fn encode [root]
+  "Encode a value as JSON, rejecting cycles and non-finite numbers."
   (let [active {}]
     (var visit nil)
 
@@ -197,7 +204,7 @@
 
     (set visit (fn [value]
                  (let [kind (type value)]
-                   (if (= value misa.json_null)
+                   (if (= value misa.json-null)
                        :null
                        (= kind :string)
                        (.. "\""
@@ -221,11 +228,9 @@
                          (table-value value))))))
     (visit root)))
 
-{:setup (fn []
-          (local setup-fx [])
-          (assert (= misa.json nil) "JSON utility already registered")
-          (table.insert setup-fx
-                        {:type :register/service
-                         :name :json
-                         :value {: decode : encode}})
-          {:fx setup-fx})}
+(fn []
+  "Build the declarations for json."
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :services :id :json :value {: decode : encode}})
+  (definitions :json declarations {}))

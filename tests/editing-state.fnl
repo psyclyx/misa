@@ -2,20 +2,24 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {}})
 (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
 (local handlers {})
 (var policy nil)
 (each [_ name (ipairs [:editor :editing])]
-  (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
-  (each [_ spec (ipairs specs.fx)]
-    (when (= spec.type :register/event)
-      (when (not (. handlers spec.name)) (tset handlers spec.name {}))
-      (table.insert (. handlers spec.name) spec.handler))
-    (when (= spec.type :register/event-route) (set policy spec.value)))
-  (misa._setup_effects specs))
+  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (each [_ spec (pairs specs.events)]
+    (when (not (. handlers spec.event)) (tset handlers spec.event {}))
+    (table.insert (. handlers spec.event) spec.handler))
+  (each [_ route (pairs (or specs.routes {}))] (set policy route))
+  (app.define specs))
+(app.define (definitions :test [{:catalog :editing-motions :id :custom_motion :value (fn [] 2)}
+                          {:catalog :editing-actions :id :custom_action :value (fn [] {:editor {:text :custom :cursor 0}})}]))
+(app.install)
 (local cofx {:argv [] :terminal {:interactive true :columns 80 :lines 24}})
 (fn unchanged [db call]
   (local before (misa.json.encode db))
@@ -59,7 +63,7 @@
                       (set db (action db name))
                       (local editor db.editor)
                       (assert (and (>= editor.cursor 0) (<= editor.cursor (length editor.text))))
-                      (assert (= editor.cursor (misa.layout.boundary_at_or_before editor.text editor.cursor)))
+                      (assert (= editor.cursor (misa.layout.boundary-at-or-before editor.text editor.cursor)))
                       (assert (<= (length (or db.editing.undo {})) 64))
                       (assert (<= (length (or db.editing.redo {})) 64))
                       (when editor.selection_start
@@ -129,7 +133,7 @@
 ;; Submission is an explicit policy reason, independent of the input key.
 (local consumed (misa.patch more {:editor {:text "" :cursor 0}}))
 (local accounted (unchanged [more consumed]
-                            #(misa.editing_transition more.editing more.editor consumed.editor :discard true)))
+                            #(misa.editor.transition more.editing more.editor consumed.editor :discard true)))
 (assert (= (length accounted.undo) 0))
 (assert (= policy.after nil) "undo policy still uses a global after hook")
 ;; Calling the owner directly must account synchronously, without before hooks.
@@ -163,21 +167,18 @@
 (assert (= forward-cleared.editor.text ""))
 (assert (= (length forward-cleared.editing.undo) 0))
 ;; Policy configuration is orthogonal to the operation's meaning.
-(assert (= (misa.editing_transition empty.editing empty.editor typed.editor :insert false)
+(assert (= (misa.editor.transition empty.editing empty.editor typed.editor :insert false)
            empty.editing) "noninteractive input acquired modal undo state")
-(local plain-specs ((. (fennel.dofile :extensions/editing.fnl) :setup)
+(local plain-specs ((fennel.dofile :extensions/editing.fnl)
                     {:config {:editing {:mode :plain}}}))
-(local plain-policy (accumulate [found nil _ spec (ipairs plain-specs.fx)]
-                     (if (= spec.name :editing_transition) spec.value found)))
+(local plain-policy (. plain-specs.services :editor.transition))
 (assert (= (plain-policy empty.editing empty.editor typed.editor :insert true) empty.editing))
 (local plain-restored (plain-policy more.editing more.editor restored.editor :restore false))
 (assert (= (length plain-restored.undo) 0) "plain restore retained the old draft history")
 (var bounded initial)
 (for [_ 1 80] (set bounded (action bounded :open_below)))
 (assert (= (length bounded.editing.undo) 64))
-(misa._setup_effects {:fx [{:type :register/editing-motion :id :custom_motion :value (fn [] 2)}
-                          {:type :register/editing-action :id :custom_action
-                           :value (fn [] {:editor {:text :custom :cursor 0}})}]})
+
 (assert (= (. (action initial :custom_motion) :editor :cursor) 2))
 (assert (= (. (action initial :custom_action) :editor :text) :custom))
 (output "editing state properties passed\n")

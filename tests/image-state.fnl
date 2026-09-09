@@ -2,11 +2,13 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(local specs ((. (fennel.dofile :extensions/images.fnl) :setup) {:config {}}))
+(local specs ((fennel.dofile :extensions/images.fnl) {:config {}}))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
 (local actions [{:type :images/paste}
                 {:type :images/load :path :test.png}
                 {:type :images/load :path ""}

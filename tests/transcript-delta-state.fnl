@@ -3,16 +3,24 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) {:config {:messages {:max_string 12}}}))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
+(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(local specs ((fennel.dofile :extensions/messages.fnl) {:config {:messages {:max_string 12}}}))
 (local handlers {})
-(var (register input-policy blocks-for) nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (when (= spec.type :register/event-route) (set input-policy spec.value.resolve))
-  (when (= spec.name :transcript_blocks) (set blocks-for spec.value))
-  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]}))
-  (when (= spec.name :register/transcript-delta) (set register spec.handler)))
+(local input-policy (. specs.routes :messages/global-keys :resolve))
+(local blocks-for (. specs.services :transcript.blocks))
+(each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
+(app.define {:subscriptions specs.subscriptions :transcript-deltas specs.transcript-deltas
+             :transcript-presentations specs.transcript-presentations})
+(app.define {:transcript-deltas {:custom (fn [_ event] {:custom event.text})}
+             :transcript-presentations {:custom (fn [model] {:role :custom.render :model {:custom model.id}})
+                                        :custom.assistant (fn [] {:role :custom.assistant :model {}})}})
+(app.install)
+(set misa.components {})
+(set misa.selection {})
+(set misa.syntax {})
+(set misa.costs {})
 (local summary-fact (misa.sub {} [:messages/detail-indicator]))
 (assert (= summary-fact.type :text))
 (assert (= summary-fact.value :summary))
@@ -62,7 +70,7 @@
 (assert (= (table.concat (. replaced.messages.blocks 1 :argument_chunks)) "{}"))
 (local structured (transition tool {:arguments {:token :secret :x 1}}))
 (assert (not= (. structured.messages.blocks 1 :arguments :token) :secret))
-(register {:id :custom :value (fn [_ event] {:custom event.text})})
+
 (assert (= (. (transition (initial :custom) {:text :value}) :messages :blocks 1 :custom) :value))
 (local streamed (transition text {:text :hello}))
 (local ended (transition streamed {:type :transcript/block-end}))
@@ -111,7 +119,7 @@
 (assert (= reset.messages.next_id 17))
 (assert (= reset.messages.top nil))
 (assert (= (length reset.messages.blocks) 0))
-(set misa.keybinding_action (fn [_ event] event.action))
+(set misa.keybindings.action (fn [_ event] event.action))
 (each [_ example (ipairs [{:kind :wheel_up :delta 3} {:kind :wheel_down :delta -3}
                           {:action :transcript_up :delta 12} {:action :transcript_down :delta -12}])]
   (local tx {:db boot :event {:type :terminal/input :kind example.kind :action example.action}
@@ -216,7 +224,7 @@
 (local finalized (notification multiple {:type :transcript/response-end} :reply nil))
 (assert (= (. finalized.messages.blocks 3) (. multiple.messages.blocks 3)))
 (local committed-lines [{:spans [{:text :committed}]}])
-(set misa.render_component (fn [] {:lines committed-lines}))
+(set misa.components.render (fn [] {:lines committed-lines}))
 (each [_ sample (ipairs [[boot {:type :transcript/user :text :user} :transcript-1 :transcript-1/1]
                          [boot {:type :transcript/harness :text :harness} :transcript-1 :transcript-1/1]
                          [boot {:type :transcript/assistant :request_id :legacy
@@ -226,24 +234,22 @@
   (assert (= (length fx) 2))
   (assert (= (. fx 1 :type) :view/commit))
   (assert (= (. fx 1 :lines) committed-lines)))
-(set misa.render_component nil)
-(var (project register-presentation) nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.name :transcript_projection) (set project spec.render))
-  (when (= spec.name :register/transcript-presentation) (set register-presentation spec.handler)))
+(set misa.components.render nil)
+(local project (. specs.projections :transcript.project :render))
+
 (local cached {:lines [{:spans [{:text :cached}]}]})
 (var rendered-role nil)
 (var rendered-model nil)
-(set misa.project_components (fn [_ _ items]
+(set misa.components.project (fn [_ _ items]
                               {:views (icollect [_ item (ipairs items)]
                                         (if item.chrome {:lines []}
                                           (do (set rendered-role item.role)
                                             (set rendered-model item.model)
                                             cached)))}))
-(set misa.selection_decorate (fn [] [{:spans [{:text :decorated}]}]))
-(set misa.selection_projection nil)
-(set misa.syntax_projection nil)
-(set misa.response_cost_projection nil)
+(set misa.selection.decorate (fn [] [{:spans [{:text :decorated}]}]))
+(set misa.selection.state nil)
+(set misa.syntax.for-model nil)
+(set misa.costs.response nil)
 (fn render [db]
   (local before (misa.json.encode db))
   (local cache-before (misa.json.encode cached))
@@ -267,13 +273,12 @@
 (render returned)
 (assert (= rendered-model.collapsed true))
 (assert (= rendered-model.selection_text nil))
-(set misa.selection_projection (fn [] {:id "12:transcript-1transcript-1/1" :text :selected :first 0 :last 8}))
+(set misa.selection.state (fn [] {:id "12:transcript-1transcript-1/1" :text :selected :first 0 :last 8}))
 (render returned)
 (assert (= rendered-model.selection_source :result))
 (assert (= rendered-model.selection_text :selected))
 (assert (= rendered-model.collapsed false))
-(register-presentation {:id :custom :value (fn [model]
-                                            {:role :custom.render :model {:custom model.id}})})
+
 (render (initial :custom))
 (assert (= rendered-role :custom.render))
 (assert (= rendered-model.custom :block))
@@ -289,12 +294,12 @@
 
 ;; A response owns the display metadata even when its only content is a tool.
 (var projected-items nil)
-(set misa.selection_projection nil)
-(set misa.project_components
+(set misa.selection.state nil)
+(set misa.components.project
      (fn [_ _ items]
        (set projected-items items)
        {:views (icollect [_ item (ipairs items)] {:lines [{:spans [{:text item.role}]}]})}))
-(set misa.response_cost_projection (fn [_ id] {:type :money :amount 0.25 :currency :USD :response_id id}))
+(set misa.costs.response (fn [_ id] {:type :money :amount 0.25 :currency :USD :response_id id}))
 (local tool-completed (transition tool-db {:type :transcript/response-end :usage {:output_tokens 20}}))
 (render tool-completed)
 (assert (= (length projected-items) 3))
@@ -382,10 +387,19 @@
 (local standalone-result (misa.patch (initial :tool_result)
                                      {:messages {:blocks (misa.replace [{:id :block :response_id :reply
                                                                         :kind :tool_result :text :old :result :latest}])}}))
-(set misa.selection_projection (fn [] {:id "5:replyblock" :text :frozen :first 0 :last 6}))
+(set misa.selection.state (fn [] {:id "5:replyblock" :text :frozen :first 0 :last 6}))
 (render standalone-result)
 (local selected-result (. projected-items 2 :model))
 (assert (= selected-result.selection_source :result))
 (assert (= selected-result.selection_text :frozen))
 (assert (= selected-result.collapsed false))
+(local override-specs ((fennel.dofile :extensions/messages.fnl)
+                      {:config {:messages {:presentations {:assistant :custom.assistant}}}}))
+(local override-project (. override-specs.projections :transcript.project :render))
+
+
+(override-project streamed {:columns 80})
+(assert (= (. projected-items 2 :role) :custom.assistant))
+(override-project (initial :thinking) {:columns 80})
+(assert (= (. projected-items 2 :role) :transcript.thinking) "override discarded other default presentations")
 (output "transcript delta state properties passed\n")

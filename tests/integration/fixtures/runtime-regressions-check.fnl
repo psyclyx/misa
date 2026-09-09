@@ -1,14 +1,13 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event :name :transcript/block-start
-                         :handler (fn [db event]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/block-start :handler (fn [db event]
                                     (when (= event.kind :tool_call)
-                                      {:patch {:test_tool_starts (+ (or db.test_tool_starts 0) 1)}}))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :agent/completed
-                         :handler (fn [db]
+                                      {:patch {:test_tool_starts (+ (or db.test_tool_starts 0) 1)}}))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
                                     (assert (= db.agent.request_seq 1)
                                             "provider tool loop was executed twice")
                                     (assert (and (= db.agent.status :ready)
@@ -36,6 +35,6 @@
                                     (assert (= (. db.agent.messages 4 :content
                                                   1 :text)
                                                "second result"))
-                                    {:fx [{:type :app/quit}]})})
+                                    {:fx [{:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.runtime-regressions-check declarations {}))

@@ -1,1 +1,0 @@
-{"extensions":["json","provider.fake","tool.shell","models","agent","@ROOT@/tests/integration/fixtures/runtime-regressions-invalid.fnl"],"config":{"models":{"default":"fake/default"},"providers":{"fake":{"responses":[{"stream":[{"type":"tool_call","id":"invalid","name":"shell","arguments":{}}]},"recovered"]}}}}

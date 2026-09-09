@@ -3,25 +3,25 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (each [_ name (ipairs [:json :layout :values :keybindings :dialogs :component.buttons])]
-  (misa._setup (fennel.dofile (.. :extensions/ (name:gsub "%." "/") :.fnl)) {:config {}}))
-(set misa.local_datetime (fn [_] "localized time"))
-(set misa.protocols {:anthropic (fn [] {:fx []})})
+  (app.define ((fennel.dofile (.. :extensions/ (name:gsub "%." "/") :.fnl)) {:config {}})))
+(set misa.time.local-datetime (fn [_] "localized time"))
 (fn handlers [specs]
-  (collect [_ spec (ipairs specs.fx)]
-    (when (= spec.type :register/event) (values spec.name spec.handler))))
+  (collect [_ spec (pairs specs.events)] spec.event spec.handler))
 (local providers (collect [_ id (ipairs [:claude :openai-codex :kimi])]
-                   (values id (handlers ((. (fennel.dofile (.. :extensions/provider/ id :.fnl)) :setup)
+                   (values id (handlers ((fennel.dofile (.. :extensions/provider/ id :.fnl))
                                          {:config {}})))))
-(local status-specs ((. (fennel.dofile :extensions/status.fnl) :setup)))
+(local status-specs ((fennel.dofile :extensions/status.fnl)))
 (local status (handlers status-specs))
-(each [_ spec (ipairs status-specs.fx)]
-  (when (= spec.type :register/sub) (misa._setup_effects {:fx [spec]})))
-(local usage (handlers ((. (fennel.dofile :extensions/usage.fnl) :setup))))
-(local dialogs (handlers ((. (fennel.dofile :extensions/dialogs.fnl) :setup))))
-(local render-data (. ((. (fennel.dofile :extensions/component/data.fnl) :setup)) :fx 1 :value :render))
-(local render-dialog (. ((. (fennel.dofile :extensions/component/dialog.fnl) :setup)) :fx 1 :value :render))
+(app.define {:subscriptions status-specs.subscriptions})
+(app.install)
+(local usage (handlers ((fennel.dofile :extensions/usage.fnl))))
+(local dialogs (handlers ((fennel.dofile :extensions/dialogs.fnl))))
+(local render-data (. ((fennel.dofile :extensions/component/data.fnl)) :components :default.data :render))
+(local render-dialog (. ((fennel.dofile :extensions/component/dialog.fnl)) :components :default.dialog :render))
 (local clock {:clock {:wall_ms 1788825600000 :monotonic_ms 0}})
 (fn apply [registry db event]
   (local before (misa.json.encode db))
@@ -96,7 +96,7 @@
                          {:type :usage/open}))
 (assert (= (section (. absent 1 :event) :unknown) nil) "missing subscription invented a section")
 (local data (render-data db.dialog {:columns 118}))
-(local view (render-dialog (misa.patch db.dialog {:content data.lines :actions (misa.replace (misa.dialog_buttons db.dialog))})
+(local view (render-dialog (misa.patch db.dialog {:content data.lines :actions (misa.replace (misa.dialogs.buttons db.dialog))})
                            {:columns 120 :available_lines 100}))
 (local text (table.concat (icollect [_ line (ipairs view.lines)]
                            (table.concat (icollect [_ span (ipairs line.spans)] span.text))) "\n"))

@@ -15,6 +15,7 @@ mkShell {
   packages = [
     zig_0_16
     luajit
+    pkgs.fnlfmt
     pkgs.tree-sitter
     pkgs.libpng
     pkgs.libjpeg

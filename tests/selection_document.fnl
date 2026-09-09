@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     (fn source [doc item]
                                       (doc.text:sub (+ item.first 1) item.last))
 
@@ -15,7 +15,7 @@ A é paragraph\r
 Tail\r
 ")
                                     (local doc
-                                           (misa.selection_document :one
+                                           (misa.selection.document :one
                                                                     :Message
                                                                     text))
                                     (assert (and (= doc.text text)
@@ -39,7 +39,7 @@ Tail\r
 | --- | keep | ``a|`b`` |\r
 |  | é | 👩‍💻 |")
                                     (local table-doc
-                                           (misa.selection_document :table
+                                           (misa.selection.document :table
                                                                     :Table
                                                                     table-text))
                                     (local rows
@@ -61,20 +61,20 @@ Tail\r
                                             "empty cell disappeared")
                                     (each [_ index (ipairs [2 3])]
                                       (local word
-                                             (. (misa.selection_children table-doc
+                                             (. (misa.selection.children table-doc
                                                                          (. rows
                                                                             3
                                                                             :children
                                                                             index))
                                                 1))
                                       (local chars
-                                             (misa.selection_children table-doc
+                                             (misa.selection.children table-doc
                                                                       word))
                                       (assert (= (length chars) 1)
                                               "fine selection split a grapheme"))
                                     (local large (string.rep :x 3000))
                                     (local large-doc
-                                           (misa.selection_document :large
+                                           (misa.selection.document :large
                                                                     :Large large))
                                     (assert (and (= large-doc.text large)
                                                  (= large-doc.last
@@ -87,7 +87,7 @@ Tail\r
                                             "source tail is unreachable")
                                     (for [height 0 12]
                                       (local frame
-                                             (misa.render_component db
+                                             (misa.components.render db
                                                                     :selection
                                                                     {:hints {}
                                                                      :index 1
@@ -107,6 +107,6 @@ c"}
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text "selection document"}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.selection_document declarations {}))

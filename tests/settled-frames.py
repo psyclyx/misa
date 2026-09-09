@@ -19,6 +19,9 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from configuration import application
 from fixture_environment import fixture_environment
 
 binary = str(Path(sys.argv[1]).resolve())
@@ -28,7 +31,7 @@ fixture = (Path(__file__).resolve().parent / 'settled-frames.fnl').read_text()
 with tempfile.TemporaryDirectory(prefix='misa-settled-frames-') as directory:
     work = Path(directory)
     (work / 'fixture.fnl').write_text(fixture)
-    (work / 'config.json').write_text(json.dumps({'extensions':[str(work/'fixture.fnl')], 'config':{'python':sys.executable,'producer':str(work/'producer.py')}}))
+    (work / 'config.fnl').write_text(application({'extensions':[str(work/'fixture.fnl')], 'config':{'python':sys.executable,'producer':str(work/'producer.py')}}))
     latencies=[]
     for trial in range(3):
         # Include an unthrottled producer: continuously pending native records
@@ -38,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='misa-settled-frames-') as directory:
         master,slave=pty.openpty()
         fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,100,0,0))
         env=fixture_environment(work,TERM='xterm-256color',MISA_AUTH_FILE=str(work/'auth.json'),MISA_STATE_FILE=str(work/'state.json'))
-        process=subprocess.Popen([binary,'--config',str(work/'config.json')],stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
+        process=subprocess.Popen([binary,'--config',str(work/'config.fnl')],stdin=slave,stdout=slave,stderr=slave,env=env,close_fds=True)
         os.close(slave)
         data=bytearray()
         def read_until(predicate, timeout=3):

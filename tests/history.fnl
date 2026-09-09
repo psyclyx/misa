@@ -1,5 +1,7 @@
-{:setup (fn [context]
-          (local setup-fx [])
+(local definitions (require :misa.definitions))
+
+(fn [context]
+          (local declarations [])
           (local steps {})
 
           (fn step [event check]
@@ -8,28 +10,22 @@
 
           ;; The editor adapter is deliberately tiny: this fixture tests history's
           ;; event contract without loading the Vim policy or transcript presentation.
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :editor/restore
-                         :handler (fn [db event]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :editor/restore :handler (fn [db event]
                                     (assert (= event.replace true))
                                     {:patch {:editor {:text event.text
                                                       :cursor (or event.cursor (length event.text))
-                                                      :attachments (misa.replace event.attachments)}}})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/editor
-                         :handler (fn [db event]
+                                                      :attachments (misa.replace event.attachments)}}})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/editor :handler (fn [db event]
                                     {:patch {:editor (misa.replace
                                          {:attachments (or event.attachments {})
                                           :cursor (or event.cursor
                                                       (length event.text))
-                                          :text event.text})}})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :terminal/input
-                         :handler (fn [db]
-                                    {:patch {:unhandled (+ (or db.unhandled 0) 1)}})})
+                                          :text event.text})}})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :terminal/input :handler (fn [db]
+                                    {:patch {:unhandled (+ (or db.unhandled 0) 1)}})}})
           (step {:prompt :one :type :agent/submitted})
           (step {:prompt :one :type :agent/submitted}
                 (fn [db]
@@ -120,18 +116,14 @@ second line"))
                   (assert (= (length db.history.entries) db.history_test_count)
                           "oversized input displaced bounded history")
                   nil))
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
                                     {:patch {:editor (misa.replace {:cursor 0 :text ""})}
                                      :fx [{:event {:index 1
                                                    :type :test/history-step}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/history-step
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/history-step :handler (fn [db event]
                                     (local item (. steps event.index))
                                     (if (not item)
                                         {:fx [{:lines [{:spans [{:text :history}]}]
@@ -141,29 +133,23 @@ second line"))
                                                :type :dispatch}
                                               {:event {:index event.index
                                                        :type :test/history-wait}
-                                               :type :dispatch}]}))})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/history-wait
-                         :handler (fn [db event]
+                                               :type :dispatch}]}))}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/history-wait :handler (fn [db event]
                                     {:fx [{:event {:index event.index
                                                    :type :test/history-wait-again}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/history-wait-again
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/history-wait-again :handler (fn [db event]
                                     {:fx [{:event {:index event.index
                                                    :type :test/history-check}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/history-check
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/history-check :handler (fn [db event]
                                     (local check (. steps event.index :check))
                                     {:patch (and check (check db))
                                      :fx [{:event {:index (+ event.index 1)
                                                    :type :test/history-step}
-                                           :type :dispatch}]})})
+                                           :type :dispatch}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.history declarations {}))

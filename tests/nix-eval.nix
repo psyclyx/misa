@@ -5,18 +5,12 @@ let
   allTreeSitterGrammars = pkgs.tree-sitter.withPlugins (_: pkgs.tree-sitter-grammars.allGrammars);
   inherit (project) lib;
   standard = lib.standardExtensions;
-  custom = ../extensions/agent.fnl;
+  custom = ../config/default.fnl;
   defaults = lib.mkMisa { };
-  configured = lib.mkMisa {
-    extensions = with standard; [
-      agent
-      custom
-      providerCommand
-    ];
-  };
-  serializedCustom = builtins.elemAt configured.configData.extensions 1;
+  scripted = lib.mkMisa { configuration = custom; };
+  serializedCustom = scripted.configFile;
   invalid = builtins.tryEval (
-    builtins.deepSeq (lib.mkMisa { extensions = [ "provider.unknown" ]; }).configData true
+    builtins.deepSeq (lib.mkMisa { configuration = "/unpackaged/config.fnl"; }).configFile true
   );
   moduleEval = pkgs.lib.evalModules {
     specialArgs = { inherit pkgs; };
@@ -29,11 +23,7 @@ let
       }
       project.homeManagerModules.misa
       {
-        programs.misa.extensions = [
-          "agent"
-          custom
-          "provider.fake"
-        ];
+        programs.misa.configuration = custom;
       }
     ];
   };
@@ -45,6 +35,9 @@ assert project.default.src.filter "${toString ../.}/tools/compile-fennel.lua" "r
 assert project.default.src.filter "${toString ../.}/extensions/agent.fnl" "regular";
 assert
   standard == {
+    definitions = "misa.definitions";
+    default = "misa.default";
+    standard = "misa.standard";
     actions = "actions";
     clipboard = "clipboard";
     links = "links";
@@ -52,27 +45,27 @@ assert
     costs = "costs";
     history = "history";
     queue = "queue";
-    queueView = "queue_view";
+    queueView = "queue.view";
     images = "images";
     attachments = "attachments";
     componentImage = "component.image";
 
     selection = "selection";
-    selectionDocument = "selection_document";
+    selectionDocument = "selection.document";
     componentSelection = "component.selection";
     agent = "agent";
-    toolSummary = "tool_summary";
+    toolSummary = "tool.summary";
     animations = "animations";
     animationDefault = "animation.default";
     auth = "auth";
     choices = "choices";
-    choicePreview = "choice_preview";
-    choiceLayout = "choice_layout";
+    choicePreview = "choices.preview";
+    choiceLayout = "choices.layout";
     values = "values";
     commands = "commands";
     omnipicker = "omnipicker";
     dialogs = "dialogs";
-    dialogView = "dialog_view";
+    dialogView = "dialogs.view";
     components = "components";
     layout = "layout";
     markdown = "markdown";
@@ -81,7 +74,7 @@ assert
     componentTool = "component.tool";
     componentContent = "component.content";
     componentTruncation = "component.truncation";
-    toolPresentations = "tool_presentations";
+    toolPresentations = "tool.presentations";
     componentGroup = "component.group";
     componentMessage = "component.message";
     componentEditor = "component.editor";
@@ -99,9 +92,9 @@ assert
     messages = "messages";
     models = "models";
     picker = "picker";
-    pickerView = "picker_view";
+    pickerView = "picker.view";
     preferences = "preferences";
-    requestOptions = "request_options";
+    requestOptions = "request-options";
     effort = "effort";
     status = "status";
     usage = "usage";
@@ -111,6 +104,7 @@ assert
     providerCommand = "provider.command";
     providerClaude = "provider.claude";
     protocolAnthropic = "protocol.anthropic";
+    stream = "stream";
     providerAnthropic = "provider.anthropic";
     providerKimi = "provider.kimi";
     protocolOpenAI = "protocol.openai";
@@ -121,38 +115,26 @@ assert
     toolShell = "tool.shell";
     ui = "ui";
   };
-assert
-  defaults.configData == {
-    extensions = [ ];
-    config = { };
-  };
-assert builtins.elemAt configured.configData.extensions 0 == "agent";
-assert builtins.elemAt configured.configData.extensions 2 == "provider.command";
-# Do not pin the content hash: verify path interpolation performed store
-# coercion and retained dependency context for writeText's closure.
-assert pkgs.lib.hasPrefix "${builtins.storeDir}/" serializedCustom;
-assert pkgs.lib.hasSuffix "-agent.fnl" serializedCustom;
-assert builtins.getContext serializedCustom != { };
+assert defaults.configFile == null;
+assert pkgs.lib.hasPrefix "${builtins.storeDir}/" scripted.configFile;
+assert builtins.getContext scripted.configFile != { };
+assert moduleEval.config.programs.misa.configuration == custom;
+# Path interpolation retains the configuration in the wrapper's closure.
+assert pkgs.lib.hasSuffix "-default.fnl" serializedCustom;
 assert invalid.success == false;
-assert
-  moduleEval.config.programs.misa.extensions == [
-    "agent"
-    custom
-    "provider.fake"
-  ];
 assert builtins.pathExists ../extensions/agent.fnl;
 assert builtins.pathExists ../extensions/auth.fnl;
 assert builtins.pathExists ../extensions/actions.fnl;
 assert builtins.pathExists ../extensions/clipboard.fnl;
 assert builtins.pathExists ../extensions/editing.fnl;
 assert builtins.pathExists ../extensions/selection.fnl;
-assert builtins.pathExists ../extensions/selection_document.fnl;
+assert builtins.pathExists ../extensions/selection/document.fnl;
 assert builtins.pathExists ../extensions/component/selection.fnl;
 
 assert builtins.pathExists ../extensions/animations.fnl;
 assert builtins.pathExists ../extensions/animation/default.fnl;
 assert builtins.pathExists ../extensions/components.fnl;
-assert builtins.pathExists ../extensions/choice_preview.fnl;
+assert builtins.pathExists ../extensions/choices/preview.fnl;
 assert builtins.pathExists ../extensions/values.fnl;
 assert builtins.pathExists ../extensions/layout.fnl;
 assert builtins.pathExists ../extensions/markdown.fnl;
@@ -165,7 +147,7 @@ assert builtins.pathExists ../extensions/component/status.fnl;
 assert builtins.pathExists ../extensions/component/chrome.fnl;
 assert builtins.pathExists ../extensions/editor.fnl;
 assert builtins.pathExists ../extensions/choices.fnl;
-assert builtins.pathExists ../extensions/choice_layout.fnl;
+assert builtins.pathExists ../extensions/choices/layout.fnl;
 assert builtins.pathExists ../extensions/commands.fnl;
 assert builtins.pathExists ../extensions/omnipicker.fnl;
 assert builtins.pathExists ../extensions/fuzzy.fnl;
@@ -175,9 +157,9 @@ assert builtins.pathExists ../extensions/json.fnl;
 assert builtins.pathExists ../extensions/messages.fnl;
 assert builtins.pathExists ../extensions/models.fnl;
 assert builtins.pathExists ../extensions/picker.fnl;
-assert builtins.pathExists ../extensions/picker_view.fnl;
+assert builtins.pathExists ../extensions/picker/view.fnl;
 assert builtins.pathExists ../extensions/preferences.fnl;
-assert builtins.pathExists ../extensions/request_options.fnl;
+assert builtins.pathExists ../extensions/request-options.fnl;
 assert builtins.pathExists ../extensions/effort.fnl;
 assert builtins.pathExists ../extensions/status.fnl;
 assert builtins.pathExists ../extensions/themes.fnl;
@@ -199,6 +181,6 @@ assert builtins.pathExists ../extensions/ui.fnl;
 # building either from this evaluation-only test.
 assert pkgs.lib.hasSuffix ".drv" project.packages.misa.drvPath;
 assert project.packages.misa.treeSitterGrammars.outPath == allTreeSitterGrammars.outPath;
-assert pkgs.lib.hasSuffix ".drv" configured.drvPath;
-assert configured.unwrapped.outPath == project.packages.misa.outPath;
+assert pkgs.lib.hasSuffix ".drv" scripted.drvPath;
+assert scripted.unwrapped.outPath == project.packages.misa.outPath;
 true

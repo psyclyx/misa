@@ -1,15 +1,9 @@
-{:setup (fn [context]
-          (local setup-fx [])
-          (local ok (pcall (fn []
-                             (misa._setup_effects {:fx [{:type :register/cofx
-                                                         :name :terminal
-                                                         :handler (fn [] nil)}]})
-                             nil)))
-          (assert (not ok) "terminal cofx name must be reserved")
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db event cofx]
+(local definitions (require :misa.definitions))
+
+(fn [context]
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db event cofx]
                                     (assert (and (= cofx.config.value 42)
                                                  (= (. cofx.argv 1) :arg)))
                                     (assert (and (and (= cofx.terminal.interactive
@@ -20,6 +14,6 @@
                                     {:fx [{:lines [{:spans [{:style {:foreground :cyan}
                                                              :text :plain}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.context declarations {}))

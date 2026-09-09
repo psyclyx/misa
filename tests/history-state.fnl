@@ -1,13 +1,15 @@
 (local fennel (require :fennel))
 (local output io.write)
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local handlers {})
-(local setup ((. (fennel.dofile :extensions/history.fnl) :setup)
+(local setup ((fennel.dofile :extensions/history.fnl)
               {:config {:history {:max_entries 3 :persist false}}}))
-(each [_ spec (ipairs setup.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
-(set misa.choice_session (fn [spec] spec))
+(each [_ spec (pairs (. setup :events))]
+  (tset handlers spec.event spec.handler))
+(set misa.choices {:session (fn [spec] spec)})
 (fn transition [db event]
   (local before (fennel.view db))
   (local result ((. handlers event.type) db event))

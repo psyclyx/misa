@@ -1,23 +1,21 @@
-{:setup (fn [context]
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :smoke/model
+(local definitions (require :misa.definitions))
+
+(fn [context]
+          (local declarations [])
+          (table.insert declarations
+                        (let [definition {:id :smoke/model
                                  :label "Friendly name"
                                  :model :model
-                                 :provider :smoke}})
-          (table.insert setup-fx
-                        {:type :register/event-route
-                         :value {:id :smoke/inspect :event :terminal/input
+                                 :provider :smoke}] {:catalog :models :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        (let [definition {:id :smoke/inspect :event :terminal/input
                                  :priority 2000 :context [:db/path]
                                  :resolve (fn [_ input]
                                             (when (or (and (= input.kind :alt) (= input.text :z))
                                                       (and (= input.kind :key) (= input.key :alt+z)))
-                                              {:type :smoke/inspect}))}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :smoke/inspect
-                         :handler (fn [db]
+                                              {:type :smoke/inspect}))}] {:catalog :routes :id (. definition :id) :value definition}))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :smoke/inspect :handler (fn [db]
                                     (local inspections (+ (or db.inspections 0) 1))
                                     (local value
                                            {:attachments (length (or db.editor.attachments
@@ -34,7 +32,7 @@
                                             :requests (or db.requests {})
                                             :selection (not= db.selection nil)
                                             :selection_visual (and db.selection (= db.selection.visual true))
-                                            :selection_ranges (if db.selection (length (misa.selection_ranges db)) 0)
+                                            :selection_ranges (if db.selection (length (misa.selection.ranges db)) 0)
                                             :status db.agent.status
                                             :text db.editor.text
                                             :top db.messages.top})
@@ -45,19 +43,15 @@
                                            :path (.. context.config.smoke.directory
                                                      :/snapshot- inspections)
                                            :type :file/write}
-                                          {:type :terminal/read}]})})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.smoke
-                         :handler (fn [effect]
+                                          {:type :terminal/read}]})}})
+          (table.insert declarations
+                        {:catalog :effects :id :provider.smoke :value (fn [effect]
                                     {:event {:id effect.id
                                              :messages effect.messages
                                              :type :smoke/request}
                                      :type :dispatch})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :smoke/request
-                         :handler (fn [db event]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :smoke/request :handler (fn [db event]
                                     (local requests (icollect [_ request (ipairs (or db.requests []))] request))
                                     (tset requests
                                           (+ (length requests) 1)
@@ -74,11 +68,9 @@
                                                       "); print('# Response\\n\\nA **bold** [link](https://example.test).\\n\\n' + 'Paragraph for scrolling.\\n\\n' * 20 + '[footer](https://hover.test)')")]
                                            :completion :smoke/response
                                            :id event.id
-                                           :type :process/run}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :smoke/response
-                         :handler (fn [_ event]
+                                           :type :process/run}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :smoke/response :handler (fn [_ event]
                                     (if (not event.ok)
                                         {:fx [{:event {:id event.id
                                                        :message :Cancelled
@@ -96,6 +88,6 @@
                                                        :type :agent/stream-end
                                                        :usage {:input_tokens 10
                                                                :output_tokens 20}}
-                                               :type :dispatch}]}))})
+                                               :type :dispatch}]}))}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.ghostty-input declarations {}))

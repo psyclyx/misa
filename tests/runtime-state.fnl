@@ -9,6 +9,9 @@
 
 (dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local declarations (require :misa.definitions))
+(app.include (fennel.dofile :extensions/stream.fnl) {})
 
 (each [_ name (ipairs [:json
                        :protocol/openai
@@ -16,58 +19,49 @@
                        :provider/openai-codex
                        :agent
                        :queue])]
-  (misa._setup (dofile (.. :extensions/ name :.fnl)) context))
+  (app.include (dofile (.. :extensions/ name :.fnl)) context))
 
-(misa._setup_effects (misa.protocols.openai {:id :fixture-chat
+(app.define ((. (require :protocol.openai) :configure) {:id :fixture-chat
                                              :models {}
                                              :url "https://fixture.invalid"}))
 
-(misa._setup_effects (misa.protocols.anthropic {:id :fixture-anthropic
+(app.define ((. (require :protocol.anthropic) :configure) {:id :fixture-anthropic
                                                 :models {}
                                                 :url "https://fixture.invalid"}))
 
-(misa._setup_effects {:fx [{:type :register/tool
-                            :value {:description "Fixture tool"
+(app.define (declarations :runtime-state-4 [(let [definition {:description "Fixture tool"
                                     :effect :capture/tool
                                     :input_schema {:properties {:value {:type :string}}
                                                    :required [:value]
                                                    :type :object}
-                                    :name :fixture}}]})
+                                    :name :fixture}] {:catalog :tools :id (. definition :name) :value definition})]))
 
 (var (snapshot native observed) (values nil {} {}))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/read
-                            :handler (fn [db] (set snapshot db) nil)}]})
+(app.define (declarations :runtime-state-5 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set snapshot db) nil)}}]))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :test/patch
-                            :handler (fn [_]
-                                       {:patch {:patch_probe {:value :updated}}})}]})
+(app.define (declarations :runtime-state-6 [{:catalog :events  :value {:event :test/patch :handler (fn [_]
+                                       {:patch {:patch_probe {:value :updated}}})}}]))
 
 (var subscription-evaluations 0)
-(misa._setup_effects {:fx [{:type :register/sub
-                            :value {:id :test/doubled
+(app.define (declarations :runtime-state-7 [(let [definition {:id :test/doubled
                                     :inputs (fn [_] [[:db/path :value]])
                                     :compute (fn [inputs _]
                                                (set subscription-evaluations
                                                     (+ subscription-evaluations 1))
-                                               (* (. inputs 1) 2))}}]})
+                                               (* (. inputs 1) 2))}] {:catalog :subscriptions :id (. definition :id) :value definition})]))
 
-(misa._setup_effects {:fx [{:type :register/event
-                            :name :app/start
-                            :handler (fn [db]
+(app.define (declarations :runtime-state-8 [{:catalog :events  :value {:event :app/start :handler (fn [db]
                                        {:patch {:models
                                             {:entries [{:id :openai-codex/gpt-5.4
                                                         :model :gpt-5.4
                                                         :provider :openai-codex}]
-                                             :selected :openai-codex/gpt-5.4}}})}]})
+                                             :selected :openai-codex/gpt-5.4}}})}}]))
 
-(misa._setup_effects {:fx [{:type :register/event :name :editor/restore
-                            :handler (fn [_ event]
-                                       (table.insert observed event) nil)}]})
+(app.define (declarations :runtime-state-9 [{:catalog :events  :value {:event :editor/restore :handler (fn [_ event]
+                                       (table.insert observed event) nil)}}]))
 
-(misa._seal context)
+(app.install context)
 
 (fn dispatch [event]
   (let [pending [event]]
@@ -254,14 +248,14 @@
 ;; Shared protocol serializers preserve attachments and signed thinking.
 
 (local chat
-       (misa.protocols.serialize_openai_messages [{:content [image]
+       (misa.protocols.openai-messages [{:content [image]
                                                    :role :user}]))
 
 (assert (= (. chat 1 :content 1 :image_url :url)
            "data:image/png;base64,aW1hZ2U="))
 
 (local anthropic
-       (misa.protocols.serialize_anthropic_messages [{:content [{:text :visible
+       (misa.protocols.anthropic-messages [{:content [{:text :visible
                                                                  :type :thinking}
                                                                 {:arguments {}
                                                                  :id :c
@@ -282,7 +276,7 @@
 (assert (= (. anthropic 2 :content 1 :type) :image))
 
 (local switched
-       (misa.protocols.serialize_anthropic_messages [{:content [{:text :visible
+       (misa.protocols.anthropic-messages [{:content [{:text :visible
                                                                  :type :text}]
                                                       :provider_state [{:provider :anthropic
                                                                         :value {:signature :signed

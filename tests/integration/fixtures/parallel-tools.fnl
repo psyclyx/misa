@@ -1,22 +1,20 @@
-{:setup (fn []
-          (local setup-fx [])
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
           (each [_ name (ipairs [:slow :fast])]
-            (table.insert setup-fx
-                          {:type :register/tool
-                           :value {:description (.. name " description")
+            (table.insert declarations
+                          (let [definition {:description (.. name " description")
                                    :effect :parallel/run
                                    :input_schema {:type :object}
-                                   : name}}))
-          (table.insert setup-fx
-                        {:type :register/model
-                         :value {:id :parallel/model
+                                   : name}] {:catalog :tools :id (. definition :name) :value definition})))
+          (table.insert declarations
+                        (let [definition {:id :parallel/model
                                  :model :model
-                                 :provider :parallel}})
+                                 :provider :parallel}] {:catalog :models :id (. definition :id) :value definition}))
           (var provider-calls 0)
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :provider.parallel
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :provider.parallel :value (fn [effect]
                                     (set provider-calls (+ provider-calls 1))
                                     (if (= provider-calls 1)
                                         {:event {:content [{:arguments {}
@@ -48,29 +46,23 @@
                                                    :id effect.id
                                                    :type :agent/result}
                                            :type :dispatch})))})
-          (table.insert setup-fx
-                        {:type :register/fx
-                         :name :parallel/run
-                         :handler (fn [effect]
+          (table.insert declarations
+                        {:catalog :effects :id :parallel/run :value (fn [effect]
                                     {:completion :parallel/done
                                      :id effect.tool_call_id
                                      :interval_ms (or (and (= effect.name :fast)
                                                            10)
                                                       50)
                                      :type :timer/start})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :parallel/done
-                         :handler (fn [_ event]
+          (table.insert declarations
+                        {:catalog :events  :value {:event :parallel/done :handler (fn [_ event]
                                     {:fx [{:id event.id :type :timer/stop}
                                           {:event {:text event.id
                                                    :tool_call_id event.id
                                                    :type :tool/result}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/tool-result
-                         :handler (fn [db event]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/tool-result :handler (fn [db event]
                                     (when (= event.id :second)
                                       (local (first second)
                                              (values (. db.messages.blocks 2)
@@ -83,6 +75,6 @@
                                                            :second))
                                                    (= second.status :success))
                                               "parallel transcript sections did not update independently"))
-                                    nil)})
+                                    nil)}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.parallel-tools declarations {}))

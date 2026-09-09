@@ -1,5 +1,6 @@
-;; Pure terminal-cell layout primitives. The width tables intentionally mirror
+(local definitions (require :misa.definitions))
 
+;; Pure terminal-cell layout primitives. The width tables intentionally mirror
 ;; src/terminal/width.zig so Lua projections and the native presenter agree.
 
 (local zero [[768 879]
@@ -91,7 +92,7 @@
              [129648 129791]
              [131072 262141]])
 
-(fn contains [intervals cp]
+(fn contains? [intervals cp]
   (var low 1)
   (var high (length intervals))
   (var found false)
@@ -121,7 +122,6 @@
           (if valid (values cp size) (values a 1))))))
 
 ;; UAX #29 GB9c linkers, kept in lockstep with terminal/width.zig. This is
-
 ;; deliberately conservative: only a linker followed by an Indic letter joins.
 
 (local virama {})
@@ -188,19 +188,18 @@
                      73111])]
   (tset virama cp true))
 
-(fn indic-letter [cp]
-  (or (or (or (or (and (>= cp 2304) (<= cp 3583))
-                  (and (>= cp 4096) (<= cp 4255)))
-              (and (>= cp 6016) (<= cp 6143)))
-          (and (>= cp 43008) (<= cp 44031)))
+(fn indic-letter? [cp]
+  (or (and (>= cp 2304) (<= cp 3583)) (and (>= cp 4096) (<= cp 4255))
+      (and (>= cp 6016) (<= cp 6143)) (and (>= cp 43008) (<= cp 44031))
       (and (>= cp 69632) (<= cp 73215))))
 
 (fn cell-width [cp]
-  (if (or (contains zero cp) (. virama cp)) 0
-      (contains wide cp) 2
+  "Return the terminal cell width of a Unicode codepoint."
+  (if (or (contains? zero cp) (. virama cp)) 0
+      (contains? wide cp) 2
       1))
 
-(fn regional [cp] (and (>= cp 127462) (<= cp 127487)))
+(fn regional? [cp] (and (>= cp 127462) (<= cp 127487)))
 
 (fn cluster [text at]
   (let [(cp size) (decode text at)]
@@ -212,11 +211,11 @@
           (var emoji false)
           (var after-virama false)
           (var done false)
-          (local flag (regional cp))
+          (local flag (regional? cp))
           (while (and (not done) (<= next-at (length text)))
             (let [(following following-size) (decode text next-at)]
-              (if (and after-virama (indic-letter following)
-                       (not (contains zero following)))
+              (if (and after-virama (indic-letter? following)
+                       (not (contains? zero following)))
                   (set (cells after-virama next-at)
                        (values (math.max cells (cell-width following)) false
                                (+ next-at following-size)))
@@ -231,14 +230,14 @@
                         (do
                           (set next-at (+ next-at following-size))
                           (set done true))))
-                  (or (. virama following) (contains zero following))
+                  (or (. virama following) (contains? zero following))
                   (do
                     (when (or (= following 65039) (= following 8419)
                               (<= 127995 following 127999))
                       (set emoji true))
                     (when (. virama following) (set after-virama true))
                     (set next-at (+ next-at following-size)))
-                  (and flag (regional following))
+                  (and flag (regional? following))
                   (do
                     (set (emoji next-at)
                          (values true (+ next-at following-size)))
@@ -251,6 +250,7 @@
           (values next-at cluster-cells)))))
 
 (fn boundary-at-or-before [text cursor]
+  "Clamp a byte cursor to the preceding grapheme boundary."
   (let [target (math.max 0
                          (math.min (length text)
                                    (math.floor (or (tonumber cursor) 0))))]
@@ -268,6 +268,7 @@
     previous))
 
 (fn previous-boundary [text cursor]
+  "Return the grapheme boundary before a byte cursor."
   (let [target (boundary-at-or-before text cursor)]
     (var at 1)
     (var previous 0)
@@ -281,12 +282,14 @@
     previous))
 
 (fn next-boundary [text cursor]
+  "Return the grapheme boundary after a byte cursor."
   (let [boundary (boundary-at-or-before text cursor)]
     (if (>= boundary (length text))
         (length text)
         (- (cluster text (+ boundary 1)) 1))))
 
 (fn width [text]
+  "Measure text in terminal cells."
   (var (at cells) (values 1 0))
   (while (<= at (length text))
     (local (next-at cluster-cells) (cluster text at))
@@ -294,6 +297,7 @@
   cells)
 
 (fn take [text columns]
+  "Take the longest grapheme-aligned prefix that fits a cell width."
   (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))]
     (var at 1)
     (var cells 0)
@@ -310,12 +314,11 @@
     (values (text:sub 1 (- at 1)) (text:sub at) cells)))
 
 ;; Strict clipping differs from wrapping's take(): a too-wide first grapheme is
-
 ;; omitted rather than overflowing. Segmentation is over the complete semantic
-
 ;; line, so callers can project the returned byte boundary through style spans.
 
 (fn clip [text columns]
+  "Clip text to a terminal cell width with an ellipsis when needed."
   (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))]
     (var at 1)
     (var cells 0)
@@ -328,6 +331,7 @@
     (values (text:sub 1 (- at 1)) (- at 1) cells)))
 
 (fn fit [text columns]
+  "Clip or pad text to exactly the requested cell width."
   (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))]
     (if (= limit 0)
         ""
@@ -335,7 +339,6 @@
           (.. head (string.rep " " (math.max 0 (- limit cells))))))))
 
 ;; Span boundaries describe appearance, never word/grapheme boundaries. Wrap a
-
 ;; semantic line once, then project its byte ranges back through arbitrary spans.
 
 (fn copy-span [source text first last]
@@ -346,7 +349,8 @@
     (when (not= text source.text) (set result.animation nil))
     (when (and (= (type source.source_start) :number)
                (or (= source.source_end nil)
-                   (= (- source.source_end source.source_start) (length (or source.text "")))))
+                   (= (- source.source_end source.source_start)
+                      (length (or source.text "")))))
       (set result.source_start (- (+ source.source_start (or first 1)) 1))
       (set result.source_end (+ source.source_start (or last (length text)))))
     result))
@@ -358,10 +362,11 @@
     result))
 
 (fn wrap-ranges [text first-columns rest-columns trim words]
+  "Split text into byte ranges that fit successive row widths."
   (let [result {}]
     (var (start at used) (values 1 1 0))
     (var room (math.max 1 first-columns))
-    (set-forcibly! rest-columns (math.max 1 (or rest-columns room)))
+    (local rest-columns (math.max 1 (or rest-columns room)))
     (var (break-last break-next whitespace-start) nil)
 
     (fn emit [last next-at]
@@ -399,10 +404,11 @@
     result))
 
 (fn flow-spans [spans columns first-prefix rest-prefix options]
-  (set-forcibly! options (or options {}))
-  (set-forcibly! columns (math.max 1 (math.floor (or (tonumber columns) 1))))
-  (set-forcibly! first-prefix (or first-prefix {}))
-  (set-forcibly! rest-prefix (or rest-prefix first-prefix))
+  "Wrap styled spans while preserving source coordinates and row prefixes."
+  (local options (or options {}))
+  (local columns (math.max 1 (math.floor (or (tonumber columns) 1))))
+  (local first-prefix (or first-prefix {}))
+  (local rest-prefix (or rest-prefix first-prefix))
 
   (fn prefix-room [prefix]
     (let [pieces {}]
@@ -455,6 +461,7 @@
   result)
 
 (fn wrap-spans [lines columns prefix options]
+  "Wrap lines of styled spans to a terminal cell width."
   (let [result {}]
     (each [_ line (ipairs (or lines {}))]
       (each [_ wrapped (ipairs (flow-spans (or line.spans {}) columns prefix
@@ -467,17 +474,15 @@
     result))
 
 ;; Wrap editable text into physical rows and project its global UTF-8 byte
-
 ;; cursor onto the resulting row. Prompt bytes are part of each semantic row,
-
 ;; so the native presenter can continue to own byte-to-cell conversion.
 
 (fn normalize-newlines [text cursor]
-  (set-forcibly! text (tostring (or text "")))
-  (set-forcibly! cursor
-                 (math.max 0
-                           (math.min (length text)
-                                     (math.floor (or (tonumber cursor) 0)))))
+  (local text (tostring (or text "")))
+  (local cursor
+         (math.max 0
+                   (math.min (length text)
+                             (math.floor (or (tonumber cursor) 0)))))
   (var (pieces mapped at bytes) (values {} nil 1 0))
   (while (<= at (length text))
     (when (and (= mapped nil) (>= (- at 1) cursor))
@@ -496,15 +501,15 @@
   (values (table.concat pieces) (or mapped bytes)))
 
 (fn wrap-input [text columns cursor prompt text-style prompt-style]
-  (set-forcibly! (text cursor) (normalize-newlines text cursor))
-  (set-forcibly! columns (math.max 1 (math.floor (or (tonumber columns) 1))))
-  (set-forcibly! cursor (boundary-at-or-before text cursor))
+  "Lay out editable text and map its byte cursor to a terminal row."
+  (local (text cursor) (normalize-newlines text cursor))
+  (local columns (math.max 1 (math.floor (or (tonumber columns) 1))))
+  (local cursor (boundary-at-or-before text cursor))
   ;; Preserve two cells for a potentially-wide grapheme whenever possible;
   ;; on tiny terminals the prompt yields before editable content does.
-  (set-forcibly! prompt (tostring (or prompt "")))
+  (local prompt (tostring (or prompt "")))
   (local prompt-room (math.max 0 (- columns 2)))
-  (set-forcibly! prompt (or (and (= prompt-room 0) "")
-                            (take prompt prompt-room)))
+  (local prompt (or (and (= prompt-room 0) "") (take prompt prompt-room)))
   (local prompt-cells (width prompt))
   (local room (math.max 1 (- columns prompt-cells)))
   (local continuation (string.rep " " prompt-cells))
@@ -541,11 +546,12 @@
    :lines rows})
 
 (fn columns [total minimum maximum gap]
-  (set-forcibly! (total minimum maximum gap)
-                 (values (math.max 1 (math.floor total))
-                         (math.max 1 (math.floor minimum))
-                         (math.max 1 (math.floor maximum))
-                         (math.max 0 (math.floor (or gap 0)))))
+  "Allocate column widths within the available terminal cells."
+  (local (total minimum maximum gap)
+         (values (math.max 1 (math.floor total))
+                 (math.max 1 (math.floor minimum))
+                 (math.max 1 (math.floor maximum))
+                 (math.max 0 (math.floor (or gap 0)))))
   (local count
          (math.max 1
                    (math.min maximum
@@ -557,23 +563,22 @@
     (tset widths index (+ base (or (and (<= index extra) 1) 0))))
   widths)
 
-(local api {:boundary_at_or_before boundary-at-or-before
-            :cell_width cell-width
+(local api {:boundary-at-or-before boundary-at-or-before
+            :cell-width cell-width
             : clip
             : columns
             : fit
-            :flow_spans flow-spans
-            :next_boundary next-boundary
-            :previous_boundary previous-boundary
+            :flow-spans flow-spans
+            :next-boundary next-boundary
+            :previous-boundary previous-boundary
             : take
             : width
-            :wrap_input wrap-input
-            :wrap_ranges wrap-ranges
-            :wrap_spans wrap-spans})
+            :wrap-input wrap-input
+            :wrap-ranges wrap-ranges
+            :wrap-spans wrap-spans})
 
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx {:type :register/service
-                                  :name :layout
-                                  :value api})
-          {:fx setup-fx})}
+(fn []
+  "Build the declarations for layout."
+  (local declarations [])
+  (table.insert declarations {:catalog :services :id :layout :value api})
+  (definitions :layout declarations {}))

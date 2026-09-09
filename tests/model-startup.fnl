@@ -7,18 +7,18 @@
             :api {:request_options {:enabled {:choices [false true] :default true}}}})
 (local two {:id :two :provider :test :model :two
             :api {:request_options {:region {:choices [:west :east] :default :east}}}})
-(set misa.models (fn [] [one two]))
+(set misa.models.all (fn [] [one two]))
 ;; Register the consumer first: startup and subsequent selections must use the
 ;; committed model, not depend on the ordering of extension registrations.
-(each [_ name (ipairs [:json :request_options :models])]
-  (local specs ((. (fennel.dofile (.. :extensions/ name :.fnl)) :setup) context))
-  (each [_ spec (ipairs specs.fx)]
-    (assert (not= spec.type :register/interceptor) "model initialization installed middleware"))
-  (misa._setup_effects specs))
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local declarations (require :misa.definitions))
+(each [_ name (ipairs [:json :request-options :models])]
+  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+
+  (app.define specs))
 (var observed nil)
-(misa._setup_effects {:fx [{:type :register/event :name :test/read
-                           :handler (fn [db] (set observed db) nil)}]})
-(misa._seal context)
+(app.define (declarations :model-startup-1 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
+(app.install context)
 (fn dispatch [event]
   (local pending [event])
   (var at 1)

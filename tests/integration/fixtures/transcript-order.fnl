@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:content [{:text "ordinary **bold**"
                                                               :type :text}
                                                              {:text :thought
@@ -16,11 +16,9 @@
                                                               :type :text}]
                                                    :request_id :ordered
                                                    :type :transcript/assistant}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/assistant
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/assistant :handler (fn [db]
                                     (local transcript db.messages.blocks)
                                     (assert (and (and (and (and (= (length transcript)
                                                                    4)
@@ -37,7 +35,7 @@
                                             "normalized block order changed")
                                     (local before (. transcript 3 :detail))
                                     (local lines
-                                           (misa.transcript_projection db
+                                           (misa.transcript.project db
                                                                        {:columns 80
                                                                         :interactive true}))
                                     (assert (= (. transcript 3 :detail) before)
@@ -55,6 +53,6 @@
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :ordered}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.transcript-order declarations {}))

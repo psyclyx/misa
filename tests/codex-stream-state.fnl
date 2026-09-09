@@ -3,12 +3,16 @@
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
-(misa._setup (fennel.dofile :extensions/json.fnl) {})
-(local specs ((. (fennel.dofile :extensions/provider/openai-codex.fnl) :setup) {:config {}}))
-(var handler nil)
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (set handler spec.handler)))
-(misa._setup_effects specs)
+(local definitions (require :misa.definitions))
+(local specs ((fennel.dofile :extensions/provider/openai-codex.fnl) {:config {}}))
+(local application (misa.compose
+ [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+  (misa.compose [{:definitions specs}])
+  {:definitions (definitions :test [{:catalog :codex-records :id :test.metadata :value (fn [_ record] {:patch {:metadata record.value}})}])}]))
+(misa._install application.definitions {:argv [] :config {}})
+(local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
+(local handler (. handlers :provider/openai-codex-complete))
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))
   (local result (handler db event))
@@ -44,7 +48,7 @@
                       (set split next)
                       (each [_ effect (ipairs fx)] (table.insert split-fx effect)))
                     (assert (= (misa.json.encode whole) (misa.json.encode split)) "stream batching changed state")
-                    (assert (= (misa.json.encode effects) (misa.json.encode split-fx)) "stream batching changed effects"))
+                    (assert (= (misa.json.encode effects) (misa.json.encode (misa.stream.effects split-fx))) "stream batching changed effects"))
                   {:cases 1000 :size 25}))
 (assert (not failure) (and failure (fennel.view failure)))
 (local (reasoned reasoning-fx) (transition initial {:id :request :phase :data
@@ -65,14 +69,10 @@
 (assert (= failed-end.providers.codex_streams.request nil))
 (local (_ incomplete-fx) (transition initial {:id :request :phase :end :ok true}))
 (assert (= (. incomplete-fx 1 :event :type) :agent/stream-error))
-(misa._setup_effects {:fx [{:type :register/codex-record :id :test.metadata
-                          :value (fn [_ record] {:patch {:metadata record.value}})}]})
+
 (assert (= (. (transition initial {:id :request :phase :data :records [{:type :test.metadata :value :custom}]})
               :providers :codex_streams :request :metadata) :custom))
-;; With the agent installed, a transport batch is normalized once before its
-;; dispatch chain. Provider-state records still separate reasoning segments.
-(each [_ spec (ipairs (. ((. (fennel.dofile :extensions/agent.fnl) :setup) {:config {}}) :fx))]
-  (when (= spec.name :agent_stream_effects) (misa._setup_effects {:fx [spec]})))
+;; Provider-state records separate reasoning segments during normalization.
 (local (_ batched) (transition initial {:id :request :phase :data
                                         :records (fcollect [_ 1 32] {:type :response.output_text.delta :delta "x"})}))
 (assert (= (length batched) 1))

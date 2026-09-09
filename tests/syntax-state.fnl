@@ -2,20 +2,21 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
 (each [_ name (ipairs [:json :layout :markdown])]
-  (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
-(local specs ((. (fennel.dofile :extensions/syntax.fnl) :setup) {:config {}}))
+  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {:config {}})))
+(local specs ((fennel.dofile :extensions/syntax.fnl) {:config {}}))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
-  (assert (not= spec.type :register/interceptor) "syntax must consume explicit transcript events"))
-(misa._setup_effects specs)
-(misa._setup_effects {:fx [{:type :register/service :name :transcript_blocks
-                          :value (fn [db response-id block-id]
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
+(app.define specs)
+(app.define (definitions :test [{:catalog :services :id :transcript.blocks :value (fn [db response-id block-id]
                                    (icollect [_ block (ipairs (or (and db.messages db.messages.blocks) []))]
                                      (when (and (or (not response-id) (= block.response_id response-id))
-                                                (or (not block-id) (= block.id block-id))) block)))}]})
+                                                (or (not block-id) (= block.id block-id))) block)))}]))
+(app.install)
 (fn unchanged [db call]
   (local before (misa.json.encode db))
   (local result (call))
@@ -34,10 +35,10 @@
 (local (first requests) (source (initial) text))
 (assert (= ((. handlers :transcript/updated) first {:type :transcript/updated}
             {:terminal {:interactive false}}) nil) "headless transcript requested highlighting")
-(local disabled ((. (fennel.dofile :extensions/syntax.fnl) :setup)
+(local disabled ((fennel.dofile :extensions/syntax.fnl)
                  {:config {:messages {:markdown false}}}))
-(each [_ spec (ipairs disabled.fx)]
-  (when (= spec.name :transcript/updated)
+(each [_ spec (pairs (. disabled :events))]
+  (when (= spec.event :transcript/updated)
     (assert (= (spec.handler first {:type :transcript/updated}
                             {:terminal {:interactive true}}) nil)
             "disabled Markdown requested highlighting")))
@@ -78,14 +79,14 @@
 (local retained (event retained-pending {:type :syntax/completed :id (. retained-fx 1 :id)
                                        :ok true :data [{:start_byte 0 :end_byte 5 :capture :keyword}]}))
 (local model (. retained.messages.blocks 1))
-(local projection (misa.syntax_projection (misa.syntax_projections retained) model))
+(local projection (misa.syntax.for-model (misa.syntax.all retained) model))
 (local expected (fennel.view projection))
-(assert (= projection (misa.syntax_projection (misa.syntax_projections (misa.patch retained {:unrelated true})) model))
+(assert (= projection (misa.syntax.for-model (misa.syntax.all (misa.patch retained {:unrelated true})) model))
         "unrelated state invalidated the syntax subscription")
 (local later (source retained "```lua\nlocal x=99\n```"))
 (local reset-later (event later {:type :transcript/reset}))
 (event reset-later {:type :syntax/completed :id :unrelated})
-(assert (= expected (fennel.view (misa.syntax_projection (misa.syntax_projections retained) model)))
+(assert (= expected (fennel.view (misa.syntax.for-model (misa.syntax.all retained) model)))
         "later syntax work invalidated a retained state's projection")
 ;; Collection updates preserve other documents and request identities. No-op
 ;; notifications return no patch rather than rebuilding a syntax snapshot.

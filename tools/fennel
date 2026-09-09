@@ -8,6 +8,8 @@ local exit, stderr = os.exit, io.stderr
 local environment = {}
 for key, value in pairs(_G) do environment[key] = value end
 local compiler = setfenv(assert(loadfile(os.getenv("MISA_FENNEL_COMPILER"))), environment)()
+compiler.path = "./extensions/?.fnl;./extensions/?/init.fnl;" .. compiler.path
+package.path = "./extensions/?.lua;./extensions/?/init.lua;" .. package.path
 package.loaded.fennel = compiler
 debug.traceback = compiler.traceback
 compiler.install()

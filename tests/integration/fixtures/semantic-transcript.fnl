@@ -1,9 +1,9 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:event {:text "# Heading with **emphasis**, *italics*, ~~gone~~, `code`, and [docs](https://example.test)"
                                                    :type :transcript/user}
                                            :type :dispatch}
@@ -20,13 +20,11 @@
                                           {:event {:id :call
                                                    :text :result
                                                    :type :transcript/tool-result}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :transcript/tool-result
-                         :handler (fn [db]
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :transcript/tool-result :handler (fn [db]
                                     (local lines
-                                           (misa.transcript_projection db
+                                           (misa.transcript.project db
                                                                        {:columns 32
                                                                         :interactive true}))
                                     (assert (= (. lines 1 :spans 1 :text) "┃ ")
@@ -63,7 +61,7 @@
                                                            :thinking
                                                            :tool])]
                                       (assert (. rails
-                                                 (color-key (. (misa.theme_style db
+                                                 (color-key (. (misa.themes.style db
                                                                                  (.. :rail.
                                                                                      role))
                                                                :foreground)))
@@ -81,6 +79,6 @@
                                             "matching tool result created an unrelated transcript block")
                                     {:fx [{:lines [{:spans [{:text :semantic}]}]
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.semantic-transcript declarations {}))

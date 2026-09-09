@@ -1,3 +1,5 @@
+(local definitions (require :misa.definitions))
+
 (assert (and (and (and (= _G.os nil) (= _G.io nil)) (= _G.print nil))
              (= _G.debug nil)))
 
@@ -21,13 +23,11 @@
 
 (assert (= (. (require :misa.test.module) :answer) 42))
 
-{:setup (fn [context]
-          (local setup-fx [])
-          (assert (= context.config.missing misa.json_null))
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn []
-                                    {:fx [{:type :app/quit}]})})
+(fn [context]
+          (local declarations [])
+          (assert (= context.config.missing misa.json-null))
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn []
+                                    {:fx [{:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.sandbox declarations {}))

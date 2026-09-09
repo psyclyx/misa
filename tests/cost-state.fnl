@@ -2,13 +2,14 @@
 (local output io.write)
 (local G (require :tests.generators))
 (fennel.dofile :src/lua_runtime/framework.fnl)
+(local app ((require :tests.application) {:argv [] :config {}}))
+(local definitions (require :misa.definitions))
 (local misa _G.misa)
-(local specs ((. (fennel.dofile :extensions/costs.fnl) :setup)
+(local specs ((fennel.dofile :extensions/costs.fnl)
               {:config {:costs {:models {:test {:input 2 :output 4}}}}}))
 (local handlers {})
-(each [_ spec (ipairs specs.fx)]
-  (assert (not= spec.type :register/interceptor) "accounting must use explicit event handlers")
-  (when (= spec.type :register/event) (tset handlers spec.name spec.handler)))
+(each [_ spec (pairs (. specs :events))]
+  (tset handlers spec.event spec.handler))
 (fn account [tx]
   (local before (fennel.view tx))
   (local result ((assert (. handlers tx.event.type)) tx.db tx.event))
@@ -39,9 +40,10 @@
 (local cleared (account {:db interrupted.db :event {:type :transcript/reset}}))
 (assert (= (next cleared.db.costs.responses) nil))
 (assert interrupted.db.costs.responses.current)
-(misa._setup_effects specs)
-(misa._setup (fennel.dofile :extensions/values.fnl) {})
-(local scope (misa.subscription_scope))
+(app.define specs)
+(app.define ((fennel.dofile :extensions/values.fnl) {}))
+(app.install)
+(local scope (misa.subscriptions.scope))
 (local pending-cost (scope.query started.db [:costs/response :current]))
 (assert (= pending-cost.type :money))
 (assert pending-cost.pending)
@@ -63,7 +65,7 @@
 (assert (= earlier.text nil))
 (assert (not earlier.pending))
 (fn formatted [fact]
-  (table.concat (icollect [_ span (ipairs (misa.render_value fact))] span.text)))
+  (table.concat (icollect [_ span (ipairs (misa.values.render fact))] span.text)))
 (assert (= (formatted pending-cost) :pending))
 (assert (= (formatted (scope.query finished.db [:costs/response :current])) "~$2.00"))
 (assert (= (formatted (scope.query interrupted.db [:costs/response :current])) "?"))
@@ -98,7 +100,7 @@
        (G.for_all
          (G.vector (G.tuple [(G.integer 0 10000) G.boolean G.boolean]))
          (fn [items]
-           (local consumer (misa.subscription_scope))
+(local consumer (misa.subscriptions.scope))
            (var state {:costs {:responses {}}})
            (var sum 0)
            (var estimated false)
@@ -133,7 +135,7 @@
 (local attached (account {:db finished.db
                          :event {:type :tool-summary/usage :response_id :summary :parent_response_id :current
                                  :call_id :call :model :test :usage {:output_tokens 1000000}}}))
-(local group-scope (misa.subscription_scope))
+(local group-scope (misa.subscriptions.scope))
 (local groups (group-scope.query attached.db [:costs/groups]))
 (assert (= (. groups :current :amount) 6))
 (assert (= (. groups :earlier :amount) 7))

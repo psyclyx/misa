@@ -3,29 +3,34 @@ const std = @import("std");
 const build_options = @import("misa_build_options");
 
 pub const default_config_path = build_options.default_config_path;
+pub const default_extension_dir = build_options.default_extension_dir;
 
 pub const Entry = struct { id: []const u8, path: []const u8 };
 
 /// Single source for discovery, build-time translation, and runtime resolution.
 pub const entries = [_]Entry{
+    .{ .id = "misa.definitions", .path = "misa/definitions.fnl" },
+    .{ .id = "misa.default", .path = "misa/default.fnl" },
+    .{ .id = "misa.standard", .path = "misa/standard.fnl" },
     .{ .id = "costs", .path = "costs.fnl" },
     .{ .id = "history", .path = "history.fnl" },
     .{ .id = "queue", .path = "queue.fnl" },
-    .{ .id = "queue_view", .path = "queue_view.fnl" },
+    .{ .id = "queue.view", .path = "queue/view.fnl" },
     .{ .id = "images", .path = "images.fnl" },
     .{ .id = "attachments", .path = "attachments.fnl" },
     .{ .id = "component.image", .path = "component/image.fnl" },
     .{ .id = "actions", .path = "actions.fnl" },
     .{ .id = "clipboard", .path = "clipboard.fnl" },
-    .{ .id = "selection_document", .path = "selection_document.fnl" },
+    .{ .id = "selection.document", .path = "selection/document.fnl" },
     .{ .id = "selection", .path = "selection.fnl" },
     .{ .id = "component.selection", .path = "component/selection.fnl" },
     .{ .id = "editing", .path = "editing.fnl" },
     .{ .id = "agent", .path = "agent.fnl" },
+    .{ .id = "stream", .path = "stream.fnl" },
     .{ .id = "auth", .path = "auth.fnl" },
     .{ .id = "choices", .path = "choices.fnl" },
-    .{ .id = "choice_layout", .path = "choice_layout.fnl" },
-    .{ .id = "choice_preview", .path = "choice_preview.fnl" },
+    .{ .id = "choices.layout", .path = "choices/layout.fnl" },
+    .{ .id = "choices.preview", .path = "choices/preview.fnl" },
     .{ .id = "values", .path = "values.fnl" },
     .{ .id = "usage", .path = "usage.fnl" },
     .{ .id = "links", .path = "links.fnl" },
@@ -34,7 +39,7 @@ pub const entries = [_]Entry{
     .{ .id = "commands", .path = "commands.fnl" },
     .{ .id = "omnipicker", .path = "omnipicker.fnl" },
     .{ .id = "dialogs", .path = "dialogs.fnl" },
-    .{ .id = "dialog_view", .path = "dialog_view.fnl" },
+    .{ .id = "dialogs.view", .path = "dialogs/view.fnl" },
     .{ .id = "components", .path = "components.fnl" },
     .{ .id = "layout", .path = "layout.fnl" },
     .{ .id = "markdown", .path = "markdown.fnl" },
@@ -43,7 +48,7 @@ pub const entries = [_]Entry{
     .{ .id = "component.tool", .path = "component/tool.fnl" },
     .{ .id = "component.content", .path = "component/content.fnl" },
     .{ .id = "component.truncation", .path = "component/truncation.fnl" },
-    .{ .id = "tool_presentations", .path = "tool_presentations.fnl" },
+    .{ .id = "tool.presentations", .path = "tool/presentations.fnl" },
     .{ .id = "component.group", .path = "component/group.fnl" },
     .{ .id = "component.message", .path = "component/message.fnl" },
     .{ .id = "component.editor", .path = "component/editor.fnl" },
@@ -59,9 +64,9 @@ pub const entries = [_]Entry{
     .{ .id = "messages", .path = "messages.fnl" },
     .{ .id = "models", .path = "models.fnl" },
     .{ .id = "picker", .path = "picker.fnl" },
-    .{ .id = "picker_view", .path = "picker_view.fnl" },
+    .{ .id = "picker.view", .path = "picker/view.fnl" },
     .{ .id = "preferences", .path = "preferences.fnl" },
-    .{ .id = "request_options", .path = "request_options.fnl" },
+    .{ .id = "request-options", .path = "request-options.fnl" },
     .{ .id = "effort", .path = "effort.fnl" },
     .{ .id = "status", .path = "status.fnl" },
     .{ .id = "themes", .path = "themes.fnl" },
@@ -80,7 +85,7 @@ pub const entries = [_]Entry{
     .{ .id = "provider.openrouter", .path = "provider/openrouter.fnl" },
     .{ .id = "tool.files", .path = "tool/files.fnl" },
     .{ .id = "tool.shell", .path = "tool/shell.fnl" },
-    .{ .id = "tool_summary", .path = "tool_summary.fnl" },
+    .{ .id = "tool.summary", .path = "tool/summary.fnl" },
     .{ .id = "ui", .path = "ui.fnl" },
 };
 
@@ -150,11 +155,11 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("agent.fnl", catalogPath("agent").?);
     try std.testing.expectEqualStrings("auth.fnl", catalogPath("auth").?);
     try std.testing.expectEqualStrings("choices.fnl", catalogPath("choices").?);
-    try std.testing.expectEqualStrings("choice_layout.fnl", catalogPath("choice_layout").?);
+    try std.testing.expectEqualStrings("choices/layout.fnl", catalogPath("choices.layout").?);
     try std.testing.expectEqualStrings("commands.fnl", catalogPath("commands").?);
     try std.testing.expectEqualStrings("omnipicker.fnl", catalogPath("omnipicker").?);
     try std.testing.expectEqualStrings("dialogs.fnl", catalogPath("dialogs").?);
-    try std.testing.expectEqualStrings("dialog_view.fnl", catalogPath("dialog_view").?);
+    try std.testing.expectEqualStrings("dialogs/view.fnl", catalogPath("dialogs.view").?);
     try std.testing.expectEqualStrings("components.fnl", catalogPath("components").?);
     try std.testing.expectEqualStrings("layout.fnl", catalogPath("layout").?);
     try std.testing.expectEqualStrings("markdown.fnl", catalogPath("markdown").?);
@@ -163,7 +168,7 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("component/tool.fnl", catalogPath("component.tool").?);
     try std.testing.expectEqualStrings("component/content.fnl", catalogPath("component.content").?);
     try std.testing.expectEqualStrings("component/truncation.fnl", catalogPath("component.truncation").?);
-    try std.testing.expectEqualStrings("tool_presentations.fnl", catalogPath("tool_presentations").?);
+    try std.testing.expectEqualStrings("tool/presentations.fnl", catalogPath("tool.presentations").?);
     try std.testing.expectEqualStrings("component/group.fnl", catalogPath("component.group").?);
     try std.testing.expectEqualStrings("component/message.fnl", catalogPath("component.message").?);
     try std.testing.expectEqualStrings("component/editor.fnl", catalogPath("component.editor").?);
@@ -180,9 +185,9 @@ test "catalog accepts exact IDs only" {
     try std.testing.expectEqualStrings("messages.fnl", catalogPath("messages").?);
     try std.testing.expectEqualStrings("models.fnl", catalogPath("models").?);
     try std.testing.expectEqualStrings("picker.fnl", catalogPath("picker").?);
-    try std.testing.expectEqualStrings("picker_view.fnl", catalogPath("picker_view").?);
+    try std.testing.expectEqualStrings("picker/view.fnl", catalogPath("picker.view").?);
     try std.testing.expectEqualStrings("preferences.fnl", catalogPath("preferences").?);
-    try std.testing.expectEqualStrings("request_options.fnl", catalogPath("request_options").?);
+    try std.testing.expectEqualStrings("request-options.fnl", catalogPath("request-options").?);
     try std.testing.expectEqualStrings("effort.fnl", catalogPath("effort").?);
     try std.testing.expectEqualStrings("status.fnl", catalogPath("status").?);
     try std.testing.expectEqualStrings("themes.fnl", catalogPath("themes").?);

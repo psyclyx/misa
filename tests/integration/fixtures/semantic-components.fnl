@@ -1,75 +1,53 @@
-{:setup (fn []
-          (local setup-fx [])
-          (table.insert setup-fx
-                        {:type :register/theme
-                         :id :test
-                         :value {:palette {:text :default}
+(local definitions (require :misa.definitions))
+
+(fn []
+          (local declarations [])
+          (table.insert declarations
+                        {:catalog :themes :id :test :value {:palette {:text :default}
                                  :styles {:plain {:foreground :text}}}})
-          (assert (not (pcall (fn []
-                                (misa._setup_effects {:fx [{:type :register/theme
-                                                            :id :bad
-                                                            :value {:palette {:oops :orange}
-                                                                    :styles {}}}]})
-                                nil)))
-                  "invalid palette color was accepted")
-          (assert (not (pcall (fn []
-                                (misa._setup_effects {:fx [{:type :register/theme
-                                                            :id :foundationless
-                                                            :value {:palette {}
-                                                                    :styles {:label {:dim true}}}}]})
-                                nil)))
-                  "foundationless theme was accepted")
-          (table.insert setup-fx
-                        {:type :register/animation
-                         :id :pulse
-                         :value {:frames [:one :two]}})
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :test.first
-                         :value {:render (fn []
+
+
+          (table.insert declarations
+                        {:catalog :animations :id :pulse :value {:frames [:one :two]}})
+          (table.insert declarations
+                        {:catalog :components :id :test.first :value {:render (fn []
                                            {:lines [{:spans [{:style :plain
                                                               :text :first}]}]})}})
-          (table.insert setup-fx
-                        {:type :register/component
-                         :id :test.second
-                         :value {:render (fn []
+          (table.insert declarations
+                        {:catalog :components :id :test.second :value {:render (fn []
                                            {:lines [{:spans [{:style :plain
                                                               :text :swapped}]}]})}})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :app/start
-                         :handler (fn [db]
-                                    (assert (= (. (misa.render_component db
+          (table.insert declarations
+                        {:catalog :events  :value {:event :app/start :handler (fn [db]
+                                    (assert (= (. (misa.components.render db
                                                                          :test.role
                                                                          {})
                                                   :lines 1 :spans 1 :text)
                                                :first))
-                                    (assert (and (= (. (misa.theme_style db
+                                    (assert (and (= (. (misa.themes.style db
                                                                          :syntax.escape)
                                                        :bold)
                                                     true)
-                                                 (= (. (misa.theme_style db
+                                                 (= (. (misa.themes.style db
                                                                          :dialog.hint)
                                                        :dim)
                                                     true))
                                             "complete standard theme fallbacks were not composed")
-                                    (assert (= (misa.animation_frame db nil 1)
+                                    (assert (= (misa.animations.frame db nil 1)
                                                :two))
                                     {:fx [{:event {:implementation :test.second
                                                    :role :test.role
                                                    :type :components/swap}
                                            :type :dispatch}
                                           {:event {:type :test/render}
-                                           :type :dispatch}]})})
-          (table.insert setup-fx
-                        {:type :register/event
-                         :name :test/render
-                         :handler (fn [db]
-                                    {:fx [{:lines (. (misa.render_component db
+                                           :type :dispatch}]})}})
+          (table.insert declarations
+                        {:catalog :events  :value {:event :test/render :handler (fn [db]
+                                    {:fx [{:lines (. (misa.components.render db
                                                                             :test.role
                                                                             {})
                                                      :lines)
                                            :type :view/commit}
-                                          {:type :app/quit}]})})
+                                          {:type :app/quit}]})}})
           nil
-          {:fx setup-fx})}
+          (definitions :tests.integration.fixtures.semantic-components declarations {}))

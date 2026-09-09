@@ -7,9 +7,9 @@
 (local encode misa.json.encode)
 (local baseline-path (assert (. arg 1) "baseline component source required"))
 (setup (fennel.dofile baseline-path))
-(local baseline misa.markdown_view)
+(local baseline misa.markdown.view)
 (setup (fennel.dofile :extensions/component/markdown.fnl))
-(local candidate misa.markdown_view)
+(local candidate misa.markdown.view)
 (local source (string.rep "# Heading\n\nordinary **bold** and [link](https://example.test)\n\n```lua\nlocal x = 1\n```\n\n" 40))
 (local streaming [])
 (local redraw [])
@@ -18,7 +18,7 @@
 (local cases [{:name :stream :inputs streaming} {:name :redraw :inputs redraw}])
 (fn run [api inputs oracle]
   (var projection nil)
-  (local view (and api.new_document (api.new_document)))
+  (local view (and api.new-document (api.new-document)))
   (local result [])
   (var elapsed 0)
   (each [index text (ipairs inputs)]
