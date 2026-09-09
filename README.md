@@ -675,7 +675,13 @@ continuation, then returns the harness to ready with visible cancelled/interrupt
 transcript state. Providers
 normalize every response to `agent/stream-start`, `agent/stream-delta`, optional
 `agent/stream-usage`, and `agent/stream-end`/`agent/stream-error`. Deltas cover
-text, thinking, and incrementally assembled tool calls; finalized tool argument
+text, thinking, and incrementally assembled tool calls. Protocol adapters use
+`misa.agent_stream_effects` to combine adjacent plain text or thinking deltas
+already present in one transport batch. Request changes, different delta kinds,
+extra metadata, and intervening effects preserve their ordering boundaries;
+there is no waiting for more chunks. This avoids a full event/view transaction
+for every token while retaining validation before each committed event.
+Finalized tool argument
 chunks are compacted once before the transcript is reprojected. The focused `json`
 extension supplies `misa.json.decode` and `misa.json.encode` at protocol
 boundaries. Before continuation, the agent parses every tool call into a

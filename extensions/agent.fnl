@@ -325,6 +325,37 @@
       (tset blocks (+ (length blocks) 1) block))
     blocks))
 
+;; Transport chunk boundaries have no meaning for adjacent text deltas. Fold
+;; only plain text/thinking events within one delivered batch, never across an
+;; intervening effect, request, usage record, or provider-state update.
+(fn stream-effects [effects]
+  (local result [])
+  (var (first chunks) nil)
+  (fn flush []
+    (when first
+      (table.insert result (if (= (length chunks) 1) first
+                               (misa.patch first {:event {:delta {:text (table.concat chunks)}}})))
+      (set (first chunks) (values nil nil))))
+  (fn plain-text [effect]
+    (local event effect.event)
+    (local delta (and (= (type event) :table) event.delta))
+    (when (and (= effect.type :dispatch) event (= event.type :agent/stream-delta)
+               (= (type delta) :table) (or (= delta.type :text) (= delta.type :thinking)) (= (type delta.text) :string))
+      (each [key (pairs effect)] (when (not (or (= key :type) (= key :event))) (lua "return false")))
+      (each [key (pairs event)] (when (not (or (= key :type) (= key :id) (= key :delta))) (lua "return false")))
+      (each [key (pairs delta)] (when (not (or (= key :type) (= key :text))) (lua "return false")))
+      true))
+  (each [_ effect (ipairs effects)]
+    (if (plain-text effect)
+        (do
+          (when (and first (or (not= first.event.id effect.event.id)
+                               (not= first.event.delta.type effect.event.delta.type))) (flush))
+          (when (not first) (set (first chunks) (values effect [])))
+          (table.insert chunks effect.event.delta.text))
+        (do (flush) (table.insert result effect))))
+  (flush)
+  result)
+
 (fn transcript-event [id kind fields]
   {:type :dispatch :event (misa.patch (or fields {}) {:type kind :response_id id})})
 
@@ -405,6 +436,7 @@
 
 {:setup (fn [context]
           (local setup-fx [])
+          (table.insert setup-fx {:type :register/service :name :agent_stream_effects :value stream-effects})
           (local deltas {:text text-delta :thinking text-delta :tool_call tool-delta})
           (table.insert setup-fx {:type :register/setup-effect :name :register/agent-delta
                                  :handler (fn [effect]

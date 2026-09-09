@@ -177,7 +177,8 @@
         :error failed-record :response.failed failed-record :response.incomplete failed-record})
 
 (fn stream-update [id state fx]
-  {:patch {:providers {:codex_streams {id (misa.replace state)}}} : fx})
+  {:patch {:providers {:codex_streams {id (misa.replace state)}}}
+   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
 
 (fn stream [db event]
   (local streams (or (and db.providers db.providers.codex_streams) {}))

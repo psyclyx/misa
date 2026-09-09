@@ -1,0 +1,12 @@
+summary,1,redraw,candidate,frames=8,render_median_s=0.000393500,render_best_s=0.000124000,update_median_s=0.000000000,update_best_s=0.000000000,total_median_s=0.000393500,total_best_s=0.000124000
+summary,1,redraw,baseline,frames=8,render_median_s=0.000534000,render_best_s=0.000233000,update_median_s=0.000000000,update_best_s=0.000000000,total_median_s=0.000534000,total_best_s=0.000233000
+summary,1,stream,candidate,frames=8,render_median_s=0.002011000,render_best_s=0.001642000,update_median_s=0.000115500,update_best_s=0.000073000,total_median_s=0.002107000,total_best_s=0.001715000
+summary,1,stream,baseline,frames=8,render_median_s=0.002240500,render_best_s=0.001638000,update_median_s=0.000093000,update_best_s=0.000072000,total_median_s=0.002347000,total_best_s=0.001730000
+summary,16,redraw,candidate,frames=8,render_median_s=0.002497500,render_best_s=0.000592000,update_median_s=0.000000000,update_best_s=0.000000000,total_median_s=0.002497500,total_best_s=0.000592000
+summary,16,redraw,baseline,frames=8,render_median_s=0.003208500,render_best_s=0.001013000,update_median_s=0.000000000,update_best_s=0.000000000,total_median_s=0.003208500,total_best_s=0.001013000
+summary,16,stream,candidate,frames=8,render_median_s=0.004335000,render_best_s=0.002248000,update_median_s=0.001200000,update_best_s=0.000338000,total_median_s=0.005461500,total_best_s=0.003695000
+summary,16,stream,baseline,frames=8,render_median_s=0.004326500,render_best_s=0.003058000,update_median_s=0.000282000,update_best_s=0.000198000,total_median_s=0.004749000,total_best_s=0.003305000
+summary,300,redraw,candidate,frames=8,render_median_s=0.045738000,render_best_s=0.010523000,update_median_s=0.000000000,update_best_s=0.000000000,total_median_s=0.045738000,total_best_s=0.010523000
+summary,300,redraw,baseline,frames=8,render_median_s=0.092039000,render_best_s=0.025117000,update_median_s=0.000000000,update_best_s=0.000000000,total_median_s=0.092039000,total_best_s=0.025117000
+summary,300,stream,candidate,frames=8,render_median_s=0.043058000,render_best_s=0.012098000,update_median_s=0.003990000,update_best_s=0.002899000,total_median_s=0.053508000,total_best_s=0.015786000
+summary,300,stream,baseline,frames=8,render_median_s=0.083676500,render_best_s=0.019035000,update_median_s=0.004815500,update_best_s=0.002722000,total_median_s=0.091671000,total_best_s=0.022148000

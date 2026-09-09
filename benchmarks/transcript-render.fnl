@@ -14,7 +14,7 @@
 (local baseline (if baseline-path ((fennel.dofile baseline-path) misa.json_null) candidate))
 (local context {:config {}})
 (each [_ name (ipairs [:json :layout :markdown :themes :theme/default :components
-                       :component/markdown :component/message])]
+                       :component/markdown :component/message :values :component/group])]
   (misa._setup (fennel.dofile (.. :extensions/ name :.fnl)) context))
 (local specs ((. (fennel.dofile :extensions/messages.fnl) :setup) context))
 (misa._setup_effects specs)

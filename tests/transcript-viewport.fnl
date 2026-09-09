@@ -196,7 +196,7 @@
 (local anchored-db (misa.patch {:messages {}} scrolled.patch))
 (local source-anchor anchored-db.messages.anchor.source)
 (local resized (viewport anchored-db {:columns 31} 3))
-(local visible (. resized.anchors resized.first))
+(local visible resized.anchor)
 (assert (<= visible.source source-anchor))
 (assert (> visible.last source-anchor) "reflow skipped past the visible source byte")
 (each [_ delta (ipairs [1 -1 3 -3])]
@@ -205,7 +205,7 @@
   (assert (= (. (viewport changed {:columns 31} 3) :first) (- resized.first delta))
           "scroll concurrent with wrapping did not start from the relocated viewport"))
 (local wider (viewport anchored-db {:columns 100} 3))
-(local wide-visible (. wider.anchors wider.first))
+(local wide-visible wider.anchor)
 (assert (<= wide-visible.source source-anchor) (fennel.view {:anchor source-anchor :visible wide-visible}))
 (assert (> wide-visible.last source-anchor))
 (assert (= (. (viewport {:messages {}} {:columns 31} 3) :first)

@@ -17,7 +17,8 @@
 (local delta-ids {:text true :thinking true :tool_calls true})
 
 (fn stream-update [id terminal fx]
-  {:patch {:providers {:openai_streams {id (misa.replace terminal)}}} : fx})
+  {:patch {:providers {:openai_streams {id (misa.replace terminal)}}}
+   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
 
 (fn stream [db event]
   (local previous (and db.providers db.providers.openai_streams

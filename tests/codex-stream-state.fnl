@@ -69,4 +69,16 @@
                           :value (fn [_ record] {:patch {:metadata record.value}})}]})
 (assert (= (. (transition initial {:id :request :phase :data :records [{:type :test.metadata :value :custom}]})
               :providers :codex_streams :request :metadata) :custom))
+;; With the agent installed, a transport batch is normalized once before its
+;; dispatch chain. Provider-state records still separate reasoning segments.
+(each [_ spec (ipairs (. ((. (fennel.dofile :extensions/agent.fnl) :setup) {:config {}}) :fx))]
+  (when (= spec.name :agent_stream_effects) (misa._setup_effects {:fx [spec]})))
+(local (_ batched) (transition initial {:id :request :phase :data
+                                        :records (fcollect [_ 1 32] {:type :response.output_text.delta :delta "x"})}))
+(assert (= (length batched) 1))
+(assert (= (. batched 1 :event :delta :text) (string.rep "x" 32)))
+(local (_ boundaries) (transition initial {:id :request :phase :data
+                                           :records [(. records 2) (. records 3) (. records 2)]}))
+(assert (= (length boundaries) 3))
+(assert (= (. boundaries 2 :event :type) :agent/stream-state))
 (output "Codex stream state properties passed\n")

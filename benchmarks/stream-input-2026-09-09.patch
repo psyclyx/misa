@@ -1,0 +1,229 @@
+--- a/extensions/messages.fnl
++++ b/extensions/messages.fnl
+@@ -303,24 +303,55 @@
+ (fn selection-key [selected]
+   (when selected {:id selected.id :first selected.first :last selected.last}))
+ 
++;; Rendered spans are immutable. Attach ownership once per component row, with
++;; a shallow copy; weak keys release it when that component output is replaced.
++(local owned-rows (setmetatable {} {:__mode :k}))
++(fn owned-line [line id part]
++  (local previous (. owned-rows line))
++  (local source-part (or part line.source_part))
++  (when (and previous (= previous.transcript_id id) (= previous.source_part source-part))
++    (lua "return previous"))
++  (local row (collect [key value (pairs line)] key value))
++  (set row.transcript_id id)
++  (when part (set row.source_part part))
++  (tset owned-rows line row)
++  row)
++
+ (fn same-selection [a b]
+   (and a b (= a.id b.id) (= a.first b.first) (= a.last b.last)))
+ 
+ ;; Anchors identify content rather than its absolute screen row. Keeping these
+ ;; in state makes speculative projections and resize renders deterministic.
++(fn line-anchor [line]
++  (when line
++    (var (source last) nil)
++    (each [_ span (ipairs (or line.spans []))]
++      (when (and (or span.source span.selection_marker) span.source_start span.source_end)
++        (set source (math.min (or source span.source_start) span.source_start))
++        (set last (math.max (or last span.source_end) span.source_end))))
++    {:id line.transcript_id :part (or line.source_part :body)
++     :source (or source line.source_start -1) : last :offset 0}))
++
++(fn same-source [a b]
++  (and a b (= a.id b.id) (= a.part b.part) (= a.source b.source)))
++
++;; Most frames follow the tail or retain their physical top row. Only inspect
++;; that row (and its continuations); build all anchors only after displacement.
++(fn anchor-at [lines index]
++  (local anchor (line-anchor (. lines index)))
++  (when anchor
++    (for [previous (- index 1) 1 -1]
++      (when (not (same-source anchor (line-anchor (. lines previous)))) (lua :break))
++      (set anchor.offset (+ anchor.offset 1))))
++  anchor)
++
+ (fn line-anchors [lines]
+   (var (previous offset) (values nil 0))
+   (icollect [_ line (ipairs lines)]
+-    (let [id line.transcript_id
+-          part (or line.source_part :body)]
+-      (var (source last) nil)
+-      (each [_ span (ipairs (or line.spans []))]
+-        (when (and (or span.source span.selection_marker) span.source_start span.source_end)
+-          (set source (math.min (or source span.source_start) span.source_start))
+-          (set last (math.max (or last span.source_end) span.source_end))))
+-      (set source (or source line.source_start -1))
+-      (set offset (if (and previous (= previous.id id) (= previous.part part) (= previous.source source)) (+ offset 1) 0))
+-      (set previous {: id : part : source : last : offset})
++    (let [anchor (line-anchor line)]
++      (set offset (if (same-source previous anchor) (+ offset 1) 0))
++      (set anchor.offset offset)
++      (set previous anchor)
+       previous)))
+ 
+ (fn anchored-row [anchors anchor fallback]
+@@ -344,13 +375,13 @@
+   (and a b (= a.id b.id) (= a.part b.part) (= a.source b.source)
+        (= a.offset b.offset)))
+ 
+-(fn viewport-top [messages anchors bottom]
++(fn viewport-top [messages lines bottom]
+   (if (not messages.top) bottom
+       ;; Scrolling owns a physical row. Only relocate its content when layout
+       ;; changes have actually displaced that row; ordinary renders must not
+       ;; reinterpret an explicit scroll as a request to find the block again.
+-      (or (not messages.anchor) (same-anchor (. anchors messages.top) messages.anchor)) messages.top
+-      (anchored-row anchors messages.anchor messages.top)))
++      (or (not messages.anchor) (same-anchor (anchor-at lines messages.top) messages.anchor)) messages.top
++      (anchored-row (line-anchors lines) messages.anchor messages.top)))
+ 
+ (fn transcript-viewport [db context available-lines]
+   (local room (math.max 0 (math.floor (or available-lines 0))))
+@@ -358,9 +389,8 @@
+       (let [lines (misa.transcript_projection db context)
+             selected (and misa.selection_projection (misa.selection_projection db))
+             key (selection-key selected)
+-            bottom (math.max 1 (+ (- (length lines) room) 1))
+-            anchors (line-anchors lines)]
+-        (var first (math.max 1 (math.min (viewport-top db.messages anchors bottom) bottom)))
++            bottom (math.max 1 (+ (- (length lines) room) 1))]
++        (var first (math.max 1 (math.min (viewport-top db.messages lines bottom) bottom)))
+         (when (and selected (not (same-selection db.messages.scroll_selection key)))
+           (each [index line (ipairs lines)]
+             (when (and (or line.selected line.selection_anchor)
+@@ -368,7 +398,7 @@
+               (set first (math.max 1 (math.min first index)))
+               (when (>= index (+ first room)) (set first (+ (- index room) 1)))
+               (lua :break))))
+-        {: first : room :total (length lines) :selection key : anchors
++        {: first : room :total (length lines) :selection key :layout lines :anchor (anchor-at lines first)
+          :lines (icollect [index (ipairs lines) &until (>= index (+ first room))]
+                   (when (>= index first) (. lines index)))})))
+ 
+@@ -489,7 +519,7 @@
+                                         (let [bottom (math.max 1 (+ (- viewport.total viewport.room) 1))
+                                               first (math.max 1 (math.min bottom (- viewport.first event.delta)))]
+                                           {:patch {:messages {:top (if (< first bottom) first misa.delete)
+-                                                               :anchor (if (< first bottom) (misa.replace (. viewport.anchors first)) misa.delete)
++                                                               :anchor (if (< first bottom) (misa.replace (anchor-at viewport.layout first)) misa.delete)
+                                                                :scroll_selection (misa.replace viewport.selection)
+                                                                :scroll (math.max 0 (- bottom first))}}
+                                            :fx [{:type :terminal/read}]})))})
+@@ -690,7 +720,7 @@
+                                       (when (and (> (length result) 0) (> (length lines) 0) (not document-id))
+                                         (table.insert result {:spans [] :transcript_id item.id :source_part :spacing}))
+                                       (each [_ line (ipairs lines)]
+-                                        (table.insert result (misa.patch line {:transcript_id item.id :source_part (when item.chrome :chrome)})))
++                                        (table.insert result (owned-line line item.id (when item.chrome :chrome))))
+                                       (when (and (= item.role :transcript.group_footer) (= index (length items))
+                                                  (> (length lines) 0) (not document-id))
+                                         (table.insert result {:spans [] :transcript_id item.id :source_part :spacing}))
+@@ -700,7 +730,7 @@
+                                                                                      model.attachments
+                                                                                      context-copy))]
+                                           (tset result (+ (length result) 1)
+-                                                (misa.patch line {:transcript_id item.id :source_part :attachments})))))
++                                                (owned-line line item.id :attachments)))))
+                                   result)})
+           (table.insert setup-fx {:type :register/service :name :transcript_viewport :value transcript-viewport})
+           (table.insert setup-fx {:type :register/service :name :transcript_blocks :value transcript-blocks})
+--- a/extensions/agent.fnl
++++ b/extensions/agent.fnl
+@@ -325,6 +325,37 @@
+       (tset blocks (+ (length blocks) 1) block))
+     blocks))
+ 
++;; Transport chunk boundaries have no meaning for adjacent text deltas. Fold
++;; only plain text/thinking events within one delivered batch, never across an
++;; intervening effect, request, usage record, or provider-state update.
++(fn stream-effects [effects]
++  (local result [])
++  (var (first chunks) nil)
++  (fn flush []
++    (when first
++      (table.insert result (if (= (length chunks) 1) first
++                               (misa.patch first {:event {:delta {:text (table.concat chunks)}}})))
++      (set (first chunks) (values nil nil))))
++  (fn plain-text [effect]
++    (local event effect.event)
++    (local delta (and (= (type event) :table) event.delta))
++    (when (and (= effect.type :dispatch) event (= event.type :agent/stream-delta)
++               (= (type delta) :table) (or (= delta.type :text) (= delta.type :thinking)) (= (type delta.text) :string))
++      (each [key (pairs effect)] (when (not (or (= key :type) (= key :event))) (lua "return false")))
++      (each [key (pairs event)] (when (not (or (= key :type) (= key :id) (= key :delta))) (lua "return false")))
++      (each [key (pairs delta)] (when (not (or (= key :type) (= key :text))) (lua "return false")))
++      true))
++  (each [_ effect (ipairs effects)]
++    (if (plain-text effect)
++        (do
++          (when (and first (or (not= first.event.id effect.event.id)
++                               (not= first.event.delta.type effect.event.delta.type))) (flush))
++          (when (not first) (set (first chunks) (values effect [])))
++          (table.insert chunks effect.event.delta.text))
++        (do (flush) (table.insert result effect))))
++  (flush)
++  result)
++
+ (fn transcript-event [id kind fields]
+   {:type :dispatch :event (misa.patch (or fields {}) {:type kind :response_id id})})
+ 
+@@ -405,6 +436,7 @@
+ 
+ {:setup (fn [context]
+           (local setup-fx [])
++          (table.insert setup-fx {:type :register/service :name :agent_stream_effects :value stream-effects})
+           (local deltas {:text text-delta :thinking text-delta :tool_call tool-delta})
+           (table.insert setup-fx {:type :register/setup-effect :name :register/agent-delta
+                                  :handler (fn [effect]
+--- a/extensions/protocol/openai.fnl
++++ b/extensions/protocol/openai.fnl
+@@ -17,7 +17,8 @@
+ (local delta-ids {:text true :thinking true :tool_calls true})
+ 
+ (fn stream-update [id terminal fx]
+-  {:patch {:providers {:openai_streams {id (misa.replace terminal)}}} : fx})
++  {:patch {:providers {:openai_streams {id (misa.replace terminal)}}}
++   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
+ 
+ (fn stream [db event]
+   (local previous (and db.providers db.providers.openai_streams
+--- a/extensions/protocol/anthropic.fnl
++++ b/extensions/protocol/anthropic.fnl
+@@ -80,7 +80,8 @@
+                                                      "Anthropic request failed"))})]})})
+ 
+ (fn stream-update [id state fx]
+-  {:patch {:providers {:anthropic_streams {id (misa.replace state)}}} : fx})
++  {:patch {:providers {:anthropic_streams {id (misa.replace state)}}}
++   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
+ 
+ (fn stream [provider db event]
+   (local state (or (and db.providers db.providers.anthropic_streams
+--- a/extensions/provider/openai-codex.fnl
++++ b/extensions/provider/openai-codex.fnl
+@@ -177,7 +177,8 @@
+         :error failed-record :response.failed failed-record :response.incomplete failed-record})
+ 
+ (fn stream-update [id state fx]
+-  {:patch {:providers {:codex_streams {id (misa.replace state)}}} : fx})
++  {:patch {:providers {:codex_streams {id (misa.replace state)}}}
++   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
+ 
+ (fn stream [db event]
+   (local streams (or (and db.providers db.providers.codex_streams) {}))
+--- a/extensions/provider/claude.fnl
++++ b/extensions/provider/claude.fnl
+@@ -304,7 +304,8 @@
+         :rate_limit_event quota-record})
+ 
+ (fn stream-update [id state fx]
+-  {:patch {:providers {:claude_streams {id (misa.replace state)}}} : fx})
++  {:patch {:providers {:claude_streams {id (misa.replace state)}}}
++   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
+ 
+ (fn stream [db event]
+   (local state (or (and db.providers db.providers.claude_streams

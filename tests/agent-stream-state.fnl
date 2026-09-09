@@ -6,10 +6,45 @@
 (misa._setup (fennel.dofile :extensions/json.fnl) {})
 (local specs ((. (fennel.dofile :extensions/agent.fnl) :setup) {:config {}}))
 (local handlers {})
+(var fold-stream nil)
 (var register nil)
 (each [_ spec (ipairs specs.fx)]
+  (when (= spec.name :agent_stream_effects) (set fold-stream spec.value))
   (when (= spec.type :register/event) (tset handlers spec.name spec.handler))
   (when (= spec.name :register/agent-delta) (set register spec.handler)))
+(fn text-effect [kind text id]
+  {:type :dispatch :event {:type :agent/stream-delta :id (or id :request) :delta {:type kind : text}}})
+(local pieces [(text-effect :text "hel") (text-effect :text "lo")
+               {:type :dispatch :event {:type :agent/stream-usage :id :request}}
+               (text-effect :text "world") (text-effect :thinking "hmm")
+               (text-effect :text "other" :other)])
+(local original-effects (misa.json.encode pieces))
+(local folded (fold-stream pieces))
+(assert (= (length folded) 5))
+(assert (= (. folded 1 :event :delta :text) "hello"))
+(assert (= (. folded 2) (. pieces 3)) "usage must remain an ordering boundary")
+(assert (= original-effects (misa.json.encode pieces)) "batching mutated transport effects")
+;; Expanding text into bytes gives an oracle independent of segmentation.
+(fn expanded [effects]
+  (local out [])
+  (each [_ effect (ipairs effects)]
+    (local value (and effect.event effect.event.delta effect.event.delta.text))
+    (if value
+        (for [index 1 (length value)]
+          (table.insert out (misa.patch effect {:event {:delta {:text (value:sub index index)}}})))
+        (table.insert out effect)))
+  (misa.json.encode out))
+(local folding-failure
+  (G.for_all (G.vector (G.elements [(text-effect :text "界") (text-effect :text "x")
+                                  (text-effect :thinking "hmm") (text-effect :text "" :other)
+                                  (. pieces 3) {:type :operation/finish :id :request}
+                                  (misa.patch (text-effect :text "x") {:event {:custom true}})]))
+             (fn [effects]
+               (local before (misa.json.encode effects))
+               (assert (= (expanded effects) (expanded (fold-stream effects))))
+               (assert (= before (misa.json.encode effects))))
+             {:cases 500 :size 40}))
+(assert (not folding-failure) (and folding-failure (fennel.view folding-failure)))
 (fn transition [db event cofx]
   (local before (misa.json.encode db))
   (local input (misa.json.encode event))
@@ -165,6 +200,17 @@
 (assert (= provider-owned.agent.status :ready))
 (assert (= provider-owned.agent.pending_tool_count 0))
 (assert (= (. provider-owned.agent.messages 2 :content 1 :execution) nil))
+(local observed-start (transition submitted {:type :agent/stream-start : id}))
+(local observed-call (transition observed-start {:type :agent/stream-delta : id
+                                                 :delta {:type :tool_call :index :owned :id :owned :name :known
+                                                         :execution :provider :arguments {}}}))
+(local observed-result (transition observed-call {:type :agent/stream-tool-result : id
+                                                  :tool_call_id :owned :text :success}))
+(local (observed-end observed-fx) (transition observed-result {:type :agent/stream-end : id}))
+(assert (= (. observed-end.agent.messages 3 :content 1 :text) :success))
+(each [_ effect (ipairs observed-fx)]
+  (assert (not= (and effect.event effect.event.type) :transcript/tool-result)
+          "provider result was emitted again when the response ended"))
 (set misa.prepare_request_options (fn [] (values nil {:message :blocked})))
 (local blocked (transition available {:type :agent/submit :prompt :hello}))
 (assert (= (length blocked.agent.messages) 0))

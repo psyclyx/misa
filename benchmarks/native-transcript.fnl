@@ -1,6 +1,15 @@
 ;; Exercise the default UI. Only input generation and initial transcript are fixtures.
 {:setup (fn [context]
           (local count context.config.benchmark.blocks)
+          (local burst (or context.config.benchmark.burst 1))
+          (local transport context.config.benchmark.transport)
+          (var stream-handler nil)
+          (when transport
+            (local specs (misa.protocols.openai {:id :bench :url "https://example.invalid" :models [] :credential :bench}))
+            (each [_ spec (ipairs specs.fx)]
+              (when (and (= spec.type :register/event) (= spec.name :provider/bench-complete))
+                (set stream-handler spec.handler)))
+            (assert stream-handler))
           (local mixed (= context.config.benchmark.scenario :mixed))
           (var previous nil)
           (var previous-responses nil)
@@ -59,6 +68,8 @@
           (assert (= covered count))
           (fn ready-check [] {:fx [{:type :dispatch :event {:type :bench/ready}}]})
           {:fx [{:type :register/model :value {:id :bench/model :model :model :provider :bench}}
+                {:type :register/event :name :bench/transport
+                 :handler (fn [db event] (assert stream-handler) (stream-handler db event))}
                 {:type :register/event-route
                  :value {:id :bench/input :event :terminal/input :priority 2000
                          :context [:db]
@@ -96,6 +107,9 @@
                             {:patch {:messages {:blocks (misa.replace blocks) :by_response (misa.replace by-response)
                                                 :responses (misa.replace responses) :verbose (when mixed true)}
                                      :editor {:text "WAIT:0000" :cursor 10}
+                                     :agent (when transport {:active_request_id tail-owner.id :cancel_requested false
+                                                             :stream {:id tail-owner.id :block_seq 1 :tools {}
+                                                                      :blocks [{:type :text :transcript_id (tostring count) :chunks [source]}]}})
                                      :benchmark {:step 0 :streamed 0}}
                              :fx [{:type :dispatch :event {:type :transcript/updated}}]})}
                 {:type :register/event :name :bench/frame
@@ -113,11 +127,20 @@
                             (assert (= (table.concat (. db.messages.blocks count :chunks))
                                        (.. source (string.rep "x" db.benchmark.streamed)))
                                     "stream updates were lost")
+                            (when transport
+                              (assert (= (table.concat (. db.agent.stream.blocks 1 :chunks))
+                                         (table.concat (. db.messages.blocks count :chunks)))
+                                      "agent and transcript stream contents diverged"))
                             (local step (+ db.benchmark.step 1))
-                            {:patch {:benchmark {: step :streamed (+ db.benchmark.streamed (if event.stream 1 0))}
+                            {:patch {:benchmark {: step :streamed (+ db.benchmark.streamed (if event.stream burst 0))}
                                      :editor {:text (string.format "FRAME:%04d" step) :cursor 10}}
                              :fx (if event.stream
-                                     [{:type :dispatch :event {:type :transcript/block-delta :response_id tail-owner.id
-                                                               :block_id (tostring count) :text "x"}}
-                                      {:type :terminal/read}]
+                                     (let [fx (if transport
+                                                 [{:type :dispatch :event {:type :bench/transport :id tail-owner.id :phase :data
+                                                                          :records (fcollect [_ 1 burst] {:choices [{:delta {:content "x"}}]})}}]
+                                                 (fcollect [_ 1 burst]
+                                                 {:type :dispatch :event {:type :transcript/block-delta :response_id tail-owner.id
+                                                                         :block_id (tostring count) :text "x"}}))]
+                                       (table.insert fx {:type :terminal/read})
+                                       fx)
                                      [{:type :terminal/read}])})}]})}

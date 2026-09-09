@@ -31,6 +31,8 @@ parser.add_argument('--rest-ms', type=float, default=0,
 parser.add_argument('--blocks', type=int, choices=(1, 16, 300), help='run only this transcript size')
 parser.add_argument('--mode', choices=('redraw', 'stream'), help='run only this workload')
 parser.add_argument('--samples', type=int, default=10)
+parser.add_argument('--burst', type=int, default=1, help='transcript deltas per input dispatch chain')
+parser.add_argument('--transport', action='store_true', help='deliver the burst through the real OpenAI protocol and agent reducers')
 parser.add_argument('--scenario', choices=('markdown', 'mixed'), default='markdown',
                     help='single Markdown response, or multi-response user/thinking/tool/code transcript')
 parser.add_argument('--extension-dir', type=Path, help='saved extension tree for source-level A/B comparisons')
@@ -39,13 +41,15 @@ parser.add_argument('--perf-output', type=Path,
 args = parser.parse_args()
 if args.samples < 1:
     parser.error('--samples must be positive')
+if args.burst < 1:
+    parser.error('--burst must be positive')
 if args.perf_output and (not args.blocks or not args.mode):
     parser.error('--perf-output requires --blocks and --mode')
 if not 0 <= args.rest_ms <= 1000:
     parser.error('--rest-ms must be between 0 and 1000')
 root = Path(__file__).resolve().parent.parent
 begin, end = b'\x1b[?2026h', b'\x1b[?2026l'
-print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256,p95_ms,p99_ms,scenario', flush=True)
+print('blocks,workload,rest_ms,profiled,samples,median_ms,best_ms,max_ms,first_frame_ms,frame_sha256,p95_ms,p99_ms,scenario,burst,transport', flush=True)
 for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
     for mode in ((args.mode,) if args.mode else ('redraw', 'stream')):
         with tempfile.TemporaryDirectory(prefix='misa-native-transcript-') as directory:
@@ -54,9 +58,11 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
             config['extensions'] = [name for name in config['extensions']
                                     if not name.startswith(('provider.', 'protocol.')) and name != 'auth']
             config['extensions'].insert(0, str(root / 'benchmarks/native-transcript.fnl'))
+            if args.transport:
+                config['extensions'].insert(0, 'protocol.openai')
             settings = config['config']
             settings['models']['default'] = 'bench/model'
-            settings['benchmark'] = {'blocks': count, 'scenario': args.scenario}
+            settings['benchmark'] = {'blocks': count, 'scenario': args.scenario, 'burst': args.burst, 'transport': args.transport}
             for name in ('history', 'themes', 'components', 'preferences'):
                 settings.setdefault(name, {})['persist'] = False
             path = work / 'config.json'
@@ -135,7 +141,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                     else:
                         # Count the synthetic tail across wrapped lines. Other fixture
                         # text has no words consisting solely of x characters.
-                        assert sum(map(len, re.findall(rb'\bx+\b', plain))) == step, \
+                        assert sum(map(len, re.findall(rb'\bx+\b', plain))) == step * args.burst, \
                             'completed frame omitted the current stream text'
                     assert b'\x1b]8;;https://example.test' in rendered, 'layout dropped the visible Markdown link'
                     if 7 <= step <= args.samples + 6:
@@ -153,7 +159,7 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
                 percentiles = statistics.quantiles(samples, n=100, method='inclusive') if len(samples) > 1 else samples * 99
                 print(f'{count},{mode},{args.rest_ms:g},{bool(args.perf_output)},{len(samples)},{statistics.median(samples):.3f},'
                       f'{min(samples):.3f},{max(samples):.3f},{first:.3f},{frame_hash.hexdigest()},'
-                      f'{percentiles[94]:.3f},{percentiles[98]:.3f},{args.scenario}', flush=True)
+                      f'{percentiles[94]:.3f},{percentiles[98]:.3f},{args.scenario},{args.burst},{args.transport}', flush=True)
             finally:
                 if profiler and profiler.poll() is None:
                     profiler.send_signal(signal.SIGINT)

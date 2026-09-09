@@ -80,7 +80,8 @@
                                                      "Anthropic request failed"))})]})})
 
 (fn stream-update [id state fx]
-  {:patch {:providers {:anthropic_streams {id (misa.replace state)}}} : fx})
+  {:patch {:providers {:anthropic_streams {id (misa.replace state)}}}
+   :fx (if misa.agent_stream_effects (misa.agent_stream_effects fx) fx)})
 
 (fn stream [provider db event]
   (local state (or (and db.providers db.providers.anthropic_streams
