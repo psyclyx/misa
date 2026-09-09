@@ -122,4 +122,4 @@
                                                  :type :view/commit}
                                                 {:type :app/quit}]})))}})
           nil
-          (definitions :tests.integration.fixtures.cancel-tools declarations {}))
+          (definitions.build :tests.integration.fixtures.cancel-tools declarations {}))

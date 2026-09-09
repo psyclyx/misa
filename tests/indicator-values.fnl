@@ -9,17 +9,17 @@
                                   :status {:indicators [:zero :false :hidden :custom :activity]}}})
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.values :misa.ui.status.render
                        :misa.ui.animations :misa.ui.animations.default :misa.ui.status.indicators])]
-  (app.define ((require name) context)))
+  (app.define ((. (require name) :build) context)))
 (local calls {})
 (each [_ id (ipairs [:zero :false :hidden :custom :activity])]
   ;; Deliberately register the consumer before its query.
-  (app.define (definitions :fixture [(let [definition {: id :query [(.. :test/ id)]}] {:catalog :indicators :id (. definition :id) :value definition})
+  (app.define (definitions.build :fixture [(let [definition {: id :query [(.. :test/ id)]}] {:catalog :indicators :id (. definition :id) :value definition})
                             (let [definition {:id (.. :test/ id) :inputs [[:db/path :facts id]]
                                      :compute (fn [inputs]
                                                 (tset calls id (+ (or (. calls id) 0) 1))
                                                 (. inputs 1))}] {:catalog :subscriptions :id (. definition :id) :value definition})])))
 (local shared [{:text "extension"}])
-(app.define (definitions :fixture [{:catalog :animations :id :test.still :value {:frames ["Z"]}}
+(app.define (definitions.build :fixture [{:catalog :animations :id :test.still :value {:frames ["Z"]}}
                           {:catalog :value-renderers :id :custom :value (fn [fact] (assert (= fact.value 7)) shared)}]))
 (each [_ malformed (ipairs [{:id :legacy :value (fn [] :text)}
                             {:id :empty :query []}
@@ -28,7 +28,7 @@
 (assert (not (pcall app.define {:indicators {:zero {:id :zero :query [:test/zero]}}})))
 (assert (not (pcall app.define {:value-renderers {:text (fn [])}})))
 (var observed nil)
-(app.define (definitions :fixture [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
+(app.define (definitions.build :fixture [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
 (app.install)
 (each [_ event (ipairs [{:type :app/start} {:type :test/read}])]
   (misa._dispatch event {:interactive true :columns 100 :lines 24} {:wall_ms 0 :monotonic_ms 0})

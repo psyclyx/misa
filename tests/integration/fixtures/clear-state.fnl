@@ -29,4 +29,4 @@
                                                  :type :view/commit}
                                                 {:type :app/quit}]})))}})
           nil
-          (definitions :tests.integration.fixtures.clear-state declarations {}))
+          (definitions.build :tests.integration.fixtures.clear-state declarations {}))

@@ -49,4 +49,4 @@
                                                   "completion rate did not use reported output tokens and monotonic elapsed time")
                                           {:fx [{:type :app/quit}]})))}})
           nil
-          (definitions :tests.integration.fixtures.rate-check declarations {}))
+          (definitions.build :tests.integration.fixtures.rate-check declarations {}))

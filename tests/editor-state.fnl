@@ -9,18 +9,18 @@
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices
                        :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.editor.render
                        :misa.choices.picker.render :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout])]
-  (app.define ((require name) context)))
-(local specs ((fennel.dofile :extensions/misa/editor/init.fnl) context))
+  (app.define ((. (require name) :build) context)))
+(local specs ((. (fennel.dofile :extensions/misa/editor/init.fnl) :build) context))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define specs)
-(app.define (definitions :test [(let [definition {:name :/ping :description :Ping :event :test/ping}] {:catalog :commands :id (. definition :name) :value definition})
+(app.define (definitions.build :test [(let [definition {:name :/ping :description :Ping :event :test/ping}] {:catalog :commands :id (. definition :name) :value definition})
                           (let [definition {:name :/choose :description :Choose :event :test/choose :completion :test}] {:catalog :commands :id (. definition :name) :value definition})
                           {:catalog :completions :id (.. :test "/" (. {:value :alpha} :value)) :value {:group :test :value {:value :alpha}}}
                           {:catalog :completions :id (.. :test "/" (. {:value :beta} :value)) :value {:group :test :value {:value :beta}}}]))
-(app.define (definitions :test [{:catalog :editor-edits :id :test_edit :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]))
-(app.define ((fennel.dofile :extensions/misa/editor/editing.fnl) context))
+(app.define (definitions.build :test [{:catalog :editor-edits :id :test_edit :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]))
+(app.define ((. (fennel.dofile :extensions/misa/editor/editing.fnl) :build) context))
 (app.install)
 (local cofx {:argv [] :terminal {:columns 80 :lines 24 :interactive true}})
 (fn transition [db event]

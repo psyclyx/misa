@@ -3,7 +3,7 @@
 ;; The FIFO blocks a Fennel transaction until the PTY harness releases it.
 ;; loadfile is used only as a deterministic test gate; plugins use IO effects.
 (fn [context]
-          (definitions :tests.threaded-terminal [{:catalog :events  :value {:event :app/start :handler (fn [db]
+          (definitions.build :tests.threaded-terminal [{:catalog :events  :value {:event :app/start :handler (fn [db]
                             {:patch {:phase :BOOT :count 0} :fx [{:type :terminal/read}]})}}
                 {:catalog :events  :value {:event :terminal/input :handler (fn [db event]
                             (match event.kind

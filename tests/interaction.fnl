@@ -294,4 +294,4 @@ A paragraph.
                                                    :type :interaction/step}
                                            :type :dispatch}]})}})
           nil
-          (definitions :tests.interaction declarations {}))
+          (definitions.build :tests.interaction declarations {}))

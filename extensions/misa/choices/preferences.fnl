@@ -57,59 +57,60 @@
   "Return preferences with a value's usage count and recency updated."
   (assert (and (= (type scope) :string) (= (type value) :string))
           "preference use requires scope and value")
-  (local preferences (or db.preferences (new-state)))
-  (local previous (entry preferences scope value))
-  (local clock (+ preferences.clock 1))
-  (misa.patch preferences
-              {: clock
-               :scopes {scope {value {:favorite previous.favorite
-                                      :uses (+ previous.uses 1)
-                                      :last clock}}}}))
+  (let [preferences (or db.preferences (new-state))
+        previous (entry preferences scope value)
+        clock (+ preferences.clock 1)]
+    (misa.patch preferences
+                {: clock
+                 :scopes {scope {value {:favorite previous.favorite
+                                        :uses (+ previous.uses 1)
+                                        :last clock}}}})))
 
 (fn saved [preferences]
   {:patch {:preferences (misa.replace preferences)}
    :fx [{:type :state/save :namespace :preferences :data preferences}]})
 
-(fn [context]
+(fn build [context]
   "Build the declarations for preferences."
-  (local config (or (. (or context.config {}) :preferences) {}))
-  (assert (= (type config) :table) "config.preferences must be an object")
-  (definitions :preferences
-    [{:catalog :services :id :preferences.use :value use}
-     {:catalog :events
-      :value {:event :app/start
-              :handler (fn [_]
-                         {:fx [{:type :state/load
-                                :namespace :preferences
-                                :completion :preferences/loaded}]})}}
-     {:catalog :events
-      :value {:event :preferences/loaded
-              :handler (fn [_ event]
-                         (assert (= event.namespace :preferences)
-                                 "invalid preference namespace")
-                         (local preferences
-                                (if (= event.found false)
-                                    (new-state)
-                                    event.data))
-                         (assert (validate preferences)
-                                 "invalid preference data")
-                         {:patch {:preferences (misa.replace (configured-favorites preferences
-                                                                                   config.favorites))}})}}
-     {:catalog :events
-      :value {:event :choice/used
-              :handler (fn [db event]
-                         (when (and (= (type event.scope) :string)
-                                    (= (type event.value) :string))
-                           (saved (use db event.scope event.value))))}}
-     {:catalog :events
-      :value {:event :preferences/toggle
-              :handler (fn [db event]
-                         (when (and (= (type event.scope) :string)
-                                    (= (type event.value) :string))
-                           (local preferences (or db.preferences (new-state)))
-                           (local previous
-                                  (entry preferences event.scope event.value))
-                           (saved (misa.patch preferences
-                                              {:scopes {event.scope {event.value {:uses previous.uses
-                                                                                  :favorite (not previous.favorite)}}}}))))}}]
-    {}))
+  (let [config (or (. (or context.config {}) :preferences) {})]
+    (assert (= (type config) :table) "config.preferences must be an object")
+    (definitions.build :preferences
+      [{:catalog :services :id :preferences.use :value use}
+       {:catalog :events
+        :value {:event :app/start
+                :handler (fn [_]
+                           {:fx [{:type :state/load
+                                  :namespace :preferences
+                                  :completion :preferences/loaded}]})}}
+       {:catalog :events
+        :value {:event :preferences/loaded
+                :handler (fn [_ event]
+                           (assert (= event.namespace :preferences)
+                                   "invalid preference namespace")
+                           (let [preferences (if (= event.found false)
+                                                 (new-state)
+                                                 event.data)]
+                             (assert (validate preferences)
+                                     "invalid preference data")
+                             {:patch {:preferences (misa.replace (configured-favorites preferences
+                                                                                       config.favorites))}}))}}
+       {:catalog :events
+        :value {:event :choice/used
+                :handler (fn [db event]
+                           (when (and (= (type event.scope) :string)
+                                      (= (type event.value) :string))
+                             (saved (use db event.scope event.value))))}}
+       {:catalog :events
+        :value {:event :preferences/toggle
+                :handler (fn [db event]
+                           (when (and (= (type event.scope) :string)
+                                      (= (type event.value) :string))
+                             (let [preferences (or db.preferences (new-state))
+                                   previous (entry preferences event.scope
+                                                   event.value)]
+                               (saved (misa.patch preferences
+                                                  {:scopes {event.scope {event.value {:uses previous.uses
+                                                                                      :favorite (not previous.favorite)}}}})))))}}]
+      {})))
+
+{: build}

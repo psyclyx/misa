@@ -5,19 +5,19 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown :misa.markdown.render :misa.selection.document])]
-  (app.define ((require name) {})))
-(local specs ((fennel.dofile :extensions/misa/selection/init.fnl) {}))
+  (app.define ((. (require name) :build) {})))
+(local specs ((. (fennel.dofile :extensions/misa/selection/init.fnl) :build) {}))
 (local events {})
 (each [_ effect (pairs specs.events)] (tset events effect.event effect.handler))
 
 (var layout-calls 0)
 
 (app.define specs)
-(app.define (definitions :fixture [{:catalog :selection-sources :id :rendered :value {:documents (fn [db] [db.document]) :layout (fn [_ document terminal]
+(app.define (definitions.build :fixture [{:catalog :selection-sources :id :rendered :value {:documents (fn [db] [db.document]) :layout (fn [_ document terminal]
                                     (set layout-calls (+ layout-calls 1))
                                     (misa.markdown.view.render (misa.markdown.parse document.text)
                                                                {:columns terminal.columns}))}}]))
-(app.define ((fennel.dofile :extensions/misa/ui/values.fnl) {}))
+(app.define ((. (fennel.dofile :extensions/misa/ui/values.fnl) :build) {}))
 (app.install)
 (fn transition [db type action columns]
   (local before (misa.json.encode db))
@@ -83,7 +83,7 @@
 ;; A tool's arguments and result use the same transcript section, but a frozen
 ;; selection keeps its original source owner when the result arrives.
 
-(local message-specs ((fennel.dofile :extensions/misa/transcript/init.fnl) {:config {}}))
+(local message-specs ((. (fennel.dofile :extensions/misa/transcript/init.fnl) :build) {:config {}}))
 (local tool-documents (. message-specs :selection-sources :transcript :documents))
 (local pending {:messages {:blocks [{:id :call :response_id :response :kind :tool_call
                                    :text "" :arguments {:path :settings}}]}})

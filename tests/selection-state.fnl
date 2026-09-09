@@ -6,8 +6,8 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown :misa.selection.document])]
-  (app.define ((require name) {})))
-(local specs ((fennel.dofile :extensions/misa/selection/init.fnl) {}))
+  (app.define ((. (require name) :build) {})))
+(local specs ((. (fennel.dofile :extensions/misa/selection/init.fnl) :build) {}))
 (local handlers {})
 (each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
 
@@ -15,13 +15,13 @@
                  :first 0 :last 13 :children []})
 
 (app.define specs)
-(app.define (definitions :fixture [{:catalog :selection-sources :id :test :value {:documents (fn [db] (if db.empty [] (or db.documents [(or db.document document)])))}}]))
-(app.define ((fennel.dofile :extensions/misa/markdown/render.fnl) {}))
-(app.define (definitions :fixture [{:catalog :selection-actions :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}]))
-(app.define (definitions :fixture [{:catalog :selection-actions :id :inspect-ranges :value (fn [_ db]
+(app.define (definitions.build :fixture [{:catalog :selection-sources :id :test :value {:documents (fn [db] (if db.empty [] (or db.documents [(or db.document document)])))}}]))
+(app.define ((. (fennel.dofile :extensions/misa/markdown/render.fnl) :build) {}))
+(app.define (definitions.build :fixture [{:catalog :selection-actions :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}]))
+(app.define (definitions.build :fixture [{:catalog :selection-actions :id :inspect-ranges :value (fn [_ db]
                  {:fx [{:type :dispatch :event {:type :test/selection-consumer
                                                :ranges (misa.selection.ranges db)}}]})}]))
-(app.define ((fennel.dofile :extensions/misa/keybindings.fnl) {:config {}}))
+(app.define ((. (fennel.dofile :extensions/misa/keybindings.fnl) :build) {:config {}}))
 (app.install)
 (fn transition [db type action]
   (local before (misa.json.encode db))

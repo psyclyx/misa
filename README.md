@@ -131,8 +131,8 @@ A minimal application can return its definitions directly:
   :services {:example.enabled (fn [db] db.example.enabled)}}}
 ```
 
-A reusable module may return a pure constructor `(fn [context] definitions)`.
-`standard.application` calls the selected constructors with `{config}` before
+Standard modules return tables with a named `build` function, for example
+`{:build build}`. `standard.application` calls selected builders with `{config}` before
 installation and composes their results. Constructors produce data and functions;
 startup IO belongs in effects from an `app/start` handler. Constructors must not
 read installed services or mutate `misa`. Closures may call declared services
@@ -221,7 +221,7 @@ routing. Routes return no patches or effects. Subscriptions use
 `misa.sub(db, [id, ...args])`; see [subscription contracts](docs/subscriptions.md)
 for nullable inputs, consumer scopes, and speculative commit/rollback.
 
-Protocol modules export pure constructors too. Providers compose their named
+Protocol modules export named `configure` functions. Providers compose their named
 handler and adapter definitions before installation. The asynchronous
 `syntax/highlight` effect accepts `id`, `language`, `source`, and `completion`,
 with an optional `timeout_ms` (1–60000; default 1000). Its completion event has

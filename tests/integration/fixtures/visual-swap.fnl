@@ -52,4 +52,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.visual-swap declarations {}))
+          (definitions.build :tests.integration.fixtures.visual-swap declarations {}))

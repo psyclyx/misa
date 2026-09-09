@@ -21,4 +21,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.command-completion declarations {}))
+          (definitions.build :tests.integration.fixtures.command-completion declarations {}))

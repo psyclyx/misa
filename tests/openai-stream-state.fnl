@@ -9,10 +9,10 @@
                                    :models [] :models_url "https://example.invalid/models"
                                    :models_credential false :credential :test}))
 (local application (misa.compose
- [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/misa/agent/stream.fnl) {})}
+ [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
+  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
   (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
-  {:definitions (definitions :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}])}]))
+  {:definitions (definitions.build :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}])}]))
 (misa._install application.definitions {:argv [] :config {}})
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local discovery ((. handlers :models/discover) {} {:provider :test}))

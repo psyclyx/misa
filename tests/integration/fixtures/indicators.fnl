@@ -72,4 +72,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.indicators declarations {}))
+          (definitions.build :tests.integration.fixtures.indicators declarations {}))

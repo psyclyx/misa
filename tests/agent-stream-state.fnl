@@ -4,12 +4,12 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local definitions (require :misa.definitions))
-(local specs ((fennel.dofile :extensions/misa/agent/init.fnl) {:config {}}))
+(local specs ((. (fennel.dofile :extensions/misa/agent/init.fnl) :build) {:config {}}))
 (local application (misa.compose
- [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/misa/agent/stream.fnl) {})}
+ [{:definitions ((. (fennel.dofile :extensions/misa/json.fnl) :build) {})}
+  {:definitions ((. (fennel.dofile :extensions/misa/agent/stream.fnl) :build) {})}
   (misa.compose [{:definitions specs}])
-  {:definitions (definitions :test [{:catalog :agent-deltas :id :custom :value (fn [_ value] {:patch {:custom value.value}})}])}]))
+  {:definitions (definitions.build :test [{:catalog :agent-deltas :id :custom :value (fn [_ value] {:patch {:custom value.value}})}])}]))
 (misa._install application.definitions {:argv [] :config {}})
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (local fold-stream misa.stream.effects)

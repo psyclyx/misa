@@ -5,13 +5,13 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
-(local specs ((fennel.dofile :extensions/misa/dialogs/init.fnl)))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
+(local specs ((. (fennel.dofile :extensions/misa/dialogs/init.fnl) :build)))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define specs)
-(app.define (definitions :test [{:catalog :dialog-inputs :id :clear :value (fn [] {:patch {:dialog {:input ""}}})}]))
+(app.define (definitions.build :test [{:catalog :dialog-inputs :id :clear :value (fn [] {:patch {:dialog {:input ""}}})}]))
 (app.install)
 (fn transition [db event]
   (local (before input) (values (misa.json.encode db) (misa.json.encode event)))

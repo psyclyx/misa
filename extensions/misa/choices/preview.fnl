@@ -23,29 +23,31 @@
               result)
             body))))
 
-(fn [context]
+(fn build [context]
   "Build the declarations for choice preview."
-  (local selected (or (. (or (. (or context.config {}) :choices) {})
-                         :preview_renderers) {}))
-  (definitions :choice_preview
-    [{:catalog :choice-previews :id :metadata :value metadata}
-     {:catalog :choice-previews
-      :id :text
-      :value (fn [preview] [(line preview.value)])}
-     {:catalog :services
-      :id :choices.preview
-      :value (fn [preview context]
-               "Render typed preview data using its selected implementation."
-               (if (= preview nil) []
-                   (let [model (if (= (type preview) :string)
-                                   {:type :text :value preview}
-                                   preview)
-                         kind (or model.type :metadata)
-                         id (or (. selected kind) kind)
-                         render (assert (. (misa.catalog :choice-previews) id)
-                                        (.. "unknown preview renderer: " id))]
-                     (misa.layout.wrap-spans (render model context)
-                                             context.columns))))}]
-    {:validators {:choice-previews (fn [_ render]
-                                     (assert (= (type render) :function)
-                                             "choice preview renderer must be a function"))}}))
+  (let [selected (or (. (or (. (or context.config {}) :choices) {})
+                        :preview_renderers) {})]
+    (definitions.build :choice_preview
+      [{:catalog :choice-previews :id :metadata :value metadata}
+       {:catalog :choice-previews
+        :id :text
+        :value (fn [preview] [(line preview.value)])}
+       {:catalog :services
+        :id :choices.preview
+        :value (fn [preview context]
+                 "Render typed preview data using its selected implementation."
+                 (if (= preview nil) []
+                     (let [model (if (= (type preview) :string)
+                                     {:type :text :value preview}
+                                     preview)
+                           kind (or model.type :metadata)
+                           id (or (. selected kind) kind)
+                           render (assert (. (misa.catalog :choice-previews) id)
+                                          (.. "unknown preview renderer: " id))]
+                       (misa.layout.wrap-spans (render model context)
+                                               context.columns))))}]
+      {:validators {:choice-previews (fn [_ render]
+                                       (assert (= (type render) :function)
+                                               "choice preview renderer must be a function"))}})))
+
+{: build}

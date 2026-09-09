@@ -4,14 +4,14 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
 (app.install)
 (local config {:providers {:fake {:responses [:hello
                                               {:stream [{:type :tool_call :id :call :name :test :arguments {}}
                                                         {:type :tool_call :index 7 :arguments_json :fragment}]
                                                :usage {:output_tokens 3}}
                                               {:stream [] :error :failed}]}}})
-(local specs ((fennel.dofile :extensions/misa/providers/fake.fnl) {: config}))
+(local specs ((. (fennel.dofile :extensions/misa/providers/fake.fnl) :build) {: config}))
 (var handler nil)
 (each [_ spec (pairs (. specs :events))]
   (set handler spec.handler))

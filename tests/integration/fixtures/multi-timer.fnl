@@ -31,4 +31,4 @@
           (table.insert declarations
                         {:catalog :events  :value {:event :tick/b :handler (fn [db] (tick db :b))}})
           nil
-          (definitions :tests.integration.fixtures.multi-timer declarations {}))
+          (definitions.build :tests.integration.fixtures.multi-timer declarations {}))

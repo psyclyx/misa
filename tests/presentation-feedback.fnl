@@ -8,7 +8,7 @@
 (var observed nil)
 (var next-value {:width 10})
 (var fail false)
-(app.define (definitions :fixture [{:catalog :events  :value {:event :inspect :handler (fn [_ _ cofx] (set observed cofx.presentation))}}
+(app.define (definitions.build :fixture [{:catalog :events  :value {:event :inspect :handler (fn [_ _ cofx] (set observed cofx.presentation))}}
                           {:catalog :views :id :main :value (fn [_ cofx]
                                                           (assert cofx.projecting)
                                                           (misa.projections.publish :fixture next-value)

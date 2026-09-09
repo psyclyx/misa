@@ -9,8 +9,8 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(local boundary ((require :misa.ui.components.group)))
-(local groups ((require :misa.transcript.groups)))
+(local boundary ((. (require :misa.ui.components.group) :build)))
+(local groups ((. (require :misa.transcript.groups) :build)))
 (assert (. boundary.components :default.group.boundary))
 (assert (= (. boundary.components :default.transcript.group_footer) nil)
         "generic boundaries must not install transcript policy")
@@ -26,7 +26,7 @@
                        :misa.markdown
                        :misa.markdown.render
                        :misa.ui.values :misa.ui.components.group :misa.transcript.groups :misa.transcript.render :misa.ui.components.content :misa.ui.components.truncation :misa.transcript.tools :misa.transcript.tools.render])]
-  (app.define ((require name) context)))
+  (app.define ((. (require name) :build) context)))
 
 (local cached
        {:surface :panel
@@ -66,7 +66,7 @@
               {:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}})
 
 (table.insert effects {:catalog :services :id :choices.pending :value (fn [db] (and db.editor db.editor.choice db.editor.choice.combo))})
-(app.define (definitions :fixture effects))
+(app.define (definitions.build :fixture effects))
 (app.install)
 (local semantic (misa.json.encode cached))
 (misa._dispatch {:type :app/start} {:columns 80 :lines 24 :interactive true}

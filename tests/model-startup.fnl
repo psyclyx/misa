@@ -13,11 +13,11 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
 (each [_ name (ipairs [:misa.json :misa.models.options :misa.models])]
-  (local specs ((require name) context))
+  (local specs ((. (require name) :build) context))
 
   (app.define specs))
 (var observed nil)
-(app.define (declarations :model-startup-1 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
+(app.define (declarations.build :model-startup-1 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}]))
 (app.install context)
 (fn dispatch [event]
   (local pending [event])

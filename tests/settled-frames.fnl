@@ -53,4 +53,4 @@
                                                                           " DONE")
                                                                      ""))}]}]})})
           nil
-          (definitions :tests.settled-frames declarations {}))
+          (definitions.build :tests.settled-frames declarations {}))

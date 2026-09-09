@@ -8,7 +8,7 @@
 (local declarations (require :misa.definitions))
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.animations
                        :misa.ui.animations.default :misa.providers.auth :misa.models])]
-  (local specs ((require name) context))
+  (local specs ((. (require name) :build) context))
   (each [_ spec (pairs (or specs.events {}))]
 
     (when (and true (= spec.event :app/start))

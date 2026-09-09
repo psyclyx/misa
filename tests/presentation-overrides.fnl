@@ -8,12 +8,12 @@
                         :tool_presentations {:roles {:shell :custom.shell}}
                         :status {:indicator_overrides {:session false :plan {:priority 1} :extra {:priority 200}}}}})
 (each [_ name (ipairs [:misa.ui.values :misa.transcript.tools :misa.ui.status.indicators])]
-  (app.define ((require name) context)))
+  (app.define ((. (require name) :build) context)))
 
-(app.define (definitions :fixture [{:catalog :value-renderers :id :custom.tokens :value (fn [fact] [{:text (.. fact.value " tokens")}])}
+(app.define (definitions.build :fixture [{:catalog :value-renderers :id :custom.tokens :value (fn [fact] [{:text (.. fact.value " tokens")}])}
        (let [definition (fn [model] {:result {:role :content.text :model {:text (.. "custom: " model.result)}}})] {:catalog :tool-presentations :id :custom.shell :value definition})]))
 (each [_ id (ipairs [:activity :session :plan :extra])]
-  (app.define (definitions :fixture [(let [definition {:id (.. :fixture/ id) :inputs []
+  (app.define (definitions.build :fixture [(let [definition {:id (.. :fixture/ id) :inputs []
                                                        :compute (fn [] {:type :text :value id})}] {:catalog :subscriptions :id (. definition :id) :value definition})
                             (let [definition {: id :query [(.. :fixture/ id)]}] {:catalog :indicators :id (. definition :id) :value definition})])))
 (app.install)

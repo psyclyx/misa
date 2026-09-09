@@ -16,4 +16,4 @@
                                              :type :tool/result}
                                      :type :dispatch})})
           nil
-          (definitions :tests.integration.fixtures.tool declarations {}))
+          (definitions.build :tests.integration.fixtures.tool declarations {}))

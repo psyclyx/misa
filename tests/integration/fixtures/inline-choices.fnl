@@ -73,4 +73,4 @@
                                               "inline configured positional hint disappeared"))
                                     nil)}})
           nil
-          (definitions :tests.integration.fixtures.inline-choices declarations {}))
+          (definitions.build :tests.integration.fixtures.inline-choices declarations {}))

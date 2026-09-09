@@ -6,9 +6,9 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {}})
-(app.define ((fennel.dofile :extensions/misa/json.fnl) context))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) context))
 (local handlers {})
-(local specs ((fennel.dofile :extensions/misa/models/init.fnl) context))
+(local specs ((. (fennel.dofile :extensions/misa/models/init.fnl) :build) context))
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define {:subscriptions (. specs :subscriptions)})

@@ -8,13 +8,13 @@
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}}})
 (local layers {})
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.layout :misa.editor.queue.view :misa.editor.attachments])]
-  (local specs ((require name) context))
+  (local specs ((. (require name) :build) context))
   (each [id spec (pairs (or specs.view-layers {}))]
     (tset layers id spec.handler))
   (app.define specs))
 (var observed nil)
 (var received nil)
-(app.define (definitions :fixture [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}
+(app.define (definitions.build :fixture [{:catalog :events  :value {:event :test/read :handler (fn [db] (set observed db) nil)}}
        {:catalog :components :id :default.attachment.fixture :value {:render (fn [] {:lines []})}}
        {:catalog :components :id :custom.controls :value {:render (fn [model] (set received model)
                          {:lines [{:spans [{:text :custom :style :plain}]}]})}}]))

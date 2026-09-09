@@ -16,8 +16,8 @@
 (local context {:config {}})
 (each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown :misa.ui.themes :misa.ui.themes.default :misa.ui.components
                        :misa.markdown.render :misa.transcript.render :misa.ui.values :misa.ui.components.group :misa.transcript.groups])]
-  (app.define ((require name) context)))
-(local specs ((fennel.dofile :extensions/misa/transcript/init.fnl) context))
+  (app.define ((. (require name) :build) context)))
+(local specs ((. (fennel.dofile :extensions/misa/transcript/init.fnl) :build) context))
 (app.define specs)
 (var baseline-project nil)
 (local baseline-roles {})

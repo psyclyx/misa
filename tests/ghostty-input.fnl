@@ -90,4 +90,4 @@
                                                                :output_tokens 20}}
                                                :type :dispatch}]}))}})
           nil
-          (definitions :tests.ghostty-input declarations {}))
+          (definitions.build :tests.ghostty-input declarations {}))

@@ -4,12 +4,12 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
 (app.install)
 (local feature (fennel.dofile :extensions/misa/providers/openai-codex.fnl))
 (fn handlers [config]
   (local result {})
-  (each [_ effect (pairs (. (feature {:config {:providers {:openai_codex (or config {})}}}) :events))]
+  (each [_ effect (pairs (. (feature.build {:config {:providers {:openai_codex (or config {})}}}) :events))]
   (tset result effect.event effect.handler))
   result)
 (local events (handlers))
@@ -53,7 +53,7 @@
 (output "Codex model discovery contracts passed\n")
 
 (fn auth-declaration [config]
-  (. (feature {:config {:providers {:openai_codex config}}}) :auth-providers :openai-codex))
+  (. (feature.build {:config {:providers {:openai_codex config}}}) :auth-providers :openai-codex))
 (assert (. (auth-declaration {}) :discover_models)
         "authenticated startup did not schedule Codex discovery")
 (assert (not (. (auth-declaration {:models []}) :discover_models))

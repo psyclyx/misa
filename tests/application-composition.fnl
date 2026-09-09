@@ -53,7 +53,7 @@
 (local define (require :misa.definitions))
 (local handler (fn [] nil))
 (local named
-       (define :fixture
+       (define.build :fixture
          [{:catalog :events
            :id :explicit
            :value {:event :change :handler handler}}

@@ -276,4 +276,4 @@ Second paragraph with useful words."
                                                    :type :test/transcript-step}
                                            :type :dispatch}]})}})
           nil
-          (definitions :tests.transcript-interaction declarations {}))
+          (definitions.build :tests.transcript-interaction declarations {}))

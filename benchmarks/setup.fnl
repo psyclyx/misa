@@ -1,6 +1,6 @@
 ;; Install pure service declarations into an isolated benchmark stub.
 (fn setup [extension context]
-  (local result (extension (or context {})))
+  (local result ((if (= (type extension) :function) extension extension.build) (or context {})))
   (each [name value (pairs (or result.services {}))]
     (local parts [])
     (each [part (name:gmatch "[^.]+")]

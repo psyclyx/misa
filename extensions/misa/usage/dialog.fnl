@@ -13,178 +13,185 @@
                   part.text)))
 
 (fn window-row [window now]
-  (local used (or window.used
-                  (and window.limit window.remaining
-                       (- window.limit window.remaining))))
-  (local instant (or window.reset_at_unix window.reset_at))
-  {:label (or window.label "Quota")
-   :meter {: used :limit window.limit}
-   :fact (if (and used (= window.unit :percent))
-             (sequence [{:type :percent
-                         :value (math.max 0 (math.min 100 used))}
-                        (text " used")])
-             (sequence [{:type :ratio : used :limit window.limit}
-                        (text " used")]))
-   :detail (when instant (datetime instant now "Resets "))})
+  (let [used (or window.used
+                 (and window.limit window.remaining
+                      (- window.limit window.remaining)))
+        instant (or window.reset_at_unix window.reset_at)]
+    {:label (or window.label "Quota")
+     :meter {: used :limit window.limit}
+     :fact (if (and used (= window.unit :percent))
+               (sequence [{:type :percent
+                           :value (math.max 0 (math.min 100 used))}
+                          (text " used")])
+               (sequence [{:type :ratio : used :limit window.limit}
+                          (text " used")]))
+     :detail (when instant (datetime instant now "Resets "))}))
 
 (fn extra-row [provider extra actions]
-  (local facts [(text (if extra.enabled "On" "Off"))])
-  (when extra.used
-    (table.insert facts (text " · "))
-    (table.insert facts {:type :money
-                         :amount extra.used
-                         :currency extra.currency})
-    (when extra.limit
-      (table.insert facts (text " / "))
+  (let [facts [(text (if extra.enabled "On" "Off"))]]
+    (when extra.used
+      (table.insert facts (text " · "))
       (table.insert facts {:type :money
-                           :amount extra.limit
-                           :currency extra.currency}))
-    (table.insert facts (text (if extra.unlimited " used · no monthly limit"
-                                  " this month"))))
-  (local ids [])
-  (when extra.manage_url
-    (local id (.. provider "/extra-manage"))
-    (table.insert ids id)
-    (table.insert actions
-                  {: id
-                   :label "Manage"
-                   :inline true
-                   :persistent true
-                   :event {:type :link/open :url extra.manage_url}
-                   :binding (when (= provider :claude)
-                              {:context :usage :action :extra-manage})}))
-  {:label "Extra usage" :fact (sequence facts) :actions ids})
+                           :amount extra.used
+                           :currency extra.currency})
+      (when extra.limit
+        (table.insert facts (text " / "))
+        (table.insert facts
+                      {:type :money
+                       :amount extra.limit
+                       :currency extra.currency}))
+      (table.insert facts (text (if extra.unlimited " used · no monthly limit"
+                                    " this month"))))
+    (let [ids []]
+      (when extra.manage_url
+        (let [id (.. provider "/extra-manage")]
+          (table.insert ids id)
+          (table.insert actions
+                        {: id
+                         :label "Manage"
+                         :inline true
+                         :persistent true
+                         :event {:type :link/open :url extra.manage_url}
+                         :binding (when (= provider :claude)
+                                    {:context :usage :action :extra-manage})})))
+      {:label "Extra usage" :fact (sequence facts) :actions ids})))
 
 (fn reset-rows [provider now rows actions]
   (when (or provider.reset_count provider.reset_attempt)
-    (local count (or provider.reset_count 0))
-    (local ids [])
-    (when (or (> count 0) provider.reset_attempt)
-      (table.insert ids :codex-reset)
-      (local expiries [])
-      (each [_ credit (ipairs (or provider.reset_credits []))]
+    (let [count (or provider.reset_count 0)
+          ids []]
+      (when (or (> count 0) provider.reset_attempt)
+        (table.insert ids :codex-reset)
+        (let [expiries []]
+          (each [_ credit (ipairs (or provider.reset_credits []))]
+            (when (= credit.status :available)
+              (table.insert expiries
+                            (if credit.expires_never "No expiry"
+                                (value-text (datetime (or credit.expires_at_unix
+                                                          credit.expires_at)
+                                                      now "Expires "
+                                                      "Expiry unavailable"))))))
+          (table.insert actions
+                        {:id :codex-reset
+                         :label (if provider.reset_attempt "Retry reset"
+                                    "Use reset")
+                         :inline true
+                         :persistent true
+                         :event {:type :provider/codex-reset}
+                         :disabled (or provider.reset_request
+                                       provider.reset_refresh)
+                         :binding {:context :usage :action :codex-reset}
+                         :confirm {:title "Use a Codex quota reset?"
+                                   :label "Use reset"
+                                   :message (.. (if provider.reset_attempt
+                                                    "Check the previous redemption again; a retry uses the same request key."
+                                                    "Consume one earned reset to reset eligible Codex usage limits.")
+                                                (if (> (length expiries) 0)
+                                                    (.. "\n"
+                                                        (table.concat expiries
+                                                                      "\n"))
+                                                    "\nReset expiry details are unavailable."))}})))
+      (table.insert rows {:label "Quota resets"
+                          :fact (text (.. count " available"))
+                          :actions ids})
+      (each [index credit (ipairs (or provider.reset_credits []))]
         (when (= credit.status :available)
-          (table.insert expiries
-                        (if credit.expires_never "No expiry"
-                            (value-text (datetime (or credit.expires_at_unix
-                                                      credit.expires_at)
-                                                  now "Expires "
-                                                  "Expiry unavailable"))))))
-      (table.insert actions
-                    {:id :codex-reset
-                     :label (if provider.reset_attempt "Retry reset"
-                                "Use reset")
-                     :inline true
-                     :persistent true
-                     :event {:type :provider/codex-reset}
-                     :disabled (or provider.reset_request
-                                   provider.reset_refresh)
-                     :binding {:context :usage :action :codex-reset}
-                     :confirm {:title "Use a Codex quota reset?"
-                               :label "Use reset"
-                               :message (.. (if provider.reset_attempt
-                                                "Check the previous redemption again; a retry uses the same request key."
-                                                "Consume one earned reset to reset eligible Codex usage limits.")
-                                            (if (> (length expiries) 0)
-                                                (.. "\n"
-                                                    (table.concat expiries "\n"))
-                                                "\nReset expiry details are unavailable."))}}))
-    (table.insert rows {:label "Quota resets"
-                        :fact (text (.. count " available"))
-                        :actions ids})
-    (each [index credit (ipairs (or provider.reset_credits []))]
-      (when (= credit.status :available)
+          (table.insert rows
+                        {:label (.. "Reset " index)
+                         :fact (if credit.expires_never (text "No expiry")
+                                   (datetime (or credit.expires_at_unix
+                                                 credit.expires_at)
+                                             now "Expires " "Expiry unavailable"))})))
+      (when (and (> count 0) (not provider.reset_credits))
         (table.insert rows
-                      {:label (.. "Reset " index)
-                       :fact (if credit.expires_never (text "No expiry")
-                                 (datetime (or credit.expires_at_unix
-                                               credit.expires_at)
-                                           now "Expires " "Expiry unavailable"))})))
-    (when (and (> count 0) (not provider.reset_credits))
-      (table.insert rows
-                    {:label "Reset expiry"
-                     :fact (text (if provider.reset_credits_request
-                                     "Loading…"
-                                     "Unavailable"))})))
+                      {:label "Reset expiry"
+                       :fact (text (if provider.reset_credits_request
+                                       "Loading…"
+                                       "Unavailable"))}))))
   (when provider.reset_message
     (table.insert rows {:label "" :fact (text provider.reset_message)})))
 
 (fn model [db now]
-  (local usage (or (misa.sub db [:usage/session]) {}))
-  (local last (or (misa.sub db [:usage/last-request]) {}))
-  (local selected (and misa.models misa.models.selected
-                       (misa.models.selected db)))
-  (local sections
-         [{:id :model
-           :rows [{:label "Model"
-                   :fact (text (or (and selected selected.label) "None"))}
-                  {:label "Context window"
-                   :fact (if (and selected selected.context_window)
-                             (tokens selected.context_window)
-                             (text "Unknown"))}]}
-          {:id :session
-           :title "Session usage"
-           :heading true
-           :rows [{:label "Input tokens" :fact (tokens usage.input_tokens)}
-                  {:label "Output tokens" :fact (tokens usage.output_tokens)}
-                  {:label "Last request"
-                   :fact (tokens (+ (or last.input_tokens 0)
-                                    (or last.output_tokens 0)))}]}])
-  (local actions [])
-  (local providers {})
-  (each [id details (pairs (or db.providers {}))]
-    (when (and (= (type details) :table)
-               (or details.subscription_type details.usage))
-      (tset providers id {:plan details.subscription_type :usage details.usage})))
-  (each [id plan (pairs (or (misa.sub db [:usage/providers]) {}))]
-    (tset providers id {:plan (and (. providers id) (. providers id :plan))
-                        :usage plan}))
-  (local ids (icollect [id (pairs providers)] id))
-  (table.sort ids)
-  (var grouped false)
-  (each [_ id (ipairs ids)]
-    (local provider (. providers id))
-    (local quota provider.usage)
-    (when (and (= (type quota) :table)
-               (or provider.plan
-                   (and (not quota.unavailable)
-                        (> (length (or quota.windows [])) 0))))
-      (when (not grouped)
-        (table.insert sections {:id :subscriptions
-                                :title "Subscription plans"
-                                :heading true})
-        (set grouped true))
-      (local rows (icollect [_ window (ipairs (or quota.windows []))]
-                    (window-row window now)))
-      (when quota.unavailable
-        (table.insert rows
-                      {:label "Quotas" :fact (text "Temporarily unavailable")}))
-      (when quota.extra_usage
-        (table.insert rows (extra-row id quota.extra_usage actions)))
-      (when (= id :openai-codex)
-        (reset-rows (or (and db.providers (. db.providers id)) {}) now rows
-                    actions))
-      (table.insert sections {:id id
-                              :title (.. id
-                                         (if provider.plan
-                                             (.. " · " provider.plan)
-                                             ""))
-                              : rows})))
-  {: sections : actions})
+  (let [usage (or (misa.sub db [:usage/session]) {})
+        last (or (misa.sub db [:usage/last-request]) {})
+        selected (and misa.models misa.models.selected
+                      (misa.models.selected db))
+        sections [{:id :model
+                   :rows [{:label "Model"
+                           :fact (text (or (and selected selected.label) "None"))}
+                          {:label "Context window"
+                           :fact (if (and selected selected.context_window)
+                                     (tokens selected.context_window)
+                                     (text "Unknown"))}]}
+                  {:id :session
+                   :title "Session usage"
+                   :heading true
+                   :rows [{:label "Input tokens"
+                           :fact (tokens usage.input_tokens)}
+                          {:label "Output tokens"
+                           :fact (tokens usage.output_tokens)}
+                          {:label "Last request"
+                           :fact (tokens (+ (or last.input_tokens 0)
+                                            (or last.output_tokens 0)))}]}]
+        actions []
+        providers {}]
+    (each [id details (pairs (or db.providers {}))]
+      (when (and (= (type details) :table)
+                 (or details.subscription_type details.usage))
+        (tset providers id {:plan details.subscription_type
+                            :usage details.usage})))
+    (each [id plan (pairs (or (misa.sub db [:usage/providers]) {}))]
+      (tset providers id {:plan (and (. providers id) (. providers id :plan))
+                          :usage plan}))
+    (let [ids (icollect [id (pairs providers)] id)]
+      (table.sort ids)
+      (var grouped false)
+      (each [_ id (ipairs ids)]
+        (let [provider (. providers id)
+              quota provider.usage]
+          (when (and (= (type quota) :table)
+                     (or provider.plan
+                         (and (not quota.unavailable)
+                              (> (length (or quota.windows [])) 0))))
+            (when (not grouped)
+              (table.insert sections
+                            {:id :subscriptions
+                             :title "Subscription plans"
+                             :heading true})
+              (set grouped true))
+            (let [rows (icollect [_ window (ipairs (or quota.windows []))]
+                         (window-row window now))]
+              (when quota.unavailable
+                (table.insert rows
+                              {:label "Quotas"
+                               :fact (text "Temporarily unavailable")}))
+              (when quota.extra_usage
+                (table.insert rows (extra-row id quota.extra_usage actions)))
+              (when (= id :openai-codex)
+                (reset-rows (or (and db.providers (. db.providers id)) {}) now
+                            rows actions))
+              (table.insert sections
+                            {:id id
+                             :title (.. id
+                                        (if provider.plan
+                                            (.. " · " provider.plan)
+                                            ""))
+                             : rows})))))
+      {: sections : actions})))
 
 (fn update [db _ cofx]
   (when (and db.dialog (= db.dialog.id :usage))
-    (local display (model db (/ cofx.clock.wall_ms 1000)))
-    {:fx [{:type :dispatch
-           :event {:type :dialog/update
-                   :id :usage
-                   :correlation :usage
-                   :sections display.sections
-                   :actions display.actions}}]}))
+    (let [display (model db (/ cofx.clock.wall_ms 1000))]
+      {:fx [{:type :dispatch
+             :event {:type :dialog/update
+                     :id :usage
+                     :correlation :usage
+                     :sections display.sections
+                     :actions display.actions}}]})))
 
-(fn []
+(fn build []
   "Declare the usage dashboard and its interactions."
-  (definitions :usage
+  (definitions.build :usage
     [(let [definition {:context :usage :action :codex-reset :default ["r"]}]
        {:catalog :keybindings
         :id (.. (. definition :context) "/" (. definition :action))
@@ -206,21 +213,22 @@
      {:catalog :events
       :value {:event :usage/open
               :handler (fn [db _ cofx]
-                         (local display (model db (/ cofx.clock.wall_ms 1000)))
-                         {:fx [{:type :dispatch
-                                :event {:type :dialog/open
-                                        :id :usage
-                                        :title "Usage"
-                                        :sections display.sections
-                                        :actions display.actions
-                                        :cancellable true
-                                        :completion :usage/action
-                                        :correlation :usage}}
-                               {:type :timer/start
-                                :id :usage/countdown
-                                :interval_ms 60000
-                                :completion :usage/tick}
-                               {:type :dispatch :event {:type :usage/refresh}}]})}}
+                         (let [display (model db (/ cofx.clock.wall_ms 1000))]
+                           {:fx [{:type :dispatch
+                                  :event {:type :dialog/open
+                                          :id :usage
+                                          :title "Usage"
+                                          :sections display.sections
+                                          :actions display.actions
+                                          :cancellable true
+                                          :completion :usage/action
+                                          :correlation :usage}}
+                                 {:type :timer/start
+                                  :id :usage/countdown
+                                  :interval_ms 60000
+                                  :completion :usage/tick}
+                                 {:type :dispatch
+                                  :event {:type :usage/refresh}}]}))}}
      {:catalog :events :value {:event :usage/updated :handler update}}
      {:catalog :events
       :value {:event :usage/tick
@@ -233,12 +241,13 @@
                          (if event.cancelled
                              {:fx [{:type :timer/stop :id :usage/countdown}]}
                              (when (and db.dialog (= db.dialog.id :usage))
-                               (local action
-                                      (accumulate [found nil _ action (ipairs db.dialog.actions)]
-                                        (if (= action.id event.action) action
-                                            found)))
-                               (when (and action action.event
-                                          (not action.disabled))
-                                 {:fx [{:type :dispatch
-                                        :event (misa.snapshot action.event)}]}))))}}]
+                               (let [action (accumulate [found nil _ action (ipairs db.dialog.actions)]
+                                              (if (= action.id event.action)
+                                                  action found))]
+                                 (when (and action action.event
+                                            (not action.disabled))
+                                   {:fx [{:type :dispatch
+                                          :event (misa.snapshot action.event)}]})))))}}]
     {}))
+
+{: build}

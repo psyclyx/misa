@@ -10,4 +10,4 @@
                                             "invalid tool input did not become a tool error")
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.runtime-regressions-invalid declarations {}))
+          (definitions.build :tests.integration.fixtures.runtime-regressions-invalid declarations {}))

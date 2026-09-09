@@ -5,14 +5,14 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:config {}})
-(app.define ((fennel.dofile :extensions/misa/json.fnl) context))
-(app.define ((fennel.dofile :extensions/misa/choices/preferences.fnl) context))
-(local specs ((fennel.dofile :extensions/misa/commands/init.fnl) context))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) context))
+(app.define ((. (fennel.dofile :extensions/misa/choices/preferences.fnl) :build) context))
+(local specs ((. (fennel.dofile :extensions/misa/commands/init.fnl) :build) context))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define specs)
-(app.define (definitions :test [(let [definition {:name :/choose :description "Choose an option" :event :test/choose
+(app.define (definitions.build :test [(let [definition {:name :/choose :description "Choose an option" :event :test/choose
                 :completion :options :preference_scope :options}] {:catalog :commands :id (. definition :name) :value definition})
        (let [definition {:name :/guarded :description "Unavailable choice" :event :test/guarded
                 :completion :options :choice_available (fn [db] db.available)
@@ -21,7 +21,7 @@
 (var observed nil)
 (var state nil)
 (var executions 0)
-(app.define (definitions :test [{:catalog :events  :value {:event :test/choose :handler (fn [db event]
+(app.define (definitions.build :test [{:catalog :events  :value {:event :test/choose :handler (fn [db event]
                    (set observed event)
                    (set state db)
                    (set executions (+ executions 1))

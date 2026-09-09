@@ -18,4 +18,4 @@
                                             "partial transcript was not retained")
                                     nil)}})
           nil
-          (definitions :tests.integration.fixtures.interrupted-check declarations {}))
+          (definitions.build :tests.integration.fixtures.interrupted-check declarations {}))

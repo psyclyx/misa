@@ -37,4 +37,4 @@
                                                "second result"))
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.runtime-regressions-check declarations {}))
+          (definitions.build :tests.integration.fixtures.runtime-regressions-check declarations {}))

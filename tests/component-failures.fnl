@@ -7,10 +7,10 @@
 (local definitions (require :misa.definitions))
 (local context {:config {:themes {:persist false} :components {:persist false}}})
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components])]
-  (app.define ((require name) context)))
+  (app.define ((. (require name) :build) context)))
 (var calls 0)
 
-(app.define (definitions :fixture [{:catalog :components :id :default.fixture :value {:render (fn [model]
+(app.define (definitions.build :fixture [{:catalog :components :id :default.fixture :value {:render (fn [model]
                           (set calls (+ calls 1))
                           (if model.throw (error "fixture exploded") model.view))}}
        {:catalog :components :id :default.parent :value {:compose true :render (fn [model context]
@@ -18,9 +18,9 @@
                                         {:lines [{:spans [{:text :before}]}
                                                  (. child.lines 1)
                                                  {:spans [{:text :after}]}]})}}]))
-(app.define ((fennel.dofile :extensions/misa/ui/layout.fnl) context))
-(app.define (definitions :fixture [{:catalog :services :id :components.buttons :value (fn [] [])}]))
-(app.define ((fennel.dofile :extensions/misa/dialogs/render.fnl) context))
+(app.define ((. (fennel.dofile :extensions/misa/ui/layout.fnl) :build) context))
+(app.define (definitions.build :fixture [{:catalog :services :id :components.buttons :value (fn [] [])}]))
+(app.define ((. (fennel.dofile :extensions/misa/dialogs/render.fnl) :build) context))
 (app.install)
 (local db {:themes {:active :default} :components {:roles {}}})
 (local render-context {:columns 32})

@@ -96,4 +96,4 @@
                                                    :type :agent/result}
                                            :type :dispatch})))})
           nil
-          (definitions :tests.integration.fixtures.cross-provider declarations {}))
+          (definitions.build :tests.integration.fixtures.cross-provider declarations {}))

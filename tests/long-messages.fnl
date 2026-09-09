@@ -24,7 +24,7 @@
   (app.include (require name) context))
 
 (var db nil)
-(app.define (declarations :long-messages-1 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}}]))
+(app.define (declarations.build :long-messages-1 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}}]))
 
 (app.install context)
 (local terminal {:interactive true :columns 80 :lines 24})

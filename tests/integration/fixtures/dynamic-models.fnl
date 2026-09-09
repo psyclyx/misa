@@ -27,4 +27,4 @@
                                              :type :agent/result}
                                      :type :dispatch})})
           nil
-          (definitions :tests.integration.fixtures.dynamic-models declarations {}))
+          (definitions.build :tests.integration.fixtures.dynamic-models declarations {}))

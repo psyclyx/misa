@@ -384,4 +384,4 @@ c"}
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.presentation declarations {}))
+          (definitions.build :tests.presentation declarations {}))

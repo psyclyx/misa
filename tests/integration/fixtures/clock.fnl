@@ -22,4 +22,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.clock declarations {}))
+          (definitions.build :tests.integration.fixtures.clock declarations {}))

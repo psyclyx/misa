@@ -8,8 +8,8 @@
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices :misa.choices.matching :misa.models :misa.commands.palette
                        :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.editor.render
                        :misa.choices.picker.render :misa.ui.values :misa.choices.preview :misa.models.preview :misa.choices.layout])]
-  (app.define ((require name) context)))
-(local specs ((fennel.dofile :extensions/misa/editor/init.fnl) context))
+  (app.define ((. (require name) :build) context)))
+(local specs ((. (fennel.dofile :extensions/misa/editor/init.fnl) :build) context))
 (local handlers {})
 (each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
 (app.define specs)
@@ -24,7 +24,7 @@
   (values (misa.patch db (or (and result result.patch) {})) (and result result.fx)))
 (local initial (transition {:components {:roles {}} :themes {:active :default}} {:type :app/start}))
 (local model-handlers {})
-(each [_ spec (pairs (. ((fennel.dofile :extensions/misa/models/init.fnl) context) :events))] (tset model-handlers spec.event spec.handler))
+(each [_ spec (pairs (. ((. (fennel.dofile :extensions/misa/models/init.fnl) :build) context) :events))] (tset model-handlers spec.event spec.handler))
 (local catalogue (misa.patch initial {:models {:selected :test/main
                                               :entries [{:id :test/main :model :main :provider :test}
                                                         {:id :test/alpha :model :alpha :provider :test}

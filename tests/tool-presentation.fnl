@@ -7,9 +7,9 @@
 (each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.layout :misa.markdown
                        :misa.markdown.render :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation
                        :misa.transcript.tools :misa.transcript.tools.render])]
-  (app.define ((require name) {:config {}})))
-(app.define (definitions :fixture [{:catalog :components :id :fixture.text :value {:render (fn [] {:lines [{:spans [{:text :replacement}]}]})}}]))
-(app.define (definitions :fixture [(let [definition (fn [model]
+  (app.define ((. (require name) :build) {:config {}})))
+(app.define (definitions.build :fixture [{:catalog :components :id :fixture.text :value {:render (fn [] {:lines [{:spans [{:text :replacement}]}]})}}]))
+(app.define (definitions.build :fixture [(let [definition (fn [model]
                                     {:arguments [{:role :content.text :model {:text model.arguments.query}}]
                                      :result {:role :content.text :model {:text model.result}}})] {:catalog :tool-presentations :id :external :value definition})]))
 (app.install)

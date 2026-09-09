@@ -6,7 +6,7 @@
 (var committed-state nil)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(app.define (declarations :subscription-transactions-0 [(let [definition {:id :test :inputs [[:db/path :value] [:db/path :missing]]
+(app.define (declarations.build :subscription-transactions-0 [(let [definition {:id :test :inputs [[:db/path :value] [:db/path :missing]]
                 :compute (fn [inputs]
                            (assert (= inputs.n 2))
                            (set computations (+ computations 1))

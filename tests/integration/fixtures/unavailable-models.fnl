@@ -13,4 +13,4 @@
                                  :model :model
                                  :provider :private}] {:catalog :models :id (. definition :id) :value definition}))
           nil
-          (definitions :tests.integration.fixtures.unavailable-models declarations {}))
+          (definitions.build :tests.integration.fixtures.unavailable-models declarations {}))

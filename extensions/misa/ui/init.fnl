@@ -20,52 +20,54 @@
   (let []
     ;; Clip the whole semantic line before projecting its byte boundary through spans: graphemes
     ;; may cross style/link boundaries and must never be partially retained.
-    (local budget (math.max 0 (math.floor (or (tonumber columns) 1))))
-    (local result {})
-    (each [_ line (ipairs lines)]
-      (var full "")
-      (each [_ source (ipairs (or line.spans {}))]
-        (set full (.. full (or source.text ""))))
-      (local (_ visible-end) (misa.layout.clip full budget))
-      (var (spans offset) (values {} 0))
-      (each [_ source (ipairs (or line.spans {}))]
-        (local text (or source.text ""))
-        (local count
-               (math.min (length text) (math.max 0 (- visible-end offset))))
-        (when (or (> count 0) (and (= (length text) 0) (<= offset visible-end)))
-          (local item {})
-          (each [key value (pairs source)] (tset item key value))
-          (set item.text (text:sub 1 count))
-          (when (< count (length text)) (set item.animation nil))
-          (tset spans (+ (length spans) 1) item))
-        (set offset (+ offset (length text))))
-      (local copy {})
-      (each [key value (pairs line)] (tset copy key value))
-      (set copy.spans spans)
-      (tset result (+ (length result) 1) copy))
-    (var bounded-cursor nil)
-    (each [index line (ipairs result)]
-      (when line.image
-        (var count 1)
-        (while (and (. result (+ index count))
-                    (= (. result (+ index count) :image_row) line.image.id))
-          (set count (+ count 1)))
-        (local rectangle {})
-        (each [key value (pairs line.image)] (tset rectangle key value))
-        (set rectangle.rows (math.min rectangle.rows count))
-        (set line.image rectangle)))
-    (when cursor
-      (local source (. lines cursor.row))
-      (var full "")
-      (each [_ item (ipairs (or (and source source.spans) {}))]
-        (set full (.. full (or item.text ""))))
-      (local (_ visible-end) (misa.layout.clip full budget))
-      (set bounded-cursor {:byte (math.min (misa.layout.boundary-at-or-before full
-                                                                              cursor.byte)
-                                           visible-end)
-                           :row cursor.row
-                           :shape cursor.shape}))
-    {:cursor bounded-cursor :lines result}))
+    (let [budget (math.max 0 (math.floor (or (tonumber columns) 1)))
+          result {}]
+      (each [_ line (ipairs lines)]
+        (var full "")
+        (each [_ source (ipairs (or line.spans {}))]
+          (set full (.. full (or source.text ""))))
+        (let [(_ visible-end) (misa.layout.clip full budget)]
+          (var (spans offset) (values {} 0))
+          (each [_ source (ipairs (or line.spans {}))]
+            (let [text (or source.text "")
+                  count (math.min (length text)
+                                  (math.max 0 (- visible-end offset)))]
+              (when (or (> count 0)
+                        (and (= (length text) 0) (<= offset visible-end)))
+                (let [item {}]
+                  (each [key value (pairs source)] (tset item key value))
+                  (set item.text (text:sub 1 count))
+                  (when (< count (length text)) (set item.animation nil))
+                  (tset spans (+ (length spans) 1) item)))
+              (set offset (+ offset (length text)))))
+          (let [copy {}]
+            (each [key value (pairs line)] (tset copy key value))
+            (set copy.spans spans)
+            (tset result (+ (length result) 1) copy))))
+      (var bounded-cursor nil)
+      (each [index line (ipairs result)]
+        (when line.image
+          (var count 1)
+          (while (and (. result (+ index count))
+                      (= (. result (+ index count) :image_row) line.image.id))
+            (set count (+ count 1)))
+          (let [rectangle {}]
+            (each [key value (pairs line.image)] (tset rectangle key value))
+            (set rectangle.rows (math.min rectangle.rows count))
+            (set line.image rectangle))))
+      (when cursor
+        (let [source (. lines cursor.row)]
+          (var full "")
+          (each [_ item (ipairs (or (and source source.spans) {}))]
+            (set full (.. full (or item.text ""))))
+          (let [(_ visible-end) (misa.layout.clip full budget)]
+            (set bounded-cursor
+                 {:byte (math.min (misa.layout.boundary-at-or-before full
+                                                                     cursor.byte)
+                                  visible-end)
+                  :row cursor.row
+                  :shape cursor.shape}))))
+      {:cursor bounded-cursor :lines result})))
 
 ;; Shared layout policy for rendering and positional-key resolution.
 
@@ -101,16 +103,16 @@
                                                   policy.editor.height_fraction)))
                          (math.max 1 frame.available))]
     (var remaining (math.max 0 (- frame.available editor)))
-    (local dock
-           (math.min dock-count
-                     (math.max 0 (- remaining policy.dock.transcript_reserve))))
-    (set remaining (- remaining dock))
-    {:completions (math.max 0
-                            (math.floor (/ remaining
-                                           policy.completions.height_fraction)))
-     : dock
-     : editor
-     : remaining}))
+    (let [dock (math.min dock-count
+                         (math.max 0
+                                   (- remaining policy.dock.transcript_reserve)))]
+      (set remaining (- remaining dock))
+      {:completions (math.max 0
+                              (math.floor (/ remaining
+                                             policy.completions.height_fraction)))
+       : dock
+       : editor
+       : remaining})))
 
 ;; Screens are ordered regions. Cursor coordinates belong to their region;
 ;; this fold is the sole owner of screen offsets.
@@ -118,16 +120,16 @@
 (fn compose [regions terminal]
   (var (lines cursor) (values {} nil))
   (each [_ region (ipairs regions)]
-    (local offset (length lines))
-    (append lines region.lines
-            (+ offset (or region.count (length (or region.lines {})))))
-    (when region.cursor
-      (set cursor
-           {:byte region.cursor.byte
-            :shape region.cursor.shape
-            :row (math.max 1
-                           (math.min terminal.lines
-                                     (+ offset region.cursor.row)))})))
+    (let [offset (length lines)]
+      (append lines region.lines
+              (+ offset (or region.count (length (or region.lines {})))))
+      (when region.cursor
+        (set cursor
+             {:byte region.cursor.byte
+              :shape region.cursor.shape
+              :row (math.max 1
+                             (math.min terminal.lines
+                                       (+ offset region.cursor.row)))}))))
   (bound-frame lines terminal.columns cursor))
 
 (fn regions [db terminal projecting]
@@ -155,19 +157,18 @@
                                          (or disabled layer.input_disabled))))))
 
     (fn transcript [room]
-      (local context {:columns terminal.columns
-                      :images terminal.images
-                      :interactive true})
-      (local viewport
-             (and misa.transcript misa.transcript.viewport
-                  (misa.transcript.viewport db context room)))
-      {:id :transcript
-       :count room
-       : viewport
-       :lines (if viewport viewport.lines
-                  misa.transcript.window (misa.transcript.window db context
-                                                                 room)
-                  [])})
+      (let [context {:columns terminal.columns
+                     :images terminal.images
+                     :interactive true}
+            viewport (and misa.transcript misa.transcript.viewport
+                          (misa.transcript.viewport db context room))]
+        {:id :transcript
+         :count room
+         : viewport
+         :lines (if viewport viewport.lines
+                    misa.transcript.window (misa.transcript.window db context
+                                                                   room)
+                    [])}))
 
     (if exclusive
         [header
@@ -207,54 +208,55 @@
            {:count completion-count :lines editor.completions}
            status]))))
 
-(fn []
+(fn build []
   "Build the declarations for ui."
-  (local declarations [{:catalog :services :id :ui.regions :value regions}
-                       {:catalog :services
-                        :id :ui.input-budgets
-                        :value input-budgets}])
-  (table.insert declarations
-                {:catalog :services
-                 :id :ui.overlay-room
-                 :value (fn [db terminal]
-                          "Return the number of rows available to an overlay."
-                          (. (chrome db terminal) :available))})
-  (table.insert declarations {:catalog :services
-                              :id :ui.bound-frame
-                              :value bound-frame})
-  (table.insert declarations
-                {:catalog :services
-                 :id :ui.picker-room
-                 :value (fn [db terminal]
-                          "Return the number of rows available to a picker."
-                          (let [frame (chrome db terminal)]
-                            (math.max 0 (- frame.height frame.counts.header))))})
-  (table.insert declarations
-                {:catalog :services
-                 :id :ui.completion-room
-                 :value (fn [db terminal input-count]
-                          "Return the number of rows available to inline completions."
-                          (let [frame (chrome db terminal)]
-                            (if (= frame.height 0)
-                                0
-                                (do
-                                  (var dock-count 0)
-                                  (each [_ layer (ipairs (misa.ui.layers db
-                                                                         {:available_lines frame.available
-                                                                          : terminal}))]
-                                    (when (= layer.dock :input)
-                                      (set dock-count
-                                           (+ dock-count
-                                              (length (or layer.lines []))))))
-                                  (. (input-budgets frame input-count
-                                                    dock-count)
-                                     :completions)))))})
-  (table.insert declarations
-                {:catalog :views
-                 :id :main
-                 :value (fn [db cofx]
-                          (if (<= cofx.terminal.lines 0) {:lines []}
-                              (compose (regions db cofx.terminal
-                                                cofx.projecting)
-                                       cofx.terminal)))})
-  (definitions :ui declarations {}))
+  (let [declarations [{:catalog :services :id :ui.regions :value regions}
+                      {:catalog :services
+                       :id :ui.input-budgets
+                       :value input-budgets}]]
+    (table.insert declarations
+                  {:catalog :services
+                   :id :ui.overlay-room
+                   :value (fn [db terminal]
+                            "Return the number of rows available to an overlay."
+                            (. (chrome db terminal) :available))})
+    (table.insert declarations
+                  {:catalog :services :id :ui.bound-frame :value bound-frame})
+    (table.insert declarations
+                  {:catalog :services
+                   :id :ui.picker-room
+                   :value (fn [db terminal]
+                            "Return the number of rows available to a picker."
+                            (let [frame (chrome db terminal)]
+                              (math.max 0 (- frame.height frame.counts.header))))})
+    (table.insert declarations
+                  {:catalog :services
+                   :id :ui.completion-room
+                   :value (fn [db terminal input-count]
+                            "Return the number of rows available to inline completions."
+                            (let [frame (chrome db terminal)]
+                              (if (= frame.height 0)
+                                  0
+                                  (do
+                                    (var dock-count 0)
+                                    (each [_ layer (ipairs (misa.ui.layers db
+                                                                           {:available_lines frame.available
+                                                                            : terminal}))]
+                                      (when (= layer.dock :input)
+                                        (set dock-count
+                                             (+ dock-count
+                                                (length (or layer.lines []))))))
+                                    (. (input-budgets frame input-count
+                                                      dock-count)
+                                       :completions)))))})
+    (table.insert declarations
+                  {:catalog :views
+                   :id :main
+                   :value (fn [db cofx]
+                            (if (<= cofx.terminal.lines 0) {:lines []}
+                                (compose (regions db cofx.terminal
+                                                  cofx.projecting)
+                                         cofx.terminal)))})
+    (definitions.build :ui declarations {})))
+
+{: build}

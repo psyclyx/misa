@@ -109,4 +109,4 @@ c"}
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.selection_document declarations {}))
+          (definitions.build :tests.selection_document declarations {}))

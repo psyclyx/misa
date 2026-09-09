@@ -186,4 +186,4 @@ code
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.markdown declarations {}))
+          (definitions.build :tests.markdown declarations {}))

@@ -49,4 +49,4 @@
                                                :type :operation/cancel}]}
                                         {:fx [{:type :terminal/read}]}))}})
           nil
-          (definitions :tests.integration.fixtures.pty declarations {}))
+          (definitions.build :tests.integration.fixtures.pty declarations {}))

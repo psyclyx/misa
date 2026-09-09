@@ -155,4 +155,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.choice-compact declarations {}))
+          (definitions.build :tests.choice-compact declarations {}))

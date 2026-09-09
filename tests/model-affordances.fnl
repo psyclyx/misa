@@ -5,11 +5,11 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.values :misa.ui.status.indicators])]
   (app.include (require name) {:config {}}))
-(local specs ((fennel.dofile :extensions/misa/models/init.fnl) {:config {}}))
+(local specs ((. (fennel.dofile :extensions/misa/models/init.fnl) :build) {:config {}}))
 (local handlers (collect [_ entry (pairs specs.events)] entry.event entry.handler))
 (assert (= specs.routes nil) "model binding should be action data")
 (app.define specs)
-(local component ((fennel.dofile :extensions/misa/ui/status/render.fnl)))
+(local component ((. (fennel.dofile :extensions/misa/ui/status/render.fnl) :build)))
 (app.define {:value-renderers component.value-renderers})
 (app.install)
 (local default-config (require :misa.default))
@@ -74,7 +74,7 @@
 ;; The default header and input use no ornamental corner glyphs. Structural
 ;; borders in Markdown tables/code are independent and tested elsewhere.
 (fn renderer [path id]
-  (local description ((fennel.dofile path) {}))
+  (local description ((. (fennel.dofile path) :build) {}))
   (. (assert (. description.components id) (.. "missing component " id)) :render))
 (local header ((renderer :extensions/misa/ui/chrome.fnl :default.root.header)))
 (assert (= (. header.lines 1 :spans 1 :text) :misa))

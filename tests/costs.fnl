@@ -154,4 +154,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.costs declarations {}))
+          (definitions.build :tests.costs declarations {}))

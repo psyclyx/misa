@@ -2,7 +2,7 @@
 
 ;; Native FIFO: an old completion must not drop a newer rejection's events.
 (fn []
-          (definitions :tests.integration.fixtures.queued-rejection [{:catalog :events  :value {:event :app/start :handler (fn []
+          (definitions.build :tests.integration.fixtures.queued-rejection [{:catalog :events  :value {:event :app/start :handler (fn []
                             {:patch {:agent {:exit_after_response true :startup_prompt misa.delete}
                                      :models (misa.replace {:entries []})}
                              :fx [{:type :dispatch :event {:type :queue/submit :prompt :rejected}}

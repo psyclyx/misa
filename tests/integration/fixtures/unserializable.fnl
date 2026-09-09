@@ -17,4 +17,4 @@
                                     (error "blocked request reached provider")
                                     nil)})
           nil
-          (definitions :tests.integration.fixtures.unserializable declarations {}))
+          (definitions.build :tests.integration.fixtures.unserializable declarations {}))

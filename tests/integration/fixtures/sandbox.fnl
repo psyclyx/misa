@@ -30,4 +30,4 @@
                         {:catalog :events  :value {:event :app/start :handler (fn []
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.sandbox declarations {}))
+          (definitions.build :tests.integration.fixtures.sandbox declarations {}))

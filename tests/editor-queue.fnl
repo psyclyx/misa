@@ -33,19 +33,19 @@
 
 (var (db native) nil)
 
-(app.define (declarations :editor-queue-1 [{:catalog :events  :value {:event :app/start :handler (fn [state]
+(app.define (declarations.build :editor-queue-1 [{:catalog :events  :value {:event :app/start :handler (fn [state]
                                        {:patch {:models
                                             {:entries [{:id :capture/model
                                                         :model :model
                                                         :provider :capture}]
                                              :selected :capture/model}}})}}]))
 
-(app.define (declarations :editor-queue-2 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state) nil)}}]))
+(app.define (declarations.build :editor-queue-2 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state) nil)}}]))
 
-(app.define (declarations :editor-queue-3 [{:catalog :events  :value {:event :test/attachment :handler (fn [state event]
+(app.define (declarations.build :editor-queue-3 [{:catalog :events  :value {:event :test/attachment :handler (fn [state event]
                                        {:patch {:editor {:attachments (misa.replace event.attachments)}}})}}]))
 
-(app.define (declarations :editor-queue-4 [{:catalog :events  :value {:event :test/exit-after-response :handler (fn [state]
+(app.define (declarations.build :editor-queue-4 [{:catalog :events  :value {:event :test/exit-after-response :handler (fn [state]
                                        {:patch {:agent {:exit_after_response true}}})}}]))
 
 (app.install context)

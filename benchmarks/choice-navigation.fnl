@@ -20,7 +20,7 @@
                                 name)))
   (local module (if saved (fennel.dofile (.. baseline "/" saved ".fnl"))
                     (require name)))
-  (app.define (module {:config {} :argv []})))
+  (app.include module {:config {} :argv []}))
 
 (app.install)
 (each [_ count (ipairs [100 1000 3000])]

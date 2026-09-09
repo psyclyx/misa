@@ -5,19 +5,19 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local context {:argv [] :config {:choices {:preview_renderers {:custom :test.preview}}}})
-(local generic-preview ((require :misa.choices.preview) context))
+(local generic-preview ((. (require :misa.choices.preview) :build) context))
 (assert (= (. generic-preview.choice-previews :model) nil)
         "generic choices must not install model pricing presentation")
-(local model-preview ((require :misa.models.preview)))
+(local model-preview ((. (require :misa.models.preview) :build)))
 (assert (. model-preview.choice-previews :model)
         "model previews must be independently selectable")
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.ui.layout :misa.ui.values :misa.choices :misa.choices.preview :misa.models.preview :misa.choices.layout])]
-  (app.define ((require name) context)))
+  (app.define ((. (require name) :build) context)))
 (local shared [{:spans [{:text "CUSTOM" :action :custom.action :link "https://example.test"
                         :animation {:id :preview :interval_ms 100 :frames [{:text "CUSTOM"} {:text "custom"}]}}]}])
 (var received nil)
 (var calls 0)
-(app.define (definitions :fixture [{:catalog :choice-previews :id :test.preview :value (fn [model render-context]
+(app.define (definitions.build :fixture [{:catalog :choice-previews :id :test.preview :value (fn [model render-context]
                                      (set received model)
                                      (set calls (+ calls 1))
                                      (assert (> render-context.columns 0)) shared)}]))
@@ -49,7 +49,7 @@
 (assert (= (. geometry.preview.lines 1 :spans 1 :action) :custom.action))
 (assert (= (. geometry.preview.lines 1 :spans 1 :link) "https://example.test"))
 (assert (= (. shared 1 :spans 1 :text) "CUSTOM"))
-(local picker ((fennel.dofile :extensions/misa/choices/picker/render.fnl) {}))
+(local picker ((. (fennel.dofile :extensions/misa/choices/picker/render.fnl) :build) {}))
 (local rendered ((. picker :components :default.picker :render) geometry))
 (assert (= calls 1) "picker repeated preview geometry")
 (local rendered-preview (. rendered.lines (+ geometry.preview.y 1)))
@@ -63,7 +63,7 @@
   (each [_ line (ipairs compact.preview.lines)]
     (assert (<= (misa.layout.width (texts [line])) compact.width))))
 ;; Existing preview types can select an extension renderer through configuration.
-(local override ((fennel.dofile :extensions/misa/choices/preview.fnl)
+(local override ((. (fennel.dofile :extensions/misa/choices/preview.fnl) :build)
                  {:config {:choices {:preview_renderers {:model :test.override}}}}))
 
 (local project (. override.services :choices.preview))

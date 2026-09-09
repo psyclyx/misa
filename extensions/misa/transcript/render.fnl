@@ -6,30 +6,31 @@
   (assert model.rail "message model requires a semantic rail token"))
 
 (fn markdown-lines [model style columns prefix previous]
-  (local syntax model.syntax)
-  (local projection
-         (misa.markdown.view.project model.text
-                                     {:base style
-                                      :document (and syntax syntax.document)
-                                      :captures (and syntax syntax.captures)
-                                      :outer_inset (misa.layout.width prefix)
-                                      :columns (math.max 1
-                                                         (- columns
-                                                            (misa.layout.width prefix)))}
-                                     (and previous previous.projection)))
-  (local entry
-         (if (and previous (= projection previous.projection)
-                  (= prefix previous.prefix) (= (rail model) previous.rail)
-                  (= columns previous.columns))
-             previous
-             {: projection
-              : prefix
-              : columns
-              :rail (rail model)
-              :wrapped (misa.layout.wrap-spans projection.lines columns
-                                               [{:style (rail model)
-                                                 :text prefix}])}))
-  (values entry.wrapped entry))
+  (let [syntax model.syntax
+        projection (misa.markdown.view.project model.text
+                                               {:base style
+                                                :document (and syntax
+                                                               syntax.document)
+                                                :captures (and syntax
+                                                               syntax.captures)
+                                                :outer_inset (misa.layout.width prefix)
+                                                :columns (math.max 1
+                                                                   (- columns
+                                                                      (misa.layout.width prefix)))}
+                                               (and previous
+                                                    previous.projection))
+        entry (if (and previous (= projection previous.projection)
+                       (= prefix previous.prefix) (= (rail model) previous.rail)
+                       (= columns previous.columns))
+                  previous
+                  {: projection
+                   : prefix
+                   : columns
+                   :rail (rail model)
+                   :wrapped (misa.layout.wrap-spans projection.lines columns
+                                                    [{:style (rail model)
+                                                      :text prefix}])})]
+    (values entry.wrapped entry)))
 
 (fn body-lines [model context style columns prefix previous]
   (if (= context.markdown false)
@@ -38,64 +39,66 @@
       (markdown-lines model style columns prefix previous)))
 
 (fn interactive-message [model context style previous limit]
-  (local columns (math.max 1 (or (tonumber context.columns) 80)))
-  (local prefix (misa.layout.clip "┃ " (math.max 0 (- columns 2))))
-  ;; The rail and its surface are one continuous block, including its chrome.
-  (local rendered [])
-  (local (lines cache) (body-lines model context style columns prefix previous))
-  (local visible (if limit
-                     (. (context.render_child :content.truncated
-                                              {: lines
-                                               : limit
-                                               :notice_prefix [{:text prefix
-                                                                :style (rail model)
-                                                                :source false}]}
-                                              context)
-                        :lines)
-                     lines))
-  (each [_ line (ipairs visible)]
-    (local wrapped {})
-    (each [key value (pairs line)] (tset wrapped key value))
-    (set wrapped.surface (.. :surface. (: (rail model) :gsub "^rail%." "")))
-    (table.insert rendered wrapped))
-  (values rendered cache))
+  (let [columns (math.max 1 (or (tonumber context.columns) 80))
+        prefix (misa.layout.clip "┃ " (math.max 0 (- columns 2)))
+        ;; The rail and its surface are one continuous block, including its chrome.
+        rendered []
+        (lines cache) (body-lines model context style columns prefix previous)
+        visible (if limit
+                    (. (context.render_child :content.truncated
+                                             {: lines
+                                              : limit
+                                              :notice_prefix [{:text prefix
+                                                               :style (rail model)
+                                                               :source false}]}
+                                             context)
+                       :lines)
+                    lines)]
+    (each [_ line (ipairs visible)]
+      (let [wrapped {}]
+        (each [key value (pairs line)] (tset wrapped key value))
+        (set wrapped.surface (.. :surface. (: (rail model) :gsub "^rail%." "")))
+        (table.insert rendered wrapped)))
+    (values rendered cache)))
 
 (fn message [model context style previous]
   (if context.interactive
       (interactive-message model context style previous)
       (misa.markdown.view.plain model.text style)))
 
-(fn []
+(fn build []
   "Declare transcript message renderers."
-  (local declarations [])
+  (let [declarations []]
+    (fn reg [role render compose]
+      (table.insert declarations
+                    {:catalog :components
+                     :id (.. :default. role)
+                     :value {: render : compose}}))
 
-  (fn reg [role render compose]
-    (table.insert declarations
-                  {:catalog :components
-                   :id (.. :default. role)
-                   :value {: render : compose}}))
+    (let [roles [{:id :user :interactive_only true :style :user}
+                 {:id :assistant :style :assistant}
+                 {:id :thinking :style :thinking}]]
+      (each [_ role (ipairs roles)]
+        (reg (.. :transcript. role.id)
+             (fn [model context previous]
+               (let [(lines cache) (when (or (not role.interactive_only)
+                                             context.interactive)
+                                     (message model context role.style previous))]
+                 (values {:lines (or lines [])} cache)))))
+      (reg :transcript.thinking_collapsed
+           (fn [model context previous]
+             (let [(lines cache) (interactive-message model context :thinking
+                                                      previous 3)]
+               (values {: lines} cache))) true)
+      (reg :transcript.harness
+           (fn [model context previous]
+             (let [(lines cache) (message model context
+                                          (if (= model.level :error) :error
+                                              :plain)
+                                          previous)]
+               (values {: lines} cache))))
+      (definitions.build :component.message
+        declarations
+        {:requirements {:component.message [:layout :markdown :markdown.view]}}))))
 
-  (local roles [{:id :user :interactive_only true :style :user}
-                {:id :assistant :style :assistant}
-                {:id :thinking :style :thinking}])
-  (each [_ role (ipairs roles)]
-    (reg (.. :transcript. role.id)
-         (fn [model context previous]
-           (local (lines cache)
-                  (when (or (not role.interactive_only) context.interactive)
-                    (message model context role.style previous)))
-           (values {:lines (or lines [])} cache))))
-  (reg :transcript.thinking_collapsed
-       (fn [model context previous]
-         (local (lines cache)
-                (interactive-message model context :thinking previous 3))
-         (values {: lines} cache)) true)
-  (reg :transcript.harness
-       (fn [model context previous]
-         (local (lines cache) (message model context
-                                       (if (= model.level :error) :error :plain)
-                                       previous))
-         (values {: lines} cache)))
-  (definitions :component.message
-    declarations
-    {:requirements {:component.message [:layout :markdown :markdown.view]}}))
+{: build}

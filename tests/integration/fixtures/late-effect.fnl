@@ -7,4 +7,4 @@
                                     {:fx [{:type :app/quit}
                                           {:type :not/native}]})}})
           nil
-          (definitions :tests.integration.fixtures.late-effect declarations {}))
+          (definitions.build :tests.integration.fixtures.late-effect declarations {}))

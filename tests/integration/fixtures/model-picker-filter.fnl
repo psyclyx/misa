@@ -22,4 +22,4 @@
                                              :type :agent/result}
                                      :type :dispatch})})
           nil
-          (definitions :tests.integration.fixtures.model-picker-filter declarations {}))
+          (definitions.build :tests.integration.fixtures.model-picker-filter declarations {}))

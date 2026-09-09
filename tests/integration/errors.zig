@@ -12,7 +12,7 @@ test "invalid extension and callback contracts report actionable errors" {
     inline for (.{
         .{ "bad", "misa.providers.unknown" },
         .{ "fail", "exploded" },
-        .{ "missing-definitions", "module requires definitions" },
+        .{ "missing-definitions", "module requires build or definitions" },
         .{ "malformed-module", "module returned no definitions" },
         .{ "constructor-trace", "constructor exploded" },
         .{ "late-effect", "UnknownNativeEffect" },

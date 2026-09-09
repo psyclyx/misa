@@ -67,4 +67,4 @@
                                             {:type :dispatch
                                              :event {:type :dialog/begin-cancel}}]}))}})
           nil
-          (definitions :tests.integration.fixtures.dialog-lifecycle declarations {}))
+          (definitions.build :tests.integration.fixtures.dialog-lifecycle declarations {}))

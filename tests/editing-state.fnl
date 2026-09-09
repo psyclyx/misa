@@ -7,17 +7,17 @@
 (local misa _G.misa)
 (local context {:argv [] :config {}})
 (each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices])]
-  (app.define ((require name) context)))
+  (app.define ((. (require name) :build) context)))
 (local handlers {})
 (var policy nil)
 (each [_ name (ipairs [:misa.editor :misa.editor.editing])]
-  (local specs ((require name) context))
+  (local specs ((. (require name) :build) context))
   (each [_ spec (pairs specs.events)]
     (when (not (. handlers spec.event)) (tset handlers spec.event {}))
     (table.insert (. handlers spec.event) spec.handler))
   (each [_ route (pairs (or specs.routes {}))] (set policy route))
   (app.define specs))
-(app.define (definitions :test [{:catalog :editing-motions :id :custom_motion :value (fn [] 2)}
+(app.define (definitions.build :test [{:catalog :editing-motions :id :custom_motion :value (fn [] 2)}
                           {:catalog :editing-actions :id :custom_action :value (fn [] {:editor {:text :custom :cursor 0}})}]))
 (app.install)
 (local cofx {:argv [] :terminal {:interactive true :columns 80 :lines 24}})
@@ -169,7 +169,7 @@
 ;; Policy configuration is orthogonal to the operation's meaning.
 (assert (= (misa.editor.transition empty.editing empty.editor typed.editor :insert false)
            empty.editing) "noninteractive input acquired modal undo state")
-(local plain-specs ((fennel.dofile :extensions/misa/editor/editing.fnl)
+(local plain-specs ((. (fennel.dofile :extensions/misa/editor/editing.fnl) :build)
                     {:config {:editing {:mode :plain}}}))
 (local plain-policy (. plain-specs.services :editor.transition))
 (assert (= (plain-policy empty.editing empty.editor typed.editor :insert true) empty.editing))

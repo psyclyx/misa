@@ -77,4 +77,4 @@
                                               "parallel transcript sections did not update independently"))
                                     nil)}})
           nil
-          (definitions :tests.integration.fixtures.parallel-tools declarations {}))
+          (definitions.build :tests.integration.fixtures.parallel-tools declarations {}))

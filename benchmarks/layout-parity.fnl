@@ -3,7 +3,10 @@
 (local fennel (require :fennel))
 (require :tests.application)
 (local G (require :tests.generators))
-(fn api [path] (. ((fennel.dofile path) {}) :services :layout))
+(fn api [path]
+  (let [module (fennel.dofile path)
+        build (if (= (type module) :function) module module.build)]
+    (. (build {}) :services :layout)))
 (local baseline (api (assert (. arg 1) "saved layout source required")))
 (local candidate (api :extensions/misa/ui/layout.fnl))
 (for [cp 0 1114111]

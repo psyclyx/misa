@@ -98,4 +98,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.review-regressions declarations {}))
+          (definitions.build :tests.integration.fixtures.review-regressions declarations {}))

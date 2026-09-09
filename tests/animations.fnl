@@ -188,4 +188,4 @@
                                                    :type :test/animation-step}
                                            :type :dispatch}]})}})
           nil
-          (definitions :tests.animations declarations {}))
+          (definitions.build :tests.animations declarations {}))

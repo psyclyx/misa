@@ -2,7 +2,10 @@
 ;; tools/fennel benchmarks/grapheme-allocation.fnl /path/to/baseline/layout.fnl
 (local fennel (require :fennel))
 (require :tests.application)
-(fn api [path] (. ((fennel.dofile path) {}) :services :layout))
+(fn api [path]
+  (let [module (fennel.dofile path)
+        build (if (= (type module) :function) module module.build)]
+    (. (build {}) :services :layout)))
 (local baseline (api (assert (. arg 1) "baseline layout source required")))
 (local candidate (api :extensions/misa/ui/layout.fnl))
 (local cases [{:id :ascii :text (string.rep "ASCII " 64)}

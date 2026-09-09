@@ -211,43 +211,44 @@
           (var emoji false)
           (var after-virama false)
           (var done false)
-          (local flag (regional? cp))
-          (while (and (not done) (<= next-at (length text)))
-            (let [(following following-size) (decode text next-at)]
-              (if (and after-virama (indic-letter? following)
-                       (not (contains? zero following)))
-                  (set (cells after-virama next-at)
-                       (values (math.max cells (cell-width following)) false
-                               (+ next-at following-size)))
-                  (= following 8205)
-                  (let [(joined joined-size) (decode text
-                                                     (+ next-at following-size))]
-                    (if joined
-                        (set (emoji next-at cells)
-                             (values true
-                                     (+ next-at following-size joined-size)
-                                     (math.max cells (cell-width joined))))
-                        (do
-                          (set next-at (+ next-at following-size))
-                          (set done true))))
-                  (or (. virama following) (contains? zero following))
-                  (do
-                    (when (or (= following 65039) (= following 8419)
-                              (<= 127995 following 127999))
-                      (set emoji true))
-                    (when (. virama following) (set after-virama true))
-                    (set next-at (+ next-at following-size)))
-                  (and flag (regional? following))
-                  (do
-                    (set (emoji next-at)
-                         (values true (+ next-at following-size)))
-                    (set done true))
-                  (set done true))))
-          ;; A conditional in the final values position compiles to a thunk in
-          ;; Fennel. Bind the scalar first: segmentation must not allocate one
-          ;; closure per grapheme merely to return its cell count.
-          (local cluster-cells (if emoji (math.max cells 2) cells))
-          (values next-at cluster-cells)))))
+          (let [flag (regional? cp)]
+            (while (and (not done) (<= next-at (length text)))
+              (let [(following following-size) (decode text next-at)]
+                (if (and after-virama (indic-letter? following)
+                         (not (contains? zero following)))
+                    (set (cells after-virama next-at)
+                         (values (math.max cells (cell-width following)) false
+                                 (+ next-at following-size)))
+                    (= following 8205)
+                    (let [(joined joined-size) (decode text
+                                                       (+ next-at
+                                                          following-size))]
+                      (if joined
+                          (set (emoji next-at cells)
+                               (values true
+                                       (+ next-at following-size joined-size)
+                                       (math.max cells (cell-width joined))))
+                          (do
+                            (set next-at (+ next-at following-size))
+                            (set done true))))
+                    (or (. virama following) (contains? zero following))
+                    (do
+                      (when (or (= following 65039) (= following 8419)
+                                (<= 127995 following 127999))
+                        (set emoji true))
+                      (when (. virama following) (set after-virama true))
+                      (set next-at (+ next-at following-size)))
+                    (and flag (regional? following))
+                    (do
+                      (set (emoji next-at)
+                           (values true (+ next-at following-size)))
+                      (set done true))
+                    (set done true))))
+            ;; A conditional in the final values position compiles to a thunk in
+            ;; Fennel. Bind the scalar first: segmentation must not allocate one
+            ;; closure per grapheme merely to return its cell count.
+            (let [cluster-cells (if emoji (math.max cells 2) cells)]
+              (values next-at cluster-cells)))))))
 
 (fn boundary-at-or-before [text cursor]
   "Clamp a byte cursor to the preceding grapheme boundary."
@@ -292,8 +293,8 @@
   "Measure text in terminal cells."
   (var (at cells) (values 1 0))
   (while (<= at (length text))
-    (local (next-at cluster-cells) (cluster text at))
-    (set (cells at) (values (+ cells cluster-cells) next-at)))
+    (let [(next-at cluster-cells) (cluster text at)]
+      (set (cells at) (values (+ cells cluster-cells) next-at))))
   cells)
 
 (fn take [text columns]
@@ -366,99 +367,105 @@
   (let [result {}]
     (var (start at used) (values 1 1 0))
     (var room (math.max 1 first-columns))
-    (local rest-columns (math.max 1 (or rest-columns room)))
-    (var (break-last break-next whitespace-start) nil)
+    (let [rest-columns (math.max 1 (or rest-columns room))]
+      (var (break-last break-next whitespace-start) nil)
 
-    (fn emit [last next-at]
-      (tset result (+ (length result) 1) {:first start : last})
-      (set (start at used room) (values next-at next-at 0 rest-columns))
-      (set (break-last break-next whitespace-start) (values nil nil nil)))
+      (fn emit [last next-at]
+        (tset result (+ (length result) 1) {:first start : last})
+        (set (start at used room) (values next-at next-at 0 rest-columns))
+        (set (break-last break-next whitespace-start) (values nil nil nil)))
 
-    (while (<= at (length text))
-      (local (next-at cells) (cluster text at))
-      (local byte (text:byte at))
-      (local whitespace (or (= byte 32) (= byte 9)))
-      (if (and (not= words false) whitespace)
-          (do
-            (set whitespace-start (or whitespace-start at))
-            (if (and trim (> whitespace-start start))
-                (set (break-last break-next)
-                     (values (- whitespace-start 1) next-at))
-                (<= (+ used cells) room)
-                (set (break-last break-next) (values (- next-at 1) next-at))))
-          (not whitespace)
-          (set whitespace-start nil))
-      (if (and (> used 0) (> (+ used cells) room))
-          (if (and break-next (> break-next start))
+      (while (<= at (length text))
+        (let [(next-at cells) (cluster text at)
+              byte (text:byte at)
+              whitespace (or (= byte 32) (= byte 9))]
+          (if (and (not= words false) whitespace)
               (do
-                (var next-start break-next)
-                (when trim
-                  (while (or (= (text:byte next-start) 32)
-                             (= (text:byte next-start) 9))
-                    (set next-start (+ next-start 1))))
-                (emit break-last next-start))
-              (emit (- at 1) at))
-          (set (used at) (values (+ used cells) next-at))))
-    (when (or (<= start (length text)) (= (length result) 0))
-      (tset result (+ (length result) 1) {:first start :last (length text)}))
-    result))
+                (set whitespace-start (or whitespace-start at))
+                (if (and trim (> whitespace-start start))
+                    (set (break-last break-next)
+                         (values (- whitespace-start 1) next-at))
+                    (<= (+ used cells) room)
+                    (set (break-last break-next) (values (- next-at 1) next-at))))
+              (not whitespace)
+              (set whitespace-start nil))
+          (if (and (> used 0) (> (+ used cells) room))
+              (if (and break-next (> break-next start))
+                  (do
+                    (var next-start break-next)
+                    (when trim
+                      (while (or (= (text:byte next-start) 32)
+                                 (= (text:byte next-start) 9))
+                        (set next-start (+ next-start 1))))
+                    (emit break-last next-start))
+                  (emit (- at 1) at))
+              (set (used at) (values (+ used cells) next-at)))))
+      (when (or (<= start (length text)) (= (length result) 0))
+        (tset result (+ (length result) 1) {:first start :last (length text)}))
+      result)))
 
 (fn flow-spans [spans columns first-prefix rest-prefix options]
   "Wrap styled spans while preserving source coordinates and row prefixes."
-  (local options (or options {}))
-  (local columns (math.max 1 (math.floor (or (tonumber columns) 1))))
-  (local first-prefix (or first-prefix {}))
-  (local rest-prefix (or rest-prefix first-prefix))
+  (let [options (or options {})
+        columns (math.max 1 (math.floor (or (tonumber columns) 1)))
+        first-prefix (or first-prefix {})
+        rest-prefix (or rest-prefix first-prefix)]
+    (fn prefix-room [prefix]
+      (let [pieces {}]
+        (each [_ item (ipairs prefix)]
+          (tset pieces (+ (length pieces) 1) (or item.text "")))
+        (math.max 1 (- columns (width (table.concat pieces))))))
 
-  (fn prefix-room [prefix]
     (let [pieces {}]
-      (each [_ item (ipairs prefix)]
-        (tset pieces (+ (length pieces) 1) (or item.text "")))
-      (math.max 1 (- columns (width (table.concat pieces))))))
-
-  (local pieces {})
-  (each [_ source (ipairs (or spans {}))]
-    (tset pieces (+ (length pieces) 1) (or source.text "")))
-  (local text (table.concat pieces))
-  (var (result span-index span-at) (values {} 1 1))
-  (local (first-room rest-room)
-         (values (prefix-room first-prefix) (prefix-room rest-prefix)))
-  (var line-start 1)
-  (while line-start
-    (local newline (text:find "\n" line-start true))
-    (local line-end (or (and newline (- newline 1)) (length text)))
-    (local ranges
-           (wrap-ranges (text:sub line-start line-end)
-                        (or (and (= (length result) 0) first-room) rest-room)
-                        rest-room (not= options.trim false) options.words))
-    (each [_ range (ipairs ranges)]
-      (local (first last)
-             (values (- (+ line-start range.first) 1)
-                     (- (+ line-start range.last) 1)))
-      (local current (clone-spans (or (and (= (length result) 0) first-prefix)
-                                      rest-prefix)))
-      (while (and (. spans span-index)
-                  (< (- (+ span-at (length (or (. spans span-index :text) "")))
-                        1) first))
-        (set span-at (+ span-at (length (or (. spans span-index :text) ""))))
-        (set span-index (+ span-index 1)))
-      (var (index offset) (values span-index span-at))
-      (while (and (. spans index) (<= offset last))
-        (local source (. spans index))
-        (local value (or source.text ""))
-        (local (a b)
-               (values (math.max 1 (+ (- first offset) 1))
-                       (math.min (length value) (+ (- last offset) 1))))
-        (when (>= b a)
-          (tset current (+ (length current) 1)
-                (copy-span source (value:sub a b) a b)))
-        (set (offset index) (values (+ offset (length value)) (+ index 1))))
-      (when (= (length current) 0)
-        (tset current 1 (copy-span (or (. spans 1) {}) "")))
-      (tset result (+ (length result) 1)
-            {:source_end last :source_start (- first 1) :spans current}))
-    (set line-start (and newline (+ newline 1))))
-  result)
+      (each [_ source (ipairs (or spans {}))]
+        (tset pieces (+ (length pieces) 1) (or source.text "")))
+      (let [text (table.concat pieces)]
+        (var (result span-index span-at) (values {} 1 1))
+        (let [(first-room rest-room) (values (prefix-room first-prefix)
+                                             (prefix-room rest-prefix))]
+          (var line-start 1)
+          (while line-start
+            (let [newline (text:find "\n" line-start true)
+                  line-end (or (and newline (- newline 1)) (length text))
+                  ranges (wrap-ranges (text:sub line-start line-end)
+                                      (or (and (= (length result) 0) first-room)
+                                          rest-room)
+                                      rest-room (not= options.trim false)
+                                      options.words)]
+              (each [_ range (ipairs ranges)]
+                (let [(first last) (values (- (+ line-start range.first) 1)
+                                           (- (+ line-start range.last) 1))
+                      current (clone-spans (or (and (= (length result) 0)
+                                                    first-prefix)
+                                               rest-prefix))]
+                  (while (and (. spans span-index)
+                              (< (- (+ span-at
+                                       (length (or (. spans span-index :text)
+                                                   "")))
+                                    1) first))
+                    (set span-at
+                         (+ span-at (length (or (. spans span-index :text) ""))))
+                    (set span-index (+ span-index 1)))
+                  (var (index offset) (values span-index span-at))
+                  (while (and (. spans index) (<= offset last))
+                    (let [source (. spans index)
+                          value (or source.text "")
+                          (a b) (values (math.max 1 (+ (- first offset) 1))
+                                        (math.min (length value)
+                                                  (+ (- last offset) 1)))]
+                      (when (>= b a)
+                        (tset current (+ (length current) 1)
+                              (copy-span source (value:sub a b) a b)))
+                      (set (offset index)
+                           (values (+ offset (length value)) (+ index 1)))))
+                  (when (= (length current) 0)
+                    (tset current 1 (copy-span (or (. spans 1) {}) "")))
+                  (tset result (+ (length result) 1)
+                        {:source_end last
+                         :source_start (- first 1)
+                         :spans current})))
+              (set line-start (and newline (+ newline 1)))))
+          result)))))
 
 (fn wrap-spans [lines columns prefix options]
   "Wrap lines of styled spans to a terminal cell width."
@@ -478,90 +485,88 @@
 ;; so the native presenter can continue to own byte-to-cell conversion.
 
 (fn normalize-newlines [text cursor]
-  (local text (tostring (or text "")))
-  (local cursor
-         (math.max 0
-                   (math.min (length text)
-                             (math.floor (or (tonumber cursor) 0)))))
-  (var (pieces mapped at bytes) (values {} nil 1 0))
-  (while (<= at (length text))
-    (when (and (= mapped nil) (>= (- at 1) cursor))
-      (set mapped bytes))
-    (if (= (text:byte at) 13)
-        (let [size (or (and (= (text:byte (+ at 1)) 10) 2) 1)]
-          (tset pieces (+ (length pieces) 1) "\n")
-          (set bytes (+ bytes 1))
-          (set at (+ at size))
-          (when (and (= mapped nil) (>= (- at 1) cursor))
-            (set mapped bytes)))
-        (let [(_ size) (decode text at)]
-          (tset pieces (+ (length pieces) 1) (text:sub at (- (+ at size) 1)))
-          (set bytes (+ bytes size))
-          (set at (+ at size)))))
-  (values (table.concat pieces) (or mapped bytes)))
+  (let [text (tostring (or text ""))
+        cursor (math.max 0
+                         (math.min (length text)
+                                   (math.floor (or (tonumber cursor) 0))))]
+    (var (pieces mapped at bytes) (values {} nil 1 0))
+    (while (<= at (length text))
+      (when (and (= mapped nil) (>= (- at 1) cursor))
+        (set mapped bytes))
+      (if (= (text:byte at) 13)
+          (let [size (or (and (= (text:byte (+ at 1)) 10) 2) 1)]
+            (tset pieces (+ (length pieces) 1) "\n")
+            (set bytes (+ bytes 1))
+            (set at (+ at size))
+            (when (and (= mapped nil) (>= (- at 1) cursor))
+              (set mapped bytes)))
+          (let [(_ size) (decode text at)]
+            (tset pieces (+ (length pieces) 1) (text:sub at (- (+ at size) 1)))
+            (set bytes (+ bytes size))
+            (set at (+ at size)))))
+    (values (table.concat pieces) (or mapped bytes))))
 
 (fn wrap-input [text columns cursor prompt text-style prompt-style]
   "Lay out editable text and map its byte cursor to a terminal row."
-  (local (text cursor) (normalize-newlines text cursor))
-  (local columns (math.max 1 (math.floor (or (tonumber columns) 1))))
-  (local cursor (boundary-at-or-before text cursor))
-  ;; Preserve two cells for a potentially-wide grapheme whenever possible;
-  ;; on tiny terminals the prompt yields before editable content does.
-  (local prompt (tostring (or prompt "")))
-  (local prompt-room (math.max 0 (- columns 2)))
-  (local prompt (or (and (= prompt-room 0) "") (take prompt prompt-room)))
-  (local prompt-cells (width prompt))
-  (local room (math.max 1 (- columns prompt-cells)))
-  (local continuation (string.rep " " prompt-cells))
-  (var (rows mapped) (values {} nil))
-  (var line-start 0)
-  (while line-start
-    (local newline (text:find "\n" (+ line-start 1) true))
-    (local line-end (or (and newline (- newline 1)) (length text)))
-    (local value (text:sub (+ line-start 1) line-end))
-    ;; Keep all source whitespace in the editor so selection/cursor offsets are
-    ;; exact; prose rendering can discard separators at a soft wrap instead.
-    (local segments (wrap-ranges value room room false))
-    (each [index segment (ipairs segments)]
-      (local prefix (or (and (= (length rows) 0) prompt) continuation))
-      (local piece (value:sub segment.first segment.last))
-      (tset rows (+ (length rows) 1)
-            {:spans [{:style prompt-style :text prefix}
-                     {:style text-style :text piece}]})
-      (local first-byte (- (+ line-start segment.first) 1))
-      (local last-byte (+ line-start segment.last))
-      ;; Prefer the following physical row at a soft-wrap boundary. This keeps
-      ;; an insertion cursor off the unusable cell just beyond the right edge.
-      (when (and (>= cursor first-byte) (<= cursor last-byte))
-        (set mapped {:byte (+ (length prefix) (- cursor first-byte))
-                     :row (length rows)})))
-    (set line-start newline))
-  {:cursor (or mapped {:byte (length (.. (or (. rows (length rows) :spans 1
-                                                :text)
-                                             "")
-                                         (or (. rows (length rows) :spans 2
-                                                :text)
-                                             "")))
-                       :row (length rows)})
-   :lines rows})
+  (let [(text cursor) (normalize-newlines text cursor)
+        columns (math.max 1 (math.floor (or (tonumber columns) 1)))
+        cursor (boundary-at-or-before text cursor)
+        ;; Preserve two cells for a potentially-wide grapheme whenever possible;
+        ;; on tiny terminals the prompt yields before editable content does.
+        prompt (tostring (or prompt ""))
+        prompt-room (math.max 0 (- columns 2))]
+    (let [prompt (or (and (= prompt-room 0) "") (take prompt prompt-room))
+          prompt-cells (width prompt)
+          room (math.max 1 (- columns prompt-cells))
+          continuation (string.rep " " prompt-cells)]
+      (var (rows mapped) (values {} nil))
+      (var line-start 0)
+      (while line-start
+        (let [newline (text:find "\n" (+ line-start 1) true)
+              line-end (or (and newline (- newline 1)) (length text))
+              value (text:sub (+ line-start 1) line-end)
+              ;; Keep all source whitespace in the editor so selection/cursor offsets are
+              ;; exact; prose rendering can discard separators at a soft wrap instead.
+              segments (wrap-ranges value room room false)]
+          (each [index segment (ipairs segments)]
+            (let [prefix (or (and (= (length rows) 0) prompt) continuation)
+                  piece (value:sub segment.first segment.last)]
+              (tset rows (+ (length rows) 1)
+                    {:spans [{:style prompt-style :text prefix}
+                             {:style text-style :text piece}]})
+              (let [first-byte (- (+ line-start segment.first) 1)
+                    last-byte (+ line-start segment.last)]
+                ;; Prefer the following physical row at a soft-wrap boundary. This keeps
+                ;; an insertion cursor off the unusable cell just beyond the right edge.
+                (when (and (>= cursor first-byte) (<= cursor last-byte))
+                  (set mapped
+                       {:byte (+ (length prefix) (- cursor first-byte))
+                        :row (length rows)})))))
+          (set line-start newline)))
+      {:cursor (or mapped {:byte (length (.. (or (. rows (length rows) :spans 1
+                                                    :text)
+                                                 "")
+                                             (or (. rows (length rows) :spans 2
+                                                    :text)
+                                                 "")))
+                           :row (length rows)})
+       :lines rows})))
 
 (fn columns [total minimum maximum gap]
   "Allocate column widths within the available terminal cells."
-  (local (total minimum maximum gap)
-         (values (math.max 1 (math.floor total))
-                 (math.max 1 (math.floor minimum))
-                 (math.max 1 (math.floor maximum))
-                 (math.max 0 (math.floor (or gap 0)))))
-  (local count
-         (math.max 1
-                   (math.min maximum
-                             (math.floor (/ (+ total gap) (+ minimum gap))))))
-  (local (usable widths) (values (math.max count (- total (* gap (- count 1))))
-                                 {}))
-  (local (base extra) (values (math.floor (/ usable count)) (% usable count)))
-  (for [index 1 count]
-    (tset widths index (+ base (or (and (<= index extra) 1) 0))))
-  widths)
+  (let [(total minimum maximum gap) (values (math.max 1 (math.floor total))
+                                            (math.max 1 (math.floor minimum))
+                                            (math.max 1 (math.floor maximum))
+                                            (math.max 0 (math.floor (or gap 0))))
+        count (math.max 1
+                        (math.min maximum
+                                  (math.floor (/ (+ total gap) (+ minimum gap)))))
+        (usable widths) (values (math.max count (- total (* gap (- count 1))))
+                                {})
+        (base extra) (values (math.floor (/ usable count)) (% usable count))]
+    (for [index 1 count]
+      (tset widths index (+ base (or (and (<= index extra) 1) 0))))
+    widths))
 
 (local api {:boundary-at-or-before boundary-at-or-before
             :cell-width cell-width
@@ -577,8 +582,10 @@
             :wrap-ranges wrap-ranges
             :wrap-spans wrap-spans})
 
-(fn []
+(fn build []
   "Build the declarations for layout."
-  (local declarations [])
-  (table.insert declarations {:catalog :services :id :layout :value api})
-  (definitions :layout declarations {}))
+  (let [declarations []]
+    (table.insert declarations {:catalog :services :id :layout :value api})
+    (definitions.build :layout declarations {})))
+
+{: build}

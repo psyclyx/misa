@@ -3,7 +3,7 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(local specs ((fennel.dofile :extensions/misa/tools/files.fnl)))
+(local specs ((. (fennel.dofile :extensions/misa/tools/files.fnl) :build)))
 (local handlers {})
 (each [id handler (pairs specs.effects)] (tset handlers id handler))
 (each [_ spec (pairs (. specs :events))]
@@ -31,7 +31,7 @@
 (assert (not (pcall edit {:path :file :old_text :old :snapshot :tag :new_text :new})))
 (assert (not (pcall edit {:path :file :new_text :new})))
 (assert (not (pcall edit {:path :file :snapshot :tag :start :1#HASH :end 1 :new_text :new})))
-(local shell-specs ((fennel.dofile :extensions/misa/tools/shell.fnl) {:config {}}))
+(local shell-specs ((. (fennel.dofile :extensions/misa/tools/shell.fnl) :build) {:config {}}))
 (each [_ spec (pairs (. shell-specs :events))]
   (when (= spec.event :tool/shell-complete)
     (local failed (spec.handler {} {:id :shell :ok false :status 2 :stderr "bad input"}))

@@ -135,4 +135,4 @@ return 42
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.markdown-rendering declarations {}))
+          (definitions.build :tests.integration.fixtures.markdown-rendering declarations {}))

@@ -8,15 +8,15 @@
 
 (fn append [queue text attachments]
   (assert (= (type text) :string) "queued prompt must be a string")
-  (local next {:attachments {} :pending queue.pending :sending queue.sending})
-  (when (not= text "")
-    (set next.pending (or (and (= queue.pending "") text)
-                          (.. queue.pending "\n" text))))
-  (each [key image (pairs (or queue.attachments {}))]
-    (tset next.attachments key image))
-  (each [_ image (ipairs (or attachments {}))]
-    (tset next.attachments (+ (length next.attachments) 1) image))
-  next)
+  (let [next {:attachments {} :pending queue.pending :sending queue.sending}]
+    (when (not= text "")
+      (set next.pending
+           (or (and (= queue.pending "") text) (.. queue.pending "\n" text))))
+    (each [key image (pairs (or queue.attachments {}))]
+      (tset next.attachments key image))
+    (each [_ image (ipairs (or attachments {}))]
+      (tset next.attachments (+ (length next.attachments) 1) image))
+    next))
 
 (fn empty [queue]
   (and (= queue.pending "") (= (length (or queue.attachments {})) 0)))
@@ -36,17 +36,17 @@
                :type :dispatch}
               {:type :dispatch :event {:type :queue/submission-settled}}]})))
 
-(fn []
+(fn build []
   "Build the declarations for queue."
-  (definitions :queue
+  (definitions.build :queue
     [{:catalog :services :id :editor.submit-event :value :queue/submit}
      (let [definition {:id :queue/lifecycle
                        :inputs [[:db/path :queue]]
                        :compute (fn [inputs]
-                                  (local queue (. inputs 1))
-                                  {:hold_exit (and (not= queue nil)
-                                                   (or (not (empty queue))
-                                                       (= queue.sending true)))})}]
+                                  (let [queue (. inputs 1)]
+                                    {:hold_exit (and (not= queue nil)
+                                                     (or (not (empty queue))
+                                                         (= queue.sending true)))}))}]
        {:catalog :subscriptions :id (. definition :id) :value definition})
      {:catalog :services :id :editor.lifecycle.queue :value [:queue/lifecycle]}
      {:catalog :events
@@ -92,28 +92,27 @@
      {:catalog :events
       :value {:event :queue/take
               :handler (fn [db]
-                         (local queue (state db))
-                         (if (empty queue) nil
-                             (do
-                               (local (text attachments)
-                                      (values queue.pending queue.attachments))
-                               {:patch {:queue {:pending ""
-                                                :attachments (misa.replace {})}}
-                                :fx [{:event {: attachments
-                                              : text
-                                              :type :editor/restore}
-                                      :type :dispatch}]})))}}
+                         (let [queue (state db)]
+                           (if (empty queue) nil
+                               (do
+                                 (let [(text attachments) (values queue.pending
+                                                                  queue.attachments)]
+                                   {:patch {:queue {:pending ""
+                                                    :attachments (misa.replace {})}}
+                                    :fx [{:event {: attachments
+                                                  : text
+                                                  :type :editor/restore}
+                                          :type :dispatch}]})))))}}
      {:catalog :events
       :value {:event :queue/steer
               :handler (fn [db event]
-                         (local queue
-                                (append (state db) (or event.prompt "")
-                                        event.attachments))
-                         (if (empty queue) nil
-                             (if (ready db queue) (drain db queue)
-                                 {:patch {:queue queue}
-                                  :fx [{:event {:type :agent/cancel-active}
-                                        :type :dispatch}]})))}}
+                         (let [queue (append (state db) (or event.prompt "")
+                                             event.attachments)]
+                           (if (empty queue) nil
+                               (if (ready db queue) (drain db queue)
+                                   {:patch {:queue queue}
+                                    :fx [{:event {:type :agent/cancel-active}
+                                          :type :dispatch}]}))))}}
      (let [definition {:available (fn [db]
                                     (and db.queue (not (empty db.queue))))
                        :event {:type :queue/take}
@@ -127,3 +126,5 @@
                        :label "Interrupt and send draft / pending message"}]
        {:catalog :actions :id (. definition :id) :value definition})]
     {}))
+
+{: build}

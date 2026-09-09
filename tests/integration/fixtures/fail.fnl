@@ -5,4 +5,4 @@
           (table.insert declarations
                         {:catalog :events  :value {:event :app/start :handler (fn [] (error :exploded) nil)}})
           nil
-          (definitions :tests.integration.fixtures.fail declarations {}))
+          (definitions.build :tests.integration.fixtures.fail declarations {}))

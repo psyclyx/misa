@@ -72,4 +72,4 @@
                                             "stream chunks were not compacted once")
                                     nil)}})
           nil
-          (definitions :tests.integration.fixtures.stream-check declarations {}))
+          (definitions.build :tests.integration.fixtures.stream-check declarations {}))

@@ -27,7 +27,7 @@
                                    (lines count :transcript))}})
 
 (fn setup [extension]
-  (local definitions (extension {}))
+  (local definitions (extension.build {}))
   (each [name value (pairs (or definitions.services {}))]
     (local parts (icollect [part (name:gmatch "[^.]+") ] part))
     (var target _G.misa)
@@ -94,7 +94,7 @@
   (assert (= (. source 1 :spans 1 :animation) animation)
           "root clipping mutated the source animation"))
 
-(each [id component (pairs (. ((fennel.dofile :extensions/misa/editor/render.fnl) {}) :components))]
+(each [id component (pairs (. ((. (fennel.dofile :extensions/misa/editor/render.fnl) :build) {}) :components))]
   (when (= id :default.editor.input)
     (each [_ mode (ipairs [:insert :normal :visual])]
       (local input (component.render {:text "hello" :cursor 2 : mode} {:columns 20}))

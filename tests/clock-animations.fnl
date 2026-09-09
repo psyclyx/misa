@@ -32,7 +32,7 @@
    :cursor {:row 1 :byte 0}})
 
 (fn [context]
-          (definitions :tests.clock-animations [{:catalog :events  :value {:event :app/start :handler (fn [db]
+          (definitions.build :tests.clock-animations [{:catalog :events  :value {:event :app/start :handler (fn [db]
                             (local initial {:mode :active :ticks 0 :gates 0})
                             {:patch initial
                              :fx (if context.config.headless

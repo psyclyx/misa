@@ -50,4 +50,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.semantic-components declarations {}))
+          (definitions.build :tests.integration.fixtures.semantic-components declarations {}))

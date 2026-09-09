@@ -114,4 +114,4 @@
                                                    :type :picker/input}
                                            :type :dispatch}]})}})
           nil
-          (definitions :tests.command-history declarations {}))
+          (definitions.build :tests.command-history declarations {}))

@@ -15,7 +15,7 @@
   (each [_ name (ipairs [:misa.json :misa.keybindings :misa.actions :misa.ui.layout :misa.commands :misa.choices :misa.ui.values
                          :misa.choices.preview :misa.models.preview :misa.choices.layout :misa.dialogs :misa.choices.picker :misa.commands.palette
                          :misa.editor.history :misa.editor :misa.editor.editing :misa.selection :misa.transcript :misa.models])]
-    (local description ((require name) context))
+    (local description ((. (require name) :build) context))
     (assert (= description.interceptors nil))
     (each [id value (pairs (or description.routes {}))] (table.insert routes {: id : value}))
     (construction.define (collect [kind entries (pairs description)]

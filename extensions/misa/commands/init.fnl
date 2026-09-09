@@ -12,45 +12,45 @@
     (.. name (or (and (not= args "") (.. " " args)) ""))))
 
 (fn invoke [db event]
-  (local command
-         (assert (misa.commands.lookup event.command) "unknown command"))
-  (local args (trim event.arguments))
-  (if (and (= args "") (or command.completion command.complete)
-           (not event.resumed_choice))
-      {:fx [{:type :dispatch
-             :event {:type :choices/command-open :command command.name}}]}
-      (let [invocation (canonical command.name args)
-            execution (misa.patch event
-                                  {:type command.event
-                                   :arguments args
-                                   :canonical invocation})
-            effects []]
-        (var patch {})
-        (when (and misa.preferences misa.preferences.use)
-          (var preferences (misa.preferences.use db :commands invocation))
-          (local used (misa.patch db {:preferences (misa.replace preferences)}))
-          (when (and (not= args "") (or command.completion command.complete))
-            (each [_ candidate (ipairs (misa.commands.completions command args
-                                                                  used))]
-              (when (= candidate.value args)
-                (set preferences
-                     (misa.preferences.use used
-                                           (or command.preference_scope
-                                               (.. "command:" command.name))
-                                           (or candidate.id
-                                               (tostring candidate.value))))
-                (lua :break))))
-          (set patch {:preferences (misa.replace preferences)})
-          (table.insert effects
-                        {:type :state/save
-                         :namespace :preferences
-                         :data preferences}))
-        (table.insert effects {:type :dispatch :event execution})
-        {: patch :fx effects})))
+  (let [command (assert (misa.commands.lookup event.command) "unknown command")
+        args (trim event.arguments)]
+    (if (and (= args "") (or command.completion command.complete)
+             (not event.resumed_choice))
+        {:fx [{:type :dispatch
+               :event {:type :choices/command-open :command command.name}}]}
+        (let [invocation (canonical command.name args)
+              execution (misa.patch event
+                                    {:type command.event
+                                     :arguments args
+                                     :canonical invocation})
+              effects []]
+          (var patch {})
+          (when (and misa.preferences misa.preferences.use)
+            (var preferences (misa.preferences.use db :commands invocation))
+            (let [used (misa.patch db {:preferences (misa.replace preferences)})]
+              (when (and (not= args "")
+                         (or command.completion command.complete))
+                (each [_ candidate (ipairs (misa.commands.completions command
+                                                                      args used))]
+                  (when (= candidate.value args)
+                    (set preferences
+                         (misa.preferences.use used
+                                               (or command.preference_scope
+                                                   (.. "command:" command.name))
+                                               (or candidate.id
+                                                   (tostring candidate.value))))
+                    (lua :break))))
+              (set patch {:preferences (misa.replace preferences)})
+              (table.insert effects
+                            {:type :state/save
+                             :namespace :preferences
+                             :data preferences})))
+          (table.insert effects {:type :dispatch :event execution})
+          {: patch :fx effects}))))
 
-(fn []
+(fn build []
   "Build the declarations for commands."
-  (definitions :commands
+  (definitions.build :commands
     [{:catalog :services
       :id :commands.invocation
       :value (fn [text]
@@ -58,51 +58,51 @@
                (assert (= (type text) :string)
                        "command invocation must be a string")
                (var (name args) (text:match "^(%S+)%s*(.-)%s*$"))
-               (local command (and name (misa.commands.lookup name)))
-               (if (not command) nil
-                   (do
-                     (set args (trim args))
-                     {:arguments args
-                      :canonical (canonical command.name args)
-                      :command command.name
-                      :type :commands/invoke})))}
+               (let [command (and name (misa.commands.lookup name))]
+                 (if (not command) nil
+                     (do
+                       (set args (trim args))
+                       {:arguments args
+                        :canonical (canonical command.name args)
+                        :command command.name
+                        :type :commands/invoke}))))}
      {:catalog :services :id :commands.canonical :value canonical}
      {:catalog :services
       :id :commands.recent
       :value (fn [db]
                "List previously used commands, most recent first."
-               (local result {})
-               (local source-values (or (and db.preferences
-                                             db.preferences.scopes.commands)
-                                        {}))
-               (each [text usage (pairs source-values)]
-                 (local invocation (misa.commands.invocation text))
-                 (when (and invocation
-                            (or (> (or usage.uses 0) 0) usage.favorite))
-                   (tset result (+ (length result) 1)
-                         {:arguments invocation.arguments
-                          :canonical invocation.canonical
-                          :command invocation.command
-                          :last (or usage.last 0)})))
-               (table.sort result
-                           (fn [a b]
-                             (if (not= a.last b.last)
-                                 (> a.last b.last)
-                                 (< a.canonical b.canonical))))
-               result)}
+               (let [result {}
+                     source-values (or (and db.preferences
+                                            db.preferences.scopes.commands)
+                                       {})]
+                 (each [text usage (pairs source-values)]
+                   (let [invocation (misa.commands.invocation text)]
+                     (when (and invocation
+                                (or (> (or usage.uses 0) 0) usage.favorite))
+                       (tset result (+ (length result) 1)
+                             {:arguments invocation.arguments
+                              :canonical invocation.canonical
+                              :command invocation.command
+                              :last (or usage.last 0)}))))
+                 (table.sort result
+                             (fn [a b]
+                               (if (not= a.last b.last)
+                                   (> a.last b.last)
+                                   (< a.canonical b.canonical))))
+                 result))}
      {:catalog :services
       :id :commands.choice-items
       :value (fn [command query db]
                "Return completion items with canonical command invocations."
-               (local result {})
-               (each [_ candidate (ipairs (misa.commands.completions command
-                                                                     query db))]
-                 (local item {})
-                 (each [key value (pairs candidate)]
-                   (tset item key value))
-                 (set item.invocation (canonical command.name item.value))
-                 (tset result (+ (length result) 1) item))
-               result)}
+               (let [result {}]
+                 (each [_ candidate (ipairs (misa.commands.completions command
+                                                                       query db))]
+                   (let [item {}]
+                     (each [key value (pairs candidate)]
+                       (tset item key value))
+                     (set item.invocation (canonical command.name item.value))
+                     (tset result (+ (length result) 1) item)))
+                 result))}
      {:catalog :services
       :id :commands.choice-spec
       :value (fn [command query db]
@@ -119,51 +119,49 @@
      {:catalog :events
       :value {:event :choices/command-open
               :handler (fn [db event]
-                         (local command
-                                (assert (misa.commands.lookup event.command)))
-                         (if (and command.choice_available
-                                  (not (command.choice_available db)))
-                             {:fx [{:type :dispatch
-                                    :event {:type command.choice_unavailable}}]}
-                             (do
-                               (local state
-                                      (or db.choice_commands
-                                          {:pending {} :sequence 0}))
-                               (local sequence (+ state.sequence 1))
-                               (local token (.. "command:" sequence))
-                               {:patch {:choice_commands {: sequence
-                                                          :pending {token {:command command.name}}}}
-                                :fx [{:event {:completion :choices/command-selected
-                                              :id :command-choice
-                                              :session (misa.choices.session (misa.commands.choice-spec command
-                                                                                                        ""
-                                                                                                        db)
-                                                                             db)
-                                              :title (command.name:sub 2)
-                                              : token
-                                              :type :picker/open}
-                                      :type :dispatch}]})))}}
+                         (let [command (assert (misa.commands.lookup event.command))]
+                           (if (and command.choice_available
+                                    (not (command.choice_available db)))
+                               {:fx [{:type :dispatch
+                                      :event {:type command.choice_unavailable}}]}
+                               (do
+                                 (let [state (or db.choice_commands
+                                                 {:pending {} :sequence 0})
+                                       sequence (+ state.sequence 1)
+                                       token (.. "command:" sequence)]
+                                   {:patch {:choice_commands {: sequence
+                                                              :pending {token {:command command.name}}}}
+                                    :fx [{:event {:completion :choices/command-selected
+                                                  :id :command-choice
+                                                  :session (misa.choices.session (misa.commands.choice-spec command
+                                                                                                            ""
+                                                                                                            db)
+                                                                                 db)
+                                                  :title (command.name:sub 2)
+                                                  : token
+                                                  :type :picker/open}
+                                          :type :dispatch}]})))))}}
      {:catalog :events
       :value {:event :choices/command-selected
               :handler (fn [db event]
-                         (local pending
-                                (and db.choice_commands
-                                     (. db.choice_commands.pending
-                                        event.picker_token)))
-                         (if (or (not= event.picker :command-choice)
-                                 (not pending))
-                             nil
-                             (do
-                               (local patch
-                                      {:choice_commands {:pending {event.picker_token misa.delete}}})
-                               (if event.cancelled
-                                   {: patch :fx [{:type :terminal/read}]}
-                                   (do
-                                     (local invocation
-                                            (assert (misa.commands.invocation (.. pending.command
-                                                                                  " "
-                                                                                  (tostring event.value)))))
-                                     (set invocation.resumed_choice true)
-                                     {: patch
-                                      :fx [{:event invocation :type :dispatch}]})))))}}]
+                         (let [pending (and db.choice_commands
+                                            (. db.choice_commands.pending
+                                               event.picker_token))]
+                           (if (or (not= event.picker :command-choice)
+                                   (not pending))
+                               nil
+                               (do
+                                 (let [patch {:choice_commands {:pending {event.picker_token misa.delete}}}]
+                                   (if event.cancelled
+                                       {: patch :fx [{:type :terminal/read}]}
+                                       (do
+                                         (let [invocation (assert (misa.commands.invocation (.. pending.command
+                                                                                                " "
+                                                                                                (tostring event.value))))]
+                                           (set invocation.resumed_choice true)
+                                           {: patch
+                                            :fx [{:event invocation
+                                                  :type :dispatch}]}))))))))}}]
     {}))
+
+{: build}

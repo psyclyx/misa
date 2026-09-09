@@ -48,4 +48,4 @@
           (table.insert declarations
                         {:catalog :views :id :main :value (fn [] {:cursor nil :lines {}})})
           nil
-          (definitions :tests.integration.fixtures.contracts declarations {}))
+          (definitions.build :tests.integration.fixtures.contracts declarations {}))

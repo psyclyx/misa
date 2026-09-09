@@ -29,7 +29,7 @@
                                                 :models {}
                                                 :url "https://fixture.invalid"}))
 
-(app.define (declarations :runtime-state-4 [(let [definition {:description "Fixture tool"
+(app.define (declarations.build :runtime-state-4 [(let [definition {:description "Fixture tool"
                                     :effect :capture/tool
                                     :input_schema {:properties {:value {:type :string}}
                                                    :required [:value]
@@ -38,27 +38,27 @@
 
 (var (snapshot native observed) (values nil {} {}))
 
-(app.define (declarations :runtime-state-5 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set snapshot db) nil)}}]))
+(app.define (declarations.build :runtime-state-5 [{:catalog :events  :value {:event :test/read :handler (fn [db] (set snapshot db) nil)}}]))
 
-(app.define (declarations :runtime-state-6 [{:catalog :events  :value {:event :test/patch :handler (fn [_]
+(app.define (declarations.build :runtime-state-6 [{:catalog :events  :value {:event :test/patch :handler (fn [_]
                                        {:patch {:patch_probe {:value :updated}}})}}]))
 
 (var subscription-evaluations 0)
-(app.define (declarations :runtime-state-7 [(let [definition {:id :test/doubled
+(app.define (declarations.build :runtime-state-7 [(let [definition {:id :test/doubled
                                     :inputs (fn [_] [[:db/path :value]])
                                     :compute (fn [inputs _]
                                                (set subscription-evaluations
                                                     (+ subscription-evaluations 1))
                                                (* (. inputs 1) 2))}] {:catalog :subscriptions :id (. definition :id) :value definition})]))
 
-(app.define (declarations :runtime-state-8 [{:catalog :events  :value {:event :app/start :handler (fn [db]
+(app.define (declarations.build :runtime-state-8 [{:catalog :events  :value {:event :app/start :handler (fn [db]
                                        {:patch {:models
                                             {:entries [{:id :openai-codex/gpt-5.4
                                                         :model :gpt-5.4
                                                         :provider :openai-codex}]
                                              :selected :openai-codex/gpt-5.4}}})}}]))
 
-(app.define (declarations :runtime-state-9 [{:catalog :events  :value {:event :editor/restore :handler (fn [_ event]
+(app.define (declarations.build :runtime-state-9 [{:catalog :events  :value {:event :editor/restore :handler (fn [_ event]
                                        (table.insert observed event) nil)}}]))
 
 (app.install context)

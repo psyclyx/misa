@@ -16,4 +16,4 @@
                                                     (when (and (= event.kind :alt) (= event.text :q))
                                                       {:type :bench/quit}))}] {:catalog :routes :id (. definition :id) :value definition}))
           (table.insert effects {:catalog :events  :value {:event :bench/quit :handler (fn [] {:fx [{:type :app/quit}]})}})
-          (definitions :benchmarks.picker-key-repeat effects {}))
+          (definitions.build :benchmarks.picker-key-repeat effects {}))

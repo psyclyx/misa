@@ -4,13 +4,13 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) {}))
 (app.install)
 (local feature (fennel.dofile :extensions/misa/providers/claude.fnl))
 ;; Inspect declarations and invoke handlers only: never execute process effects.
 (fn handlers-for [config]
   (local handlers {})
-  (each [_ spec (pairs (. (feature {:config {:providers {:claude (or config {})}}}) :events))]
+  (each [_ spec (pairs (. (feature.build {:config {:providers {:claude (or config {})}}}) :events))]
   (tset handlers spec.event spec.handler))
   handlers)
 (local handlers (handlers-for nil))

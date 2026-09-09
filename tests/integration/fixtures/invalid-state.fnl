@@ -13,4 +13,4 @@
                                                  (= event.message :InvalidState)))
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.invalid-state declarations {}))
+          (definitions.build :tests.integration.fixtures.invalid-state declarations {}))

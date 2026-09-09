@@ -12,7 +12,7 @@
 (local handler-effect {:type :dispatch :event {:type :test/handler}})
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(app.define (declarations :state-dispatch-0 [{:catalog :events  :value {:event :test/update :handler (fn [db]
+(app.define (declarations.build :state-dispatch-0 [{:catalog :events  :value {:event :test/update :handler (fn [db]
                    (set borrowed-db db)
                    (set borrowed {:patch {:ownership {:value :retained}} :fx [before-effect]})
                    borrowed)}}

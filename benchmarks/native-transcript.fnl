@@ -69,7 +69,7 @@
             (set covered (+ covered owner.block_count)))
           (assert (= covered count))
           (fn ready-check [] {:fx [{:type :dispatch :event {:type :bench/ready}}]})
-          (definitions :benchmarks.native-transcript [(let [definition {:id :bench/model :model :model :provider :bench}] {:catalog :models :id (. definition :id) :value definition})
+          (definitions.build :benchmarks.native-transcript [(let [definition {:id :bench/model :model :model :provider :bench}] {:catalog :models :id (. definition :id) :value definition})
                 {:catalog :events  :value {:event :bench/transport :handler (fn [db event] (assert stream-handler) (stream-handler db event))}}
                 (let [definition {:id :bench/input :event :terminal/input :priority 2000
                          :context [:db]

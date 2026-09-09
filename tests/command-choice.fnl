@@ -48,4 +48,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.command-choice declarations {}))
+          (definitions.build :tests.command-choice declarations {}))

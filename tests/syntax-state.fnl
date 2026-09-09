@@ -6,13 +6,13 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown])]
-  (app.define ((require name) {:config {}})))
-(local specs ((fennel.dofile :extensions/misa/transcript/syntax.fnl) {:config {}}))
+  (app.define ((. (require name) :build) {:config {}})))
+(local specs ((. (fennel.dofile :extensions/misa/transcript/syntax.fnl) :build) {:config {}}))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define specs)
-(app.define (definitions :test [{:catalog :services :id :transcript.blocks :value (fn [db response-id block-id]
+(app.define (definitions.build :test [{:catalog :services :id :transcript.blocks :value (fn [db response-id block-id]
                                    (icollect [_ block (ipairs (or (and db.messages db.messages.blocks) []))]
                                      (when (and (or (not response-id) (= block.response_id response-id))
                                                 (or (not block-id) (= block.id block-id))) block)))}]))
@@ -35,7 +35,7 @@
 (local (first requests) (source (initial) text))
 (assert (= ((. handlers :transcript/updated) first {:type :transcript/updated}
             {:terminal {:interactive false}}) nil) "headless transcript requested highlighting")
-(local disabled ((fennel.dofile :extensions/misa/transcript/syntax.fnl)
+(local disabled ((. (fennel.dofile :extensions/misa/transcript/syntax.fnl) :build)
                  {:config {:messages {:markdown false}}}))
 (each [_ spec (pairs (. disabled :events))]
   (when (= spec.event :transcript/updated)

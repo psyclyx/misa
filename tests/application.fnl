@@ -26,6 +26,7 @@
   (fn add-module [module options]
     "Add a module's pure declarations to this test application."
     (define (if (= (type module) :function) (module (or options config))
+                module.build (module.build (or options config))
                 module.definitions)))
 
   {: define

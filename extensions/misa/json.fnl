@@ -228,9 +228,11 @@
                          (table-value value))))))
     (visit root)))
 
-(fn []
+(fn build []
   "Build the declarations for json."
-  (local declarations [])
-  (table.insert declarations
-                {:catalog :services :id :json :value {: decode : encode}})
-  (definitions :json declarations {}))
+  (let [declarations []]
+    (table.insert declarations
+                  {:catalog :services :id :json :value {: decode : encode}})
+    (definitions.build :json declarations {})))
+
+{: build}

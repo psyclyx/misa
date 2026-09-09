@@ -7,4 +7,4 @@
 
           (nested)
           nil
-          (definitions :tests.integration.fixtures.constructor-trace declarations {}))
+          (definitions.build :tests.integration.fixtures.constructor-trace declarations {}))

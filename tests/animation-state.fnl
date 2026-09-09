@@ -6,13 +6,13 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {:animations {:persist false}}})
-(app.define ((fennel.dofile :extensions/misa/json.fnl) context))
-(local specs ((fennel.dofile :extensions/misa/ui/animations/init.fnl) context))
+(app.define ((. (fennel.dofile :extensions/misa/json.fnl) :build) context))
+(local specs ((. (fennel.dofile :extensions/misa/ui/animations/init.fnl) :build) context))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
 (app.define specs)
-(app.define (definitions :test [{:catalog :animations :id :moving :value {:frames ["a" "b"]}}
+(app.define (definitions.build :test [{:catalog :animations :id :moving :value {:frames ["a" "b"]}}
                           {:catalog :animations :id :still :value {:frames ["a"]}}]))
 (app.install)
 (local actions [{:type :animations/start :role :status}

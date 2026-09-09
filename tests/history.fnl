@@ -152,4 +152,4 @@ second line"))
                                                    :type :test/history-step}
                                            :type :dispatch}]})}})
           nil
-          (definitions :tests.history declarations {}))
+          (definitions.build :tests.history declarations {}))

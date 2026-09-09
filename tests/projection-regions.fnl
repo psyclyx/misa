@@ -19,7 +19,7 @@
                            (tset counts id (+ (or (. counts id) 0) 1))
                            (render db context))))
 (app.define application.definitions)
-(app.define (definitions :fixture [{:catalog :components :id :test.bad-editor :value {:render (fn [] (error "broken editor component"))}}
+(app.define (definitions.build :fixture [{:catalog :components :id :test.bad-editor :value {:render (fn [] (error "broken editor component"))}}
                           {:catalog :events  :value {:event :test/editor-component :handler (fn [_ event] {:patch {:components {:roles {:editor.input event.id}}}})}}
                           {:catalog :events  :value {:event :test/type :handler (fn [_ event] {:patch {:reject_frame (= event.reject true)
                                                           :editor {:text event.text :cursor (length event.text)}}})}}]))

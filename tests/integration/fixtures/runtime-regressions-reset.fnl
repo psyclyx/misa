@@ -23,4 +23,4 @@
                                                     0)))
                                     {:fx [{:type :app/quit}]})}})
           nil
-          (definitions :tests.integration.fixtures.runtime-regressions-reset declarations {}))
+          (definitions.build :tests.integration.fixtures.runtime-regressions-reset declarations {}))

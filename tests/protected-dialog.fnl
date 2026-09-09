@@ -84,4 +84,4 @@
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
           nil
-          (definitions :tests.protected-dialog declarations {}))
+          (definitions.build :tests.protected-dialog declarations {}))

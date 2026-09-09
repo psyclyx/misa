@@ -19,7 +19,7 @@
                                     :compute (fn [inputs] (or (. inputs 1) {}))}}
     :services {:editor.lifecycle.test [:test/lifecycle]}})
   (each [_ name (ipairs order)]
-    (local description ((require name) context))
+    (local description ((. (require name) :build) context))
     (assert (= description.interceptors nil) "domain lifecycle declared middleware")
     (construction.define description))
   (each [_ name (ipairs [:misa.editor.editing :misa.dialogs :misa.choices.picker])]

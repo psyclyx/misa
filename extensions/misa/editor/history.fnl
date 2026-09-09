@@ -32,273 +32,292 @@
         true)
       false))
 
-(fn [context]
+(fn build [context]
   "Build the declarations for history."
-  (local declarations [])
-  (var config (or (and (= (type context.config) :table) context.config.history)
-                  {}))
-  (set config (or (and (= (type config) :table) config) {}))
-  (local (max-entries max-bytes)
-         (values (or config.max_entries 500) (or config.max_bytes 65536)))
-  (each [name value (pairs {:max_bytes max-bytes :max_entries max-entries})]
-    (assert (and (= (type value) :number) (>= value 1) (= (% value 1) 0))
-            (.. :history. name " must be a positive integer")))
+  (let [declarations []]
+    (var config (or (and (= (type context.config) :table)
+                         context.config.history) {}))
+    (set config (or (and (= (type config) :table) config) {}))
+    (let [(max-entries max-bytes) (values (or config.max_entries 500)
+                                          (or config.max_bytes 65536))]
+      (each [name value (pairs {:max_bytes max-bytes :max_entries max-entries})]
+        (assert (and (= (type value) :number) (>= value 1) (= (% value 1) 0))
+                (.. :history. name " must be a positive integer")))
 
-  (fn bounded [entries]
-    (var (first bytes) (values (+ (length entries) 1) 0))
-    (for [index (length entries) 1 (- 1)]
-      (when (or (>= (- (length entries) index) max-entries)
-                (> (+ bytes (length (. entries index))) max-bytes))
-        (lua :break))
-      (set bytes (+ bytes (length (. entries index))))
-      (set first index))
-    (local result {})
-    (for [index first (length entries)]
-      (tset result (+ (length result) 1) (. entries index)))
-    result)
+      (fn bounded [entries]
+        (var (first bytes) (values (+ (length entries) 1) 0))
+        (for [index (length entries) 1 (- 1)]
+          (when (or (>= (- (length entries) index) max-entries)
+                    (> (+ bytes (length (. entries index))) max-bytes))
+            (lua :break))
+          (set bytes (+ bytes (length (. entries index))))
+          (set first index))
+        (let [result {}]
+          (for [index first (length entries)]
+            (tset result (+ (length result) 1) (. entries index)))
+          result))
 
-  (fn save [history]
-    (if (= config.persist false) {}
-        [{:data {:entries history.entries :version 1}
-          :namespace :history
-          :type :state/save}]))
+      (fn save [history]
+        (if (= config.persist false) {}
+            [{:data {:entries history.entries :version 1}
+              :namespace :history
+              :type :state/save}]))
 
-  (each [name keys (pairs {:next [:ctrl_n :alt+n]
-                           :previous [:ctrl_p :alt+p]
-                           :search [:ctrl_r]})]
-    (table.insert declarations
-                  (let [definition {:action name
-                                    :context :history
-                                    :default keys}]
-                    {:catalog :keybindings
-                     :id (.. (. definition :context) "/" (. definition :action))
-                     :value definition}))
-    (table.insert declarations
-                  (let [definition {:available available?
-                                    :binding {:action name :context :history}
-                                    :event {:type (.. :history/ name)}
-                                    :id (.. :history. name)
-                                    :label (or (and (= name :search)
-                                                    "Search input history")
-                                               (and (= name :previous)
-                                                    "Previous input")
-                                               "Next input")}]
-                    {:catalog :actions
-                     :id (. definition :id)
-                     :value definition})))
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :app/start
-                         :handler (fn [db]
-                                    {:patch {:history (misa.replace (state db))}
-                                     :fx (or (and (= config.persist false) {})
-                                             [{:completion :history/loaded
-                                               :namespace :history
-                                               :type :state/load}])})}})
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :history/loaded
-                         :handler (fn [db event]
-                                    (if (not= event.namespace :history) nil
-                                        (do
-                                          (local history (state db))
-                                          (local entries {})
-                                          (when (not= event.found false)
-                                            (local data event.data)
-                                            (assert (and (= (type data) :table)
-                                                         (= data.version 1)
-                                                         (= (type data.entries)
-                                                            :table))
-                                                    "invalid input history data")
-                                            (each [_ text (ipairs data.entries)]
-                                              (assert (= (type text) :string)
-                                                      "history entry must be a string")
-                                              (when (<= (length text) max-bytes)
-                                                (add entries text))))
-                                          ;; Input may have been accepted while the native load was outstanding.
-                                          (each [_ text (ipairs history.entries)]
-                                            (add entries text))
-                                          (updated history
-                                                   {:entries (misa.replace (bounded entries))}))))}})
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :agent/submitted
-                         :handler (fn [db event]
-                                    (local history (state db))
-                                    (local entries {})
-                                    (each [index text (ipairs history.entries)]
-                                      (tset entries index text))
-                                    (local changed
-                                           (and (= (type event.prompt) :string)
-                                                (<= (length event.prompt)
-                                                    max-bytes)
-                                                (add entries event.prompt)))
-                                    (local next-history
-                                           (misa.patch history
-                                                       (reset-navigation)))
-                                    (if changed
-                                        (let [next-history (misa.patch next-history
-                                                                       {:entries (misa.replace (bounded entries))})]
-                                          (updated next-history {}
-                                                   (save next-history)))
-                                        (updated next-history {})))}})
+      (each [name keys (pairs {:next [:ctrl_n :alt+n]
+                               :previous [:ctrl_p :alt+p]
+                               :search [:ctrl_r]})]
+        (table.insert declarations
+                      (let [definition {:action name
+                                        :context :history
+                                        :default keys}]
+                        {:catalog :keybindings
+                         :id (.. (. definition :context) "/"
+                                 (. definition :action))
+                         :value definition}))
+        (table.insert declarations
+                      (let [definition {:available available?
+                                        :binding {:action name
+                                                  :context :history}
+                                        :event {:type (.. :history/ name)}
+                                        :id (.. :history. name)
+                                        :label (or (and (= name :search)
+                                                        "Search input history")
+                                                   (and (= name :previous)
+                                                        "Previous input")
+                                                   "Next input")}]
+                        {:catalog :actions
+                         :id (. definition :id)
+                         :value definition})))
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :app/start
+                             :handler (fn [db]
+                                        {:patch {:history (misa.replace (state db))}
+                                         :fx (or (and (= config.persist false)
+                                                      {})
+                                                 [{:completion :history/loaded
+                                                   :namespace :history
+                                                   :type :state/load}])})}})
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :history/loaded
+                             :handler (fn [db event]
+                                        (if (not= event.namespace :history) nil
+                                            (do
+                                              (let [history (state db)
+                                                    entries {}]
+                                                (when (not= event.found false)
+                                                  (let [data event.data]
+                                                    (assert (and (= (type data)
+                                                                    :table)
+                                                                 (= data.version
+                                                                    1)
+                                                                 (= (type data.entries)
+                                                                    :table))
+                                                            "invalid input history data")
+                                                    (each [_ text (ipairs data.entries)]
+                                                      (assert (= (type text)
+                                                                 :string)
+                                                              "history entry must be a string")
+                                                      (when (<= (length text)
+                                                                max-bytes)
+                                                        (add entries text)))))
+                                                ;; Input may have been accepted while the native load was outstanding.
+                                                (each [_ text (ipairs history.entries)]
+                                                  (add entries text))
+                                                (updated history
+                                                         {:entries (misa.replace (bounded entries))})))))}})
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :agent/submitted
+                             :handler (fn [db event]
+                                        (let [history (state db)
+                                              entries {}]
+                                          (each [index text (ipairs history.entries)]
+                                            (tset entries index text))
+                                          (let [changed (and (= (type event.prompt)
+                                                                :string)
+                                                             (<= (length event.prompt)
+                                                                 max-bytes)
+                                                             (add entries
+                                                                  event.prompt))
+                                                next-history (misa.patch history
+                                                                         (reset-navigation))]
+                                            (if changed
+                                                (let [next-history (misa.patch next-history
+                                                                               {:entries (misa.replace (bounded entries))})]
+                                                  (updated next-history {}
+                                                           (save next-history)))
+                                                (updated next-history {})))))}})
 
-  (fn navigate [db direction]
-    (if (not (available? db)) {:fx [{:type :terminal/read}]}
-        (do
-          (local (history editor) (values (state db) db.editor))
-          (if (= (length history.entries) 0)
-              {:fx [{:type :terminal/read}]}
-              (do
-                (local reset
-                       (or (= history.index 0)
-                           (not= editor.text history.current)))
-                (local start (if reset 0 history.index))
-                (local draft (if reset
-                                 {:attachments (or editor.attachments {})
-                                  :cursor editor.cursor
-                                  :text (or editor.text "")}
-                                 history.draft))
-                (local index
-                       (math.max 0
-                                 (math.min (length history.entries)
-                                           (+ start direction))))
-                (local text
-                       (when (> index 0)
-                         (. history.entries
-                            (+ (- (length history.entries) index) 1))))
-                (local fx [{:type :terminal/read}])
-                (when (not= index start)
-                  (table.insert fx 1
-                                (if (= index 0)
-                                    (restore draft.text draft.attachments
-                                             draft.cursor)
-                                    (restore text))))
-                (updated history
-                         {: index
-                          :draft (misa.replace draft)
-                          :current (misa.replace (if (= index start)
-                                                     history.current
-                                                     text))}
-                         fx))))))
+      (fn navigate [db direction]
+        (if (not (available? db)) {:fx [{:type :terminal/read}]}
+            (do
+              (let [(history editor) (values (state db) db.editor)]
+                (if (= (length history.entries) 0)
+                    {:fx [{:type :terminal/read}]}
+                    (do
+                      (let [reset (or (= history.index 0)
+                                      (not= editor.text history.current))
+                            start (if reset 0 history.index)
+                            draft (if reset
+                                      {:attachments (or editor.attachments {})
+                                       :cursor editor.cursor
+                                       :text (or editor.text "")}
+                                      history.draft)
+                            index (math.max 0
+                                            (math.min (length history.entries)
+                                                      (+ start direction)))
+                            text (when (> index 0)
+                                   (. history.entries
+                                      (+ (- (length history.entries) index) 1)))
+                            fx [{:type :terminal/read}]]
+                        (when (not= index start)
+                          (table.insert fx 1
+                                        (if (= index 0)
+                                            (restore draft.text
+                                                     draft.attachments
+                                                     draft.cursor)
+                                            (restore text))))
+                        (updated history
+                                 {: index
+                                  :draft (misa.replace draft)
+                                  :current (misa.replace (if (= index start)
+                                                             history.current
+                                                             text))}
+                                 fx))))))))
 
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :history/previous
-                         :handler (fn [db] (navigate db 1))}})
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :history/next
-                         :handler (fn [db] (navigate db (- 1)))}})
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :history/search
-                         :handler (fn [db]
-                                    (if (not (available? db))
-                                        {:fx [{:type :terminal/read}]}
-                                        (do
-                                          (local history (state db))
-                                          (local (items seen) (values {} {}))
-                                          (for [index (length history.entries) 1 (- 1)]
-                                            (local text
-                                                   (. history.entries index))
-                                            (when (not (. seen text))
-                                              (tset seen text true)
-                                              (local first
-                                                     (: (: (or (text:match "[^
-]+")
-                                                               "(blank input)")
-                                                           :gsub "\t" " ")
-                                                        :gsub
-                                                        "[%z\001-\031\127]" ""))
-                                              (var label
-                                                   (or (and misa.layout
-                                                            (misa.layout.clip first
-                                                                              100))
-                                                       first))
-                                              (when (< (length label)
-                                                       (length first))
-                                                (set label (.. label "…")))
-                                              (local (_ newlines)
-                                                     (text:gsub "\n" ""))
-                                              (tset items (+ (length items) 1)
-                                                    {:description (or (and (> newlines
-                                                                              0)
-                                                                           (.. (+ newlines
-                                                                                  1)
-                                                                               " lines"))
-                                                                      nil)
-                                                     :id (tostring index)
-                                                     : label
-                                                     :search text
-                                                     :value text})))
-                                          (local sequence
-                                                 (+ history.sequence 1))
-                                          {:patch {:history (misa.replace (misa.patch history
-                                                                                      {: sequence}))}
-                                           :fx [{:event {:completion :history/selected
-                                                         :id :input-history
-                                                         :session (misa.choices.session {: items
-                                                                                         :purpose :history
-                                                                                         :title "Input history"
-                                                                                         :views [:all]}
-                                                                                        db)
-                                                         :title "Input history"
-                                                         :token (tostring sequence)
-                                                         :type :picker/open}
-                                                 :type :dispatch}]})))}})
-  (table.insert declarations
-                {:catalog :events
-                 :value {:event :history/selected
-                         :handler (fn [db event]
-                                    (local history (state db))
-                                    (if (or (not= event.picker :input-history)
-                                            (not= event.picker_token
-                                                  (tostring history.sequence)))
-                                        nil
-                                        (if event.cancelled
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :history/previous
+                             :handler (fn [db] (navigate db 1))}})
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :history/next
+                             :handler (fn [db] (navigate db (- 1)))}})
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :history/search
+                             :handler (fn [db]
+                                        (if (not (available? db))
                                             {:fx [{:type :terminal/read}]}
                                             (do
-                                              (assert (= (type event.value)
-                                                         :string)
-                                                      "history selection must be text")
-                                              (updated history
-                                                       (reset-navigation)
-                                                       [(restore event.value)
-                                                        {:type :terminal/read}])))))}})
-  (table.insert declarations
-                (let [definition {:id :history/input
-                                  :event :terminal/input
-                                  :priority 300
-                                  :context [:db/path]
-                                  :resolve (fn [db event]
-                                             (when (available? db)
-                                               (var action
-                                                    (misa.keybindings.action :history
-                                                                             event))
-                                               (local editor db.editor)
-                                               (local text (or editor.text ""))
-                                               (local cursor
-                                                      (or editor.cursor 0))
-                                               (when (and (not action)
-                                                          (= (or editor.mode
-                                                                 :insert)
-                                                             :insert))
-                                                 (if (and (= event.kind
-                                                             :arrow_up)
-                                                          (not (: (text:sub 1
-                                                                            cursor)
-                                                                  :find "\n" 1
-                                                                  true)))
-                                                     (set action :previous)
-                                                     (and (= event.kind
-                                                             :arrow_down)
-                                                          (not (: (text:sub (+ cursor
-                                                                               1))
-                                                                  :find "\n" 1
-                                                                  true)))
-                                                     (set action :next)))
-                                               (when action
-                                                 {:type (.. :history/ action)})))}]
-                  {:catalog :routes :id (. definition :id) :value definition}))
-  (definitions :history declarations {}))
+                                              (let [history (state db)
+                                                    (items seen) (values {} {})]
+                                                (for [index (length history.entries) 1 (- 1)]
+                                                  (let [text (. history.entries
+                                                                index)]
+                                                    (when (not (. seen text))
+                                                      (tset seen text true)
+                                                      (let [first (: (: (or (text:match "[^
+]+")
+                                                                            "(blank input)")
+                                                                        :gsub
+                                                                        "\t" " ")
+                                                                     :gsub
+                                                                     "[%z\001-\031\127]"
+                                                                     "")]
+                                                        (var label
+                                                             (or (and misa.layout
+                                                                      (misa.layout.clip first
+                                                                                        100))
+                                                                 first))
+                                                        (when (< (length label)
+                                                                 (length first))
+                                                          (set label
+                                                               (.. label "…")))
+                                                        (let [(_ newlines) (text:gsub "\n"
+                                                                                      "")]
+                                                          (tset items
+                                                                (+ (length items)
+                                                                   1)
+                                                                {:description (or (and (> newlines
+                                                                                          0)
+                                                                                       (.. (+ newlines
+                                                                                              1)
+                                                                                           " lines"))
+                                                                                  nil)
+                                                                 :id (tostring index)
+                                                                 : label
+                                                                 :search text
+                                                                 :value text}))))))
+                                                (let [sequence (+ history.sequence
+                                                                  1)]
+                                                  {:patch {:history (misa.replace (misa.patch history
+                                                                                              {: sequence}))}
+                                                   :fx [{:event {:completion :history/selected
+                                                                 :id :input-history
+                                                                 :session (misa.choices.session {: items
+                                                                                                 :purpose :history
+                                                                                                 :title "Input history"
+                                                                                                 :views [:all]}
+                                                                                                db)
+                                                                 :title "Input history"
+                                                                 :token (tostring sequence)
+                                                                 :type :picker/open}
+                                                         :type :dispatch}]})))))}})
+      (table.insert declarations
+                    {:catalog :events
+                     :value {:event :history/selected
+                             :handler (fn [db event]
+                                        (let [history (state db)]
+                                          (if (or (not= event.picker
+                                                        :input-history)
+                                                  (not= event.picker_token
+                                                        (tostring history.sequence)))
+                                              nil
+                                              (if event.cancelled
+                                                  {:fx [{:type :terminal/read}]}
+                                                  (do
+                                                    (assert (= (type event.value)
+                                                               :string)
+                                                            "history selection must be text")
+                                                    (updated history
+                                                             (reset-navigation)
+                                                             [(restore event.value)
+                                                              {:type :terminal/read}]))))))}})
+      (table.insert declarations
+                    (let [definition {:id :history/input
+                                      :event :terminal/input
+                                      :priority 300
+                                      :context [:db/path]
+                                      :resolve (fn [db event]
+                                                 (when (available? db)
+                                                   (var action
+                                                        (misa.keybindings.action :history
+                                                                                 event))
+                                                   (let [editor db.editor
+                                                         text (or editor.text
+                                                                  "")
+                                                         cursor (or editor.cursor
+                                                                    0)]
+                                                     (when (and (not action)
+                                                                (= (or editor.mode
+                                                                       :insert)
+                                                                   :insert))
+                                                       (if (and (= event.kind
+                                                                   :arrow_up)
+                                                                (not (: (text:sub 1
+                                                                                  cursor)
+                                                                        :find
+                                                                        "\n" 1
+                                                                        true)))
+                                                           (set action
+                                                                :previous)
+                                                           (and (= event.kind
+                                                                   :arrow_down)
+                                                                (not (: (text:sub (+ cursor
+                                                                                     1))
+                                                                        :find
+                                                                        "\n" 1
+                                                                        true)))
+                                                           (set action :next)))
+                                                     (when action
+                                                       {:type (.. :history/
+                                                                  action)}))))}]
+                      {:catalog :routes
+                       :id (. definition :id)
+                       :value definition}))
+      (definitions.build :history declarations {}))))
+
+{: build}

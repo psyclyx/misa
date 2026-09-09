@@ -26,9 +26,9 @@
 (var db nil)
 (var expected-syntax nil)
 (var syntax-input-checked false)
-(app.define (declarations :syntax-1 [{:catalog :events  :value {:event :test/read :handler (fn [value] (set db value))}}]))
+(app.define (declarations.build :syntax-1 [{:catalog :events  :value {:event :test/read :handler (fn [value] (set db value))}}]))
 
-(app.define (declarations :syntax-2 [{:catalog :events  :value {:event :syntax/completed :handler (fn [_ event]
+(app.define (declarations.build :syntax-2 [{:catalog :events  :value {:event :syntax/completed :handler (fn [_ event]
                                        (when event.reject
                                          (error "reject completion"))
                                        (when event.mutate
@@ -38,7 +38,7 @@
                                        (when event.reject
                                          (error "reject reset")))}}]))
 
-(app.define (declarations :syntax-3 [{:catalog :components :id :test.syntax-input :value {:render (fn [model]
+(app.define (declarations.build :syntax-3 [{:catalog :components :id :test.syntax-input :value {:render (fn [model]
                                               (assert (= (type model.syntax)
                                                          :table))
                                               (local resolved model.syntax)
