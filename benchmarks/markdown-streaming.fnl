@@ -1,5 +1,4 @@
 (local fennel (require :fennel))
-(local setup (fennel.dofile :benchmarks/setup.fnl))
 (local lua-dofile dofile)
 (fn dofile [path]
   (if (path:match "%.fnl$") (fennel.dofile path) (lua-dofile path)))
@@ -21,9 +20,7 @@
   true)
 
 (fn load [path]
-  (global misa {})
-  (setup (dofile path) {:config {}})
-  misa.markdown)
+  (dofile path))
 
 (local (baseline candidate)
        (values (load (assert (. arg 1))) (load (assert (. arg 2)))))

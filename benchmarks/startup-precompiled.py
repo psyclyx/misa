@@ -44,7 +44,7 @@ for mode, group in samples.items():
     summary[mode] = {
         phase: {"median_ms": statistics.median(s[phase] for s in group) * 1000,
                 "best_ms": min(s[phase] for s in group) * 1000}
-        for phase in ["compile", "load", "construct", "install", "dispatch", "total", "wall"]
+        for phase in ["compile", "load", "install", "dispatch", "total", "wall"]
     }
 print(json.dumps({"summary": summary,
                   "oracle_sha256": hashlib.sha256(next(iter(oracles)).encode()).hexdigest(),

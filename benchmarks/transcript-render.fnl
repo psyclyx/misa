@@ -8,60 +8,95 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:config {}}))
 (local candidate {:patch misa.patch :replace misa.replace :delete misa.delete})
-(local projection-directory (when (= (. arg 1) :--projection-baseline)
-                              (assert (. arg 2) "saved projection directory required")))
+(local projection-directory
+       (when (= (. arg 1) :--projection-baseline)
+         (assert (. arg 2) "saved projection directory required")))
+
 (local baseline-path (when (not projection-directory) (. arg 1)))
 (local comparing (or baseline-path projection-directory))
-(local baseline (if baseline-path ((fennel.dofile baseline-path) misa.json-null) candidate))
+(local baseline
+       (if baseline-path ((fennel.dofile baseline-path) misa.json-null)
+           candidate))
 (local context {:config {}})
-(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.markdown :misa.ui.themes :misa.ui.themes.default :misa.ui.components
-                       :misa.markdown.render :misa.transcript.render :misa.ui.values :misa.ui.components.group :misa.transcript.groups])]
-  (app.define ((. (require name) :build) context)))
-(local specs ((. (fennel.dofile :extensions/misa/transcript/init.fnl) :build) context))
+(each [_ name (ipairs [:misa.json
+                       :misa.ui.layout
+                       :misa.markdown
+                       :misa.ui.themes
+                       :misa.ui.themes.default
+                       :misa.ui.components
+                       :misa.markdown.render
+                       :misa.transcript.render
+                       :misa.ui.values
+                       :misa.ui.components.group
+                       :misa.transcript.groups])]
+  (app.define (. (require :tests.stock) name)))
+
+(local specs (. (require :tests.stock) :misa.transcript))
 (app.define specs)
 (var baseline-project nil)
 (local baseline-roles {})
 (when projection-directory
-  (local saved ((fennel.dofile (.. projection-directory :/messages.fnl)) context))
+  (local saved (fennel.dofile (.. projection-directory :/messages.fnl)))
   (set baseline-project (. saved :projections :transcript.project :render))
-  (local saved-components ((fennel.dofile (.. projection-directory :/message.fnl)) context))
+  (local saved-components
+         (fennel.dofile (.. projection-directory :/message.fnl)))
   (each [id component (pairs saved-components.components)]
     (local role (id:sub 9))
     (local selected (.. :baseline. role))
     (tset baseline-roles role selected)
     (app.define {:components {selected component}})))
+
 (app.install)
 (set candidate.project misa.transcript.project)
 (set baseline-project (or baseline-project misa.transcript.project))
 (local delta (. specs :events :messages/transcript/block-delta :handler))
 (assert delta)
 (local render-context {:columns 80 :interactive true})
-(local source (string.rep "A **bold** [link](https://example.test) with 界 and é.\n\n" 3))
+(local source (string.rep "A **bold** [link](https://example.test) with 界 and é.\n\n"
+                          3))
 (local fragment "stream **bold** [link](https://example.test)\n\n")
-(local cofx {:clock {:wall_ms 1000 :monotonic_ms 1000} :terminal {:interactive true}})
+(local cofx {:clock {:wall_ms 1000 :monotonic_ms 1000}
+             :terminal {:interactive true}})
 
 (each [_ count (ipairs [1 16 300])]
   (local blocks (fcollect [i 1 count]
-                  {:id (tostring i) :response_id :reply :kind :assistant
-                   :text source :started_wall_ms 0}))
-  (tset blocks count {:id (tostring count) :response_id :reply :kind :assistant
-                      :streaming true :chunks [source] :byte_count (length source)
+                  {:id (tostring i)
+                   :response_id :reply
+                   :kind :assistant
+                   :text source
+                   :started_wall_ms 0}))
+  (tset blocks count {:id (tostring count)
+                      :response_id :reply
+                      :kind :assistant
+                      :streaming true
+                      :chunks [source]
+                      :byte_count (length source)
                       :started_wall_ms 0})
-  (local initial {:components {:roles {}} :themes {:active :default}
-                  :messages {:blocks blocks :by_response {:reply 1}
-                             :responses [{:id :reply :role :assistant :block_start 1
-                                          :block_count count :status :streaming}]}})
+  (local initial
+         {:components {:roles {}}
+          :themes {:active :default}
+          :messages {:blocks blocks
+                     :by_response {:reply 1}
+                     :responses [{:id :reply
+                                  :role :assistant
+                                  :block_start 1
+                                  :block_count count
+                                  :status :streaming}]}})
   (local original (misa.json.encode initial))
-  (local event {:type :transcript/block-delta :response_id :reply
-                :block_id (tostring count) :text fragment})
+  (local event {:type :transcript/block-delta
+                :response_id :reply
+                :block_id (tostring count)
+                :text fragment})
   (each [_ mode (ipairs [:redraw :stream])]
     (local oracle [])
+
     (fn run [record api baseline-mode]
       (set misa.patch api.patch)
       (set misa.replace api.replace)
       (set misa.delete api.delete)
       (var db (if (and projection-directory baseline-mode)
-                  (misa.patch initial {:components {:roles baseline-roles}}) initial))
+                  (misa.patch initial {:components {:roles baseline-roles}})
+                  initial))
       (var (render-time update-time) (values 0 0))
       (for [frame 1 8]
         (when (= mode :stream)
@@ -70,30 +105,40 @@
           (set db (misa.patch db (or (and result result.patch) {})))
           (set update-time (+ update-time (- (clock) start))))
         (local start (clock))
-        (local lines ((if baseline-mode baseline-project candidate.project) db render-context))
+        (local lines
+               ((if baseline-mode baseline-project candidate.project) db
+                                                                      render-context))
         (set render-time (+ render-time (- (clock) start)))
         ;; Compare complete output records, including styles and link metadata.
         (local encoded (misa.json.encode lines))
         (if record (tset oracle frame encoded)
-            (assert (= encoded (. oracle frame)) "transcript output changed between identical runs")))
-      (assert (= original (misa.json.encode initial)) "projection or reducer mutated initial state")
+            (assert (= encoded (. oracle frame))
+                    "transcript output changed between identical runs")))
+      (assert (= original (misa.json.encode initial))
+              "projection or reducer mutated initial state")
       (when (= mode :stream)
         (assert (= (table.concat (. db.messages.blocks count :chunks))
-                   (.. source (string.rep fragment 8))) "stream content was lost")
+                   (.. source (string.rep fragment 8)))
+                "stream content was lost")
         (for [i 1 (- count 1)]
           (assert (= (. initial.messages.blocks i) (. db.messages.blocks i))
                   "stream update replaced an unrelated block")))
       (values render-time update-time))
+
     (run true baseline true)
     ;; Six unchanged repetitions establish the oracle and warm both paths.
-    (for [_ 1 6] (run false baseline true) (when comparing (run false candidate false)))
-    (local samples {:baseline {:renders [] :updates [] :totals []}
-                    :candidate {:renders [] :updates [] :totals []}})
+    (for [_ 1 6] (run false baseline true)
+      (when comparing (run false candidate false)))
+    (local samples
+           {:baseline {:renders [] :updates [] :totals []}
+            :candidate {:renders [] :updates [] :totals []}})
     (for [iteration 1 10]
       (each [_ variant (ipairs (if (not comparing) [:baseline]
-                                  (= (% iteration 2) 0) [:candidate :baseline] [:baseline :candidate]))]
-        (local (render-time update-time) (run false (if (= variant :baseline) baseline candidate)
-                                                 (= variant :baseline)))
+                                   (= (% iteration 2) 0) [:candidate :baseline]
+                                   [:baseline :candidate]))]
+        (local (render-time update-time)
+               (run false (if (= variant :baseline) baseline candidate)
+                    (= variant :baseline)))
         (table.insert (. samples variant :renders) render-time)
         (table.insert (. samples variant :updates) update-time)
         (table.insert (. samples variant :totals) (+ render-time update-time))))
@@ -106,6 +151,9 @@
         (table.sort updates)
         (table.sort totals)
         (output (string.format "summary,%d,%s,%s,frames=8,render_median_s=%.9f,render_best_s=%.9f,update_median_s=%.9f,update_best_s=%.9f,total_median_s=%.9f,total_best_s=%.9f"
-                               count mode variant (/ (+ (. renders 5) (. renders 6)) 2) (. renders 1)
-                               (/ (+ (. updates 5) (. updates 6)) 2) (. updates 1)
-                               (/ (+ (. totals 5) (. totals 6)) 2) (. totals 1)))))))
+                               count mode variant
+                               (/ (+ (. renders 5) (. renders 6)) 2)
+                               (. renders 1)
+                               (/ (+ (. updates 5) (. updates 6)) 2)
+                               (. updates 1) (/ (+ (. totals 5) (. totals 6)) 2)
+                               (. totals 1)))))))

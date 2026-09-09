@@ -24,7 +24,7 @@ for _ in range(args.samples):
 oracles = {sample["oracle"] for sample in samples}
 if len(oracles) != 1:
     raise RuntimeError("startup semantics changed across identical runs")
-phases = ["bootstrap", "compile", "load", "setup", "dispatch", "total", "wall"]
+phases = ["bootstrap", "compile", "load", "install", "dispatch", "total", "wall"]
 summary = {
     phase: {"median_ms": statistics.median(s[phase] for s in samples) * 1000,
             "best_ms": min(s[phase] for s in samples) * 1000}

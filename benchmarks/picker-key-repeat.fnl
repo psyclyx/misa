@@ -1,4 +1,4 @@
-(local definitions (require :misa.definitions))
+(local definitions (require :tests.declarations))
 
 ;; Real model catalogue and default model picker; only provider I/O is omitted.
 (fn [context]
@@ -16,4 +16,4 @@
                                                     (when (and (= event.kind :alt) (= event.text :q))
                                                       {:type :bench/quit}))}] {:catalog :routes :id (. definition :id) :value definition}))
           (table.insert effects {:catalog :events  :value {:event :bench/quit :handler (fn [] {:fx [{:type :app/quit}]})}})
-          (definitions.build :benchmarks.picker-key-repeat effects {}))
+          (definitions.collect :benchmarks.picker-key-repeat effects {}))

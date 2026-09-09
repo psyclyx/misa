@@ -1,11 +1,8 @@
 ;; Isolate terminator searches and quote-prefix scanning. The quote depth changes
 ;; intentionally; both variants must preserve its body, and the new one its depth.
 (local fennel (require :fennel))
-(local setup (fennel.dofile :benchmarks/setup.fnl))
 (fn load-parser [path]
-  (global misa {})
-  (setup (fennel.dofile path) {:config {}})
-  misa.markdown.parse)
+  (. (fennel.dofile path) :parse))
 
 (fn equal [a b]
   (if (not= (type a) (type b))

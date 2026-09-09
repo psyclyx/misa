@@ -1,4 +1,4 @@
-;; Compare this service path against saved choices.fnl and choice_layout.fnl.
+;; Compare stock services against saved choices.fnl and choice_layout.fnl catalogs.
 ;; MISA_CHOICE_BASELINE selects that directory; output contains deterministic
 ;; frame oracles plus sample CPU milliseconds per navigation-and-layout step.
 (local fennel (require :fennel))
@@ -13,14 +13,15 @@
                        :misa.keybindings
                        :misa.choices
                        :misa.ui.values
-                       :misa.choices.preview :misa.models.preview
+                       :misa.choices.preview
+                       :misa.models.preview
                        :misa.choices.layout])]
   (local saved (and baseline (. {:misa.choices :choices
                                  :misa.choices.layout :choice_layout}
                                 name)))
   (local module (if saved (fennel.dofile (.. baseline "/" saved ".fnl"))
-                    (require name)))
-  (app.include module {:config {} :argv []}))
+                    (. (require :tests.stock) name)))
+  (app.include module))
 
 (app.install)
 (each [_ count (ipairs [100 1000 3000])]

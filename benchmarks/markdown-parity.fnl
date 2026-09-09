@@ -1,19 +1,16 @@
 (local fennel (require :fennel))
-(local setup (fennel.dofile :benchmarks/setup.fnl))
 (local lua-dofile dofile)
 (fn dofile [path]
   (if (path:match "%.fnl$") (fennel.dofile path) (lua-dofile path)))
 
-(global misa {:json_null {}})
+(global misa {:json-null {}})
 
-(setup (dofile :extensions/misa/json.fnl))
+(set misa.json (dofile :extensions/misa/json.fnl))
 
 (local encode misa.json.encode)
 
 (fn load [path]
-  (global misa {})
-  (setup (dofile path) {:config {}})
-  misa.markdown.parse)
+  (. (dofile path) :parse))
 
 (local (baseline candidate) (values (load (. arg 1)) (load (. arg 2))))
 

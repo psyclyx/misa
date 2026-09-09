@@ -9,8 +9,8 @@ local compiler = setfenv(assert(loadfile("src/lua_runtime/vendor/fennel.lua")), 
 local bootstrap = clock() - started
 package.loaded.fennel = compiler
 compiler.install()
-local rows, by_path = {}, {}
-local totals = {compile = 0, load = 0, construct = 0}
+local rows = {}
+local totals = {compile = 0, load = 0}
 local function source(path)
   local file = assert(open(path, "rb"))
   local text = assert(file:read("*a"))
@@ -18,7 +18,7 @@ local function source(path)
   return text
 end
 local function measured()
-  return totals.compile + totals.load + totals.construct
+  return totals.compile + totals.load
 end
 local function load_fennel(path)
   local text = source(precompiled and (precompiled .. "/" .. path:gsub("%.fnl$", ".lua")) or path)
@@ -34,7 +34,7 @@ local function load_fennel(path)
   local loaded = math.max(0, clock() - start - (measured() - nested))
   totals.load = totals.load + loaded
   local row = {path = path, compile = compiled, load = loaded}
-  rows[#rows + 1], by_path[path] = row, row
+  rows[#rows + 1] = row
   return value
 end
 -- Route dependency imports through the same measured source/precompiled path.
@@ -49,24 +49,6 @@ end)
 package.loaded["misa.runtime.state"] = load_fennel("src/lua_runtime/state.fnl")
 package.loaded["misa.runtime.subscriptions"] = load_fennel("src/lua_runtime/subscriptions.fnl")
 load_fennel("src/lua_runtime/framework.fnl")
-local standard = require("misa.standard")
-for id, module in pairs(standard.default.modules) do
-  local source_name = module.source
-  local build = source_name and require(source_name) or module.build
-  if type(build) == "function" then
-    module.source = nil
-    local path = assert(module_path(source_name or id))
-    module.build = function(context)
-      local nested = measured()
-      local start = clock()
-      local value = build(context)
-      local elapsed = math.max(0, clock() - start - (measured() - nested))
-      totals.construct = totals.construct + elapsed
-      by_path[path].construct = (by_path[path].construct or 0) + elapsed
-      return value
-    end
-  end
-end
 local application = load_fennel("config/default.fnl")
 local context = {config = application.config, argv = {}, host = {executable = "misa"}}
 local start = clock()
@@ -86,6 +68,6 @@ local dispatch = clock() - start
 local oracle = misa.json.encode({effects = effects, view = view,
                                 models = #misa.models.all(), commands = #misa.commands.all()})
 write(misa.json.encode({bootstrap = bootstrap, compile = totals.compile,
-                       load = totals.load, construct = totals.construct,
+                       load = totals.load,
                        install = installed, dispatch = dispatch,
                        total = clock() - started, rows = rows, oracle = oracle}), "\n")
