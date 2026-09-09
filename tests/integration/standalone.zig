@@ -319,6 +319,12 @@ test "ui layout" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/ui-layout.fnl"} }, "layout contracts passed\n");
 }
 
+test "file tool contracts expose hashline reads and compatible edits" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/file-tools.fnl"} }, "file tool contracts passed\n");
+}
+
 test "Codex discovers the authenticated model catalogue" {
     var h = try Harness.init();
     defer h.deinit();

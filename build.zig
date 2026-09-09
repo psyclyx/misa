@@ -237,6 +237,7 @@ pub fn build(b: *std.Build) void {
     const config_unit = b.addTest(.{ .root_module = config });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const process_unit = b.addTest(.{ .root_module = process_effect });
+    const file_unit = b.addTest(.{ .root_module = file_effect });
     const state_unit = b.addTest(.{ .root_module = state });
     const image_unit = b.addTest(.{ .root_module = image });
     const syntax_unit = b.addTest(.{ .root_module = syntax });
@@ -250,6 +251,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(config_unit).step);
     test_step.dependOn(&b.addRunArtifact(resolver_unit).step);
     test_step.dependOn(&b.addRunArtifact(process_unit).step);
+    test_step.dependOn(&b.addRunArtifact(file_unit).step);
     test_step.dependOn(&b.addRunArtifact(state_unit).step);
     test_step.dependOn(&b.addRunArtifact(image_unit).step);
     test_step.dependOn(&b.addRunArtifact(syntax_unit).step);

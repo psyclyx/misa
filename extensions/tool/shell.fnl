@@ -48,6 +48,16 @@
                                                  (not= (text:sub (- 1)) "\n"))
                                         (set text (.. text "\n")))
                                       (set text (.. text event.stderr)))
+                                    (when (not event.ok)
+                                      (local messages {:Canceled "Command cancelled."
+                                                       :StartupTimeout "The command did not start producing output before the timeout."
+                                                       :IdleTimeout "The command stopped producing output and timed out."
+                                                       :OverallTimeout "The command exceeded its time limit."
+                                                       :FileNotFound "The shell executable could not be found. Check the configured shell path."
+                                                       :AccessDenied "Permission denied when starting the shell."})
+                                      (local headline (or (. messages event.message)
+                                                          (.. "Command exited with status " (tostring event.status) ".")))
+                                      (set text (.. headline (if (= text "") "" (.. "\n" text)))))
                                     (when (= text "")
                                       (set text
                                            (or (and event.ok

@@ -508,10 +508,11 @@ fn cloneJson(a: std.mem.Allocator, value: std.json.Value) !std.json.Value {
 
 fn cloneFile(a: std.mem.Allocator, source: file.Spec) !file.Spec {
     return switch (source) {
-        .read => |value| .{ .read = .{ .path = try a.dupe(u8, value.path), .completion = try a.dupe(u8, value.completion), .id = try a.dupe(u8, value.id) } },
+        .read => |value| .{ .read = .{ .path = try a.dupe(u8, value.path), .completion = try a.dupe(u8, value.completion), .id = try a.dupe(u8, value.id), .anchored = value.anchored, .start_line = value.start_line, .max_lines = value.max_lines } },
         .list => |value| .{ .list = .{ .path = try a.dupe(u8, value.path), .completion = try a.dupe(u8, value.completion), .id = try a.dupe(u8, value.id) } },
         .write => |value| .{ .write = .{ .path = try a.dupe(u8, value.path), .content = try a.dupe(u8, value.content), .completion = try a.dupe(u8, value.completion), .id = try a.dupe(u8, value.id) } },
         .edit => |value| .{ .edit = .{ .path = try a.dupe(u8, value.path), .old = try a.dupe(u8, value.old), .new = try a.dupe(u8, value.new), .completion = try a.dupe(u8, value.completion), .id = try a.dupe(u8, value.id) } },
+        .edit_lines => |value| .{ .edit_lines = .{ .path = try a.dupe(u8, value.path), .snapshot = try a.dupe(u8, value.snapshot), .start = try a.dupe(u8, value.start), .end = try a.dupe(u8, value.end), .position = value.position, .content = try a.dupe(u8, value.content), .completion = try a.dupe(u8, value.completion), .id = try a.dupe(u8, value.id) } },
     };
 }
 
