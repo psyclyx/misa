@@ -225,14 +225,46 @@ fn fetch(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Sp
     defer if (encoded) |value| allocator.free(value);
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
-    const response = try client.fetch(.{
-        .location = .{ .url = spec.url },
-        .method = spec.method,
-        .payload = encoded orelse spec.body,
+    const payload = encoded orelse spec.body;
+    const redirects: std.http.Client.Request.RedirectBehavior = if (payload == null) @enumFromInt(3) else .unhandled;
+    var req = try client.request(spec.method, try std.Uri.parse(spec.url), .{
+        .redirect_behavior = redirects,
         .extra_headers = headers.items,
-        .response_writer = writer,
     });
-    return @intFromEnum(response.status);
+    defer req.deinit();
+    if (payload) |bytes| {
+        req.transfer_encoding = .{ .content_length = bytes.len };
+        var body = try req.sendBodyUnflushed(&.{});
+        try body.writer.writeAll(bytes);
+        try body.end();
+        try req.connection.?.flush();
+    } else try req.sendBodiless();
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+    const decompress_buffer = try allocator.alloc(u8, switch (response.head.content_encoding) {
+        .identity => 0,
+        .zstd => std.compress.zstd.default_window_len,
+        .deflate, .gzip => std.compress.flate.max_window_len,
+        .compress => return error.UnsupportedCompressionMethod,
+    });
+    defer allocator.free(decompress_buffer);
+    var transfer_buffer: [64]u8 = undefined;
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+    _ = reader.streamRemaining(writer) catch |err| switch (err) {
+        // Zig 0.16's Client.fetch unwraps bodyErr here, but a canceled
+        // socket read can leave that HTTP framing error unset (also via TLS).
+        // The socket reader retains the original error, including Canceled.
+        error.ReadFailed => {
+            if (req.connection) |connection| {
+                if (connection.stream_reader.err) |failure| return failure;
+            }
+            if (response.bodyErr()) |failure| return failure;
+            return error.ReadFailed;
+        },
+        else => return err,
+    };
+    return @intFromEnum(response.head.status);
 }
 
 const SseWriter = struct {

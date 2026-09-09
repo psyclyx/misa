@@ -11,6 +11,13 @@ const syntax_module = @import("misa_syntax");
 const terminal_module = @import("misa_terminal");
 const session_module = @import("misa_session");
 
+pub const panic = std.debug.FullPanic(struct {
+    fn panic(message: []const u8, first_trace_addr: ?usize) noreturn {
+        terminal_module.restoreAfterFailure();
+        std.debug.defaultPanic(message, first_trace_addr);
+    }
+}.panic);
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     var args_iterator = try init.minimal.args.iterateAllocator(allocator);

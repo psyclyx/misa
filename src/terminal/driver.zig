@@ -252,8 +252,14 @@ fn loop(self: *Driver) !void {
         }
         if (self.decoder_deadline) |deadline| timeout = @intCast(@min(timeout, @max(0, @divFloor(deadline - now + std.time.ns_per_ms - 1, std.time.ns_per_ms))));
         const ready = try self.terminal.waitSources(self.actor_wakeup.read_fd, want_input, timeout);
-        // Commands win readiness races with stdin (especially handoff/discard).
-        if (ready.operation) continue;
+        // Ownership commands win races with stdin. Frame publications and
+        // input acknowledgements must not starve a simultaneously ready tty.
+        if (ready.operation) {
+            self.mutex.lockUncancelable(self.io);
+            const control_pending = self.stopping or self.command != null;
+            self.mutex.unlock(self.io);
+            if (control_pending) continue;
+        }
         if (ready.input) {
             self.decoded.clearRetainingCapacity();
             self.decoded_head = 0;

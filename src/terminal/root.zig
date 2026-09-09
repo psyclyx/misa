@@ -44,11 +44,12 @@ pub const PreparedPresentation = struct {
 const frame_end = "\x1b[?7h\x1b[?2026l";
 const show_cursor = "\x1b[?25h";
 const enter_managed_screen = "\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1003h\x1b[?1006h\x1b[>1u";
-const leave_managed_screen = "\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?2004l\x1b[?25h\x1b[?1049l";
+const leave_managed_screen = "\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l";
 
-const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM };
+const handled_signals = [_]posix.SIG{ .HUP, .INT, .QUIT, .TERM, .ABRT };
 const SignalState = struct {
     active: std.atomic.Value(bool) = .init(false),
+    failed: std.atomic.Value(bool) = .init(false),
     screen_active: std.atomic.Value(bool) = .init(false),
     resize_pending: std.atomic.Value(bool) = .init(false),
     saved_termios: posix.termios = undefined,
@@ -57,13 +58,19 @@ const SignalState = struct {
 };
 var signal_state: SignalState = .{};
 
-fn restoreOnSignal(sig: posix.SIG) callconv(.c) void {
-    if (!signal_state.active.load(.acquire)) return;
+/// Allocation-free, lock-free cleanup for panic and fatal signal paths.
+pub fn restoreAfterFailure() void {
+    signal_state.failed.store(true, .release);
+    if (!signal_state.active.swap(false, .acq_rel)) return;
     if (signal_state.screen_active.load(.acquire))
         _ = posix.system.write(posix.STDOUT_FILENO, leave_managed_screen.ptr, leave_managed_screen.len)
     else
         _ = posix.system.write(posix.STDOUT_FILENO, show_cursor.ptr, show_cursor.len);
     posix.tcsetattr(posix.STDIN_FILENO, .NOW, signal_state.saved_termios) catch {};
+}
+
+fn restoreOnSignal(sig: posix.SIG) callconv(.c) void {
+    restoreAfterFailure();
     for (handled_signals, 0..) |candidate, i| {
         if (candidate == sig) {
             posix.sigaction(candidate, &signal_state.old_actions[i], null);
@@ -134,6 +141,7 @@ pub const Terminal = struct {
             std.debug.assert(!signal_state.active.load(.acquire));
             self.saved = input_attr.?;
             signal_state.saved_termios = input_attr.?;
+            signal_state.failed.store(false, .release);
             var signal_mask = posix.sigemptyset();
             for (handled_signals) |sig| posix.sigaddset(&signal_mask, sig);
             posix.sigaddset(&signal_mask, .WINCH);
@@ -475,6 +483,7 @@ pub const Terminal = struct {
     }
 
     fn writeAll(self: *Terminal, bytes: []const u8) !void {
+        if (signal_state.failed.load(.acquire)) return error.TerminalFailed;
         try std.Io.File.stdout().writeStreamingAll(self.io, bytes);
     }
 };
@@ -525,7 +534,7 @@ fn parseDimension(value: ?[]const u8, fallback: usize) usize {
 
 test "managed screen lifetime and frames use distinct control sequences" {
     try std.testing.expectEqualStrings("\x1b[?25l\x1b[?1049h\x1b[H\x1b[2J\x1b[?2004h\x1b[?1003h\x1b[?1006h\x1b[>1u", enter_managed_screen);
-    try std.testing.expectEqualStrings("\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?2004l\x1b[?25h\x1b[?1049l", leave_managed_screen);
+    try std.testing.expectEqualStrings("\x1b[?2026l\x1b[?7h\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l", leave_managed_screen);
     try std.testing.expect(std.mem.indexOf(u8, enter_managed_screen, leave_managed_screen) == null);
 }
 

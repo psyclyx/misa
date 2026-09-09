@@ -8,3 +8,7 @@ result-*
 # Zig
 .zig-cache/
 zig-out/
+
+# Python test and benchmark bytecode
+__pycache__/
+*.py[cod]
