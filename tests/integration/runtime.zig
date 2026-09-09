@@ -204,6 +204,6 @@ test "component resolution preserves cached semantic spans across themes" {
         \\    end}}}
         \\end
     );
-    try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {\"themes\" {\"persist\" false} \"components\" {\"persist\" false}}\n   :modules {\n    \"module-1\" {:priority 0 :build (require \"themes\")}\n    \"module-2\" {:priority 1000 :build (require \"theme.default\")}\n    \"module-3\" {:priority 2000 :build (require \"components\")}\n    \"module-4\" {:priority 3000 :build (dofile \"@WORK@/cached-component.lua\")}}})\n");
+    try h.config("(local standard (require :misa.standard))\n\n(standard.application\n  {:config {\"themes\" {\"persist\" false} \"components\" {\"persist\" false}}\n   :modules {\n    \"module-1\" {:priority 0 :build (require \"misa.ui.themes\")}\n    \"module-2\" {:priority 1000 :build (require \"misa.ui.themes.default\")}\n    \"module-3\" {:priority 2000 :build (require \"misa.ui.components\")}\n    \"module-4\" {:priority 3000 :build (dofile \"@WORK@/cached-component.lua\")}}})\n");
     try h.expect(.{}, "pure components\n");
 }

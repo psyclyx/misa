@@ -5,9 +5,9 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:config {}})
-(app.define ((fennel.dofile :extensions/json.fnl) context))
-(app.define ((fennel.dofile :extensions/preferences.fnl) context))
-(local specs ((fennel.dofile :extensions/commands.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/choices/preferences.fnl) context))
+(local specs ((fennel.dofile :extensions/misa/commands/init.fnl) context))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))

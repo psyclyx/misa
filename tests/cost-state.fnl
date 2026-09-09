@@ -5,7 +5,7 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(local specs ((fennel.dofile :extensions/costs.fnl)
+(local specs ((fennel.dofile :extensions/misa/agent/costs.fnl)
               {:config {:costs {:models {:test {:input 2 :output 4}}}}}))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
@@ -41,7 +41,7 @@
 (assert (= (next cleared.db.costs.responses) nil))
 (assert interrupted.db.costs.responses.current)
 (app.define specs)
-(app.define ((fennel.dofile :extensions/values.fnl) {}))
+(app.define ((fennel.dofile :extensions/misa/ui/values.fnl) {}))
 (app.install)
 (local scope (misa.subscriptions.scope))
 (local pending-cost (scope.query started.db [:costs/response :current]))

@@ -4,10 +4,10 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local definitions (require :misa.definitions))
-(local specs ((fennel.dofile :extensions/provider/claude.fnl) {:config {}}))
+(local specs ((fennel.dofile :extensions/misa/providers/claude.fnl) {:config {}}))
 (local application (misa.compose
- [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+ [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
   (misa.compose [{:definitions specs}])
   {:definitions (definitions :test [{:catalog :claude-records :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}
                          {:catalog :claude-stream-events :id :custom :value (fn [state] {:state (misa.patch state {:custom_partial true})})}])}]))

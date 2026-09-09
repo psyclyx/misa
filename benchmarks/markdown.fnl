@@ -6,7 +6,7 @@
 
 ;; Public parser A/B harness. Run sequentially in a quiet environment:
 
-;; tools/fennel benchmarks/markdown.fnl /path/to/baseline.lua extensions/markdown.fnl
+;; tools/fennel benchmarks/markdown.fnl /path/to/baseline.lua extensions/misa/text/markdown.fnl
 
 (local baseline-path (assert (. arg 1) "baseline source required"))
 
@@ -18,7 +18,7 @@
 
 (global misa {:json_null {}})
 
-(setup (dofile :extensions/json.fnl))
+(setup (dofile :extensions/misa/json.fnl))
 
 (local encode misa.json.encode)
 

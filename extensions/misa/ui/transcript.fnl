@@ -523,7 +523,7 @@
                                       :rail.harness)}})})
 
 (fn [context]
-  "Build the declarations for messages."
+  "Build the declarations for transcript presentation."
   (local declarations [])
   (local projectors {})
   (each [id project (pairs presentations)] (tset projectors id project))

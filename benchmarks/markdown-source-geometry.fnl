@@ -3,15 +3,15 @@
 (local fennel (require :fennel))
 (local setup (fennel.dofile :benchmarks/setup.fnl))
 (global misa {:json_null {}})
-(each [_ name (ipairs [:json :layout])]
-  (setup (fennel.dofile (.. :extensions/ name :.fnl))))
+(each [_ name (ipairs [:misa.json :misa.ui.layout])]
+  (setup (require name)))
 (fn load [parser component]
   (set misa.markdown nil)
   (setup (fennel.dofile parser))
   (setup (fennel.dofile component))
   {:parser misa.markdown :view misa.markdown.view})
 (local baseline (load (assert (. arg 1)) (assert (. arg 2))))
-(local candidate (load :extensions/markdown.fnl :extensions/component/markdown.fnl))
+(local candidate (load :extensions/misa/text/markdown.fnl :extensions/misa/ui/components/markdown.fnl))
 (local source (string.rep "# Heading\n\nordinary **bold** and [link](https://example.test) with escaped \\* text\n  continuing on another source line\n\n- first second third fourth\n- next item\n\n| key | value |\n| --- | --- |\n| one | **two** |\n\n" 30))
 (local streaming [])
 (local redraw [])

@@ -14,22 +14,22 @@
 
 (local app ((require :tests.application) context))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:json
-                       :keybindings
-                       :actions
-                       :layout
-                       :commands
-                       :choices
-                       :themes
-                       :theme/default
-                       :components
-                       :component/editor
-                       :agent
-                       :queue
-                       :editor
-                       :images
-                       :editing])]
-  (app.include (dofile (.. :extensions/ name :.fnl)) context))
+(each [_ name (ipairs [:misa.json
+                       :misa.commands.keybindings
+                       :misa.commands.actions
+                       :misa.ui.layout
+                       :misa.commands
+                       :misa.choices
+                       :misa.ui.themes
+                       :misa.ui.themes.default
+                       :misa.ui.components
+                       :misa.ui.components.editor
+                       :misa.agent
+                       :misa.editor.queue
+                       :misa.editor
+                       :misa.editor.images
+                       :misa.editor.editing])]
+  (app.include (require name) context))
 
 (var (db native) nil)
 

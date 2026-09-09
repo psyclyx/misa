@@ -10,7 +10,7 @@ fn expectFailure(h: *Harness, invocation: Harness.Invocation, needles: []const [
 
 test "invalid extension and callback contracts report actionable errors" {
     inline for (.{
-        .{ "bad", "provider.unknown" },
+        .{ "bad", "misa.providers.unknown" },
         .{ "fail", "exploded" },
         .{ "missing-definitions", "module requires definitions" },
         .{ "malformed-module", "module returned no definitions" },
@@ -41,7 +41,7 @@ test "installed generated extensions preserve actionable diagnostics" {
     try h.config(
         \\(local standard (require :misa.standard))
         \\(standard.application {:config {:models {:default 42}}
-        \\                       :modules {:models {:build (require :models)}}})
+        \\                       :modules {:models {:build (require :misa.agent.models)}}})
     );
     try expectFailure(&h, .{ .binary = @import("integration_options").installed_binary }, &.{ "models.lua:", "config.models.default must be a nonempty string", "stack traceback:" });
 }

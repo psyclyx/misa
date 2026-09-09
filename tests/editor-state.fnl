@@ -6,11 +6,11 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
-(each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices
-                       :themes :theme/default :components :component/editor
-                       :component/picker :values :choices/preview :choices/layout])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
-(local specs ((fennel.dofile :extensions/editor.fnl) context))
+(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices
+                       :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.components.editor
+                       :misa.ui.components.picker :misa.ui.values :misa.choices.preview :misa.choices.layout])]
+  (app.define ((require name) context)))
+(local specs ((fennel.dofile :extensions/misa/editor/init.fnl) context))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))
@@ -20,7 +20,7 @@
                           {:catalog :completions :id (.. :test "/" (. {:value :alpha} :value)) :value {:group :test :value {:value :alpha}}}
                           {:catalog :completions :id (.. :test "/" (. {:value :beta} :value)) :value {:group :test :value {:value :beta}}}]))
 (app.define (definitions :test [{:catalog :editor-edits :id :test_edit :value (fn [editor] (misa.patch editor {:text :custom :cursor 6}))}]))
-(app.define ((fennel.dofile :extensions/editing.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/editor/editing.fnl) context))
 (app.install)
 (local cofx {:argv [] :terminal {:columns 80 :lines 24 :interactive true}})
 (fn transition [db event]

@@ -1,15 +1,15 @@
 # Subscription contracts
 
-Subscriptions are pure queries, independent of rendering. Register either a
-state read or a computation with explicit query dependencies:
+Subscriptions are pure queries, independent of rendering. Declare either a
+state read or a computation in the `subscriptions` catalog:
 
 ```fennel
-{:type :register/sub
- :value {:id :usage/total
-         :inputs [[:db/path :status :usage]]
-         :compute (fn [inputs query]
-                    (local usage (or (. inputs 1) {}))
-                    (+ (or usage.input_tokens 0) (or usage.output_tokens 0)))}}
+{:subscriptions
+ {:usage/total
+  {:inputs [[:db/path :status :usage]]
+   :compute (fn [inputs query]
+              (local usage (or (. inputs 1) {}))
+              (+ (or usage.input_tokens 0) (or usage.output_tokens 0)))}}}
 
 (misa.sub db [:usage/total])
 ```
@@ -17,7 +17,7 @@ state read or a computation with explicit query dependencies:
 A read uses `:read (fn [db query] ...)`, with neither `inputs` nor `compute`.
 A computation supplies both `inputs` and `compute`, with no `read`. Declare fixed
 dependencies as a dense vector of query vectors in `inputs`; these are validated
-at registration. When dependencies depend on query arguments, use a function:
+at installation. When dependencies depend on query arguments, use a function:
 `:inputs (fn [query] [[:db/path :costs :responses (. query 2)]])`.
 Its returned vector is validated during evaluation. The computation receives positional
 values plus `inputs.n`, the dependency count: missing values remain nil even at
@@ -42,7 +42,7 @@ one scope entry per historical response. Unrelated state changes preserve result
 while cached. Existing cost presentation services query this graph rather than
 owning a separate cache.
 
-Indicators declare named queries through `register/indicator.query`. The
+Entries in the `indicators` catalog declare named queries through `query`. The
 `[:indicators/model]` subscription composes those dependencies into ordered
 records containing immutable `fact` data and configured presentation metadata.
 Only nil omits a fact; typed false and zero remain visible. Width, theme, hover,
@@ -69,7 +69,7 @@ recomputation, so callbacks must not rely on running exactly once.
 Other consumers can own a scope explicitly:
 
 ```fennel
-(local scope (misa.subscription_scope 128))
+(local scope (misa.subscriptions.scope 128))
 (scope.query db [:usage/total])
 (local speculative (scope.fork))
 ;; Use the fork for speculative work; retain it on success or close it on failure.
@@ -92,7 +92,7 @@ not clone the database or reconcile a mutable draft. Updates enter through
 patches. Ordinary tables are not write-protected: callback purity is a contract,
 not a sandbox, and in-place mutation cannot be rolled back. Sharing layout work
 through subscriptions uses collection ownership rather than one flat scope
-entry per historical item. `misa.project_components` owns semantic component
+entry per historical item. `misa.components.project` owns semantic component
 output, incremental hints, and resolved views in one collection subscription;
 syntax and cost enrichment likewise use shared collection projections.
 Model preparation and viewport assembly still perform general traversal; this

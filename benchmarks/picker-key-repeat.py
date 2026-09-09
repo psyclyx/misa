@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='misa-picker-repeat-') as directory:
     for name in ('history', 'themes', 'components', 'preferences'):
         settings.setdefault(name, {})['persist'] = False
     path = work / 'config.fnl'
-    path.write_text(application(config, default=True, omit=('provider.', 'protocol.', 'auth')))
+    path.write_text(application(config, default=True, omit=('misa.providers.', 'misa.protocols.openai', 'misa.protocols.anthropic')))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
     original = termios.tcgetattr(slave)

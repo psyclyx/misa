@@ -6,9 +6,9 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(app.include (fennel.dofile :extensions/json.fnl) {})
+(app.include (fennel.dofile :extensions/misa/json.fnl) {})
 ;; Providers register after the auth extension in supported configurations.
-(local specs ((fennel.dofile :extensions/auth.fnl) {:config {}}))
+(local specs ((fennel.dofile :extensions/misa/providers/auth.fnl) {:config {}}))
 (local handlers {})
 (each [_ spec (pairs specs.events)]
   (tset handlers spec.event spec.handler)
@@ -71,9 +71,9 @@
   (local app _G.misa)
   (local context {:argv argv :config {}})
   (local scenario ((require :tests.application) context))
-  (scenario.include (fennel.dofile :extensions/json.fnl) context)
+  (scenario.include (fennel.dofile :extensions/misa/json.fnl) context)
   (each [_ name (ipairs order)]
-    (scenario.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
+    (scenario.include (require name) context))
   (when with-providers
     (scenario.define (declarations :auth-case-604 [(let [definition {:id :fixture :model_provider :fixture :strategy :api_key
                                       :discover_models true}] {:catalog :auth-providers :id (. definition :id) :value definition})
@@ -100,7 +100,7 @@
                    {:wall_ms 0 :monotonic_ms 0})
     (app._commit))
   (dispatch {:type :app/start})
-  (local has-auth (accumulate [found false _ name (ipairs order)] (or found (= name :auth))))
+  (local has-auth (accumulate [found false _ name (ipairs order)] (or found (= name :misa.providers.auth))))
   (when (and has-auth with-providers)
     (assert (= (length requests) 0) "startup prompt escaped the auth gate")
     (dispatch {:type :auth/startup-ready})
@@ -123,11 +123,11 @@
   (dispatch {:type :agent/startup})
   (dispatch {:type :auth/startup-ready})
   (assert (= (length requests) expected) "duplicate continuation submitted twice"))
-(each [_ order (ipairs [[:agent :auth] [:auth :agent]])]
+(each [_ order (ipairs [[:misa.agent :misa.providers.auth] [:misa.providers.auth :misa.agent]])]
   (each [_ early (ipairs [false true])]
     (startup-case order true early [:hello :world]))
   (startup-case order false false [:hello :world])
   (startup-case order true false []))
-(startup-case [:agent] false false [:hello :world])
-(startup-case [:agent] false false [])
+(startup-case [:misa.agent] false false [:hello :world])
+(startup-case [:misa.agent] false false [])
 (output "auth state contracts passed\n")

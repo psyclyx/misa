@@ -5,8 +5,8 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
-(local specs ((fennel.dofile :extensions/dialogs.fnl)))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
+(local specs ((fennel.dofile :extensions/misa/dialogs/init.fnl)))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))

@@ -15,7 +15,7 @@
                    {:type :dispatch :event {:type :tool/result :tool_call_id effect.tool_call_id :text :done}})}
        {:catalog :serializers :id :fixture :value {:accepts (fn [name] (= name :effort))
                      :serialize (fn [_ value] {:reasoning {:effort value}})}}]))
-(misa._install (. (misa.compose [{:definitions ((fennel.dofile :extensions/json.fnl) {})} {:definitions policy}]) :definitions) {:argv [] :config {}})
+(misa._install (. (misa.compose [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})} {:definitions policy}]) :definitions) {:argv [] :config {}})
 (local terminal {:interactive false :columns 80 :lines 24})
 (local clock {:wall_ms 123 :monotonic_ms 456})
 (local fx (misa._dispatch {:type :fixture/run} terminal clock))

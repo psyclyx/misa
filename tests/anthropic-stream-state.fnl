@@ -4,11 +4,11 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local definitions (require :misa.definitions))
-(local protocol (require :protocol.anthropic))
+(local protocol (require :misa.protocols.anthropic))
 (local specs (protocol.configure {:id :test :url "https://example.invalid/messages" :models []}))
 (local application (misa.compose
- [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+ [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
   (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
   {:definitions (definitions :test [{:catalog :anthropic-block-deltas :id :custom :value (fn [_ record] {:patch {:custom record.delta.value}})}
                          {:catalog :anthropic-block-starts :id :custom :value (fn [] {:patch {:custom_started true}})}

@@ -5,8 +5,8 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(app.define ((fennel.dofile :extensions/json.fnl) {:config {}}))
-(app.add :animation/default)
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {:config {}}))
+(app.add :misa.ui.animations.default)
 (app.install)
 
 (each [_ persist (ipairs [false true])]
@@ -14,7 +14,7 @@
     (local config {: persist})
     (when (= name :components) (tset config :message :custom.message))
     (when (= name :animations) (tset config :roles {:status :default}))
-    (local specs ((fennel.dofile (.. :extensions/ name :.fnl))
+    (local specs ((require (.. :misa.ui. name))
                  {:config {name config}}))
     (var start nil)
     (assert (= specs.interceptors nil) "startup must not install middleware")

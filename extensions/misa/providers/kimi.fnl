@@ -1,4 +1,4 @@
-(local protocol (require :protocol.anthropic))
+(local protocol (require :misa.protocols.anthropic))
 (local definitions (require :misa.definitions))
 
 ;; Kimi Code subscription/API provider over Anthropic Messages.

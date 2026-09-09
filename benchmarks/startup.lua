@@ -38,11 +38,12 @@ local function load_fennel(path)
   return value
 end
 -- Route dependency imports through the same measured source/precompiled path.
+local function module_path(name)
+  return compiler.searchModule(name, "extensions/?.fnl;extensions/?/init.fnl")
+end
 table.insert(package.loaders, 1, function(name)
-  local path = "extensions/" .. name:gsub("%.", "/") .. ".fnl"
-  local file = open(path, "rb")
-  if not file then return "\n\tno benchmark module '" .. path .. "'" end
-  file:close()
+  local path = module_path(name)
+  if not path then return "\n\tno benchmark module '" .. name .. "'" end
   return function() return load_fennel(path) end
 end)
 package.loaded["misa.runtime.state"] = load_fennel("src/lua_runtime/state.fnl")
@@ -54,7 +55,7 @@ for id, module in pairs(standard.default.modules) do
   local build = source_name and require(source_name) or module.build
   if type(build) == "function" then
     module.source = nil
-    local path = "extensions/" .. (source_name or id):gsub("%.", "/") .. ".fnl"
+    local path = assert(module_path(source_name or id))
     module.build = function(context)
       local nested = measured()
       local start = clock()

@@ -11,21 +11,21 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(app.include (fennel.dofile :extensions/stream.fnl) {})
+(app.include (fennel.dofile :extensions/misa/protocols/stream.fnl) {})
 
-(each [_ name (ipairs [:json
-                       :protocol/openai
-                       :protocol/anthropic
-                       :provider/openai-codex
-                       :agent
-                       :queue])]
-  (app.include (dofile (.. :extensions/ name :.fnl)) context))
+(each [_ name (ipairs [:misa.json
+                       :misa.protocols.openai
+                       :misa.protocols.anthropic
+                       :misa.providers.openai-codex
+                       :misa.agent
+                       :misa.editor.queue])]
+  (app.include (require name) context))
 
-(app.define ((. (require :protocol.openai) :configure) {:id :fixture-chat
+(app.define ((. (require :misa.protocols.openai) :configure) {:id :fixture-chat
                                              :models {}
                                              :url "https://fixture.invalid"}))
 
-(app.define ((. (require :protocol.anthropic) :configure) {:id :fixture-anthropic
+(app.define ((. (require :misa.protocols.anthropic) :configure) {:id :fixture-anthropic
                                                 :models {}
                                                 :url "https://fixture.invalid"}))
 

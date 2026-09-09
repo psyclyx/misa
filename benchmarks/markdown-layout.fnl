@@ -2,13 +2,13 @@
 (local fennel (require :fennel))
 (local setup (fennel.dofile :benchmarks/setup.fnl))
 (global misa {:json_null {}})
-(each [_ name (ipairs [:json :layout :markdown])]
-  (setup (fennel.dofile (.. :extensions/ name :.fnl))))
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.text.markdown])]
+  (setup (require name)))
 (local encode misa.json.encode)
 (local baseline-path (assert (. arg 1) "baseline component source required"))
 (setup (fennel.dofile baseline-path))
 (local baseline misa.markdown.view)
-(setup (fennel.dofile :extensions/component/markdown.fnl))
+(setup (fennel.dofile :extensions/misa/ui/components/markdown.fnl))
 (local candidate misa.markdown.view)
 (local source (string.rep "# Heading\n\nordinary **bold** and [link](https://example.test)\n\n```lua\nlocal x = 1\n```\n\n" 40))
 (local streaming [])

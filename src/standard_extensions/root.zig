@@ -9,84 +9,84 @@ pub const Entry = struct { id: []const u8, path: []const u8 };
 
 /// Single source for discovery, build-time translation, and runtime resolution.
 pub const entries = [_]Entry{
-    .{ .id = "misa.definitions", .path = "misa/definitions.fnl" },
+    .{ .id = "misa.agent", .path = "misa/agent/init.fnl" },
+    .{ .id = "misa.agent.costs", .path = "misa/agent/costs.fnl" },
+    .{ .id = "misa.agent.effort", .path = "misa/agent/effort.fnl" },
+    .{ .id = "misa.agent.models", .path = "misa/agent/models.fnl" },
+    .{ .id = "misa.agent.request-options", .path = "misa/agent/request-options.fnl" },
+    .{ .id = "misa.choices", .path = "misa/choices/init.fnl" },
+    .{ .id = "misa.choices.layout", .path = "misa/choices/layout.fnl" },
+    .{ .id = "misa.choices.picker", .path = "misa/choices/picker/init.fnl" },
+    .{ .id = "misa.choices.picker.view", .path = "misa/choices/picker/view.fnl" },
+    .{ .id = "misa.choices.preferences", .path = "misa/choices/preferences.fnl" },
+    .{ .id = "misa.choices.preview", .path = "misa/choices/preview.fnl" },
+    .{ .id = "misa.commands", .path = "misa/commands/init.fnl" },
+    .{ .id = "misa.commands.actions", .path = "misa/commands/actions.fnl" },
+    .{ .id = "misa.commands.keybindings", .path = "misa/commands/keybindings.fnl" },
+    .{ .id = "misa.commands.palette", .path = "misa/commands/palette.fnl" },
     .{ .id = "misa.default", .path = "misa/default.fnl" },
+    .{ .id = "misa.definitions", .path = "misa/definitions.fnl" },
+    .{ .id = "misa.dialogs", .path = "misa/dialogs/init.fnl" },
+    .{ .id = "misa.dialogs.view", .path = "misa/dialogs/view.fnl" },
+    .{ .id = "misa.editor", .path = "misa/editor/init.fnl" },
+    .{ .id = "misa.editor.attachments", .path = "misa/editor/attachments.fnl" },
+    .{ .id = "misa.editor.editing", .path = "misa/editor/editing.fnl" },
+    .{ .id = "misa.editor.history", .path = "misa/editor/history.fnl" },
+    .{ .id = "misa.editor.images", .path = "misa/editor/images.fnl" },
+    .{ .id = "misa.editor.queue", .path = "misa/editor/queue/init.fnl" },
+    .{ .id = "misa.editor.queue.view", .path = "misa/editor/queue/view.fnl" },
+    .{ .id = "misa.json", .path = "misa/json.fnl" },
+    .{ .id = "misa.protocols.anthropic", .path = "misa/protocols/anthropic.fnl" },
+    .{ .id = "misa.protocols.openai", .path = "misa/protocols/openai.fnl" },
+    .{ .id = "misa.protocols.stream", .path = "misa/protocols/stream.fnl" },
+    .{ .id = "misa.providers.anthropic", .path = "misa/providers/anthropic.fnl" },
+    .{ .id = "misa.providers.auth", .path = "misa/providers/auth.fnl" },
+    .{ .id = "misa.providers.claude", .path = "misa/providers/claude.fnl" },
+    .{ .id = "misa.providers.command", .path = "misa/providers/command.fnl" },
+    .{ .id = "misa.providers.fake", .path = "misa/providers/fake.fnl" },
+    .{ .id = "misa.providers.kimi", .path = "misa/providers/kimi.fnl" },
+    .{ .id = "misa.providers.openai", .path = "misa/providers/openai.fnl" },
+    .{ .id = "misa.providers.openai-codex", .path = "misa/providers/openai-codex.fnl" },
+    .{ .id = "misa.providers.openrouter", .path = "misa/providers/openrouter.fnl" },
+    .{ .id = "misa.selection", .path = "misa/selection/init.fnl" },
+    .{ .id = "misa.selection.document", .path = "misa/selection/document.fnl" },
     .{ .id = "misa.standard", .path = "misa/standard.fnl" },
-    .{ .id = "costs", .path = "costs.fnl" },
-    .{ .id = "history", .path = "history.fnl" },
-    .{ .id = "queue", .path = "queue.fnl" },
-    .{ .id = "queue.view", .path = "queue/view.fnl" },
-    .{ .id = "images", .path = "images.fnl" },
-    .{ .id = "attachments", .path = "attachments.fnl" },
-    .{ .id = "component.image", .path = "component/image.fnl" },
-    .{ .id = "actions", .path = "actions.fnl" },
-    .{ .id = "clipboard", .path = "clipboard.fnl" },
-    .{ .id = "selection.document", .path = "selection/document.fnl" },
-    .{ .id = "selection", .path = "selection.fnl" },
-    .{ .id = "component.selection", .path = "component/selection.fnl" },
-    .{ .id = "editing", .path = "editing.fnl" },
-    .{ .id = "agent", .path = "agent.fnl" },
-    .{ .id = "stream", .path = "stream.fnl" },
-    .{ .id = "auth", .path = "auth.fnl" },
-    .{ .id = "choices", .path = "choices.fnl" },
-    .{ .id = "choices.layout", .path = "choices/layout.fnl" },
-    .{ .id = "choices.preview", .path = "choices/preview.fnl" },
-    .{ .id = "values", .path = "values.fnl" },
-    .{ .id = "usage", .path = "usage.fnl" },
-    .{ .id = "links", .path = "links.fnl" },
-    .{ .id = "component.buttons", .path = "component/buttons.fnl" },
-    .{ .id = "component.data", .path = "component/data.fnl" },
-    .{ .id = "commands", .path = "commands.fnl" },
-    .{ .id = "omnipicker", .path = "omnipicker.fnl" },
-    .{ .id = "dialogs", .path = "dialogs.fnl" },
-    .{ .id = "dialogs.view", .path = "dialogs/view.fnl" },
-    .{ .id = "components", .path = "components.fnl" },
-    .{ .id = "layout", .path = "layout.fnl" },
-    .{ .id = "markdown", .path = "markdown.fnl" },
-    .{ .id = "syntax", .path = "syntax.fnl" },
-    .{ .id = "component.markdown", .path = "component/markdown.fnl" },
-    .{ .id = "component.tool", .path = "component/tool.fnl" },
-    .{ .id = "component.content", .path = "component/content.fnl" },
-    .{ .id = "component.truncation", .path = "component/truncation.fnl" },
-    .{ .id = "tool.presentations", .path = "tool/presentations.fnl" },
-    .{ .id = "component.group", .path = "component/group.fnl" },
-    .{ .id = "component.message", .path = "component/message.fnl" },
-    .{ .id = "component.editor", .path = "component/editor.fnl" },
-    .{ .id = "component.picker", .path = "component/picker.fnl" },
-    .{ .id = "component.status", .path = "component/status.fnl" },
-    .{ .id = "component.chrome", .path = "component/chrome.fnl" },
-    .{ .id = "component.dialog", .path = "component/dialog.fnl" },
-    .{ .id = "editor", .path = "editor.fnl" },
-    .{ .id = "fuzzy", .path = "fuzzy.fnl" },
-    .{ .id = "keybindings", .path = "keybindings.fnl" },
-    .{ .id = "indicators", .path = "indicators.fnl" },
-    .{ .id = "json", .path = "json.fnl" },
-    .{ .id = "messages", .path = "messages.fnl" },
-    .{ .id = "models", .path = "models.fnl" },
-    .{ .id = "picker", .path = "picker.fnl" },
-    .{ .id = "picker.view", .path = "picker/view.fnl" },
-    .{ .id = "preferences", .path = "preferences.fnl" },
-    .{ .id = "request-options", .path = "request-options.fnl" },
-    .{ .id = "effort", .path = "effort.fnl" },
-    .{ .id = "status", .path = "status.fnl" },
-    .{ .id = "themes", .path = "themes.fnl" },
-    .{ .id = "theme.default", .path = "theme/default.fnl" },
-    .{ .id = "animations", .path = "animations.fnl" },
-    .{ .id = "animation.default", .path = "animation/default.fnl" },
-    .{ .id = "provider.fake", .path = "provider/fake.fnl" },
-    .{ .id = "provider.command", .path = "provider/command.fnl" },
-    .{ .id = "provider.claude", .path = "provider/claude.fnl" },
-    .{ .id = "protocol.anthropic", .path = "protocol/anthropic.fnl" },
-    .{ .id = "provider.anthropic", .path = "provider/anthropic.fnl" },
-    .{ .id = "provider.kimi", .path = "provider/kimi.fnl" },
-    .{ .id = "protocol.openai", .path = "protocol/openai.fnl" },
-    .{ .id = "provider.openai", .path = "provider/openai.fnl" },
-    .{ .id = "provider.openai-codex", .path = "provider/openai-codex.fnl" },
-    .{ .id = "provider.openrouter", .path = "provider/openrouter.fnl" },
-    .{ .id = "tool.files", .path = "tool/files.fnl" },
-    .{ .id = "tool.shell", .path = "tool/shell.fnl" },
-    .{ .id = "tool.summary", .path = "tool/summary.fnl" },
-    .{ .id = "ui", .path = "ui.fnl" },
+    .{ .id = "misa.system.clipboard", .path = "misa/system/clipboard.fnl" },
+    .{ .id = "misa.system.links", .path = "misa/system/links.fnl" },
+    .{ .id = "misa.text.fuzzy", .path = "misa/text/fuzzy.fnl" },
+    .{ .id = "misa.text.markdown", .path = "misa/text/markdown.fnl" },
+    .{ .id = "misa.text.syntax", .path = "misa/text/syntax.fnl" },
+    .{ .id = "misa.tools.files", .path = "misa/tools/files.fnl" },
+    .{ .id = "misa.tools.shell", .path = "misa/tools/shell.fnl" },
+    .{ .id = "misa.tools.summary", .path = "misa/tools/summary.fnl" },
+    .{ .id = "misa.ui", .path = "misa/ui/init.fnl" },
+    .{ .id = "misa.ui.animations", .path = "misa/ui/animations/init.fnl" },
+    .{ .id = "misa.ui.animations.default", .path = "misa/ui/animations/default.fnl" },
+    .{ .id = "misa.ui.components", .path = "misa/ui/components/init.fnl" },
+    .{ .id = "misa.ui.components.buttons", .path = "misa/ui/components/buttons.fnl" },
+    .{ .id = "misa.ui.components.chrome", .path = "misa/ui/components/chrome.fnl" },
+    .{ .id = "misa.ui.components.content", .path = "misa/ui/components/content.fnl" },
+    .{ .id = "misa.ui.components.data", .path = "misa/ui/components/data.fnl" },
+    .{ .id = "misa.ui.components.dialog", .path = "misa/ui/components/dialog.fnl" },
+    .{ .id = "misa.ui.components.editor", .path = "misa/ui/components/editor.fnl" },
+    .{ .id = "misa.ui.components.group", .path = "misa/ui/components/group.fnl" },
+    .{ .id = "misa.ui.components.image", .path = "misa/ui/components/image.fnl" },
+    .{ .id = "misa.ui.components.markdown", .path = "misa/ui/components/markdown.fnl" },
+    .{ .id = "misa.ui.components.message", .path = "misa/ui/components/message.fnl" },
+    .{ .id = "misa.ui.components.picker", .path = "misa/ui/components/picker.fnl" },
+    .{ .id = "misa.ui.components.selection", .path = "misa/ui/components/selection.fnl" },
+    .{ .id = "misa.ui.components.status", .path = "misa/ui/components/status.fnl" },
+    .{ .id = "misa.ui.components.tool", .path = "misa/ui/components/tool.fnl" },
+    .{ .id = "misa.ui.components.truncation", .path = "misa/ui/components/truncation.fnl" },
+    .{ .id = "misa.ui.layout", .path = "misa/ui/layout.fnl" },
+    .{ .id = "misa.ui.status", .path = "misa/ui/status/init.fnl" },
+    .{ .id = "misa.ui.status.indicators", .path = "misa/ui/status/indicators.fnl" },
+    .{ .id = "misa.ui.status.usage", .path = "misa/ui/status/usage.fnl" },
+    .{ .id = "misa.ui.themes", .path = "misa/ui/themes/init.fnl" },
+    .{ .id = "misa.ui.themes.default", .path = "misa/ui/themes/default.fnl" },
+    .{ .id = "misa.ui.tools", .path = "misa/ui/tools.fnl" },
+    .{ .id = "misa.ui.transcript", .path = "misa/ui/transcript.fnl" },
+    .{ .id = "misa.ui.values", .path = "misa/ui/values.fnl" },
 };
 
 pub const ids = blk: {
@@ -117,8 +117,7 @@ pub fn resolve(
     value: []const u8,
     extension_dir: ?[]const u8,
 ) ResolveError![]u8 {
-    // luaL_loadfile accepts a C string, so reject truncation at this boundary
-    // even when callers did not obtain the value through config.parse.
+    // luaL_loadfile accepts a C string; embedded NUL would truncate the path.
     if (std.mem.indexOfScalar(u8, value, 0) != null) return error.ExtensionPathContainsNul;
     if (isLiteralPath(value)) return allocator.dupe(u8, value);
     const relative = catalogPath(value) orelse return error.UnknownStandardExtension;
@@ -129,12 +128,21 @@ pub fn resolve(
     return std.fs.path.join(allocator, &.{ root, compiled });
 }
 
-test "catalog entries are unique relative Fennel sources" {
+test "catalog paths mirror sorted namespaced IDs" {
     try std.testing.expect(entries.len > 0);
     for (entries, 0..) |entry, index| {
         try std.testing.expectEqualStrings(entry.id, ids[index]);
         try std.testing.expectEqualStrings(entry.path, catalogPath(entry.id).?);
-        try std.testing.expect(entry.id.len > 0);
+        try std.testing.expect(std.mem.startsWith(u8, entry.id, "misa."));
+        if (index > 0) try std.testing.expect(std.mem.order(u8, entries[index - 1].id, entry.id) == .lt);
+        const stem = if (std.mem.endsWith(u8, entry.path, "/init.fnl"))
+            entry.path[0 .. entry.path.len - "/init.fnl".len]
+        else
+            entry.path[0 .. entry.path.len - ".fnl".len];
+        try std.testing.expectEqual(entry.id.len, stem.len);
+        for (entry.id, stem) |name_byte, path_byte| {
+            try std.testing.expectEqual(if (name_byte == '.') @as(u8, '/') else name_byte, path_byte);
+        }
         try std.testing.expect(!isLiteralPath(entry.id));
         try std.testing.expect(!std.fs.path.isAbsolute(entry.path));
         try std.testing.expect(std.mem.endsWith(u8, entry.path, ".fnl"));
@@ -151,64 +159,14 @@ test "catalog entries are unique relative Fennel sources" {
     }
 }
 
-test "catalog accepts exact IDs only" {
-    try std.testing.expectEqualStrings("agent.fnl", catalogPath("agent").?);
-    try std.testing.expectEqualStrings("auth.fnl", catalogPath("auth").?);
-    try std.testing.expectEqualStrings("choices.fnl", catalogPath("choices").?);
-    try std.testing.expectEqualStrings("choices/layout.fnl", catalogPath("choices.layout").?);
-    try std.testing.expectEqualStrings("commands.fnl", catalogPath("commands").?);
-    try std.testing.expectEqualStrings("omnipicker.fnl", catalogPath("omnipicker").?);
-    try std.testing.expectEqualStrings("dialogs.fnl", catalogPath("dialogs").?);
-    try std.testing.expectEqualStrings("dialogs/view.fnl", catalogPath("dialogs.view").?);
-    try std.testing.expectEqualStrings("components.fnl", catalogPath("components").?);
-    try std.testing.expectEqualStrings("layout.fnl", catalogPath("layout").?);
-    try std.testing.expectEqualStrings("markdown.fnl", catalogPath("markdown").?);
-    try std.testing.expectEqualStrings("syntax.fnl", catalogPath("syntax").?);
-    try std.testing.expectEqualStrings("component/markdown.fnl", catalogPath("component.markdown").?);
-    try std.testing.expectEqualStrings("component/tool.fnl", catalogPath("component.tool").?);
-    try std.testing.expectEqualStrings("component/content.fnl", catalogPath("component.content").?);
-    try std.testing.expectEqualStrings("component/truncation.fnl", catalogPath("component.truncation").?);
-    try std.testing.expectEqualStrings("tool/presentations.fnl", catalogPath("tool.presentations").?);
-    try std.testing.expectEqualStrings("component/group.fnl", catalogPath("component.group").?);
-    try std.testing.expectEqualStrings("component/message.fnl", catalogPath("component.message").?);
-    try std.testing.expectEqualStrings("component/editor.fnl", catalogPath("component.editor").?);
-    try std.testing.expectEqualStrings("component/picker.fnl", catalogPath("component.picker").?);
-    try std.testing.expectEqualStrings("component/status.fnl", catalogPath("component.status").?);
-    try std.testing.expectEqualStrings("component/chrome.fnl", catalogPath("component.chrome").?);
-    try std.testing.expectEqualStrings("component/dialog.fnl", catalogPath("component.dialog").?);
-    try std.testing.expect(catalogPath("component.default") == null);
-    try std.testing.expectEqualStrings("editor.fnl", catalogPath("editor").?);
-    try std.testing.expectEqualStrings("fuzzy.fnl", catalogPath("fuzzy").?);
-    try std.testing.expectEqualStrings("keybindings.fnl", catalogPath("keybindings").?);
-    try std.testing.expectEqualStrings("indicators.fnl", catalogPath("indicators").?);
-    try std.testing.expectEqualStrings("json.fnl", catalogPath("json").?);
-    try std.testing.expectEqualStrings("messages.fnl", catalogPath("messages").?);
-    try std.testing.expectEqualStrings("models.fnl", catalogPath("models").?);
-    try std.testing.expectEqualStrings("picker.fnl", catalogPath("picker").?);
-    try std.testing.expectEqualStrings("picker/view.fnl", catalogPath("picker.view").?);
-    try std.testing.expectEqualStrings("preferences.fnl", catalogPath("preferences").?);
-    try std.testing.expectEqualStrings("request-options.fnl", catalogPath("request-options").?);
-    try std.testing.expectEqualStrings("effort.fnl", catalogPath("effort").?);
-    try std.testing.expectEqualStrings("status.fnl", catalogPath("status").?);
-    try std.testing.expectEqualStrings("themes.fnl", catalogPath("themes").?);
-    try std.testing.expectEqualStrings("theme/default.fnl", catalogPath("theme.default").?);
-    try std.testing.expectEqualStrings("animations.fnl", catalogPath("animations").?);
-    try std.testing.expectEqualStrings("animation/default.fnl", catalogPath("animation.default").?);
-    try std.testing.expectEqualStrings("provider/fake.fnl", catalogPath("provider.fake").?);
-    try std.testing.expectEqualStrings("provider/command.fnl", catalogPath("provider.command").?);
-    try std.testing.expectEqualStrings("provider/claude.fnl", catalogPath("provider.claude").?);
-    try std.testing.expectEqualStrings("protocol/anthropic.fnl", catalogPath("protocol.anthropic").?);
-    try std.testing.expectEqualStrings("provider/anthropic.fnl", catalogPath("provider.anthropic").?);
-    try std.testing.expectEqualStrings("provider/kimi.fnl", catalogPath("provider.kimi").?);
-    try std.testing.expectEqualStrings("protocol/openai.fnl", catalogPath("protocol.openai").?);
-    try std.testing.expectEqualStrings("provider/openai.fnl", catalogPath("provider.openai").?);
-    try std.testing.expectEqualStrings("provider/openai-codex.fnl", catalogPath("provider.openai-codex").?);
-    try std.testing.expectEqualStrings("provider/openrouter.fnl", catalogPath("provider.openrouter").?);
-    try std.testing.expect(catalogPath("provider") == null);
-    try std.testing.expect(catalogPath("Agent") == null);
-    try std.testing.expectEqualStrings("ui.fnl", catalogPath("ui").?);
-    try std.testing.expectEqualStrings("tool/files.fnl", catalogPath("tool.files").?);
-    try std.testing.expectEqualStrings("tool/shell.fnl", catalogPath("tool.shell").?);
+test "catalog accepts namespaced leaf and owner IDs only" {
+    try std.testing.expectEqualStrings("misa/agent/init.fnl", catalogPath("misa.agent").?);
+    try std.testing.expectEqualStrings("misa/choices/layout.fnl", catalogPath("misa.choices.layout").?);
+    try std.testing.expectEqualStrings("misa/ui/components/init.fnl", catalogPath("misa.ui.components").?);
+    try std.testing.expectEqualStrings("misa/ui/components/markdown.fnl", catalogPath("misa.ui.components.markdown").?);
+    for ([_][]const u8{ "agent", "component.markdown", "misa.providers", "misa.Agent", "misa.agent.init" }) |id| {
+        try std.testing.expect(catalogPath(id) == null);
+    }
 }
 
 test "resolver preserves literals and resolves catalog roots" {
@@ -217,13 +175,13 @@ test "resolver preserves literals and resolves catalog roots" {
     defer allocator.free(literal);
     try std.testing.expectEqualStrings("custom/x.fnl", literal);
 
-    const env_path = try resolve(allocator, "provider.fake", "/source/extensions");
+    const env_path = try resolve(allocator, "misa.providers.fake", "/source/extensions");
     defer allocator.free(env_path);
-    try std.testing.expectEqualStrings("/source/extensions/provider/fake.fnl", env_path);
+    try std.testing.expectEqualStrings("/source/extensions/misa/providers/fake.fnl", env_path);
 
-    const installed = try resolve(allocator, "agent", null);
+    const installed = try resolve(allocator, "misa.agent", null);
     defer allocator.free(installed);
-    try std.testing.expect(std.mem.endsWith(u8, installed, "/share/misa/extensions/agent.lua"));
+    try std.testing.expect(std.mem.endsWith(u8, installed, "/share/misa/extensions/misa/agent/init.lua"));
     try std.testing.expectError(error.UnknownStandardExtension, resolve(allocator, "unknown", null));
     try std.testing.expectError(error.ExtensionPathContainsNul, resolve(allocator, "bad\x00.fnl", null));
 }

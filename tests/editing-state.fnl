@@ -6,12 +6,12 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {}})
-(each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices])]
+  (app.define ((require name) context)))
 (local handlers {})
 (var policy nil)
-(each [_ name (ipairs [:editor :editing])]
-  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+(each [_ name (ipairs [:misa.editor :misa.editor.editing])]
+  (local specs ((require name) context))
   (each [_ spec (pairs specs.events)]
     (when (not (. handlers spec.event)) (tset handlers spec.event {}))
     (table.insert (. handlers spec.event) spec.handler))
@@ -169,7 +169,7 @@
 ;; Policy configuration is orthogonal to the operation's meaning.
 (assert (= (misa.editor.transition empty.editing empty.editor typed.editor :insert false)
            empty.editing) "noninteractive input acquired modal undo state")
-(local plain-specs ((fennel.dofile :extensions/editing.fnl)
+(local plain-specs ((fennel.dofile :extensions/misa/editor/editing.fnl)
                     {:config {:editing {:mode :plain}}}))
 (local plain-policy (. plain-specs.services :editor.transition))
 (assert (= (plain-policy empty.editing empty.editor typed.editor :insert true) empty.editing))

@@ -4,13 +4,13 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local definitions (require :misa.definitions))
-(local protocol (require :protocol.openai))
+(local protocol (require :misa.protocols.openai))
 (local specs (protocol.configure {:id :test :url "https://example.invalid/chat"
                                    :models [] :models_url "https://example.invalid/models"
                                    :models_credential false :credential :test}))
 (local application (misa.compose
- [{:definitions ((fennel.dofile :extensions/json.fnl) {})}
-  {:definitions ((fennel.dofile :extensions/stream.fnl) {})}
+ [{:definitions ((fennel.dofile :extensions/misa/json.fnl) {})}
+  {:definitions ((fennel.dofile :extensions/misa/protocols/stream.fnl) {})}
   (misa.compose [{:definitions protocol.definitions} {:definitions specs}])
   {:definitions (definitions :test [{:catalog :openai-deltas :id :custom :value (fn [delta] (when delta.custom [{:type :text :text delta.custom}]))}])}]))
 (misa._install application.definitions {:argv [] :config {}})

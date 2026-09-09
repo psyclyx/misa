@@ -6,22 +6,22 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(each [_ name (ipairs [:json :layout :values :keybindings :dialogs :component.buttons])]
-  (app.define ((fennel.dofile (.. :extensions/ (name:gsub "%." "/") :.fnl)) {:config {}})))
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.ui.values :misa.commands.keybindings :misa.dialogs :misa.ui.components.buttons])]
+  (app.define ((require name) {:config {}})))
 (set misa.time.local-datetime (fn [_] "localized time"))
 (fn handlers [specs]
   (collect [_ spec (pairs specs.events)] spec.event spec.handler))
 (local providers (collect [_ id (ipairs [:claude :openai-codex :kimi])]
-                   (values id (handlers ((fennel.dofile (.. :extensions/provider/ id :.fnl))
+                   (values id (handlers ((require (.. :misa.providers. id))
                                          {:config {}})))))
-(local status-specs ((fennel.dofile :extensions/status.fnl)))
+(local status-specs ((fennel.dofile :extensions/misa/ui/status/init.fnl)))
 (local status (handlers status-specs))
 (app.define {:subscriptions status-specs.subscriptions})
 (app.install)
-(local usage (handlers ((fennel.dofile :extensions/usage.fnl))))
-(local dialogs (handlers ((fennel.dofile :extensions/dialogs.fnl))))
-(local render-data (. ((fennel.dofile :extensions/component/data.fnl)) :components :default.data :render))
-(local render-dialog (. ((fennel.dofile :extensions/component/dialog.fnl)) :components :default.dialog :render))
+(local usage (handlers ((fennel.dofile :extensions/misa/ui/status/usage.fnl))))
+(local dialogs (handlers ((fennel.dofile :extensions/misa/dialogs/init.fnl))))
+(local render-data (. ((fennel.dofile :extensions/misa/ui/components/data.fnl)) :components :default.data :render))
+(local render-dialog (. ((fennel.dofile :extensions/misa/ui/components/dialog.fnl)) :components :default.dialog :render))
 (local clock {:clock {:wall_ms 1788825600000 :monotonic_ms 0}})
 (fn apply [registry db event]
   (local before (misa.json.encode db))

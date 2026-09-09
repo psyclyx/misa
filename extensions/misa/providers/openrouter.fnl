@@ -1,4 +1,4 @@
-(local protocol (require :protocol.openai))
+(local protocol (require :misa.protocols.openai))
 (local definitions (require :misa.definitions))
 
 ;; OpenRouter API provider declaration.

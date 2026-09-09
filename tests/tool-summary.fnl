@@ -4,9 +4,9 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
 (app.install)
-(local specs ((fennel.dofile :extensions/tool/summary.fnl)))
+(local specs ((fennel.dofile :extensions/misa/tools/summary.fnl)))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))

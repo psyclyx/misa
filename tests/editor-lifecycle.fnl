@@ -10,20 +10,20 @@
   (local app _G.misa)
   (local context {:argv [] :config {:components {:persist false} :themes {:persist false}}})
   (local construction ((require :tests.application) context))
-  (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices
-                         :themes :theme/default :components :component/editor
-                         :component/picker :values :choices/preview :choices/layout :agent])]
-    (construction.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices
+                         :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.components.editor
+                         :misa.ui.components.picker :misa.ui.values :misa.choices.preview :misa.choices.layout :misa.agent])]
+    (construction.include (require name) context))
   (construction.define
    {:subscriptions {:test/lifecycle {:inputs [[:db/path :test_lifecycle]]
                                     :compute (fn [inputs] (or (. inputs 1) {}))}}
     :services {:editor.lifecycle.test [:test/lifecycle]}})
   (each [_ name (ipairs order)]
-    (local description ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+    (local description ((require name) context))
     (assert (= description.interceptors nil) "domain lifecycle declared middleware")
     (construction.define description))
-  (each [_ name (ipairs [:editing :dialogs :picker])]
-    (construction.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (each [_ name (ipairs [:misa.editor.editing :misa.dialogs :misa.choices.picker])]
+    (construction.include (require name) context))
   (var db nil)
   (local requests [])
   (local submissions [])
@@ -77,7 +77,7 @@
    :native (fn [] native)})
 
 ;; Both event orders, both terminal modes: drain before considering one-shot exit.
-(each [_ order (ipairs [[:queue :images :editor] [:editor :images :queue]])]
+(each [_ order (ipairs [[:misa.editor.queue :misa.editor.images :misa.editor] [:misa.editor :misa.editor.images :misa.editor.queue]])]
   (each [_ interactive (ipairs [false true])]
     (local f (fixture order interactive))
     (f.dispatch {:type :queue/submit :prompt :first})
@@ -143,7 +143,7 @@
       (assert (= (. (draft.native) 1 :type) :terminal/read)))))
 
 ;; An open data-only contributor works with neither queue nor images installed.
-(local custom (fixture [:editor] true))
+(local custom (fixture [:misa.editor] true))
 (custom.dispatch {:type :test/state :patch {:test_lifecycle {:block_draft true}
                                           :test_other {:hold_exit true}}})
 (custom.dispatch {:type :editor/restore :text :draft})
@@ -160,7 +160,7 @@
 (assert (custom.dispatch {:type :agent/completed :exit true}) "block_draft also blocked exit")
 
 ;; Acquisition guards only draft submission. Modal and command Enter still work.
-(local images (fixture [:images :editor :queue] true))
+(local images (fixture [:misa.editor.images :misa.editor :misa.editor.queue] true))
 (images.dispatch {:type :images/paste})
 (images.dispatch {:type :editor/restore :text :draft})
 (images.dispatch {:type :test/state :patch {:editor {:selection_start 0 :selection_end 2}

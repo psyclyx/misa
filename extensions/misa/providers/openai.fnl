@@ -1,4 +1,4 @@
-(local protocol (require :protocol.openai))
+(local protocol (require :misa.protocols.openai))
 (local definitions (require :misa.definitions))
 
 ;; OpenAI API provider declaration. API keys remain in the native auth store.

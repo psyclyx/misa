@@ -7,7 +7,7 @@
           (local transport context.config.benchmark.transport)
           (var stream-handler nil)
           (when transport
-            (local specs ((. (require :protocol.openai) :configure) {:id :bench :url "https://example.invalid" :models [] :credential :bench}))
+            (local specs ((. (require :misa.protocols.openai) :configure) {:id :bench :url "https://example.invalid" :models [] :credential :bench}))
             (each [_ spec (pairs specs.events)]
               (when (= spec.event :provider/bench-complete)
                 (set stream-handler spec.handler)))

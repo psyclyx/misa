@@ -5,9 +5,9 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:json :protocol/anthropic])]
-  (app.include (fennel.dofile (.. :extensions/ name :.fnl)) {:config {}}))
-(local protocol (require :protocol.anthropic))
+(each [_ name (ipairs [:misa.json :misa.protocols.anthropic])]
+  (app.include (require name) {:config {}}))
+(local protocol (require :misa.protocols.anthropic))
 (local specs (protocol.configure {:id :test :url "https://example.invalid/messages"
                                       :models_url "https://example.invalid/models?region=test"
                                       :models [] :credential :test :catalogue_authoritative true

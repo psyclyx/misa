@@ -5,6 +5,21 @@ let
   allTreeSitterGrammars = pkgs.tree-sitter.withPlugins (_: pkgs.tree-sitter-grammars.allGrammars);
   inherit (project) lib;
   standard = lib.standardExtensions;
+  checkCatalog =
+    namespace: entries:
+    builtins.all (
+      name:
+      let
+        value = entries.${name};
+        path = namespace ++ [ name ];
+        module = if name == "init" then namespace else path;
+      in
+      if builtins.isAttrs value then
+        checkCatalog path value
+      else
+        value == builtins.concatStringsSep "." module
+        && builtins.pathExists (../extensions + "/${builtins.concatStringsSep "/" path}.fnl")
+    ) (builtins.attrNames entries);
   custom = ../config/default.fnl;
   defaults = lib.mkMisa { };
   scripted = lib.mkMisa { configuration = custom; };
@@ -32,89 +47,17 @@ assert !(project.default.src.filter "${toString ../.}/.zig-cache" "directory");
 assert !(project.default.src.filter "${toString ../.}/zig-out" "directory");
 assert !(project.default.src.filter "${toString ../.}/.direnv" "directory");
 assert project.default.src.filter "${toString ../.}/tools/compile-fennel.lua" "regular";
-assert project.default.src.filter "${toString ../.}/extensions/agent.fnl" "regular";
-assert
-  standard == {
-    definitions = "misa.definitions";
-    default = "misa.default";
-    standard = "misa.standard";
-    actions = "actions";
-    clipboard = "clipboard";
-    links = "links";
-    editing = "editing";
-    costs = "costs";
-    history = "history";
-    queue = "queue";
-    queueView = "queue.view";
-    images = "images";
-    attachments = "attachments";
-    componentImage = "component.image";
-
-    selection = "selection";
-    selectionDocument = "selection.document";
-    componentSelection = "component.selection";
-    agent = "agent";
-    toolSummary = "tool.summary";
-    animations = "animations";
-    animationDefault = "animation.default";
-    auth = "auth";
-    choices = "choices";
-    choicePreview = "choices.preview";
-    choiceLayout = "choices.layout";
-    values = "values";
-    commands = "commands";
-    omnipicker = "omnipicker";
-    dialogs = "dialogs";
-    dialogView = "dialogs.view";
-    components = "components";
-    layout = "layout";
-    markdown = "markdown";
-    syntax = "syntax";
-    componentMarkdown = "component.markdown";
-    componentTool = "component.tool";
-    componentContent = "component.content";
-    componentTruncation = "component.truncation";
-    toolPresentations = "tool.presentations";
-    componentGroup = "component.group";
-    componentMessage = "component.message";
-    componentEditor = "component.editor";
-    componentPicker = "component.picker";
-    componentStatus = "component.status";
-    componentChrome = "component.chrome";
-    componentDialog = "component.dialog";
-    componentButtons = "component.buttons";
-    componentData = "component.data";
-    editor = "editor";
-    fuzzy = "fuzzy";
-    keybindings = "keybindings";
-    indicators = "indicators";
-    json = "json";
-    messages = "messages";
-    models = "models";
-    picker = "picker";
-    pickerView = "picker.view";
-    preferences = "preferences";
-    requestOptions = "request-options";
-    effort = "effort";
-    status = "status";
-    usage = "usage";
-    themes = "themes";
-    themeDefault = "theme.default";
-    providerFake = "provider.fake";
-    providerCommand = "provider.command";
-    providerClaude = "provider.claude";
-    protocolAnthropic = "protocol.anthropic";
-    stream = "stream";
-    providerAnthropic = "provider.anthropic";
-    providerKimi = "provider.kimi";
-    protocolOpenAI = "protocol.openai";
-    providerOpenAI = "provider.openai";
-    providerOpenAICodex = "provider.openai-codex";
-    providerOpenRouter = "provider.openrouter";
-    toolFiles = "tool.files";
-    toolShell = "tool.shell";
-    ui = "ui";
-  };
+assert project.default.src.filter "${toString ../.}/extensions/misa/agent/init.fnl" "regular";
+assert builtins.attrNames standard == [ "misa" ];
+assert standard.misa.agent.init == "misa.agent";
+assert standard.misa.agent.request-options == "misa.agent.request-options";
+assert standard.misa.ui.components.init == "misa.ui.components";
+assert standard.misa.ui.components.markdown == "misa.ui.components.markdown";
+assert standard.misa.ui.themes.default == "misa.ui.themes.default";
+assert standard.misa.editor.queue.view == "misa.editor.queue.view";
+assert standard.misa.providers.openai-codex == "misa.providers.openai-codex";
+assert standard.misa.standard == "misa.standard";
+assert checkCatalog [ ] standard;
 assert defaults.configFile == null;
 assert pkgs.lib.hasPrefix "${builtins.storeDir}/" scripted.configFile;
 assert builtins.getContext scripted.configFile != { };
@@ -122,61 +65,6 @@ assert moduleEval.config.programs.misa.configuration == custom;
 # Path interpolation retains the configuration in the wrapper's closure.
 assert pkgs.lib.hasSuffix "-default.fnl" serializedCustom;
 assert invalid.success == false;
-assert builtins.pathExists ../extensions/agent.fnl;
-assert builtins.pathExists ../extensions/auth.fnl;
-assert builtins.pathExists ../extensions/actions.fnl;
-assert builtins.pathExists ../extensions/clipboard.fnl;
-assert builtins.pathExists ../extensions/editing.fnl;
-assert builtins.pathExists ../extensions/selection.fnl;
-assert builtins.pathExists ../extensions/selection/document.fnl;
-assert builtins.pathExists ../extensions/component/selection.fnl;
-
-assert builtins.pathExists ../extensions/animations.fnl;
-assert builtins.pathExists ../extensions/animation/default.fnl;
-assert builtins.pathExists ../extensions/components.fnl;
-assert builtins.pathExists ../extensions/choices/preview.fnl;
-assert builtins.pathExists ../extensions/values.fnl;
-assert builtins.pathExists ../extensions/layout.fnl;
-assert builtins.pathExists ../extensions/markdown.fnl;
-assert builtins.pathExists ../extensions/component/markdown.fnl;
-assert builtins.pathExists ../extensions/component/tool.fnl;
-assert builtins.pathExists ../extensions/component/message.fnl;
-assert builtins.pathExists ../extensions/component/editor.fnl;
-assert builtins.pathExists ../extensions/component/picker.fnl;
-assert builtins.pathExists ../extensions/component/status.fnl;
-assert builtins.pathExists ../extensions/component/chrome.fnl;
-assert builtins.pathExists ../extensions/editor.fnl;
-assert builtins.pathExists ../extensions/choices.fnl;
-assert builtins.pathExists ../extensions/choices/layout.fnl;
-assert builtins.pathExists ../extensions/commands.fnl;
-assert builtins.pathExists ../extensions/omnipicker.fnl;
-assert builtins.pathExists ../extensions/fuzzy.fnl;
-assert builtins.pathExists ../extensions/keybindings.fnl;
-assert builtins.pathExists ../extensions/indicators.fnl;
-assert builtins.pathExists ../extensions/json.fnl;
-assert builtins.pathExists ../extensions/messages.fnl;
-assert builtins.pathExists ../extensions/models.fnl;
-assert builtins.pathExists ../extensions/picker.fnl;
-assert builtins.pathExists ../extensions/picker/view.fnl;
-assert builtins.pathExists ../extensions/preferences.fnl;
-assert builtins.pathExists ../extensions/request-options.fnl;
-assert builtins.pathExists ../extensions/effort.fnl;
-assert builtins.pathExists ../extensions/status.fnl;
-assert builtins.pathExists ../extensions/themes.fnl;
-assert builtins.pathExists ../extensions/theme/default.fnl;
-assert builtins.pathExists ../extensions/provider/fake.fnl;
-assert builtins.pathExists ../extensions/provider/command.fnl;
-assert builtins.pathExists ../extensions/provider/claude.fnl;
-assert builtins.pathExists ../extensions/protocol/anthropic.fnl;
-assert builtins.pathExists ../extensions/provider/anthropic.fnl;
-assert builtins.pathExists ../extensions/provider/kimi.fnl;
-assert builtins.pathExists ../extensions/protocol/openai.fnl;
-assert builtins.pathExists ../extensions/provider/openai.fnl;
-assert builtins.pathExists ../extensions/provider/openai-codex.fnl;
-assert builtins.pathExists ../extensions/provider/openrouter.fnl;
-assert builtins.pathExists ../extensions/tool/files.fnl;
-assert builtins.pathExists ../extensions/tool/shell.fnl;
-assert builtins.pathExists ../extensions/ui.fnl;
 # Instantiate both the package and configured wrapper without recursively
 # building either from this evaluation-only test.
 assert pkgs.lib.hasSuffix ".drv" project.packages.misa.drvPath;

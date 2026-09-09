@@ -5,7 +5,7 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local handlers {})
-(local setup ((fennel.dofile :extensions/history.fnl)
+(local setup ((fennel.dofile :extensions/misa/editor/history.fnl)
               {:config {:history {:max_entries 3 :persist false}}}))
 (each [_ spec (pairs (. setup :events))]
   (tset handlers spec.event spec.handler))

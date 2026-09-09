@@ -5,13 +5,13 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
-(local specs ((fennel.dofile :extensions/messages.fnl) {:config {}}))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
+(local specs ((fennel.dofile :extensions/misa/ui/transcript.fnl) {:config {}}))
 (var (viewport scroll) nil)
 (set viewport (. specs.services :transcript.viewport))
 (set scroll (. specs.events :messages/messages/scroll :handler))
-(each [_ name (ipairs [:layout :markdown :component/markdown])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {})))
+(each [_ name (ipairs [:misa.ui.layout :misa.text.markdown :misa.ui.components.markdown])]
+  (app.define ((require name) {})))
 (app.install)
 (set misa.transcript {})
 (set misa.selection {})

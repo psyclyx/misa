@@ -4,9 +4,9 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
 (app.install)
-(local feature (fennel.dofile :extensions/provider/openai-codex.fnl))
+(local feature (fennel.dofile :extensions/misa/providers/openai-codex.fnl))
 (fn handlers [config]
   (local result {})
   (each [_ effect (pairs (. (feature {:config {:providers {:openai_codex (or config {})}}}) :events))]

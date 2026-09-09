@@ -5,7 +5,7 @@
 (local context {:argv [] :config {}})
 (local app ((require :tests.application) context))
 (local declarations (require :misa.definitions))
-(app.include (fennel.dofile :extensions/preferences.fnl) context)
+(app.include (fennel.dofile :extensions/misa/choices/preferences.fnl) context)
 (app.install)
 (local original {:preferences {:clock 0 :scopes {:other {:entry {:favorite true :uses 0}}}}})
 (local used (misa.preferences.use original :commands :/model))

@@ -6,7 +6,7 @@
 
 (global misa {:json_null {}})
 
-(setup (dofile :extensions/json.fnl))
+(setup (dofile :extensions/misa/json.fnl))
 
 (local encode misa.json.encode)
 

@@ -59,13 +59,13 @@ for count in ((args.blocks,) if args.blocks else (1, 16, 300)):
             config = {'extensions': [str(root / 'benchmarks/native-transcript.fnl')],
                       'config': {'models': {'default': 'bench/model'}}}
             if args.transport:
-                config['extensions'].append('protocol.openai')
+                config['extensions'].append('misa.protocols.openai')
             settings = config['config']
             settings['benchmark'] = {'blocks': count, 'scenario': args.scenario, 'burst': args.burst, 'transport': args.transport}
             for name in ('history', 'themes', 'components', 'preferences'):
                 settings.setdefault(name, {})['persist'] = False
             path = work / 'config.fnl'
-            path.write_text(application(config, default=True, omit=('provider.', 'protocol.', 'auth')))
+            path.write_text(application(config, default=True, omit=('misa.providers.', 'misa.protocols.openai', 'misa.protocols.anthropic')))
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
             env = dict(os.environ, TERM='xterm-256color', MISA_AUTH_FILE=str(work / 'auth'),

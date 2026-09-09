@@ -9,16 +9,16 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(each [_ name (ipairs [:json
-                       :themes
-                       :theme/default
-                       :components
-                       :actions
-                       :layout
-                       :markdown
-                       :component/markdown
-                       :values :component/group :component/message :component/content :component/truncation :tool/presentations :component/tool])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(each [_ name (ipairs [:misa.json
+                       :misa.ui.themes
+                       :misa.ui.themes.default
+                       :misa.ui.components
+                       :misa.commands.actions
+                       :misa.ui.layout
+                       :misa.text.markdown
+                       :misa.ui.components.markdown
+                       :misa.ui.values :misa.ui.components.group :misa.ui.components.message :misa.ui.components.content :misa.ui.components.truncation :misa.ui.tools :misa.ui.components.tool])]
+  (app.define ((require name) context)))
 
 (local cached
        {:surface :panel

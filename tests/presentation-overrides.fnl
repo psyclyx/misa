@@ -7,8 +7,8 @@
 (local context {:config {:values {:roles {:tokens :custom.tokens}}
                         :tool_presentations {:roles {:shell :custom.shell}}
                         :status {:indicator_overrides {:session false :plan {:priority 1} :extra {:priority 200}}}}})
-(each [_ name (ipairs [:values :tool/presentations :indicators])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(each [_ name (ipairs [:misa.ui.values :misa.ui.tools :misa.ui.status.indicators])]
+  (app.define ((require name) context)))
 
 (app.define (definitions :fixture [{:catalog :value-renderers :id :custom.tokens :value (fn [fact] [{:text (.. fact.value " tokens")}])}
        (let [definition (fn [model] {:result {:role :content.text :model {:text (.. "custom: " model.result)}}})] {:catalog :tool-presentations :id :custom.shell :value definition})]))

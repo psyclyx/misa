@@ -4,11 +4,11 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
-(local status ((fennel.dofile :extensions/status.fnl)))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
+(local status ((fennel.dofile :extensions/misa/ui/status/init.fnl)))
 (app.define {:subscriptions status.subscriptions})
 (app.install)
-(local feature (fennel.dofile :extensions/provider/openai-codex.fnl))
+(local feature (fennel.dofile :extensions/misa/providers/openai-codex.fnl))
 (local handlers {})
 (each [_ spec (pairs (. (feature {:config {}}) :events))]
   (tset handlers spec.event spec.handler))
@@ -82,7 +82,7 @@
 ;; The shared dashboard consumes normalized facts without provider-specific text.
 (set misa.models.selected (fn [] {:provider :openai-codex}))
 (var (open-usage plan-query) (values nil nil))
-(each [_ spec (pairs (. ((fennel.dofile :extensions/usage.fnl)) :events))]
+(each [_ spec (pairs (. ((fennel.dofile :extensions/misa/ui/status/usage.fnl)) :events))]
   (when (= spec.event :usage/open) (set open-usage spec.handler)))
 (assert (= status.indicators.plan.value nil))
 (set plan-query status.indicators.plan.query)

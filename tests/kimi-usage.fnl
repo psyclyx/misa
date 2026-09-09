@@ -4,10 +4,10 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
 (app.install)
 (set misa.protocols {:anthropic (fn [] {:fx []})})
-(local feature (fennel.dofile :extensions/provider/kimi.fnl))
+(local feature (fennel.dofile :extensions/misa/providers/kimi.fnl))
 (fn handlers-for [region]
   (local result {})
   (each [_ spec (pairs (. (feature {:config {:providers {:kimi {: region}}}}) :events))]

@@ -14,10 +14,10 @@
 (local comparing (or baseline-path projection-directory))
 (local baseline (if baseline-path ((fennel.dofile baseline-path) misa.json-null) candidate))
 (local context {:config {}})
-(each [_ name (ipairs [:json :layout :markdown :themes :theme/default :components
-                       :component/markdown :component/message :values :component/group])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
-(local specs ((fennel.dofile :extensions/messages.fnl) context))
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.text.markdown :misa.ui.themes :misa.ui.themes.default :misa.ui.components
+                       :misa.ui.components.markdown :misa.ui.components.message :misa.ui.values :misa.ui.components.group])]
+  (app.define ((require name) context)))
+(local specs ((fennel.dofile :extensions/misa/ui/transcript.fnl) context))
 (app.define specs)
 (var baseline-project nil)
 (local baseline-roles {})

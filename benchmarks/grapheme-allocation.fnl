@@ -4,7 +4,7 @@
 (require :tests.application)
 (fn api [path] (. ((fennel.dofile path) {}) :services :layout))
 (local baseline (api (assert (. arg 1) "baseline layout source required")))
-(local candidate (api :extensions/layout.fnl))
+(local candidate (api :extensions/misa/ui/layout.fnl))
 (local cases [{:id :ascii :text (string.rep "ASCII " 64)}
               {:id :unicode :text (string.rep "é界👩‍💻🇺🇸क्ष" 64)}
               {:id :mixed :text (string.rep "text é 界 👩‍💻 " 64)}])

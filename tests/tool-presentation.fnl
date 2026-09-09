@@ -4,10 +4,10 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(each [_ name (ipairs [:json :themes :theme/default :components :layout :markdown
-                       :component/markdown :values :component/content :component/truncation
-                       :tool/presentations :component/tool])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {:config {}})))
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.layout :misa.text.markdown
+                       :misa.ui.components.markdown :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation
+                       :misa.ui.tools :misa.ui.components.tool])]
+  (app.define ((require name) {:config {}})))
 (app.define (definitions :fixture [{:catalog :components :id :fixture.text :value {:render (fn [] {:lines [{:spans [{:text :replacement}]}]})}}]))
 (app.define (definitions :fixture [(let [definition (fn [model]
                                     {:arguments [{:role :content.text :model {:text model.arguments.query}}]

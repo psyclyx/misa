@@ -35,7 +35,7 @@
     result))
 
 (fn []
-  "Build the declarations for omnipicker."
+  "Build the declarations for the command palette."
   (local declarations [])
   (table.insert declarations
                 {:catalog :choice-sources

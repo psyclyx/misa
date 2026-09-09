@@ -4,13 +4,14 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(app.define ((fennel.dofile :extensions/json.fnl) {}))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) {}))
 (set misa.request-options.choices (fn [db] (or db.options [])))
 (set misa.request-options.value (fn [db] db.selected))
 (set misa.keybindings.action (fn [_ event] event.action))
 (local specs {})
-(each [_ name (ipairs [:effort :images :queue])]
-  (tset specs name ((fennel.dofile (.. :extensions/ name :.fnl)) {:config {}})))
+(each [name source (pairs {:effort :misa.agent.effort
+                           :images :misa.editor.images :queue :misa.editor.queue})]
+  (tset specs name ((require source) {:config {}})))
 (each [_ command (pairs specs.effort.commands)]
   (assert (= command.choice_unavailable :effort/unsupported))
   (assert (not (command.choice_available {})))

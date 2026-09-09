@@ -11,17 +11,17 @@
 (local misa _G.misa)
 (local app ((require :tests.application) context))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:keybindings
-                       :themes
-                       :theme/default
-                       :components
-                       :layout
-                       :markdown
-                       :component/markdown
-                       :values :component/content :component/truncation :tool/presentations :component/tool
-                       :component/group :component/message
-                       :messages])]
-  (app.include (fennel.dofile (.. :extensions/ name :.fnl)) context))
+(each [_ name (ipairs [:misa.commands.keybindings
+                       :misa.ui.themes
+                       :misa.ui.themes.default
+                       :misa.ui.components
+                       :misa.ui.layout
+                       :misa.text.markdown
+                       :misa.ui.components.markdown
+                       :misa.ui.values :misa.ui.components.content :misa.ui.components.truncation :misa.ui.tools :misa.ui.components.tool
+                       :misa.ui.components.group :misa.ui.components.message
+                       :misa.ui.transcript])]
+  (app.include (require name) context))
 
 (var db nil)
 (app.define (declarations :long-messages-1 [{:catalog :events  :value {:event :test/read :handler (fn [state] (set db state))}}]))

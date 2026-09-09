@@ -5,9 +5,9 @@
 (local misa _G.misa)
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
-(each [_ name (ipairs [:json :layout :markdown :selection/document])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) {})))
-(local specs ((fennel.dofile :extensions/selection.fnl) {}))
+(each [_ name (ipairs [:misa.json :misa.ui.layout :misa.text.markdown :misa.selection.document])]
+  (app.define ((require name) {})))
+(local specs ((fennel.dofile :extensions/misa/selection/init.fnl) {}))
 (local handlers {})
 (each [_ spec (pairs specs.events)] (tset handlers spec.event spec.handler))
 
@@ -16,12 +16,12 @@
 
 (app.define specs)
 (app.define (definitions :fixture [{:catalog :selection-sources :id :test :value {:documents (fn [db] (if db.empty [] (or db.documents [(or db.document document)])))}}]))
-(app.define ((fennel.dofile :extensions/component/markdown.fnl) {}))
+(app.define ((fennel.dofile :extensions/misa/ui/components/markdown.fnl) {}))
 (app.define (definitions :fixture [{:catalog :selection-actions :id :custom :value (fn [state] {:state (misa.patch state {:custom true})})}]))
 (app.define (definitions :fixture [{:catalog :selection-actions :id :inspect-ranges :value (fn [_ db]
                  {:fx [{:type :dispatch :event {:type :test/selection-consumer
                                                :ranges (misa.selection.ranges db)}}]})}]))
-(app.define ((fennel.dofile :extensions/keybindings.fnl) {:config {}}))
+(app.define ((fennel.dofile :extensions/misa/commands/keybindings.fnl) {:config {}}))
 (app.install)
 (fn transition [db type action]
   (local before (misa.json.encode db))

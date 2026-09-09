@@ -7,9 +7,9 @@
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}
                                   :animations {:persist false}
                                   :status {:indicators [:zero :false :hidden :custom :activity]}}})
-(each [_ name (ipairs [:json :keybindings :layout :themes :theme/default :components :values :component/status
-                       :animations :animation/default :indicators])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.ui.layout :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.values :misa.ui.components.status
+                       :misa.ui.animations :misa.ui.animations.default :misa.ui.status.indicators])]
+  (app.define ((require name) context)))
 (local calls {})
 (each [_ id (ipairs [:zero :false :hidden :custom :activity])]
   ;; Deliberately register the consumer before its query.

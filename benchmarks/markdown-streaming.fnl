@@ -7,7 +7,7 @@
 ;; Parser-only streaming benchmark, including unchanged animation redraws.
 ;; Compare incremental APIs when available; older baselines use their full parser.
 
-;; tools/fennel benchmarks/markdown-streaming.fnl baseline.lua extensions/markdown.fnl
+;; tools/fennel benchmarks/markdown-streaming.fnl baseline.lua extensions/misa/text/markdown.fnl
 
 (fn equal [a b]
   (when (not= (type a) (type b)) (lua "return false"))

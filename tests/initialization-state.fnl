@@ -6,9 +6,9 @@
 (local initializers [])
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local declarations (require :misa.definitions))
-(each [_ name (ipairs [:json :themes :theme/default :components :animations
-                       :animation/default :auth :models])]
-  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.animations
+                       :misa.ui.animations.default :misa.providers.auth :misa.agent.models])]
+  (local specs ((require name) context))
   (each [_ spec (pairs (or specs.events {}))]
 
     (when (and true (= spec.event :app/start))

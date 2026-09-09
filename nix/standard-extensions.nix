@@ -1,81 +1,30 @@
-{
-  definitions = "misa.definitions";
-  default = "misa.default";
-  standard = "misa.standard";
-  costs = "costs";
-  history = "history";
-  queue = "queue";
-  queueView = "queue.view";
-  images = "images";
-  attachments = "attachments";
-  componentImage = "component.image";
-
-  actions = "actions";
-  clipboard = "clipboard";
-  selectionDocument = "selection.document";
-  selection = "selection";
-  componentSelection = "component.selection";
-  editing = "editing";
-  agent = "agent";
-  toolSummary = "tool.summary";
-  animations = "animations";
-  animationDefault = "animation.default";
-  auth = "auth";
-  choices = "choices";
-  choicePreview = "choices.preview";
-  choiceLayout = "choices.layout";
-  values = "values";
-  usage = "usage";
-  links = "links";
-  componentButtons = "component.buttons";
-  componentData = "component.data";
-  commands = "commands";
-  omnipicker = "omnipicker";
-  dialogs = "dialogs";
-  dialogView = "dialogs.view";
-  components = "components";
-  layout = "layout";
-  markdown = "markdown";
-  syntax = "syntax";
-  componentMarkdown = "component.markdown";
-  componentTool = "component.tool";
-  componentContent = "component.content";
-  componentTruncation = "component.truncation";
-  toolPresentations = "tool.presentations";
-  componentGroup = "component.group";
-  componentMessage = "component.message";
-  componentEditor = "component.editor";
-  componentPicker = "component.picker";
-  componentStatus = "component.status";
-  componentChrome = "component.chrome";
-  componentDialog = "component.dialog";
-  editor = "editor";
-  fuzzy = "fuzzy";
-  keybindings = "keybindings";
-  indicators = "indicators";
-  json = "json";
-  messages = "messages";
-  models = "models";
-  picker = "picker";
-  pickerView = "picker.view";
-  preferences = "preferences";
-  requestOptions = "request-options";
-  effort = "effort";
-  status = "status";
-  themes = "themes";
-  themeDefault = "theme.default";
-  providerFake = "provider.fake";
-  stream = "stream";
-  providerCommand = "provider.command";
-  providerClaude = "provider.claude";
-  protocolAnthropic = "protocol.anthropic";
-  providerAnthropic = "provider.anthropic";
-  providerKimi = "provider.kimi";
-  protocolOpenAI = "protocol.openai";
-  providerOpenAI = "provider.openai";
-  providerOpenAICodex = "provider.openai-codex";
-  providerOpenRouter = "provider.openrouter";
-  toolFiles = "tool.files";
-  toolShell = "tool.shell";
-  ui = "ui";
-}
+let
+  # Mirror source namespaces; init selects the module owned by its directory.
+  catalog =
+    directory: namespace:
+    let
+      entries = builtins.readDir directory;
+      names = builtins.filter (
+        name: entries.${name} == "directory" || builtins.match ".*\\.fnl" name != null
+      ) (builtins.attrNames entries);
+    in
+    builtins.listToAttrs (
+      map (
+        name:
+        let
+          isDirectory = entries.${name} == "directory";
+          key = if isDirectory then name else builtins.substring 0 (builtins.stringLength name - 4) name;
+          module = if key == "init" then namespace else namespace ++ [ key ];
+        in
+        {
+          name = key;
+          value =
+            if isDirectory then
+              catalog (directory + "/${name}") module
+            else
+              builtins.concatStringsSep "." module;
+        }
+      ) names
+    );
+in
+catalog ../extensions [ ]

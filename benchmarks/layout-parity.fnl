@@ -5,7 +5,7 @@
 (local G (require :tests.generators))
 (fn api [path] (. ((fennel.dofile path) {}) :services :layout))
 (local baseline (api (assert (. arg 1) "saved layout source required")))
-(local candidate (api :extensions/layout.fnl))
+(local candidate (api :extensions/misa/ui/layout.fnl))
 (for [cp 0 1114111]
   (assert (= (baseline.cell-width cp) (candidate.cell-width cp))
           (.. "codepoint width changed: " cp)))

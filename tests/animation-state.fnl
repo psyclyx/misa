@@ -6,8 +6,8 @@
 (local definitions (require :misa.definitions))
 (local misa _G.misa)
 (local context {:argv [] :config {:animations {:persist false}}})
-(app.define ((fennel.dofile :extensions/json.fnl) context))
-(local specs ((fennel.dofile :extensions/animations.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/json.fnl) context))
+(local specs ((fennel.dofile :extensions/misa/ui/animations/init.fnl) context))
 (local handlers {})
 (each [_ spec (pairs (. specs :events))]
   (tset handlers spec.event spec.handler))

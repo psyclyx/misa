@@ -8,17 +8,33 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local misa _G.misa)
 (local app ((require :tests.application) {:config {} :argv []}))
-(each [_ name (ipairs [:json :layout :keybindings :choices :values :choices/preview :choices/layout])]
-  (local path (if (and baseline (or (= name :choices) (= name :choices/layout)))
-                  (.. baseline "/" (if (= name :choices/layout) :choice_layout name) :.fnl) (.. :extensions/ name :.fnl)))
-  (app.define ((fennel.dofile path) {:config {} :argv []})))
+(each [_ name (ipairs [:misa.json
+                       :misa.ui.layout
+                       :misa.commands.keybindings
+                       :misa.choices
+                       :misa.ui.values
+                       :misa.choices.preview
+                       :misa.choices.layout])]
+  (local saved (and baseline (. {:misa.choices :choices
+                                 :misa.choices.layout :choice_layout}
+                                name)))
+  (local module (if saved (fennel.dofile (.. baseline "/" saved ".fnl"))
+                    (require name)))
+  (app.define (module {:config {} :argv []})))
+
 (app.install)
 (each [_ count (ipairs [100 1000 3000])]
-  (local items (fcollect [index 1 count]
-                 {:id (.. :provider/model- index) :label (.. :provider/model- index)
-                  :description "A sample model with enough detail to wrap"}))
-  (local initial (misa.choices.session {:title :Models :items items :views [:browse]} {}))
+  (local items
+         (fcollect [index 1 count]
+           {:id (.. :provider/model- index)
+            :label (.. :provider/model- index)
+            :description "A sample model with enough detail to wrap"}))
+  (local initial (misa.choices.session {:title :Models
+                                        :items items
+                                        :views [:browse]}
+                                       {}))
   (local terminal {:columns 100 :lines 32})
+
   (fn run []
     (var session initial)
     (var frame nil)
@@ -26,13 +42,16 @@
       (set session (. (misa.choices.input session {:action :next} {}) :session))
       (set frame (misa.choices.picker-layout session {} terminal)))
     frame)
+
   (local oracle (misa.json.encode (run)))
   (for [_ 1 6]
-    (assert (= oracle (misa.json.encode (run))) "non-deterministic navigation projection"))
+    (assert (= oracle (misa.json.encode (run)))
+            "non-deterministic navigation projection"))
   (output (.. count " oracle " oracle "\n"))
   (for [_ 1 10]
     (local start (clock))
     (local frame (run))
     (local elapsed (- (clock) start))
-    (assert (= oracle (misa.json.encode frame)) "timed navigation changed output")
+    (assert (= oracle (misa.json.encode frame))
+            "timed navigation changed output")
     (output (string.format "%d sample %.6f\n" count (* 1000 (/ elapsed 12))))))

@@ -7,8 +7,8 @@
 (local definitions (require :misa.definitions))
 (local context {:argv [] :config {:themes {:persist false} :components {:persist false}}})
 (local layers {})
-(each [_ name (ipairs [:json :themes :theme/default :components :layout :queue/view :attachments])]
-  (local specs ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components :misa.ui.layout :misa.editor.queue.view :misa.editor.attachments])]
+  (local specs ((require name) context))
   (each [id spec (pairs (or specs.view-layers {}))]
     (tset layers id spec.handler))
   (app.define specs))

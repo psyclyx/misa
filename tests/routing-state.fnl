@@ -12,10 +12,10 @@
   (local context {:argv [] :config {}})
   (local construction ((require :tests.application) context))
   (local routes [])
-  (each [_ name (ipairs [:json :keybindings :actions :layout :commands :choices :values
-                         :choices/preview :choices/layout :dialogs :picker :omnipicker
-                         :history :editor :editing :selection :messages :models])]
-    (local description ((fennel.dofile (.. :extensions/ name :.fnl)) context))
+  (each [_ name (ipairs [:misa.json :misa.commands.keybindings :misa.commands.actions :misa.ui.layout :misa.commands :misa.choices :misa.ui.values
+                         :misa.choices.preview :misa.choices.layout :misa.dialogs :misa.choices.picker :misa.commands.palette
+                         :misa.editor.history :misa.editor :misa.editor.editing :misa.selection :misa.ui.transcript :misa.agent.models])]
+    (local description ((require name) context))
     (assert (= description.interceptors nil))
     (each [id value (pairs (or description.routes {}))] (table.insert routes {: id : value}))
     (construction.define (collect [kind entries (pairs description)]
@@ -122,8 +122,8 @@
 (fennel.dofile :src/lua_runtime/framework.fnl)
 (local app _G.misa)
 (local construction ((require :tests.application) {:argv [] :config {}}))
-(construction.include (fennel.dofile :extensions/json.fnl) {})
-(construction.include (fennel.dofile :extensions/keybindings.fnl) {:config {}})
+(construction.include (fennel.dofile :extensions/misa/json.fnl) {})
+(construction.include (fennel.dofile :extensions/misa/commands/keybindings.fnl) {:config {}})
 (local calls {})
 (var observed nil)
 (var saved nil)

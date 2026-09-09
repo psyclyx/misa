@@ -6,8 +6,8 @@
 (local app ((require :tests.application) {:argv [] :config {}}))
 (local definitions (require :misa.definitions))
 (local context {:config {:themes {:persist false} :components {:persist false}}})
-(each [_ name (ipairs [:json :themes :theme/default :components])]
-  (app.define ((fennel.dofile (.. :extensions/ name :.fnl)) context)))
+(each [_ name (ipairs [:misa.json :misa.ui.themes :misa.ui.themes.default :misa.ui.components])]
+  (app.define ((require name) context)))
 (var calls 0)
 
 (app.define (definitions :fixture [{:catalog :components :id :default.fixture :value {:render (fn [model]
@@ -18,9 +18,9 @@
                                         {:lines [{:spans [{:text :before}]}
                                                  (. child.lines 1)
                                                  {:spans [{:text :after}]}]})}}]))
-(app.define ((fennel.dofile :extensions/layout.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/ui/layout.fnl) context))
 (app.define (definitions :fixture [{:catalog :services :id :components.buttons :value (fn [] [])}]))
-(app.define ((fennel.dofile :extensions/component/dialog.fnl) context))
+(app.define ((fennel.dofile :extensions/misa/ui/components/dialog.fnl) context))
 (app.install)
 (local db {:themes {:active :default} :components {:roles {}}})
 (local render-context {:columns 32})
