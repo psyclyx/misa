@@ -13,4 +13,4 @@
       :value {:frames ["·" "•" "●" "•"]}}]
     {}))
 
-{: build}
+{:build build}

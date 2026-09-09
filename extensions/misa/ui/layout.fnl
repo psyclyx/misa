@@ -588,4 +588,4 @@
     (table.insert declarations {:catalog :services :id :layout :value api})
     (definitions.build :layout declarations {})))
 
-{: build}
+{:build build}

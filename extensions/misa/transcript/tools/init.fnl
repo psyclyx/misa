@@ -118,29 +118,28 @@
           (when (or model.result model.text)
             (descriptor :code {:text (or model.result model.text) :style :tool})))))
 
+(fn tools-presentation [roles model]
+  "Describe a tool call using its configured presentation adapter."
+  (let [name (or model.name "")
+        selected (. roles name)
+        binding (. (misa.catalog :tool-presentations) (or selected name))]
+    (when selected
+      (assert binding (.. "unknown tool presentation: " selected)))
+    (let [heading (when (not= (type binding) :function)
+                    (subject model binding))]
+      (if (= (type binding) :function) (binding model)
+          {:subject heading
+           :arguments (arguments model binding heading)
+           :result (or (and binding binding.result (binding.result model))
+                       (result model))}))))
+
 (fn build [context]
   "Build the declarations for tool presentations."
   (let [roles (or (. (or (. (or context.config {}) :tool_presentations) {})
                      :roles) {})
         fx [{:catalog :services
              :id :tools.presentation
-             :value (fn [model]
-                      "Describe a tool call using its configured presentation adapter."
-                      (let [name (or model.name "")
-                            selected (. roles name)
-                            binding (. (misa.catalog :tool-presentations)
-                                       (or selected name))]
-                        (when selected
-                          (assert binding
-                                  (.. "unknown tool presentation: " selected)))
-                        (let [heading (when (not= (type binding) :function)
-                                        (subject model binding))]
-                          (if (= (type binding) :function) (binding model)
-                              {:subject heading
-                               :arguments (arguments model binding heading)
-                               :result (or (and binding binding.result
-                                                (binding.result model))
-                                           (result model))}))))}]]
+             :value (fn [model] (tools-presentation roles model))}]]
     (each [name binding (pairs {:shell {:fields [:command]
                                         :code :command
                                         :language :sh
@@ -164,4 +163,4 @@
                                                          :function))
                                                   "tool presentation requires an adapter or binding"))}})))
 
-{: build}
+{:build build}

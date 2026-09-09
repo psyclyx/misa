@@ -67,4 +67,4 @@
       :value {:render (fn [model context] (code model context :diff))}}]
     {:requirements {:component.content [:layout :markdown.view]}}))
 
-{: build}
+{:build build}

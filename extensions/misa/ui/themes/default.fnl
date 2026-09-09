@@ -186,4 +186,4 @@
                                       :value {:foreground :text}}}})
       (definitions.build :theme.default declarations {}))))
 
-{: build}
+{:build build}

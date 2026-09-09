@@ -38,4 +38,4 @@
       :value {:render footer :compose true}}]
     {}))
 
-{: build}
+{:build build}

@@ -95,3 +95,30 @@ uses the `init` attribute: `standardExtensions.misa.editor.init` evaluates to
 `"misa.editor"`, while `standardExtensions.misa.editor.history` evaluates to
 `"misa.editor.history"`. `standardExtensions.misa.markdown.render` selects the
 Markdown renderer independently of its parser.
+
+# Fennel conventions
+
+Follow the [Fennel style guide](https://fennel-lang.org/style) and format sources
+with `fnlfmt`. Use `local` for module bindings and `let` inside functions. Bind
+related values together; use `var` only for values that actually change. Prefer
+collection expressions for transforms and Fennel loop termination to raw Lua.
+Keep comments for rationale that the code cannot express.
+
+Every module returns a table. Selectable features expose a named `build`
+function; policy modules expose a small set of domain operations. Each public
+function has a short docstring: one sentence first, with further explanation
+separated by a blank line when needed. Preserve established host data keys;
+use kebab-case for Fennel names and `?` for predicates.
+
+Declaration tables associate events, services, and components with behavior.
+Substantial behavior belongs in named functions outside those tables. Pass
+configuration and other dependencies explicitly to policy functions; retain
+small anonymous adapters when they make the association clearer. Do not expose
+private helpers as runtime services merely to test them. Stateful parser and
+cache closures are appropriate when their state is the abstraction being built.
+
+Direct policy tests exercise model transitions and request construction without
+installing an application. Integration tests cover the wiring and host contracts.
+`tests/extension-style.fnl` checks module exports, public docstrings, duplicate
+module function names, and lexical/control-flow conventions across the native
+source catalog. These checks supplement review; they do not measure code quality.

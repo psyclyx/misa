@@ -97,8 +97,12 @@
                        :model {:text model.selection_text :style :tool}}]
                      views.arguments) :args model.collapsed)))
     (let [result-text (if (= model.selection_source :result)
-                          model.selection_text (not= model.result nil)
-                          model.result fallback model.text nil)]
+                          model.selection_text
+                          (not= model.result nil)
+                          model.result
+                          fallback
+                          model.text
+                          nil)]
       (when (not= result-text nil)
         (let [collapsed model.collapsed
               summary (and collapsed (not views.prefer_result)
@@ -139,4 +143,4 @@
                                      :values.render
                                      :tools.presentation]}}))
 
-{: build}
+{:build build}

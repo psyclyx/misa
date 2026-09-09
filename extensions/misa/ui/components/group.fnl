@@ -35,4 +35,4 @@
       :value {:render boundary}}]
     {:requirements {:component.group [:layout :values.render]}}))
 
-{: build}
+{:build build}

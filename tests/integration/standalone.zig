@@ -414,3 +414,15 @@ test "tool and keybinding policy contracts passed" {
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-policy.fnl"} }, "tool and keybinding policy contracts passed\n");
 }
+
+test "extensions follow lexical scope and module API conventions" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/extension-style.fnl"} }, "extension style contracts passed\n");
+}
+
+test "presentation policies work without installed event wiring" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/presentation-behavior.fnl"} }, "presentation behavior contracts passed\n");
+}

@@ -88,17 +88,22 @@
                         (if (<= (. origin middle :last) node.source_start)
                             (set low (+ middle 1))
                             (set high (- middle 1)))))
-                    (for [index low (length origin)]
-                      (let [run (. origin index)]
-                        (when (>= run.first node.source_end) (lua :break))
-                        (let [first (math.max run.first node.source_start)
-                              last (math.min run.last node.source_end)]
-                          (when (< first last)
-                            (emit (node.text:sub (+ (- first node.source_start)
-                                                    1)
-                                                 (- last node.source_start))
-                                  (+ run.source (- first run.first))
-                                  (+ run.source (- last run.first))))))))))))
+                    (do
+                      (var finished? false)
+                      (for [index low (length origin) &until finished?]
+                        (let [run (. origin index)]
+                          (when (>= run.first node.source_end)
+                            (set finished? true))
+                          (when (not finished?)
+                            (let [first (math.max run.first node.source_start)
+                                  last (math.min run.last node.source_end)]
+                              (when (< first last)
+                                (emit (node.text:sub (+ (- first
+                                                           node.source_start)
+                                                        1)
+                                                     (- last node.source_start))
+                                      (+ run.source (- first run.first))
+                                      (+ run.source (- last run.first))))))))))))))
       nil)
 
     (visit nodes nil)
@@ -148,21 +153,26 @@
     (let [room (math.max (* 2 count) (- (- available (+ count 1)) (* 2 count)))]
       (var total 0)
       (each [_ width (ipairs widths)] (set total (+ total width)))
-      (while (> total room)
-        (var widest 1)
-        (for [column 2 count]
-          (when (> (. widths column) (. widths widest)) (set widest column)))
-        (when (<= (. widths widest) 2) (lua :break))
-        (tset widths widest (- (. widths widest) 1))
-        (set total (- total 1)))
-      (while (< total room)
-        (var grew false)
-        (for [column 1 count]
-          (when (and (< total room) (< (. widths column) 40))
-            (tset widths column (+ (. widths column) 1))
-            (set total (+ total 1))
-            (set grew true)))
-        (when (not grew) (lua :break)))
+      (do
+        (var finished? false)
+        (while (and (not finished?) (> total room))
+          (var widest 1)
+          (for [column 2 count]
+            (when (> (. widths column) (. widths widest)) (set widest column)))
+          (when (<= (. widths widest) 2) (set finished? true))
+          (when (not finished?)
+            (tset widths widest (- (. widths widest) 1))
+            (set total (- total 1)))))
+      (do
+        (var finished? false)
+        (while (and (not finished?) (< total room))
+          (var grew false)
+          (for [column 1 count]
+            (when (and (< total room) (< (. widths column) 40))
+              (tset widths column (+ (. widths column) 1))
+              (set total (+ total 1))
+              (set grew true)))
+          (when (not grew) (set finished? true))))
       widths)))
 
 (fn border [widths left middle right base]
@@ -235,172 +245,174 @@
         result)))
 
 (fn highlighted-lines [block base captures]
-  (let [source (or block.text "")]
-    (let [captures (or captures {})]
-      (var (spans at) (values {} 1))
-      (each [_ capture (ipairs captures)]
-        (let [first (+ (or (tonumber capture.start_byte) 0) 1)
-              after (+ (or (tonumber capture.end_byte) 0) 1)
-              class capture.capture]
-          (when (and (. syntax-classes class) (>= first at) (> after first)
-                     (<= after (+ (length source) 1)))
-            (when (> first at)
-              (tset spans (+ (length spans) 1)
-                    (span (source:sub at (- first 1)) (compose base :code))))
+  (let [source (or block.text "")
+        captures (or captures {})]
+    (var (spans at) (values {} 1))
+    (each [_ capture (ipairs captures)]
+      (let [first (+ (or (tonumber capture.start_byte) 0) 1)
+            after (+ (or (tonumber capture.end_byte) 0) 1)
+            class capture.capture]
+        (when (and (. syntax-classes class) (>= first at) (> after first)
+                   (<= after (+ (length source) 1)))
+          (when (> first at)
             (tset spans (+ (length spans) 1)
-                  (span (source:sub first (- after 1))
-                        (compose base :code (.. :syntax. class))))
-            (set at after))))
-      (when (<= at (length source))
-        (tset spans (+ (length spans) 1)
-              (span (source:sub at) (compose base :code))))
-      (when (= (length spans) 0)
-        (tset spans 1 (span source (compose base :code))))
-      (let [lines [{:spans {}}]]
-        (each [_ item (ipairs spans)]
-          (var start 1)
-          (while true
+                  (span (source:sub at (- first 1)) (compose base :code))))
+          (tset spans (+ (length spans) 1)
+                (span (source:sub first (- after 1))
+                      (compose base :code (.. :syntax. class))))
+          (set at after))))
+    (when (<= at (length source))
+      (tset spans (+ (length spans) 1)
+            (span (source:sub at) (compose base :code))))
+    (when (= (length spans) 0)
+      (tset spans 1 (span source (compose base :code))))
+    (let [lines [{:spans {}}]]
+      (each [_ item (ipairs spans)]
+        (var start 1)
+        (do
+          (var finished? false)
+          (while (and (not finished?) true)
             (let [newline (item.text:find "\n" start true)]
               (when (not newline)
                 (tset (. lines (length lines) :spans)
                       (+ (length (. lines (length lines) :spans)) 1)
                       (span (item.text:sub start) item.style item.link))
-                (lua :break))
-              (tset (. lines (length lines) :spans)
-                    (+ (length (. lines (length lines) :spans)) 1)
-                    (span (item.text:sub start (- newline 1)) item.style
-                          item.link))
-              (tset lines (+ (length lines) 1) {:spans {}})
-              (set start (+ newline 1)))))
-        (var offset block.content_start)
-        (each [_ line (ipairs lines)]
-          (each [_ item (ipairs line.spans)]
-            (set item.source true)
-            (when offset
-              (set item.source_start offset)
-              (set offset (+ offset (length item.text)))
-              (set item.source_end offset)))
-          (when offset (set offset (+ offset 1))))
-        lines))))
+                (set finished? true))
+              (when (not finished?)
+                (tset (. lines (length lines) :spans)
+                      (+ (length (. lines (length lines) :spans)) 1)
+                      (span (item.text:sub start (- newline 1)) item.style
+                            item.link))
+                (tset lines (+ (length lines) 1) {:spans {}})
+                (set start (+ newline 1)))))))
+      (var offset block.content_start)
+      (each [_ line (ipairs lines)]
+        (each [_ item (ipairs line.spans)]
+          (set item.source true)
+          (when offset
+            (set item.source_start offset)
+            (set offset (+ offset (length item.text)))
+            (set item.source_end offset)))
+        (when offset (set offset (+ offset 1))))
+      lines)))
 
 (fn code-block [block columns base captures outer-inset]
   (let [language (or (and (not= block.language "") block.language) :plain)
-        result {}]
-    (let [source-lines (if block.rows
-                           (icollect [_ row (ipairs block.rows)]
-                             {:spans [{:text row.text
-                                       :style (compose base :code)
-                                       :source (not= row.source_start nil)
-                                       :source_start row.source_start
-                                       :source_end (when row.source_start
-                                                     (+ row.source_start
-                                                        (length row.text)))}]})
-                           (highlighted-lines block base captures))]
-      ;; A terminal newline ends the last line; only additional newlines are
-      ;; blank content. Keep this policy shared by all tool code views.
-      (when (and block.terminated (not block.rows)
-                 (= (: (or block.text "") :sub -1) "\n"))
-        (table.remove source-lines))
-      (when (and block.missing_newline (not block.rows)
-                 (not= (or block.text "") "") (not= (block.text:sub -1) "\n"))
-        (table.insert source-lines
-                      {:annotation true
-                       :spans [{:text block.missing_newline
-                                :style (compose base :code :dim)
-                                :source false}]}))
-      (var digits (length (tostring (length source-lines))))
-      (each [_ row (ipairs (or block.rows []))]
-        (set digits (math.max digits (length (tostring (or row.number ""))))))
-      (let [diff (= language :diff)]
-        (when diff
-          (each [_ line (ipairs source-lines)]
-            (let [raw (table.concat (icollect [_ part (ipairs line.spans)]
-                                      part.text))
-                  (old count-old new count-new) (raw:match "^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")]
-              (when old
-                (set digits
-                     (math.max digits
-                               (length (tostring (+ (tonumber old)
-                                                    (or (tonumber count-old) 1))))
-                               (length (tostring (+ (tonumber new)
-                                                    (or (tonumber count-new) 1))))))))))
-        (var (old-line new-line) (values 1 1))
-        (each [index line (ipairs source-lines)]
-          (let [raw (table.concat (icollect [_ item (ipairs line.spans)]
-                                    item.text))
-                (old-start new-start) (raw:match "^@@ %-(%d+)[^ ]* %+(%d+)[^ ]* @@")
-                marker (raw:sub 1 1)
-                metadata (or old-start (raw:match "^diff ")
-                             (raw:match "^index ") (raw:match "^%-%-%- ")
-                             (raw:match "^%+%+%+ ") (= marker "\\"))]
-            (when old-start
-              (set (old-line new-line)
-                   (values (tonumber old-start) (tonumber new-start))))
-            (var number (if block.rows
-                            (tostring (or (. block.rows index :number) ""))
-                            (tostring index)))
-            (when line.annotation (set number ""))
-            (when diff
-              ;; One gutter: removed lines refer to the old file; context and
-              ;; additions refer to the new file. The diff marker supplies the side.
-              (set number
-                   (if metadata ""
-                       (tostring (if (= marker "-") old-line new-line))))
-              (when (not metadata)
-                (each [_ item (ipairs line.spans)]
-                  (set item.style
-                       (compose base :code
-                                (if (= marker "+") :diff.added
-                                    (= marker "-") :diff.removed
-                                    :plain))))
-                (when (not= marker "+") (set old-line (+ old-line 1)))
-                (when (not= marker "-") (set new-line (+ new-line 1)))))
-            ;; Surrounding margins inherit the parent; gutter and code share a surface.
-            (set number (.. (string.rep " "
-                                        (math.max 0 (- digits (length number))))
-                            number))
-            (let [numbered (not= block.numbered false)
-                  requested-left (math.max 0 (- 3 (or outer-inset 0)))
-                  left (if (> columns (+ requested-left 4)) requested-left 0)
-                  right (if (> columns (+ requested-left 4)) 3 0)
-                  gutter (if (and numbered
-                                  (> (- columns left right)
-                                     (+ (length number) 3)))
-                             (.. number "  ")
-                             "")
-                  body-width (math.max 1 (- columns left right (length gutter)))]
-              (each [wrapped-index row (ipairs (flow line.spans body-width nil
-                                                     nil
-                                                     {:trim false :words false}))]
-                (let [parts [{:text (string.rep " " left)
-                              :style base
-                              :source false}
-                             {:text (if (= wrapped-index 1) gutter
-                                        (string.rep " " (length gutter)))
-                              :style [:dim :surface.code]
-                              :source false}]]
-                  (var used 0)
-                  (each [_ item (ipairs row.spans)]
-                    (set used (+ used (misa.layout.width item.text)))
-                    (table.insert parts
-                                  (misa.patch item
-                                              {:style (compose item.style
-                                                               :surface.code)})))
-                  (when (< used body-width)
-                    (table.insert parts
-                                  {:text (string.rep " " (- body-width used))
-                                   :style :surface.code
-                                   :source false}))
-                  (when (> right 0)
-                    (table.insert parts
-                                  {:text (string.rep " " right)
-                                   :style base
-                                   :source false}))
-                  (table.insert result
-                                (misa.patch row
-                                            {:spans (misa.replace parts)
-                                             :annotation line.annotation})))))))
-        result))))
+        result {}
+        source-lines (if block.rows
+                         (icollect [_ row (ipairs block.rows)]
+                           {:spans [{:text row.text
+                                     :style (compose base :code)
+                                     :source (not= row.source_start nil)
+                                     :source_start row.source_start
+                                     :source_end (when row.source_start
+                                                   (+ row.source_start
+                                                      (length row.text)))}]})
+                         (highlighted-lines block base captures))]
+    ;; A terminal newline ends the last line; only additional newlines are
+    ;; blank content. Keep this policy shared by all tool code views.
+    (when (and block.terminated (not block.rows)
+               (= (: (or block.text "") :sub -1) "\n"))
+      (table.remove source-lines))
+    (when (and block.missing_newline (not block.rows)
+               (not= (or block.text "") "") (not= (block.text:sub -1) "\n"))
+      (table.insert source-lines
+                    {:annotation true
+                     :spans [{:text block.missing_newline
+                              :style (compose base :code :dim)
+                              :source false}]}))
+    (var digits (length (tostring (length source-lines))))
+    (each [_ row (ipairs (or block.rows []))]
+      (set digits (math.max digits (length (tostring (or row.number ""))))))
+    (let [diff (= language :diff)]
+      (when diff
+        (each [_ line (ipairs source-lines)]
+          (let [raw (table.concat (icollect [_ part (ipairs line.spans)]
+                                    part.text))
+                (old count-old new count-new) (raw:match "^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")]
+            (when old
+              (set digits
+                   (math.max digits
+                             (length (tostring (+ (tonumber old)
+                                                  (or (tonumber count-old) 1))))
+                             (length (tostring (+ (tonumber new)
+                                                  (or (tonumber count-new) 1))))))))))
+      (var (old-line new-line) (values 1 1))
+      (each [index line (ipairs source-lines)]
+        (let [raw (table.concat (icollect [_ item (ipairs line.spans)]
+                                  item.text))
+              (old-start new-start) (raw:match "^@@ %-(%d+)[^ ]* %+(%d+)[^ ]* @@")
+              marker (raw:sub 1 1)
+              metadata (or old-start (raw:match "^diff ") (raw:match "^index ")
+                           (raw:match "^%-%-%- ") (raw:match "^%+%+%+ ")
+                           (= marker "\\"))]
+          (when old-start
+            (set (old-line new-line)
+                 (values (tonumber old-start) (tonumber new-start))))
+          (var number (if block.rows
+                          (tostring (or (. block.rows index :number) ""))
+                          (tostring index)))
+          (when line.annotation (set number ""))
+          (when diff
+            ;; One gutter: removed lines refer to the old file; context and
+            ;; additions refer to the new file. The diff marker supplies the side.
+            (set number
+                 (if metadata ""
+                     (tostring (if (= marker "-") old-line new-line))))
+            (when (not metadata)
+              (each [_ item (ipairs line.spans)]
+                (set item.style
+                     (compose base :code
+                              (if (= marker "+") :diff.added
+                                  (= marker "-") :diff.removed
+                                  :plain))))
+              (when (not= marker "+") (set old-line (+ old-line 1)))
+              (when (not= marker "-") (set new-line (+ new-line 1)))))
+          ;; Surrounding margins inherit the parent; gutter and code share a surface.
+          (set number (.. (string.rep " "
+                                      (math.max 0 (- digits (length number))))
+                          number))
+          (let [numbered (not= block.numbered false)
+                requested-left (math.max 0 (- 3 (or outer-inset 0)))
+                left (if (> columns (+ requested-left 4)) requested-left 0)
+                right (if (> columns (+ requested-left 4)) 3 0)
+                gutter (if (and numbered
+                                (> (- columns left right) (+ (length number) 3)))
+                           (.. number "  ")
+                           "")
+                body-width (math.max 1 (- columns left right (length gutter)))]
+            (each [wrapped-index row (ipairs (flow line.spans body-width nil
+                                                   nil
+                                                   {:trim false :words false}))]
+              (let [parts [{:text (string.rep " " left)
+                            :style base
+                            :source false}
+                           {:text (if (= wrapped-index 1) gutter
+                                      (string.rep " " (length gutter)))
+                            :style [:dim :surface.code]
+                            :source false}]]
+                (var used 0)
+                (each [_ item (ipairs row.spans)]
+                  (set used (+ used (misa.layout.width item.text)))
+                  (table.insert parts
+                                (misa.patch item
+                                            {:style (compose item.style
+                                                             :surface.code)})))
+                (when (< used body-width)
+                  (table.insert parts
+                                {:text (string.rep " " (- body-width used))
+                                 :style :surface.code
+                                 :source false}))
+                (when (> right 0)
+                  (table.insert parts
+                                {:text (string.rep " " right)
+                                 :style base
+                                 :source false}))
+                (table.insert result
+                              (misa.patch row
+                                          {:spans (misa.replace parts)
+                                           :annotation line.annotation})))))))
+      result)))
 
 (fn render-block [block columns base captures outer-inset]
   (let [result {}
@@ -564,14 +576,11 @@
                 :source_end (- offset 1)}]})))
 
 (fn build []
-  "Declare Markdown projection and rendering services."
-  (let [declarations []]
-    (table.insert declarations
-                  {:catalog :services
-                   :id :markdown.view
-                   :value {: project : plain : render}})
-    (definitions.build :component.markdown
-      declarations
-      {:requirements {:component.markdown [:layout :markdown :markdown.parse]}})))
+  "Build the module declarations."
+  (definitions.build :component.markdown
+    [{:catalog :services
+      :id :markdown.view
+      :value {: project : plain : render}}]
+    {:requirements {:component.markdown [:layout :markdown :markdown.parse]}}))
 
-{: build}
+{:build build}

@@ -86,4 +86,4 @@
                                      :components.buttons
                                      :values.render]}}))
 
-{: build}
+{:build build}

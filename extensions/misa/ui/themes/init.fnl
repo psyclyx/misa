@@ -1,375 +1,74 @@
+(local styles (require :misa.ui.themes.styles))
 (local definitions (require :misa.definitions))
 
 ;; Semantic theme data and style composition. Components name roles; this service
 ;; alone resolves those names to the closed native style record.
 
+(fn themes-lookup [config normalized db]
+  "Resolve the currently selected theme."
+  (assert (and (= (type db) :table) (= (type db.themes) :table))
+          "theme resolution requires initialized db")
+  (let [source (assert (. (misa.catalog :themes) db.themes.active)
+                       (.. "unknown theme: " (tostring db.themes.active)))]
+    (or (. normalized source) (let [theme (styles.normalize source config)]
+                                (tset normalized source theme)
+                                theme))))
+
+(fn themes-style [db tokens]
+  "Resolve semantic style tokens through the selected theme."
+  (styles.compose (misa.themes.lookup db) tokens))
+
+(fn themes-swap [db id]
+  "Return a database patch selecting a theme."
+  (assert (. (misa.catalog :themes) id) (.. "unknown theme: " (tostring id)))
+  (misa.patch db {:themes {:active id}}))
+
+(fn app-start [config configured db]
+  {:patch (when (not db.themes)
+            {:themes {:active configured}})
+   :fx (when (not= config.persist false)
+         [{:completion :themes/loaded :namespace :ui.theme :type :state/load}])})
+
+(fn themes-loaded [db event]
+  (if (or (= event.found false) (= event.data misa.json-null))
+      nil
+      (do
+        (assert (and (= (type event.data) :table)
+                     (= (type event.data.active) :string))
+                "invalid persisted theme")
+        (when (. (misa.catalog :themes) event.data.active)
+          {:patch {:themes {:active event.data.active}}}))))
+
+(fn themes-swap-handler [config db event]
+  (let [next (misa.themes.swap db event.theme)
+        fx {}]
+    (when (not= config.persist false)
+      (tset fx (+ (length fx) 1)
+            {:data next.themes :namespace :ui.theme :type :state/save}))
+    (tset fx (+ (length fx) 1) {:event {:type :ui/redraw} :type :dispatch})
+    {:patch {:themes (misa.replace next.themes)} : fx}))
+
 (fn build [context]
-  "Build the declarations for themes."
-  (let [declarations []
-        normalized (setmetatable {} {:__mode :k})]
-    (var config (or (and (= (type context.config) :table) context.config.themes)
-                    nil))
-    (set config (or (and (= (type config) :table) config) {}))
-    (let [configured (or (and (= (type config.default) :string) config.default)
-                         :default)
-          ansi {:black true
-                :blue true
-                :bright_black true
-                :bright_blue true
-                :bright_cyan true
-                :bright_green true
-                :bright_magenta true
-                :bright_red true
-                :bright_white true
-                :bright_yellow true
-                :cyan true
-                :green true
-                :magenta true
-                :red true
-                :white true
-                :yellow true}
-          attributes {:bold true
-                      :dim true
-                      :italic true
-                      :strikethrough true
-                      :underline true}
-          ;; Closed contract emitted by the bundled component/Markdown suite. Themes
-          ;; may override any role; omitted roles are deliberately composed from
-          ;; `plain` plus a presentation-neutral semantic modifier.
-          standard-tokens [:plain
-                           :dim
-                           :disabled
-                           :bold
-                           :italic
-                           :strikethrough
-                           :underline
-                           :accent
-                           :hover
-                           :code
-                           :link
-                           :quote
-                           :markdown.heading.1
-                           :markdown.heading.2
-                           :markdown.heading.3
-                           :markdown.heading.4
-                           :markdown.heading.5
-                           :markdown.heading.6
-                           :markdown.list.marker
-                           :markdown.rule
-                           :markdown.table.border
-                           :markdown.table.header
-                           :markdown.code.label
-                           :diff.added
-                           :diff.removed
-                           :markdown.code.border
-                           :syntax.comment
-                           :syntax.string
-                           :syntax.number
-                           :syntax.keyword
-                           :syntax.type
-                           :syntax.function
-                           :syntax.constant
-                           :syntax.variable
-                           :syntax.property
-                           :syntax.tag
-                           :syntax.attribute
-                           :syntax.operator
-                           :syntax.punctuation
-                           :syntax.escape
-                           :syntax.embedded
-                           :surface.user
-                           :surface.assistant
-                           :surface.thinking
-                           :surface.tool
-                           :surface.error
-                           :surface.harness
-                           :surface.dialog
-                           :editor.normal
-                           :editor.visual
-                           :selection
-                           :user
-                           :assistant
-                           :thinking
-                           :tool
-                           :pending
-                           :error
-                           :tool.pending
-                           :tool.success
-                           :tool.error
-                           :tool.cancelled
-                           :rail.user
-                           :rail.assistant
-                           :rail.thinking
-                           :rail.tool
-                           :rail.error
-                           :rail.harness
-                           :label
-                           :value
-                           :keybinding
-                           :choice.prompt
-                           :choice.query
-                           :choice.hint
-                           :choice.view
-                           :choice.view.active
-                           :choice.row
-                           :choice.row.active
-                           :choice.row.selected
-                           :choice.empty
-                           :choice.preview
-                           :dialog.title
-                           :dialog.message
-                           :dialog.label
-                           :dialog.value
-                           :dialog.code
-                           :dialog.progress
-                           :dialog.input
-                           :dialog.hint]
-          dim-fallback {:choice.empty true
-                        :choice.hint true
-                        :choice.preview true
-                        :dialog.hint true
-                        :dialog.label true
-                        :dialog.progress true
-                        :dim true
-                        :label true
-                        :markdown.code.border true
-                        :markdown.rule true
-                        :markdown.table.border true
-                        :pending true
-                        :quote true
-                        :rail.harness true
-                        :syntax.comment true
-                        :syntax.punctuation true
-                        :thinking true
-                        :tool.cancelled true
-                        :tool.pending true}
-          bold-fallback {:bold true
-                         :choice.row.selected true
-                         :choice.view true
-                         :choice.view.active true
-                         :dialog.code true
-                         :dialog.title true
-                         :error true
-                         :markdown.code.label true
-                         :markdown.heading.1 true
-                         :markdown.heading.2 true
-                         :markdown.heading.3 true
-                         :markdown.list.marker true
-                         :markdown.table.header true
-                         :rail.error true
-                         :syntax.escape true
-                         :syntax.keyword true
-                         :syntax.operator true
-                         :tool.error true}]
-      (fn rgb [value]
-        (if (not= (type value) :table) nil
-            (do
-              (var count 0)
-              (each [key (pairs value)]
-                (assert (or (= key :r) (= key :g) (= key :b))
-                        (.. "unknown RGB field: " (tostring key)))
-                (set count (+ count 1)))
-              (assert (= count 3) "RGB color requires r, g, and b")
-              (let [result {}]
-                (each [_ key (ipairs [:r :g :b])]
-                  (let [channel (. value key)]
-                    (assert (and (= (type channel) :number) (= (% channel 1) 0)
-                                 (>= channel 0) (<= channel 255))
-                            "RGB channels must be bytes")
-                    (tset result key channel)))
-                result))))
+  "Build the module declarations."
+  (let [config (let [value (. (or context.config {}) :themes)]
+                 (if (= (type value) :table) value {}))
+        normalized (setmetatable {} {:__mode :k})
+        configured (if (= (type config.default) :string) config.default
+                       :default)]
+    (definitions.build :themes
+      [{:catalog :services
+        :id :themes.lookup
+        :value (fn [db] (themes-lookup config normalized db))}
+       {:catalog :services :id :themes.style :value themes-style}
+       {:catalog :services :id :themes.swap :value themes-swap}
+       {:catalog :events
+        :value {:event :app/start
+                :handler (fn [db] (app-start config configured db))}}
+       {:catalog :events :value {:event :themes/loaded :handler themes-loaded}}
+       {:catalog :events
+        :value {:event :themes/swap
+                :handler (fn [db event]
+                           (themes-swap-handler config db event))}}]
+      {:validators {:themes (fn [_ theme] (styles.normalize theme config) nil)}})))
 
-      (fn terminal-color [value]
-        (if (and (= (type value) :string) (value:match "^#%x%x%x%x%x%x$"))
-            {:b (tonumber (value:sub 6 7) 16)
-             :g (tonumber (value:sub 4 5) 16)
-             :r (tonumber (value:sub 2 3) 16)}
-            (if (= (type value) :string)
-                (do
-                  (assert (or (= value :default) (. ansi value))
-                          (.. "unknown terminal color: " value))
-                  value)
-                (assert (rgb value)
-                        "foreground must be an ANSI color, default, or RGB record"))))
-
-      (fn copy-color [value]
-        (or (and (= (type value) :table) {:b value.b :g value.g :r value.r})
-            value))
-
-      (fn normalize-style [value palette name]
-        (assert (= (type value) :table)
-                (.. "theme style must be a record: " name))
-        (let [result {}]
-          (each [key field (pairs value)]
-            (if (or (= key :foreground) (= key :background))
-                (if (and (= (type field) :string) (not= (. palette field) nil))
-                    (tset result key (copy-color (. palette field)))
-                    (tset result key (terminal-color field)))
-                (do
-                  (assert (. attributes key)
-                          (.. "unknown style field: " (tostring key)))
-                  (assert (= (type field) :boolean)
-                          (.. "style attribute must be boolean: " key))
-                  (tset result key field))))
-          (assert (not= (next result) nil)
-                  (.. "theme style must not be empty: " name))
-          result))
-
-      (fn normalize-theme [theme]
-        (assert (and (= (type theme.palette) :table)
-                     (= (type theme.styles) :table))
-                "theme requires palette and styles records")
-        (let [palette {}]
-          (each [name color (pairs theme.palette)]
-            (assert (and (= (type name) :string) (not= name ""))
-                    "palette names must be nonempty strings")
-            (tset palette name (terminal-color color)))
-          ;; Overrides are independent of component implementation and theme choice.
-          ;; Palette overrides resolve before token composition; style overrides patch
-          ;; individual attributes instead of replacing an entire visual vocabulary.
-          (assert (or (= config.palette nil) (= (type config.palette) :table))
-                  "theme palette overrides must be a record")
-          (each [name color (pairs (or config.palette {}))]
-            (assert (and (= (type name) :string) (not= name ""))
-                    "palette names must be nonempty strings")
-            (tset palette name (terminal-color color)))
-          (let [styles {}]
-            (each [name style (pairs theme.styles)]
-              (assert (and (= (type name) :string) (not= name ""))
-                      "style token must be nonempty")
-              (tset styles name (normalize-style style palette name)))
-            (assert (or (= config.styles nil) (= (type config.styles) :table))
-                    "theme style overrides must be a record")
-            (each [name style (pairs (or config.styles {}))]
-              (assert (and (= (type name) :string) (not= name ""))
-                      "style token must be nonempty")
-              (let [target (or (. styles name) {})]
-                (tset styles name target)
-                (each [key value (pairs (normalize-style style palette name))]
-                  (tset target key value))))
-            (assert styles.plain "theme is missing foundation token: plain")
-            (each [_ required (ipairs standard-tokens)]
-              (when (not (. styles required))
-                (let [fallback {}]
-                  (each [key value (pairs styles.plain)]
-                    (tset fallback key (copy-color value)))
-                  (if (or (= required :italic) (= required :syntax.embedded)
-                          (= required :markdown.heading.4))
-                      (set fallback.italic true)
-                      (= required :strikethrough)
-                      (set fallback.strikethrough true)
-                      (or (= required :underline) (= required :link)
-                          (= required :syntax.variable)
-                          (= required :markdown.heading.5))
-                      (set fallback.underline true)
-                      (. bold-fallback required)
-                      (set fallback.bold true)
-                      (. dim-fallback required)
-                      (set fallback.dim true))
-                  (when (= required :disabled)
-                    (set fallback.dim true)
-                    (set fallback.bold false)
-                    (set fallback.underline false))
-                  (tset styles required fallback))))
-            {: palette : styles})))
-
-      (fn merge [target source]
-        (each [key value (pairs source)]
-          (tset target key (copy-color value)))
-        nil)
-
-      (table.insert declarations
-                    {:catalog :services
-                     :id :themes.lookup
-                     :value (fn [db]
-                              "Resolve the currently selected theme."
-                              (assert (and (= (type db) :table)
-                                           (= (type db.themes) :table))
-                                      "theme resolution requires initialized db")
-                              (let [source (assert (. (misa.catalog :themes)
-                                                      db.themes.active)
-                                                   (.. "unknown theme: "
-                                                       (tostring db.themes.active)))]
-                                (or (. normalized source)
-                                    (let [theme (normalize-theme source)]
-                                      (tset normalized source theme)
-                                      theme))))})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :themes.style
-                     :value (fn [db tokens]
-                              "Resolve semantic style tokens through the selected theme."
-                              (let [tokens (if (= (type tokens) :string)
-                                               [tokens]
-                                               tokens)]
-                                (assert (and (= (type tokens) :table)
-                                             (> (length tokens) 0))
-                                        "span style requires one or more semantic tokens")
-                                (let [(styles result) (values (. (misa.themes.lookup db)
-                                                                 :styles)
-                                                              {})]
-                                  (each [_ name (ipairs tokens)]
-                                    (assert (and (= (type name) :string)
-                                                 (not= name ""))
-                                            "semantic style tokens must be nonempty strings")
-                                    (merge result
-                                           (assert (. styles name)
-                                                   (.. "theme has no style token: "
-                                                       name))))
-                                  result)))})
-      (table.insert declarations
-                    {:catalog :services
-                     :id :themes.swap
-                     :value (fn [db id]
-                              "Return a database patch selecting a theme."
-                              (assert (. (misa.catalog :themes) id)
-                                      (.. "unknown theme: " (tostring id)))
-                              (misa.patch db {:themes {:active id}}))})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :app/start
-                             :handler (fn [db]
-                                        {:patch (when (not db.themes)
-                                                  {:themes {:active configured}})
-                                         :fx (when (not= config.persist false)
-                                               [{:completion :themes/loaded
-                                                 :namespace :ui.theme
-                                                 :type :state/load}])})}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :themes/loaded
-                             :handler (fn [db event]
-                                        (if (or (= event.found false)
-                                                (= event.data misa.json-null))
-                                            nil
-                                            (do
-                                              (assert (and (= (type event.data)
-                                                              :table)
-                                                           (= (type event.data.active)
-                                                              :string))
-                                                      "invalid persisted theme")
-                                              (when (. (misa.catalog :themes)
-                                                       event.data.active)
-                                                {:patch {:themes {:active event.data.active}}}))))}})
-      (table.insert declarations
-                    {:catalog :events
-                     :value {:event :themes/swap
-                             :handler (fn [db event]
-                                        (let [next (misa.themes.swap db
-                                                                     event.theme)
-                                              fx {}]
-                                          (when (not= config.persist false)
-                                            (tset fx (+ (length fx) 1)
-                                                  {:data next.themes
-                                                   :namespace :ui.theme
-                                                   :type :state/save}))
-                                          (tset fx (+ (length fx) 1)
-                                                {:event {:type :ui/redraw}
-                                                 :type :dispatch})
-                                          {:patch {:themes (misa.replace next.themes)}
-                                           : fx}))}})
-      (definitions.build :themes
-        declarations
-        {:validators {:themes (fn [_ theme] (normalize-theme theme) nil)}}))))
-
-{: build}
+{:build build}

@@ -47,4 +47,4 @@
     [{:catalog :components :id :default.content.truncated :value {: render}}]
     {}))
 
-{: build}
+{:build build}

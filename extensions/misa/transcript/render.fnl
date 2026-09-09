@@ -101,4 +101,4 @@
         declarations
         {:requirements {:component.message [:layout :markdown :markdown.view]}}))))
 
-{: build}
+{:build build}

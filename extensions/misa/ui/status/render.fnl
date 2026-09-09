@@ -1,6 +1,7 @@
 (local definitions (require :misa.definitions))
 
 ;; Indicator row composition; general value formatting is owned by values.
+
 (fn span [text style action] {: text : style : action})
 (fn text-value [text] [(span text)])
 (fn activity [fact context]
@@ -50,51 +51,52 @@
           (table.insert result next))))
     result))
 
+(fn render-indicators [model context]
+  (let [source (or model.indicators {})
+        keep {}]
+    (for [i 1 (length source)] (tset keep i true))
+    (let [rendered (icollect [_ item (ipairs source)]
+                     (item-spans item context))
+          widths (icollect [_ spans (ipairs rendered)]
+                   (misa.layout.width (table.concat (icollect [_ item (ipairs spans)]
+                                                      item.text))))]
+      (fn total []
+        (var (width count) (values 0 0))
+        (each [i item (ipairs source)]
+          (when (. keep i)
+            (set width (+ width (. widths i)))
+            (set count (+ count 1))))
+        (+ width (* (math.max 0 (- count 1)) 2)))
+
+      (let [columns (math.max 1 (math.floor (or (tonumber context.columns) 80)))]
+        (do
+          (var finished? false)
+          (while (and (not finished?) (> (total) columns))
+            (var victim nil)
+            (each [i item (ipairs source)]
+              (when (and (. keep i)
+                         (or (not victim)
+                             (< (or (tonumber item.priority) 0)
+                                (or (tonumber (. source victim :priority)) 0))
+                             (and (= (or (tonumber item.priority) 0)
+                                     (or (tonumber (. source victim :priority))
+                                         0))
+                                  (> i victim))))
+                (set victim i)))
+            (when (not victim) (set finished? true))
+            (when (not finished?) (tset keep victim false))))
+        (let [spans {}]
+          (each [i item (ipairs source)]
+            (when (. keep i)
+              (when (> (length spans) 0)
+                (tset spans (+ (length spans) 1) (span "  " :plain)))
+              (each [_ item-span (ipairs (. rendered i))]
+                (tset spans (+ (length spans) 1) item-span))))
+          {:lines (or (and (> (length spans) 0) [{: spans}]) {})})))))
+
 (fn build []
   "Declare status-line rendering."
   (let [declarations [{:catalog :value-renderers :id :activity :value activity}]]
-    (fn render-indicators [model context]
-      (let [source (or model.indicators {})
-            keep {}]
-        (for [i 1 (length source)] (tset keep i true))
-        (let [rendered (icollect [_ item (ipairs source)]
-                         (item-spans item context))
-              widths (icollect [_ spans (ipairs rendered)]
-                       (misa.layout.width (table.concat (icollect [_ item (ipairs spans)]
-                                                          item.text))))]
-          (fn total []
-            (var (width count) (values 0 0))
-            (each [i item (ipairs source)]
-              (when (. keep i)
-                (set width (+ width (. widths i)))
-                (set count (+ count 1))))
-            (+ width (* (math.max 0 (- count 1)) 2)))
-
-          (let [columns (math.max 1
-                                  (math.floor (or (tonumber context.columns) 80)))]
-            (while (> (total) columns)
-              (var victim nil)
-              (each [i item (ipairs source)]
-                (when (and (. keep i)
-                           (or (not victim)
-                               (< (or (tonumber item.priority) 0)
-                                  (or (tonumber (. source victim :priority)) 0))
-                               (and (= (or (tonumber item.priority) 0)
-                                       (or (tonumber (. source victim :priority))
-                                           0))
-                                    (> i victim))))
-                  (set victim i)))
-              (when (not victim) (lua :break))
-              (tset keep victim false))
-            (let [spans {}]
-              (each [i item (ipairs source)]
-                (when (. keep i)
-                  (when (> (length spans) 0)
-                    (tset spans (+ (length spans) 1) (span "  " :plain)))
-                  (each [_ item-span (ipairs (. rendered i))]
-                    (tset spans (+ (length spans) 1) item-span))))
-              {:lines (or (and (> (length spans) 0) [{: spans}]) {})})))))
-
     (table.insert declarations
                   {:catalog :components
                    :id :default.status.indicators
@@ -103,4 +105,4 @@
       declarations
       {:requirements {:component.status [:values.render]}})))
 
-{: build}
+{:build build}

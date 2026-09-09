@@ -7,9 +7,8 @@
      (or (and usage usage.output_tokens) 0)))
 
 (fn selected [entries id]
-  (each [_ model (ipairs (or entries []))]
-    (when (= model.id id) (lua "return model")))
-  nil)
+  (accumulate [found nil _ model (ipairs (or entries [])) &until found]
+    (when (= model.id id) model)))
 
 (fn finite? [value]
   (and (= (type value) :number) (= value value) (< (math.abs value) math.huge)))
@@ -70,6 +69,13 @@
                                    presentation) :lines))
       []))
 
+(fn status-context-value [inputs]
+  (let [used (total (. inputs 1))
+        model (selected (. inputs 2) (. inputs 3))]
+    (if model
+        {:type :ratio : used :limit model.context_window :unit :tokens}
+        {:type :tokens :value used})))
+
 (fn build []
   "Build the declarations for status."
   (let [fx [(let [definition {:id :status/activity
@@ -92,16 +98,7 @@
                               :inputs [[:usage/last-request]
                                        [:db/path :models :entries]
                                        [:db/path :models :selected]]
-                              :compute (fn [inputs]
-                                         (let [used (total (. inputs 1))
-                                               model (selected (. inputs 2)
-                                                               (. inputs 3))]
-                                           (if model
-                                               {:type :ratio
-                                                : used
-                                                :limit model.context_window
-                                                :unit :tokens}
-                                               {:type :tokens :value used})))}]
+                              :compute status-context-value}]
               {:catalog :subscriptions
                :id (. definition :id)
                :value definition})
@@ -120,12 +117,11 @@
                      :handler (fn [_ event]
                                 {:patch {:status {:mode event.status}}})}}
             {:catalog :services :id :status.model :value projection}]]
-    (do
-      (each [_ value (ipairs indicators)]
-        (table.insert fx (let [definition value]
-                           {:catalog :indicators
-                            :id (. definition :id)
-                            :value definition}))))
+    (each [_ value (ipairs indicators)]
+      (table.insert fx (let [definition value]
+                         {:catalog :indicators
+                          :id (. definition :id)
+                          :value definition})))
     (definitions.build :status fx {})))
 
-{: build}
+{:build build}

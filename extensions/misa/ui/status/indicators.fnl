@@ -1,10 +1,73 @@
 (local definitions (require :misa.definitions))
 
 ;; Named reactive facts, configured presentation metadata, and one component path.
-(fn build [context]
-  "Build the declarations for indicators."
-  (let [root (or (. (or context.config {}) :status) {})
-        configured (or root.indicators
+(fn indicators-model-value [selected inputs]
+  {:indicators (icollect [index selection (ipairs (selected))]
+                 (let [fact (. inputs index)
+                       definition (. (misa.catalog :indicators) selection.id)]
+                   (when (not= fact nil)
+                     (assert (and (= (type fact) :table)
+                                  (= (type fact.type) :string)
+                                  (not= fact.type ""))
+                             "indicator query must return a typed fact or nil")
+                     (let [label (if (= selection.representation :icon)
+                                     (or definition.icon definition.label
+                                         selection.id)
+                                     (or definition.label selection.id))
+                           hotkey (if (and (= selection.hotkey true)
+                                           definition.hotkey misa.keybindings
+                                           misa.keybindings.hint)
+                                      (misa.keybindings.hint definition.hotkey.context
+                                                             definition.hotkey.action)
+                                      (= (type selection.hotkey) :string)
+                                      selection.hotkey
+                                      nil)
+                           action (or definition.action
+                                      (when (and definition.hotkey misa.actions
+                                                 misa.actions.all)
+                                        (accumulate [found nil _ candidate (ipairs (misa.actions.all))
+                                                     &until found]
+                                          (when (and candidate.binding
+                                                     (= candidate.binding.context
+                                                        definition.hotkey.context)
+                                                     (= candidate.binding.action
+                                                        definition.hotkey.action))
+                                            candidate.id))))]
+                       {:id selection.id
+                        : label
+                        : hotkey
+                        : action
+                        : fact
+                        :representation selection.representation
+                        :priority selection.priority}))))})
+
+(fn status-indicators [db context]
+  "Render the configured status indicators."
+  (let [model (misa.sub db [:indicators/model])
+        presentation (misa.snapshot (or context {}))]
+    (when (and misa.animations misa.animations.state)
+      (tset presentation :activity_animation (misa.animations.state db :status)))
+    (. (misa.components.render db :status.indicators model presentation) :lines)))
+
+(fn validate-indicator [id definition]
+  (assert (and (= (type definition) :table) (= definition.id id)
+               (= definition.value nil) (= (type definition.query) :table)
+               (= (type (. definition.query 1)) :string)
+               (not= (. definition.query 1) ""))
+          "indicator requires an id and named query")
+  (each [_ field (ipairs [:label :icon :action])]
+    (assert (or (= (. definition field) nil)
+                (= (type (. definition field)) :string))
+            "indicator metadata must be strings"))
+  (assert (or (= definition.hotkey nil)
+              (and (= (type definition.hotkey) :table)
+                   (= (type definition.hotkey.context) :string)
+                   (= (type definition.hotkey.action) :string)))
+          "indicator hotkey must name context and action"))
+
+(fn selections [root]
+  "Resolve configured indicator ordering and per-identity overrides."
+  (let [configured (or root.indicators
                        [{:id :activity :priority 100 :representation :icon}
                         {:id :model
                          :priority 90
@@ -51,7 +114,8 @@
           (each [_ id (ipairs additions)] (add {: id}))
           (let [selections (icollect [index item (ipairs entries)]
                              (let [selection (if (= (type item) :string)
-                                                 {:id item} item)
+                                                 {:id item}
+                                                 item)
                                    representation (or selection.representation
                                                       :label)]
                                (assert (and (= (type selection) :table)
@@ -67,113 +131,25 @@
                                 :hotkey selection.hotkey
                                 :priority (or (tonumber selection.priority)
                                               (- 1000 index))}))]
-            (fn selected []
-              (icollect [_ selection (ipairs selections)]
-                (when (. (misa.catalog :indicators) selection.id) selection)))
+            selections))))))
 
-            (definitions.build :indicators
-              [(let [definition {:id :indicators/model
-                                 :inputs (fn []
-                                           (icollect [_ selection (ipairs (selected))]
-                                             (. (misa.catalog :indicators)
-                                                selection.id :query)))
-                                 :compute (fn [inputs]
-                                            {:indicators (icollect [index selection (ipairs (selected))]
-                                                           (let [fact (. inputs
-                                                                         index)
-                                                                 definition (. (misa.catalog :indicators)
-                                                                               selection.id)]
-                                                             (when (not= fact
-                                                                         nil)
-                                                               (assert (and (= (type fact)
-                                                                               :table)
-                                                                            (= (type fact.type)
-                                                                               :string)
-                                                                            (not= fact.type
-                                                                                  ""))
-                                                                       "indicator query must return a typed fact or nil")
-                                                               (let [label (if (= selection.representation
-                                                                                  :icon)
-                                                                               (or definition.icon
-                                                                                   definition.label
-                                                                                   selection.id)
-                                                                               (or definition.label
-                                                                                   selection.id))
-                                                                     hotkey (if (and (= selection.hotkey
-                                                                                        true)
-                                                                                     definition.hotkey
-                                                                                     misa.keybindings
-                                                                                     misa.keybindings.hint)
-                                                                                (misa.keybindings.hint definition.hotkey.context
-                                                                                                       definition.hotkey.action)
-                                                                                (= (type selection.hotkey)
-                                                                                   :string)
-                                                                                selection.hotkey
-                                                                                nil)
-                                                                     action (or definition.action
-                                                                                (when (and definition.hotkey
-                                                                                           misa.actions
-                                                                                           misa.actions.all)
-                                                                                  (accumulate [found nil _ candidate (ipairs (misa.actions.all))
-                                                                                               &until found]
-                                                                                    (when (and candidate.binding
-                                                                                               (= candidate.binding.context
-                                                                                                  definition.hotkey.context)
-                                                                                               (= candidate.binding.action
-                                                                                                  definition.hotkey.action))
-                                                                                      candidate.id))))]
-                                                                 {:id selection.id
-                                                                  : label
-                                                                  : hotkey
-                                                                  : action
-                                                                  : fact
-                                                                  :representation selection.representation
-                                                                  :priority selection.priority}))))})}]
-                 {:catalog :subscriptions
-                  :id (. definition :id)
-                  :value definition})
-               {:catalog :services
-                :id :status.indicators
-                :value (fn [db context]
-                         "Render the configured status indicators."
-                         (let [model (misa.sub db [:indicators/model])
-                               presentation (misa.snapshot (or context {}))]
-                           (when (and misa.animations misa.animations.state)
-                             (tset presentation :activity_animation
-                                   (misa.animations.state db :status)))
-                           (. (misa.components.render db :status.indicators
-                                                      model presentation)
-                              :lines)))}]
-              {:validators {:indicators (fn [id definition]
-                                          (assert (and (= (type definition)
-                                                          :table)
-                                                       (= definition.id id)
-                                                       (= definition.value nil)
-                                                       (= (type definition.query)
-                                                          :table)
-                                                       (= (type (. definition.query
-                                                                   1))
-                                                          :string)
-                                                       (not= (. definition.query
-                                                                1)
-                                                             ""))
-                                                  "indicator requires an id and named query")
-                                          (each [_ field (ipairs [:label
-                                                                  :icon
-                                                                  :action])]
-                                            (assert (or (= (. definition field)
-                                                           nil)
-                                                        (= (type (. definition
-                                                                    field))
-                                                           :string))
-                                                    "indicator metadata must be strings"))
-                                          (assert (or (= definition.hotkey nil)
-                                                      (and (= (type definition.hotkey)
-                                                              :table)
-                                                           (= (type definition.hotkey.context)
-                                                              :string)
-                                                           (= (type definition.hotkey.action)
-                                                              :string)))
-                                                  "indicator hotkey must name context and action"))}})))))))
+(fn build [context]
+  "Declare the configured indicator queries and presentation service."
+  (let [selections (selections (or (. (or context.config {}) :status) {}))]
+    (fn selected []
+      (icollect [_ selection (ipairs selections)]
+        (when (. (misa.catalog :indicators) selection.id) selection)))
 
-{: build}
+    (definitions.build :indicators
+      [(let [definition {:id :indicators/model
+                         :inputs (fn []
+                                   (icollect [_ selection (ipairs (selected))]
+                                     (. (misa.catalog :indicators) selection.id
+                                        :query)))
+                         :compute (fn [inputs]
+                                    (indicators-model-value selected inputs))}]
+         {:catalog :subscriptions :id (. definition :id) :value definition})
+       {:catalog :services :id :status.indicators :value status-indicators}]
+      {:validators {:indicators validate-indicator}})))
+
+{:build build :selections selections}
