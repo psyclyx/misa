@@ -42,6 +42,19 @@ Use `nix-shell -A shell` for the pinned development dependencies. `zig build tes
 runs native unit tests and the named Zig integration cases in `tests/integration/`.
 The suite owns temporary configurations, child processes, deadlines, and output
 assertions; extension fixtures live in `tests/integration/fixtures/*.fnl`.
+
+Formatting is defined by `treefmt.toml` and pinned by the same shell, so it is
+handled by `treefmt` rather than by invoking each formatter directly. Enable the
+tracked pre-commit check once per clone:
+
+```sh
+git config core.hooksPath githooks
+```
+
+It formats only the staged files, so unrelated unformatted work never blocks a
+commit. Because `treefmt` formats the working tree rather than the staged blob,
+the hook also refuses to commit when the two disagree: commit the whole file
+rather than a partial stage. `git commit --no-verify` bypasses it.
 Application integration runs `misa-fixture`, composed with fixture HTTP and
 authentication dependencies. HTTP requests fail as `UnmatchedHttpFixture`
 before credentials are loaded; OAuth login has no fixture implementation.

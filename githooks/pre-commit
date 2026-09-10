@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Refuse to commit files that treefmt would rewrite.
+#
+# Formatting is defined by treefmt.toml and pinned by nix/shell.nix, so the
+# check shells into the same environment developers use rather than trusting
+# whatever happens to be on PATH.
+#
+# Only staged files are passed, so an unrelated unformatted file elsewhere in
+# the working tree never blocks a commit.
+#
+# treefmt formats the working tree, not the staged blob, so a formatted working
+# tree is not enough: the index must hold that same content. Both are checked.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+# Staged paths that still exist, so deletions are skipped.
+files=()
+while IFS= read -r -d '' path; do
+  [ -f "$path" ] && files+=("$path")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ ${#files[@]} -eq 0 ]; then
+  exit 0
+fi
+
+if ! command -v nix-shell >/dev/null 2>&1; then
+  echo "pre-commit: nix-shell not found, skipping the treefmt check" >&2
+  exit 0
+fi
+
+# `./` keeps a path that begins with `-` from being read as a flag.
+printf -v staged './%q ' "${files[@]}"
+if ! nix-shell -A shell --run "treefmt --fail-on-change $staged"; then
+  cat >&2 <<'EOF'
+
+pre-commit: treefmt rewrote or rejected the staged file(s) listed above.
+
+The formatted content is already in your working tree. Review it, re-stage it,
+and commit again:
+
+  git diff
+  git add <files>
+
+EOF
+  exit 1
+fi
+
+# The working tree is formatted. The staged copy has to match it, or the commit
+# would record content that was never checked.
+stale=$(git diff --name-only -- "${files[@]}")
+if [ -n "$stale" ]; then
+  cat >&2 <<EOF
+
+pre-commit: the staged content differs from the formatted working tree:
+
+$stale
+
+treefmt only formats the working tree, so the staged copy above was never
+checked. This usually means the file was partially staged, or it was re-staged
+before formatting finished. Re-stage the whole file and commit again:
+
+  git add <files>
+
+EOF
+  exit 1
+fi
+
+exit 0
