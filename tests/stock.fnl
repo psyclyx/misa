@@ -64,6 +64,7 @@
         :misa.providers.nvidia (require :misa.standard.providers.nvidia)
         :misa.providers.openai (require :misa.standard.providers.openai)
         :misa.providers.openai-codex (require :misa.standard.providers.openai-codex)
+        :misa.providers.openai-options (require :misa.providers.openai-options)
         :misa.providers.openrouter (require :misa.standard.providers.openrouter)
         :misa.providers.siliconflow (require :misa.standard.providers.siliconflow)
         :misa.providers.together (require :misa.standard.providers.together)

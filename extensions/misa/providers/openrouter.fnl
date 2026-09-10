@@ -28,10 +28,17 @@
      :model_pricing model-pricing
      :models_credential false
      :models_url models-url
-     :reasoning_effort (fn [effort]
-                         "Describe OpenRouter reasoning options."
-                         {:reasoning {: effort}})
+     :request_options (misa.patch (or config.request_options {})
+                                  (when config.routing {:provider config.routing}))
      :timeouts config.timeouts
      :url (or config.url "https://openrouter.ai/api/v1/chat/completions")}))
 
-{:settings settings :model-pricing model-pricing}
+(fn routing [name value]
+  "Serialize OpenRouter's provider-routing policy without touching chat protocol code."
+  (when (= name :provider) {:provider value}))
+
+(fn reasoning [name value]
+  "Serialize OpenRouter's reasoning setting."
+  (when (= name :reasoning_effort) {:reasoning {:effort value}}))
+
+{:model-pricing model-pricing :reasoning reasoning :routing routing :settings settings}

@@ -1,5 +1,8 @@
 (local adapter (require :misa.providers.openrouter))
+(local options (require :misa.providers.openai-options))
 (local protocol (require :misa.protocols.openai))
+
+(local serializer (options.compose [adapter.routing adapter.reasoning options.standard]))
 
 (fn settings []
   (or (. (or (. (misa.configuration) :providers) {}) :openrouter) {}))
@@ -14,12 +17,7 @@
                                :model_provider :openrouter
                                :profile {:id :default}
                                :strategy :loopback_pkce}}
- :serializers {:openai.chat.openrouter {:accepts (fn [name]
-                                                   (= name :reasoning_effort))
-                                        :serialize (fn [name value]
-                                                     (protocol.serialize (transport-settings)
-                                                                         name
-                                                                         value))}}
+ :serializers {:openai.chat.openrouter serializer}
  :effects {:provider.openrouter (fn [effect]
                                   (protocol.request (transport-settings)
                                                     :openai.chat.openrouter

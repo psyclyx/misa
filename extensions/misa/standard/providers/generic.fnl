@@ -2,6 +2,7 @@
 ;; takes settings as an argument, so a configuration can add any number of
 ;; providers without changing Misa's shipped catalog.
 (local protocol (require :misa.protocols.openai))
+(local options (require :misa.providers.openai-options))
 
 (fn trim-slash [url] (url:gsub "/+$" ""))
 
@@ -36,9 +37,7 @@
               ;; Native code persists this base with the credential and pins requests to it.
               :profile flow.profile :strategy flow.strategy}]
     {:auth-providers {id auth}
-     :serializers {serializer {:accepts (fn [name] (= name :reasoning_effort))
-                               :serialize (fn [name value]
-                                            (protocol.serialize transport name value))}}
+     :serializers {serializer (options.compose [options.standard])}
      :effects {(.. :provider. id) (fn [effect] (protocol.request transport serializer effect))}
      :events {(.. :provider. id "/discover") {:event :models/discover :priority 7600
                                                 :handler (fn [db event]

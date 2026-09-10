@@ -1,4 +1,5 @@
 (local adapter (require :misa.providers.openai))
+(local options (require :misa.providers.openai-options))
 (local protocol (require :misa.protocols.openai))
 
 (fn settings []
@@ -13,11 +14,7 @@
                            :label :OpenAI
                            :model_provider :openai
                            :strategy :api_key}}
- :serializers {:openai.chat.openai {:accepts (fn [name]
-                                               (= name :reasoning_effort))
-                                    :serialize (fn [name value]
-                                                 (protocol.serialize (transport-settings)
-                                                                     name value))}}
+ :serializers {:openai.chat.openai (options.compose [options.standard])}
  :effects {:provider.openai (fn [effect]
                               (protocol.request (transport-settings)
                                                 :openai.chat.openai effect))}

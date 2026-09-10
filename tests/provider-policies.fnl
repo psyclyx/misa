@@ -8,6 +8,7 @@
 (local agent (require :misa.agent))
 (local stream (require :misa.agent.stream))
 (local router (require :misa.providers.openrouter))
+(local openai-options (require :misa.providers.openai-options))
 (local kimi (require :misa.providers.kimi))
 
 ;; Policies can be called without constructing or installing an application.
@@ -66,6 +67,25 @@
   (assert (= pricing.output 4))
   (assert (= pricing.cache_read 1))
   (assert (= pricing.request 0.01)))
+
+(let [serializer (openai-options.compose [router.routing router.reasoning
+                                           openai-options.standard])
+      routing {:only [:anthropic :google]
+               :require_parameters true
+               :data_collection :deny}
+      configured (router.settings {:routing routing
+                                   :request_options {:temperature 0.2}})
+      request (misa.patch (serializer.serialize :temperature
+                                                configured.request_options.temperature)
+                          (serializer.serialize :provider
+                                                configured.request_options.provider))]
+  (assert (= request.temperature 0.2))
+  (assert (= (. request.provider.only 1) :anthropic))
+  (assert (= (. request.provider.only 2) :google))
+  (assert (= request.provider.require_parameters true))
+  (assert (= request.provider.data_collection :deny))
+  (assert (= (. (serializer.serialize :reasoning_effort :high) :reasoning :effort)
+             :high)))
 
 (let [windows (kimi.usage-windows {:usage {:limit 100 :remaining 25}})]
   (assert (= (. windows 1 :used) 75))

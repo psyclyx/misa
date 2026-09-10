@@ -192,8 +192,8 @@
       (when spec.max_tokens
         (set body.max_completion_tokens spec.max_tokens))
       (let [request-options (misa.request-options.serialize serializer-id
-                                                            (or effect.request_options
-                                                                {}))
+                                                            (misa.patch (or spec.request_options {})
+                                                                        (or effect.request_options {})))
             headers [{:name :content-type :value :application/json}]]
         (each [_ header (ipairs (or spec.headers {}))]
           (tset headers (+ (length headers) 1) header))
@@ -209,13 +209,6 @@
          :timeouts spec.timeouts
          :type :http/request
          :url spec.url}))))
-
-(fn serialize [spec name value]
-  "Describe the request fields for a supported option."
-  (when (= name :reasoning_effort)
-    (if spec.reasoning_effort
-        (spec.reasoning_effort value)
-        {:reasoning_effort value})))
 
 (fn discover-models [spec _ event]
   "Describe model discovery for the configured provider."
@@ -257,6 +250,7 @@
                               :owned_by (or item.owned_by item.owner)
                               :provider item.provider
                               :raw_pricing item.pricing
+                              :supported_parameters item.supported_parameters
                               :vendor item.metadata}
                    :id (.. spec.id "/" item.id)
                    :label (or item.name item.id)
@@ -277,7 +271,6 @@
 
 {:messages messages
  :request request
- :serialize serialize
  :discover-models discover-models
  :stream stream
  :model-api model-api

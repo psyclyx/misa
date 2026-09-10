@@ -1335,6 +1335,34 @@ endpoints, so `/login PROVIDER` and `/model` work consistently across them.
 Where a provider has a known key-management page, the login dialog links to it
 before accepting the pasted key.
 
+OpenAI-compatible request options are composed from provider fragments instead
+of being embedded in the shared chat protocol. All compatible providers accept
+their supported generation defaults through `config.providers.PROVIDER.request_options`.
+OpenRouter also accepts its routing policy through `config.providers.openrouter.routing`:
+
+```fennel
+{:providers {:openrouter
+             {:request_options {:temperature 0.2
+                                :top_p 0.95
+                                :reasoning_effort :high}
+              :routing {:only [:anthropic :google]
+                        :allow_fallbacks false
+                        :require_parameters true
+                        :data_collection :deny
+                        :sort :throughput
+                        :quantizations [:fp8 :bf16]
+                        :max_price {:prompt 2 :completion 8}
+                        :preferred_min_throughput 80
+                        :preferred_max_latency 2}}}}
+```
+
+Routing settings become OpenRouter's request-level `provider` object. The
+standard generation fragment supports `temperature`, `top_p`, `top_k`, `seed`,
+`max_tokens`, penalties, `stop`, `tool_choice`, `parallel_tool_calls`, and
+`response_format`; OpenRouter adds its `reasoning_effort` translation. Provider
+extensions can compose further fragments without changing
+`misa.protocols.openai`.
+
 For an OpenAI-compatible endpoint that is not shipped as a preset, add the
 fragment returned by `misa.standard.providers.generic` to your application
 definitions. Provider IDs begin with `generic/`; Misa stores the HTTPS base URL

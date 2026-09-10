@@ -1,5 +1,6 @@
 ;; Shared wiring for API-key providers that implement OpenAI chat-completions.
 (local protocol (require :misa.protocols.openai))
+(local options (require :misa.providers.openai-options))
 
 (fn preset [id label base priority provision-url]
   "Create an OpenAI-compatible API-key provider preset."
@@ -16,9 +17,7 @@
                        :model_provider id
                        :profile (when provision-url {:provision_url provision-url})
                        :strategy :api_key}}
-   :serializers {serializer {:accepts (fn [name] (= name :reasoning_effort))
-                             :serialize (fn [name value]
-                                          (protocol.serialize (transport) name value))}}
+   :serializers {serializer (options.compose [options.standard])}
    :effects {(.. :provider. id) (fn [effect]
                                   (protocol.request (transport) serializer effect))}
    :events {(.. :provider. id "/discover") {:event :models/discover :priority priority

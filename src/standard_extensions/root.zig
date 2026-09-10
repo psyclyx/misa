@@ -55,6 +55,7 @@ pub const entries = [_]Entry{
     .{ .id = "misa.providers.kimi", .path = "misa/providers/kimi.fnl" },
     .{ .id = "misa.providers.openai", .path = "misa/providers/openai.fnl" },
     .{ .id = "misa.providers.openai-codex", .path = "misa/providers/openai-codex.fnl" },
+    .{ .id = "misa.providers.openai-options", .path = "misa/providers/openai-options.fnl" },
     .{ .id = "misa.providers.openrouter", .path = "misa/providers/openrouter.fnl" },
     .{ .id = "misa.selection", .path = "misa/selection/init.fnl" },
     .{ .id = "misa.selection.document", .path = "misa/selection/document.fnl" },
