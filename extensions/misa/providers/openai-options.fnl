@@ -24,9 +24,10 @@
   (fn matching [name value]
     (accumulate [found nil _ fragment (ipairs fragments) &until found]
       (fragment name value)))
+
   {:accepts (fn [name] (not= (matching name nil) nil))
    :serialize (fn [name value]
                 (assert (matching name value)
                         (.. "unsupported OpenAI-compatible option: " name)))})
 
-{:compose compose :standard standard}
+{: compose : standard}

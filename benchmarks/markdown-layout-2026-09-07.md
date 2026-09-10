@@ -17,10 +17,10 @@ layout calls, not compilation or output comparison. Each sample is cumulative
 CPU time for an entire sequence, not per frame. No agent build/test ran alongside
 measurement. Affinity and OS caches were not controlled.
 
-| Workload | Baseline median/best ms | Candidate median/best ms |
-| --- | ---: | ---: |
-| Streaming sequence | 2.997 / 2.819 | 2.721 / 2.581 |
-| Initial layout + 99 redraws | 1.785 / 1.735 | 1.691 / 1.654 |
+| Workload                    | Baseline median/best ms | Candidate median/best ms |
+| --------------------------- | ----------------------: | -----------------------: |
+| Streaming sequence          |           2.997 / 2.819 |            2.721 / 2.581 |
+| Initial layout + 99 redraws |           1.785 / 1.735 |            1.691 / 1.654 |
 
 All outputs matched. These small, single-session timings support retaining the
 ownership change, not an end-to-end UI speed claim. There is no native terminal,

@@ -48,23 +48,23 @@ per frame; median / best are **of the ten run medians**. Maximum is the largest
 individual measured frame across those runs.
 
 | Blocks | Workload | Median / best | Maximum |
-| --- | --- | ---: | ---: |
-| 1 | Redraw | 1.271 / 1.109 | 2.958 |
-| 1 | Stream | 2.120 / 1.932 | 6.190 |
-| 16 | Redraw | 1.545 / 1.378 | 3.807 |
-| 16 | Stream | 2.754 / 2.589 | 5.987 |
-| 300 | Redraw | 2.541 / 2.278 | 12.093 |
-| 300 | Stream | 4.960 / 4.448 | 18.329 |
+| ------ | -------- | ------------: | ------: |
+| 1      | Redraw   | 1.271 / 1.109 |   2.958 |
+| 1      | Stream   | 2.120 / 1.932 |   6.190 |
+| 16     | Redraw   | 1.545 / 1.378 |   3.807 |
+| 16     | Stream   | 2.754 / 2.589 |   5.987 |
+| 300    | Redraw   | 2.541 / 2.278 |  12.093 |
+| 300    | Stream   | 4.960 / 4.448 |  18.329 |
 
 ## Longer observations and pacing
 
 Separate 1,000-frame streaming runs at 300 blocks produced matching frame hashes
 with and without the idle gap:
 
-| Idle gap | Median | Best individual frame | p95 | p99 | Maximum |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 25 ms | 4.712 | 3.646 | 14.958 | 17.353 | 19.681 |
-| 0 ms | 17.019 | 16.270 | 17.335 | 17.378 | 17.873 |
+| Idle gap | Median | Best individual frame |    p95 |    p99 | Maximum |
+| -------- | -----: | --------------------: | -----: | -----: | ------: |
+| 25 ms    |  4.712 |                 3.646 | 14.958 | 17.353 |  19.681 |
+| 0 ms     | 17.019 |                16.270 | 17.335 | 17.378 |  17.873 |
 
 The driver enforces a 16 ms presentation interval (`src/terminal/driver.zig`).
 With no idle gap, the next input follows the previous completed frame immediately,

@@ -106,8 +106,7 @@
         (if (or (= kind :boolean) (= kind :string)
                 (and (= kind :number) (= value value)
                      (< (math.abs value) math.huge)))
-            {:type (if (= kind :string)
-                       :text
+            {:type (if (= kind :string) :text
                        kind)
              : value}
             {:type :unavailable :reason :unsupported_option_value})))))
@@ -157,12 +156,12 @@
     {:patch {:request_options (misa.replace {: configured :values {}})}
      :fx [{:type :dispatch :event {:type :request-options/reconcile}}]}))
 
-{:compute-request-options-indicator compute-request-options-indicator
- :on-app-start on-app-start
- :schedule-reconcile schedule-reconcile
- :on-request-options-reconcile on-request-options-reconcile
- :on-request-options-select on-request-options-select
- :prepare prepare
- :reconcile reconcile
- :request-options-choices request-options-choices
- :request-options-state request-options-state}
+{: compute-request-options-indicator
+ : on-app-start
+ : schedule-reconcile
+ : on-request-options-reconcile
+ : on-request-options-select
+ : prepare
+ : reconcile
+ : request-options-choices
+ : request-options-state}

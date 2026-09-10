@@ -47,7 +47,7 @@
       (if (and provider provider.usage_request)
           {:patch {:providers {:kimi {:usage_again true}}}}
           (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
-                id (.. "kimi-usage-" sequence)]
+                id (.. :kimi-usage- sequence)]
             {:patch {:providers {:kimi {:usage_sequence sequence
                                         :usage_request id}}}
              :fx [{:type :http/request
@@ -106,8 +106,4 @@
      :timeouts config.timeouts
      :url (or config.url (.. profile.api_base :/messages))}))
 
-{:settings settings
- :profiles profiles
- :refresh-usage refresh-usage
- :receive-usage receive-usage
- :usage-windows usage-windows}
+{: settings : profiles : refresh-usage : receive-usage : usage-windows}

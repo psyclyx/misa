@@ -138,11 +138,11 @@
                 (set invocation.resumed_choice true)
                 {: patch :fx [{:event invocation :type :dispatch}]}))))))
 
-{:recent recent
- :canonical canonical
- :invoke invoke
- :choice-spec choice-spec
- :open-choice open-choice
- :invocation invocation
- :select-choice select-choice
- :choice-items choice-items}
+{: recent
+ : canonical
+ : invoke
+ : choice-spec
+ : open-choice
+ : invocation
+ : select-choice
+ : choice-items}

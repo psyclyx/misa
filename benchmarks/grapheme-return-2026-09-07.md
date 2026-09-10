@@ -27,11 +27,11 @@ frame timing. All returned widths must match the baseline.
 
 Median allocated KiB per 64 width calls (not resident or peak memory):
 
-| Input | Baseline | Candidate |
-| --- | ---: | ---: |
-| `ASCII ` repeated 64 times | 3648.203 | 0.203 |
-| `é界👩‍💻🇺🇸क्ष` repeated 64 times | 3040.203 | 0.203 |
-| `text é 界 👩‍💻 ` repeated 64 times | 6688.203 | 0.203 |
+| Input                             | Baseline | Candidate |
+| --------------------------------- | -------: | --------: |
+| `ASCII ` repeated 64 times        | 3648.203 |     0.203 |
+| `é界👩‍💻🇺🇸क्ष` repeated 64 times    | 3040.203 |     0.203 |
+| `text é 界 👩‍💻 ` repeated 64 times | 6688.203 |     0.203 |
 
 Candidate observations occasionally included less than 1 KiB of additional
 runtime overhead. The removed allocation scales with grapheme count; the tiny
@@ -51,14 +51,14 @@ matched in every run, alongside the stream-content, sharing and OSC checks.
 Wall milliseconds per frame: **median / best of the ten run medians**, not
 individual-frame percentiles:
 
-| Blocks | Workload | Baseline | Candidate |
-| --- | --- | ---: | ---: |
-| 1 | Redraw | 1.268 / 1.134 | 1.063 / 0.914 |
-| 1 | Stream | 2.293 / 2.151 | 1.821 / 1.734 |
-| 16 | Redraw | 2.118 / 1.912 | 1.578 / 1.487 |
-| 16 | Stream | 3.445 / 3.079 | 2.600 / 2.429 |
-| 300 | Redraw | 2.410 / 2.086 | 2.008 / 1.895 |
-| 300 | Stream | 4.603 / 3.848 | 3.711 / 3.152 |
+| Blocks | Workload |      Baseline |     Candidate |
+| ------ | -------- | ------------: | ------------: |
+| 1      | Redraw   | 1.268 / 1.134 | 1.063 / 0.914 |
+| 1      | Stream   | 2.293 / 2.151 | 1.821 / 1.734 |
+| 16     | Redraw   | 2.118 / 1.912 | 1.578 / 1.487 |
+| 16     | Stream   | 3.445 / 3.079 | 2.600 / 2.429 |
+| 300    | Redraw   | 2.410 / 2.086 | 2.008 / 1.895 |
+| 300    | Stream   | 4.603 / 3.848 | 3.711 / 3.152 |
 
 ## Longer streaming observation
 
@@ -66,10 +66,10 @@ The native harness now appends inclusive empirical p95/p99 estimates to its CSV;
 the sample count remains explicit. Separate 1,000-frame streaming observations
 at 300 blocks, candidate first, produced matching complete frame hashes:
 
-| Variant | Median | Best individual frame | p95 | p99 | Maximum |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Baseline | 4.210 | 3.065 | 14.770 | 17.246 | 20.075 |
-| Candidate | 3.073 | 2.413 | 7.544 | 13.703 | 15.140 |
+| Variant   | Median | Best individual frame |    p95 |    p99 | Maximum |
+| --------- | -----: | --------------------: | -----: | -----: | ------: |
+| Baseline  |  4.210 |                 3.065 | 14.770 | 17.246 |  20.075 |
+| Candidate |  3.073 |                 2.413 |  7.544 | 13.703 |  15.140 |
 
 All 1,000 measured candidate frames were below 16.7 ms in this observation.
 This is not another interleaved A/B study or proof of an every-frame guarantee.

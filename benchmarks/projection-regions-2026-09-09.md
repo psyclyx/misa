@@ -20,16 +20,16 @@ streaming checks exact agent/transcript content and unchanged block identity.
 Every A/B output hash matched. Runs were baseline/candidate/candidate/baseline,
 without concurrent tests, builds, or benchmarks. No affinity/cache manipulation.
 
-| Workload | Variant | Run | Median / best / max ms |
-| --- | --- | --- | --- |
-| Editor update, 300 blocks | Baseline | 1 | 6.676 / 6.387 / 6.978 |
-| Editor update, 300 blocks | Candidate | 2 | 5.947 / 5.194 / 8.165 |
-| Editor update, 300 blocks | Candidate | 3 | 5.723 / 5.543 / 6.760 |
-| Editor update, 300 blocks | Baseline | 4 | 6.578 / 6.165 / 7.829 |
-| 32-record transport batch, 300 blocks | Baseline | 1 | 21.469 / 19.173 / 51.036 |
-| 32-record transport batch, 300 blocks | Candidate | 2 | 8.887 / 8.586 / 9.844 |
-| 32-record transport batch, 300 blocks | Candidate | 3 | 9.729 / 8.470 / 18.653 |
-| 32-record transport batch, 300 blocks | Baseline | 4 | 21.710 / 18.936 / 49.662 |
+| Workload                              | Variant   | Run | Median / best / max ms   |
+| ------------------------------------- | --------- | --- | ------------------------ |
+| Editor update, 300 blocks             | Baseline  | 1   | 6.676 / 6.387 / 6.978    |
+| Editor update, 300 blocks             | Candidate | 2   | 5.947 / 5.194 / 8.165    |
+| Editor update, 300 blocks             | Candidate | 3   | 5.723 / 5.543 / 6.760    |
+| Editor update, 300 blocks             | Baseline  | 4   | 6.578 / 6.165 / 7.829    |
+| 32-record transport batch, 300 blocks | Baseline  | 1   | 21.469 / 19.173 / 51.036 |
+| 32-record transport batch, 300 blocks | Candidate | 2   | 8.887 / 8.586 / 9.844    |
+| 32-record transport batch, 300 blocks | Candidate | 3   | 9.729 / 8.470 / 18.653   |
+| 32-record transport batch, 300 blocks | Baseline  | 4   | 21.710 / 18.936 / 49.662 |
 
 Typing improves modestly end to end: frame composition, validation, and output
 remain even when transcript rendering is reused. Streaming improves more by

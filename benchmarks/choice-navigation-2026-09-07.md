@@ -29,10 +29,10 @@ builds or other agent benchmarks ran during measurement. GC remained enabled;
 CPU affinity was not pinned.
 
 | Items | Baseline median / best | Candidate median / best |
-| --- | ---: | ---: |
-| 100 | 0.658 / 0.506 | 0.428 / 0.364 |
-| 1000 | 5.505 / 5.167 | 2.973 / 2.699 |
-| 3000 | 20.251 / 19.144 | 10.786 / 10.025 |
+| ----- | ---------------------: | ----------------------: |
+| 100   |          0.658 / 0.506 |           0.428 / 0.364 |
+| 1000  |          5.505 / 5.167 |           2.973 / 2.699 |
+| 3000  |        20.251 / 19.144 |         10.786 / 10.025 |
 
 Raw samples are in `choice-navigation-2026-09-07.csv`. This measures the actual
 choice services, but excludes native transaction/fork overhead, component theme

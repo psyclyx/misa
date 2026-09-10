@@ -73,4 +73,4 @@
        :lines result
        :overlay true})))
 
-{:render-picker render-picker}
+{: render-picker}

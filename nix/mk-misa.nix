@@ -12,7 +12,10 @@ let
   configFile =
     if configuration == null then
       null
-    else if builtins.isPath configuration || (builtins.isString configuration && builtins.getContext configuration != { }) then
+    else if
+      builtins.isPath configuration
+      || (builtins.isString configuration && builtins.getContext configuration != { })
+    then
       "${configuration}"
     else
       throw "mkMisa: configuration must be a Nix path or a store path with dependency context";

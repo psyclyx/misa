@@ -194,7 +194,4 @@
                           {:type :terminal/read}])
         (updated-session state result.session))))
 
-{:on-picker-input on-picker-input
- :on-picker-open on-picker-open
- :on-picker-update on-picker-update
- :route-terminal-input route-terminal-input}
+{: on-picker-input : on-picker-open : on-picker-update : route-terminal-input}

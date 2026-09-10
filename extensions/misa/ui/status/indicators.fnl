@@ -81,7 +81,7 @@
                     (= representation :value) (= representation :label_value))
                 "invalid indicator representation")
         {:id selection.id
-         :representation representation
+         : representation
          :hotkey selection.hotkey
          :priority (or (tonumber selection.priority) (- 1000 index))}))))
 

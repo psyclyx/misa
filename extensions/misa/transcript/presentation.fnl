@@ -21,8 +21,7 @@
   {:role :transcript.assistant :model {:rail :rail.assistant}})
 
 (fn present-thinking [model state selected]
-  {:role (if (or state.verbose model.streaming selected)
-             :transcript.thinking
+  {:role (if (or state.verbose model.streaming selected) :transcript.thinking
              :transcript.thinking_collapsed)
    :model {:rail :rail.thinking}})
 
@@ -251,8 +250,7 @@
                 (each [_ line (ipairs lines)]
                   (table.insert result
                                 (owned-line line item.id
-                                            (when item.chrome
-                                              :chrome))))
+                                            (when item.chrome :chrome))))
                 (when (and (= item.role :transcript.group_footer)
                            (= index (length items)) (> (length lines) 0)
                            (not document-id))

@@ -145,7 +145,7 @@
               (table.remove lists))
             (var frame (. lists (length lists)))
             (when (or (not frame) (< frame.depth depth))
-              (let [list (node :list "List" first last)]
+              (let [list (node :list :List first last)]
                 (table.insert (or (and frame frame.item.children)
                                   parent.children)
                               list)
@@ -216,4 +216,4 @@
         (close 0 (length text))
         root))))
 
-{:selection-children selection-children :selection-document selection-document}
+{: selection-children : selection-document}

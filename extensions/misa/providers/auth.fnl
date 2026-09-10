@@ -157,9 +157,9 @@
      :fx effects}))
 
 {:startup start
- :provider-status provider-status
- :discovery-complete discovery-complete
- :command command
- :interaction interaction
- :dialog-action dialog-action
- :complete complete}
+ : provider-status
+ : discovery-complete
+ : command
+ : interaction
+ : dialog-action
+ : complete}

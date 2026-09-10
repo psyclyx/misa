@@ -87,19 +87,19 @@
                               :event {:action :visual :type :selection/action}
                               :id :selection.visual
                               :label "Selection: visual"}}
- :events {"selection/selection/action" {:event :selection/action
-                                        :handler selection.on-selection-action
-                                        :priority 34000}
-          "selection/selection/open" {:event :selection/open
-                                      :handler selection.on-selection-open
-                                      :priority 34000}
-          "selection/transcript/reset" {:event :transcript/reset
-                                        :handler (fn [_]
-                                                   {:patch {:selection misa.delete}})
-                                        :priority 34000}}
- :keybindings {"global/select_transcript" {:action :select_transcript
-                                           :context :global
-                                           :default [:alt+s]}
+ :events {:selection/selection/action {:event :selection/action
+                                       :handler selection.on-selection-action
+                                       :priority 34000}
+          :selection/selection/open {:event :selection/open
+                                     :handler selection.on-selection-open
+                                     :priority 34000}
+          :selection/transcript/reset {:event :transcript/reset
+                                       :handler (fn [_]
+                                                  {:patch {:selection misa.delete}})
+                                       :priority 34000}}
+ :keybindings {:global/select_transcript {:action :select_transcript
+                                          :context :global
+                                          :default [:alt+s]}
                :selection/child {:action :child
                                  :context :selection
                                  :default [:J :shift+j :enter]}

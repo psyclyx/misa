@@ -62,4 +62,4 @@
       (table.insert result value.item))
     result))
 
-{:choices fuzzy-choices :score score}
+{:choices fuzzy-choices : score}

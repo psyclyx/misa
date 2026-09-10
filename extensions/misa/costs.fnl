@@ -192,17 +192,17 @@
       id)
     (rates value)))
 
-{:estimate estimate
- :costs-model costs-model
- :costs-responses costs-responses
- :response-value response-value
- :costs-groups costs-groups
- :costs-group costs-group
- :costs-total costs-total
- :costs-indicator costs-indicator
- :costs-response costs-response
- :reset reset
- :complete complete
- :start-response start-response
- :interrupt-response interrupt-response
- :overrides overrides}
+{: estimate
+ : costs-model
+ : costs-responses
+ : response-value
+ : costs-groups
+ : costs-group
+ : costs-total
+ : costs-indicator
+ : costs-response
+ : reset
+ : complete
+ : start-response
+ : interrupt-response
+ : overrides}

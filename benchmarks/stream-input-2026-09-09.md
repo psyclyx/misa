@@ -36,12 +36,12 @@ text. All four runs have identical completed-frame hashes. The standalone
 projection comparison also verifies complete output records over six unchanged
 repetitions before ten interleaved samples per variant.
 
-| Order | Variant | Median / best / max milliseconds |
-| --- | --- | --- |
-| 1 | Candidate | 11.165 / 10.107 / 35.396 |
-| 2 | Baseline | 776.806 / 738.841 / 880.770 |
-| 3 | Baseline | 702.727 / 610.401 / 915.581 |
-| 4 | Candidate | 11.964 / 9.770 / 29.356 |
+| Order | Variant   | Median / best / max milliseconds |
+| ----- | --------- | -------------------------------- |
+| 1     | Candidate | 11.165 / 10.107 / 35.396         |
+| 2     | Baseline  | 776.806 / 738.841 / 880.770      |
+| 3     | Baseline  | 702.727 / 610.401 / 915.581      |
+| 4     | Candidate | 11.964 / 9.770 / 29.356          |
 
 No builds or other benchmarks ran concurrently with these measurements. No CPU
 affinity or cache manipulation was used. Small tail-latency spikes remain;

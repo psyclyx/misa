@@ -17,14 +17,14 @@ controlled. This is the isolated default-profile setup/first-dispatch probe,
 All 20 samples produced byte-identical semantic output, SHA256
 `c1a1d5ebcbffd618ba271af75c7da75f9f9014958649a70bd76d0ebe0d3a3d5e`.
 
-| Measurement | Source median / best ms | Generated median / best ms |
-| --- | ---: | ---: |
-| Compilation, CPU | 538.451 / 509.688 | 0 / 0 |
-| Lua loading/evaluation, CPU | 9.259 / 8.738 | 8.272 / 7.851 |
-| Setup, CPU | 1.500 / 1.095 | 1.311 / 1.236 |
-| First dispatch/commit, CPU | 1.687 / 1.350 | 2.009 / 1.761 |
-| Total probe, CPU | 557.533 / 529.142 | 18.091 / 17.110 |
-| Subprocess wall | 565.200 / 541.146 | 20.757 / 19.501 |
+| Measurement                 | Source median / best ms | Generated median / best ms |
+| --------------------------- | ----------------------: | -------------------------: |
+| Compilation, CPU            |       538.451 / 509.688 |                      0 / 0 |
+| Lua loading/evaluation, CPU |           9.259 / 8.738 |              8.272 / 7.851 |
+| Setup, CPU                  |           1.500 / 1.095 |              1.311 / 1.236 |
+| First dispatch/commit, CPU  |           1.687 / 1.350 |              2.009 / 1.761 |
+| Total probe, CPU            |       557.533 / 529.142 |            18.091 / 17.110 |
+| Subprocess wall             |       565.200 / 541.146 |            20.757 / 19.501 |
 
 The first dispatch is slightly slower in generated mode; this probe does not
 attribute that difference or establish steady-state streaming performance. The

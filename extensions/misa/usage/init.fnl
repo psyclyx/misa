@@ -29,7 +29,7 @@
 
 (fn queue-refresh [force]
   "Schedule a quota check after the current transaction."
-  {:fx [{:type :dispatch :event {:type :usage/check-selected :force force}}]})
+  {:fx [{:type :dispatch :event {:type :usage/check-selected : force}}]})
 
 (fn selected-quota [inputs]
   "Select quota facts for the current model's provider."
@@ -39,8 +39,4 @@
       (or (. (or (. inputs 3) {}) provider)
           (. (or (. (or (. inputs 4) {}) provider) {}) :usage)))))
 
-{:refresh-selected refresh-selected
- :start start
- :record-usage record-usage
- :queue-refresh queue-refresh
- :selected-quota selected-quota}
+{: refresh-selected : start : record-usage : queue-refresh : selected-quota}

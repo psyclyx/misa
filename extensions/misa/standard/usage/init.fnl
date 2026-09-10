@@ -41,7 +41,7 @@
                                                :handler usage.record-usage}}})
 
 (each [event force (pairs refresh-events)]
-  (tset catalog.events (.. "usage.lifecycle/" event)
+  (tset catalog.events (.. :usage.lifecycle/ event)
         {: event :priority 54001 :handler (fn [] (usage.queue-refresh force))}))
 
 catalog

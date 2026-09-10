@@ -7,8 +7,7 @@
                          :label :Fake
                          :model :default
                          :provider :fake}}
- :serializers {:fake.options {:accepts (fn []
-                                         true)
+ :serializers {:fake.options {:accepts (fn [] true)
                               :serialize (fn [name value] {name value})}}
  :effects {:provider.fake (fn [effect]
                             (fake.request (settings) :fake.options effect))}

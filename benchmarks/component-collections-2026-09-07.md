@@ -27,13 +27,13 @@ by eight. These are sample-average frame costs, not individual-frame percentiles
 Streaming includes transcript reduction/patch application plus rendering.
 
 | Blocks | Workload | Baseline median / best | Candidate median / best |
-| --- | --- | --- | --- |
-| 1 | Redraw | 0.062 / 0.052 | 0.015 / 0.013 |
-| 1 | Stream | 0.293 / 0.205 | 0.315 / 0.223 |
-| 16 | Redraw | 1.027 / 0.868 | 0.055 / 0.033 |
-| 16 | Stream | 1.346 / 1.050 | 0.338 / 0.254 |
-| 300 | Redraw | 28.741 / 24.523 | 2.631 / 0.646 |
-| 300 | Stream | 25.071 / 21.866 | 1.791 / 1.149 |
+| ------ | -------- | ---------------------- | ----------------------- |
+| 1      | Redraw   | 0.062 / 0.052          | 0.015 / 0.013           |
+| 1      | Stream   | 0.293 / 0.205          | 0.315 / 0.223           |
+| 16     | Redraw   | 1.027 / 0.868          | 0.055 / 0.033           |
+| 16     | Stream   | 1.346 / 1.050          | 0.338 / 0.254           |
+| 300    | Redraw   | 28.741 / 24.523        | 2.631 / 0.646           |
+| 300    | Stream   | 25.071 / 21.866        | 1.791 / 1.149           |
 
 The one-block streaming case adds about 0.02 ms per frame in this session. The
 collection/dependency machinery has overhead when there is no unchanged history

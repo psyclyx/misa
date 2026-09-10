@@ -14,7 +14,7 @@
         (when (> index 1)
           (table.insert spans {:text "   " :style :plain}))
         (let [rendered (if key
-                           (misa.keybindings.reference [{:key key
+                           (misa.keybindings.reference [{: key
                                                          :label (or action.label
                                                                     action.id)
                                                          :action target}])

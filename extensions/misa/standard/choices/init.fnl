@@ -102,11 +102,11 @@
                                                   (choices.cycle session (- 1)
                                                                  db))
                                 :replace_view (fn [session]
-                                                {:session session
+                                                {: session
                                                  :consumed true
                                                  :replace_view true})
                                 :open_overlay (fn [session]
-                                                {:session session
+                                                {: session
                                                  :consumed true
                                                  :open_overlay true})
                                 :favorite choices.favorite
@@ -119,13 +119,13 @@
                                :frecency {:include choices.used?
                                           :order choices.recent-before?
                                           :title :Recent}}
-                :events {"choices/choices/dispatch" {:event :choices/dispatch
-                                                     :handler choices.on-choices-dispatch
-                                                     :priority 21000}
-                         "choices/choices/ignored" {:event :choices/ignored
-                                                    :handler (fn []
-                                                               {:fx [{:type :terminal/read}]})
-                                                    :priority 21000}}
+                :events {:choices/choices/dispatch {:event :choices/dispatch
+                                                    :handler choices.on-choices-dispatch
+                                                    :priority 21000}
+                         :choices/choices/ignored {:event :choices/ignored
+                                                   :handler (fn []
+                                                              {:fx [{:type :terminal/read}]})
+                                                   :priority 21000}}
                 :keybindings {:choices/accept {:action :accept
                                                :context :choices
                                                :default [:enter]}
@@ -170,17 +170,17 @@
                                                   :priority 800
                                                   :context [:db/path]
                                                   :resolve choices.route-ui-action}}
-                :services {:choices.accept choices.accept
-                           :choices.action choices.action
+                :services {: choices.accept
+                           : choices.action
                            :choices.first-index choices.first
-                           :choices.hint choices.hint
+                           : choices.hint
                            :choices.hotkeys choices.choices-hotkeys
-                           :choices.input choices.input
+                           : choices.input
                            :choices.needs-targets? choices.needs-targets
                            :choices.pending choices.choices-pending
                            :choices.positional choices.choices-positional
                            :choices.projected-rows choices.choices-projected-rows
-                           :choices.refresh choices.refresh
+                           : choices.refresh
                            :choices.registered-views choices.choices-registered-views
                            :choices.replace-view choices.choices-replace-view
                            :choices.rows choices.choices-rows

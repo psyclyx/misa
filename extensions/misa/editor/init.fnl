@@ -269,7 +269,8 @@
                                     : targets}
                                    db)
         next (misa.patch editor {:choice (misa.replace result.session)})
-        reason (if (or (= event.kind :text) (= event.kind :backspace)) :insert
+        reason (if (or (= event.kind :text) (= event.kind :backspace))
+                   :insert
                    :preserve)]
     (if result.accepted (accept-input next result.accepted db cofx reason)
         (or result.open_overlay result.replace_view)
@@ -333,13 +334,15 @@
                             cofx)))
       (let [edit (. (misa.catalog :editor-edits) event.kind)]
         (updated (sync-choice (if edit (edit editor event) editor) db) nil
-                 (if (= event.kind :ctrl_c) :discard
+                 (if (= event.kind :ctrl_c)
+                     :discard
                      ;; Forward-delete of the entire draft retains the existing
                      ;; discard behavior; partial forward deletes do not start a group.
                      (and (= event.kind :ctrl_d) (= editor.cursor 0)
                           (= (next-cursor editor.text 0) (length editor.text)))
                      :discard
-                     (or (= event.kind :text) (= event.kind :backspace)) :insert
+                     (or (= event.kind :text) (= event.kind :backspace))
+                     :insert
                      :preserve)))))
 
 (fn terminal-input [db input cofx]
@@ -540,9 +543,7 @@
   "Report an unavailable agent and resume input or exit."
   {:fx [{:event {:level :error :text event.message :type :transcript/harness}
          :type :dispatch}
-        {:type (if cofx.terminal.interactive
-                   :terminal/read
-                   :app/quit)}]})
+        {:type (if cofx.terminal.interactive :terminal/read :app/quit)}]})
 
 (fn agent-status [db event]
   "Update the editor busy state from agent status."
@@ -569,28 +570,28 @@
   (let [(result reason) (handler db event cofx)]
     (accounted db result (or reason :preserve) cofx)))
 
-{:agent-completed agent-completed
- :agent-status agent-status
- :agent-unavailable agent-unavailable
- :app-start app-start
- :attach attach
- :compute-editor-lifecycle compute-editor-lifecycle
- :detach detach
- :editor-completion-check editor-completion-check
- :editor-layout editor-layout
- :editor-steer editor-steer
- :input-model input-model
- :lifecycle-inputs lifecycle-inputs
- :account-transition account-transition
- :render-editor-project-input render-editor-project-input
- :restore restore
- :selected selected
- :terminal-input terminal-input
- :validate-transition validate-transition
- :with-text with-text
- :emptied emptied
- :previous-cursor previous-cursor
- :backspace backspace
- :insert-text insert-text
- :ctrl-d ctrl-d
- :next-cursor next-cursor}
+{: agent-completed
+ : agent-status
+ : agent-unavailable
+ : app-start
+ : attach
+ : compute-editor-lifecycle
+ : detach
+ : editor-completion-check
+ : editor-layout
+ : editor-steer
+ : input-model
+ : lifecycle-inputs
+ : account-transition
+ : render-editor-project-input
+ : restore
+ : selected
+ : terminal-input
+ : validate-transition
+ : with-text
+ : emptied
+ : previous-cursor
+ : backspace
+ : insert-text
+ : ctrl-d
+ : next-cursor}

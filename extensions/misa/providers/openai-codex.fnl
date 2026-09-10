@@ -41,7 +41,7 @@
                                    :reset_after_seconds (quota-number window.reset_after_seconds)})))))))))
 
     (when (= (type payload) :table)
-      (add payload.rate_limit "Codex")
+      (add payload.rate_limit :Codex)
       (add payload.code_review_rate_limit "Code review")
       (each [index item (ipairs (if (= (type payload.additional_rate_limits)
                                        :table)
@@ -270,7 +270,7 @@
       (if (and provider provider.usage_request)
           {:patch {:providers {:openai-codex {:usage_again true}}}}
           (let [sequence (+ (or (and provider provider.usage_sequence) 0) 1)
-                id (.. "codex-usage-" sequence)]
+                id (.. :codex-usage- sequence)]
             {:patch {:providers {:openai-codex {:usage_sequence sequence
                                                 :usage_request id}}}
              :fx [{:type :http/request
@@ -304,7 +304,7 @@
               count (when event.ok
                       (reset-count event.data))
               details-id (when (and count (> count 0))
-                           (.. event.id "-resets"))
+                           (.. event.id :-resets))
               updated {:type :dispatch :event {:type :usage/updated}}
               fx [updated]]
           (when details-id
@@ -362,9 +362,9 @@
                (or provider.reset_attempt (> (or provider.reset_count 0) 0)))
       (let [sequence (+ (or provider.reset_sequence 0) 1)
             attempt (or provider.reset_attempt
-                        (.. "misa-codex-reset-" cofx.clock.wall_ms "-"
+                        (.. :misa-codex-reset- cofx.clock.wall_ms "-"
                             cofx.clock.monotonic_ms "-" sequence))
-            id (.. "codex-reset-" sequence)]
+            id (.. :codex-reset- sequence)]
         {:patch {:providers {:openai-codex {:reset_sequence sequence
                                             :reset_request id
                                             :reset_attempt attempt
@@ -421,7 +421,7 @@
            :method :GET
            :url (or config.models_url
                     (.. "https://chatgpt.com/backend-api/codex/models?client_version="
-                        (or config.client_version "0.153.4")))
+                        (or config.client_version :0.153.4)))
            :credential {:id :openai-codex
                         :header :authorization
                         :prefix "Bearer "
@@ -518,15 +518,15 @@
      :type :http/request
      :url (or config.url "https://chatgpt.com/backend-api/codex/responses")}))
 
-{:records records
- :stream stream
- :refresh-usage refresh-usage
- :receive-usage receive-usage
- :receive-reset-credits receive-reset-credits
- :reset-usage reset-usage
- :reset-complete reset-complete
- :serialize serialize
- :discover-models discover-models
- :receive-models receive-models
- :request request
- :usage-windows usage-windows}
+{: records
+ : stream
+ : refresh-usage
+ : receive-usage
+ : receive-reset-credits
+ : reset-usage
+ : reset-complete
+ : serialize
+ : discover-models
+ : receive-models
+ : request
+ : usage-windows}

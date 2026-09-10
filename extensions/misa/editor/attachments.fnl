@@ -39,6 +39,4 @@
                                                :text "Remove last attachment"}]}])]
             (when line.visible {:spans line.spans}))})
 
-{:attachments-lines attachments-lines
- :on-draft-attachments on-draft-attachments
- :render-controls render-controls}
+{: attachments-lines : on-draft-attachments : render-controls}

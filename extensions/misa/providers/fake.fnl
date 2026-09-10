@@ -65,4 +65,4 @@
                    :type :dispatch})
             {: patch : fx})))))
 
-{:request request :respond respond}
+{: request : respond}

@@ -28,4 +28,4 @@
              {:spans [{:style :dim
                        :text (misa.layout.clip text context.columns)}]}]}))
 
-{:on-pending-prompt on-pending-prompt :render-pending render-pending}
+{: on-pending-prompt : render-pending}

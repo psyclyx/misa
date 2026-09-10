@@ -11,10 +11,10 @@ headings, paragraphs with Markdown emphasis/links/escapes and joined source
 lines, lists and tables. It has no fenced code, whose newly numbered appearance
 would intentionally differ from the baseline.
 
-| Workload | Baseline median | Candidate median | Added time |
-| --- | ---: | ---: | ---: |
-| 50 streaming updates, 128-byte chunks | 6.120 ms | 6.434 ms | 0.314 ms (5.1%) |
-| Initial layout plus 99 cached redraws | 2.667 ms | 3.138 ms | 0.471 ms (17.6%) |
+| Workload                              | Baseline median | Candidate median |       Added time |
+| ------------------------------------- | --------------: | ---------------: | ---------------: |
+| 50 streaming updates, 128-byte chunks |        6.120 ms |         6.434 ms |  0.314 ms (5.1%) |
+| Initial layout plus 99 cached redraws |        2.667 ms |         3.138 ms | 0.471 ms (17.6%) |
 
 These are total CPU times per workload, not per redraw, terminal latency or
 end-to-end input latency. Compilation, setup, serialization and oracle checks

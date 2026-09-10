@@ -323,25 +323,25 @@
       (transition state previous editor reason)
       state))
 
-{:action action
- :available? available?
- :editing-actions editing-actions
- :editing-motions editing-motions
- :editor-transition editor-transition
- :enabled? enabled?
- :on-editing-interrupt on-editing-interrupt
- :route-input route-input
- :submit submit
- :next-at next-at
- :line-start line-start
- :insert insert
- :visual visual
- :normal normal
- :word-previous word-previous
- :paste paste
- :prev prev
- :word-next word-next
- :undo undo
- :vertical vertical
- :word-end word-end
- :line-end line-end}
+{: action
+ : available?
+ : editing-actions
+ : editing-motions
+ : editor-transition
+ : enabled?
+ : on-editing-interrupt
+ : route-input
+ : submit
+ : next-at
+ : line-start
+ : insert
+ : visual
+ : normal
+ : word-previous
+ : paste
+ : prev
+ : word-next
+ : undo
+ : vertical
+ : word-end
+ : line-end}

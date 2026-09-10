@@ -227,4 +227,4 @@
     (set visit encode-value)
     (visit root)))
 
-{:decode decode :encode encode}
+{: decode : encode}

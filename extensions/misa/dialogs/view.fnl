@@ -31,4 +31,4 @@
           (set rendered.priority 30)
           rendered)))))
 
-{:projection projection}
+{: projection}

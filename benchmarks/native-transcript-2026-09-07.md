@@ -29,14 +29,14 @@ This is a different workload, not an optimization or a CPU-time measurement.
 
 Final rested run, wall milliseconds per individual frame:
 
-| Blocks | Workload | Median | Best | Max |
-| --- | --- | ---: | ---: | ---: |
-| 1 | Redraw | 1.442 | 1.064 | 2.639 |
-| 1 | Stream | 2.435 | 1.819 | 4.824 |
-| 16 | Redraw | 2.241 | 1.762 | 4.117 |
-| 16 | Stream | 4.192 | 3.317 | 6.910 |
-| 300 | Redraw | 4.632 | 4.274 | 15.356 |
-| 300 | Stream | 10.449 | 8.081 | 21.938 |
+| Blocks | Workload | Median |  Best |    Max |
+| ------ | -------- | -----: | ----: | -----: |
+| 1      | Redraw   |  1.442 | 1.064 |  2.639 |
+| 1      | Stream   |  2.435 | 1.819 |  4.824 |
+| 16     | Redraw   |  2.241 | 1.762 |  4.117 |
+| 16     | Stream   |  4.192 | 3.317 |  6.910 |
+| 300    | Redraw   |  4.632 | 4.274 | 15.356 |
+| 300    | Stream   | 10.449 | 8.081 | 21.938 |
 
 Two earlier rested sessions had 300-block streaming medians 9.590 and 10.133 ms,
 with maxima 23.404 and 20.937 ms. These runs establish a remaining tail-latency

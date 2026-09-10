@@ -27,20 +27,20 @@ Timing uses normal GC; allocation is observed separately with collection stopped
 for one equivalent sample, then restarted. Values below are milliseconds
 median / best, and KiB allocated per 64 replacements, from the second session.
 
-| Records | Replacement | Baseline ms | Candidate ms | Baseline KiB | Candidate KiB |
-| --- | --- | --- | --- | --- | --- |
-| 1 | Unchanged | 0.040 / 0.039 | 0.026 / 0.024 | 32.5 | 10.0 |
-| 1 | Tail changed | 0.041 / 0.039 | 0.040 / 0.037 | 39.5 | 32.5 |
-| 1 | All changed | 0.042 / 0.038 | 0.038 / 0.035 | 39.5 | 32.5 |
-| 1 | Initial insertion | 0.041 / 0.038 | 0.038 / 0.037 | 52.0 | 51.5 |
-| 16 | Unchanged | 0.420 / 0.394 | 0.269 / 0.267 | 294.5 | 10.0 |
-| 16 | Tail changed | 0.453 / 0.395 | 0.304 / 0.290 | 301.5 | 39.5 |
-| 16 | All changed | 0.424 / 0.400 | 0.407 / 0.388 | 301.5 | 189.5 |
-| 16 | Initial insertion | 0.442 / 0.409 | 0.404 / 0.387 | 433.5 | 433.5 |
-| 300 | Unchanged | 8.438 / 8.344 | 4.635 / 4.612 | 5371.0 | 10.0 |
-| 300 | Tail changed | 8.454 / 8.369 | 4.901 / 4.730 | 5377.5 | 287.5 |
-| 300 | All changed | 8.833 / 8.607 | 7.669 / 7.566 | 5377.5 | 3277.5 |
-| 300 | Initial insertion | 10.186 / 9.370 | 9.796 / 8.990 | 7781.5 | 7781.5 |
+| Records | Replacement       | Baseline ms    | Candidate ms  | Baseline KiB | Candidate KiB |
+| ------- | ----------------- | -------------- | ------------- | ------------ | ------------- |
+| 1       | Unchanged         | 0.040 / 0.039  | 0.026 / 0.024 | 32.5         | 10.0          |
+| 1       | Tail changed      | 0.041 / 0.039  | 0.040 / 0.037 | 39.5         | 32.5          |
+| 1       | All changed       | 0.042 / 0.038  | 0.038 / 0.035 | 39.5         | 32.5          |
+| 1       | Initial insertion | 0.041 / 0.038  | 0.038 / 0.037 | 52.0         | 51.5          |
+| 16      | Unchanged         | 0.420 / 0.394  | 0.269 / 0.267 | 294.5        | 10.0          |
+| 16      | Tail changed      | 0.453 / 0.395  | 0.304 / 0.290 | 301.5        | 39.5          |
+| 16      | All changed       | 0.424 / 0.400  | 0.407 / 0.388 | 301.5        | 189.5         |
+| 16      | Initial insertion | 0.442 / 0.409  | 0.404 / 0.387 | 433.5        | 433.5         |
+| 300     | Unchanged         | 8.438 / 8.344  | 4.635 / 4.612 | 5371.0       | 10.0          |
+| 300     | Tail changed      | 8.454 / 8.369  | 4.901 / 4.730 | 5377.5       | 287.5         |
+| 300     | All changed       | 8.833 / 8.607  | 7.669 / 7.566 | 5377.5       | 3277.5        |
+| 300     | Initial insertion | 10.186 / 9.370 | 9.796 / 8.990 | 7781.5       | 7781.5        |
 
 The first session also favored the candidate for 300-record tail replacements:
 8.414 / 8.048 ms baseline versus 4.033 / 3.979 ms candidate. The allocation
@@ -52,13 +52,13 @@ result tables. Initial insertion still allocates all new data.
 Eight-frame combined update-plus-render CPU samples from the second A/B session:
 
 | Blocks | Workload | Baseline median / best ms | Candidate median / best ms |
-| --- | --- | --- | --- |
-| 1 | Redraw | 0.443 / 0.391 | 0.527 / 0.406 |
-| 1 | Stream | 2.318 / 1.719 | 2.420 / 1.767 |
-| 16 | Redraw | 7.808 / 7.218 | 7.698 / 7.304 |
-| 16 | Stream | 9.065 / 8.694 | 9.112 / 8.679 |
-| 300 | Redraw | 191.578 / 182.197 | 193.208 / 187.624 |
-| 300 | Stream | 185.641 / 175.359 | 189.010 / 187.440 |
+| ------ | -------- | ------------------------- | -------------------------- |
+| 1      | Redraw   | 0.443 / 0.391             | 0.527 / 0.406              |
+| 1      | Stream   | 2.318 / 1.719             | 2.420 / 1.767              |
+| 16     | Redraw   | 7.808 / 7.218             | 7.698 / 7.304              |
+| 16     | Stream   | 9.065 / 8.694             | 9.112 / 8.679              |
+| 300    | Redraw   | 191.578 / 182.197         | 193.208 / 187.624          |
+| 300    | Stream   | 185.641 / 175.359         | 189.010 / 187.440          |
 
 The first A/B session exposed phase-accounting instability: 300-block update
 medians were 10.521 ms baseline and 38.311 ms candidate, while rendering medians

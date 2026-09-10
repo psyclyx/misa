@@ -31,11 +31,11 @@ startup time, and output hash; it does not contain individual input samples.
 Milliseconds; each cell lists the two ten-input process runs. Best is the fastest
 input in each process, not the fastest process median.
 
-| Workload | Version | Medians | Best inputs |
-| --- | --- | --- | --- |
-| Redraw | Baseline | 5.882, 5.962 | 5.204, 5.406 |
-| Redraw | Candidate | 5.742, 5.787 | 5.178, 5.445 |
-| Streaming | Baseline | 9.886, 9.730 | 9.024, 8.780 |
+| Workload  | Version   | Medians      | Best inputs  |
+| --------- | --------- | ------------ | ------------ |
+| Redraw    | Baseline  | 5.882, 5.962 | 5.204, 5.406 |
+| Redraw    | Candidate | 5.742, 5.787 | 5.178, 5.445 |
+| Streaming | Baseline  | 9.886, 9.730 | 9.024, 8.780 |
 | Streaming | Candidate | 9.711, 9.441 | 8.843, 8.929 |
 
 Raw process results: [final CSV](stdlib-composition-2026-09-09.csv).

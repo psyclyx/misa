@@ -12,4 +12,4 @@
      :timeouts config.timeouts
      :url (or config.url "https://api.openai.com/v1/chat/completions")}))
 
-{:settings settings}
+{: settings}

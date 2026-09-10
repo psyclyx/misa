@@ -7,9 +7,10 @@
         pricing (and cost cost.pricing)
         currency (or (and cost cost.currency) :USD)
         unit (or (and cost cost.token_unit) 1000000)
-        unit-text (if (= unit 1000000) "1M" (tostring unit))]
+        unit-text (if (= unit 1000000) :1M (tostring unit))]
     (fn rate [value]
-      (if (= value nil) "?"
+      (if (= value nil)
+          "?"
           (do
             (assert (and (= (type value) :number) (<= 0 value)
                          (< value math.huge))
@@ -58,4 +59,4 @@
                               (line "Cost: unavailable; configure costs.models for this model")))
             result)))))
 
-{:model-preview model-preview}
+{: model-preview}

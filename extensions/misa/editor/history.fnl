@@ -78,9 +78,9 @@
           (let [text (. history.entries index)]
             (when (not (. seen text))
               (tset seen text true)
-              (let [first (: (: (or (text:match "[^
-]+") "(blank input)") :gsub "\t" " ") :gsub
-                             "[%z\001-\031\127]" "")]
+              (let [first (: (: (or (text:match "[^\n]+") "(blank input)")
+                                :gsub "\t" " ")
+                             :gsub "[%z\001-\031\127]" "")]
                 (var label (or (and misa.layout (misa.layout.clip first 100))
                                first))
                 (when (< (length label) (length first))
@@ -162,7 +162,7 @@
     result))
 
 (fn save [config history]
-  "Save."
+  :Save.
   (if (= config.persist false) {}
       [{:data {:entries history.entries :version 1}
         :namespace :history
@@ -225,12 +225,12 @@
               (updated next-history {} (save config next-history)))
             (updated next-history {}))))))
 
-{:available? available?
- :navigate navigate
- :on-agent-submitted on-agent-submitted
- :on-app-start on-app-start
- :on-history-loaded on-history-loaded
- :on-history-search on-history-search
- :on-history-selected on-history-selected
- :recent-entries recent-entries
- :route-terminal-input route-terminal-input}
+{: available?
+ : navigate
+ : on-agent-submitted
+ : on-app-start
+ : on-history-loaded
+ : on-history-search
+ : on-history-selected
+ : recent-entries
+ : route-terminal-input}

@@ -295,8 +295,8 @@
                : x
                :y 0})))))))
 
-{:choices-completion-layout choices-completion-layout
- :choices-picker-layout choices-picker-layout
- :choices-row-lines choices-row-lines
- :choices-viewport choices-viewport
- :overlay-options overlay-options}
+{: choices-completion-layout
+ : choices-picker-layout
+ : choices-row-lines
+ : choices-viewport
+ : overlay-options}

@@ -2,10 +2,10 @@
 
 {:keybindings {:usage/codex-reset {:context :usage
                                    :action :codex-reset
-                                   :default ["r"]}
+                                   :default [:r]}
                :usage/extra-manage {:context :usage
                                     :action :extra-manage
-                                    :default ["e"]}}
+                                    :default [:e]}}
  :actions {:usage.open {:id :usage.open
                         :label "Show usage"
                         :event {:type :usage/open}

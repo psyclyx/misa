@@ -23,13 +23,13 @@ All values below are CPU milliseconds **per eight-frame sample**, not per frame.
 This is one baseline session, not an A/B comparison or a speedup claim.
 
 | Blocks | Workload | Render median / best | Update median / best |
-| --- | --- | --- | --- |
-| 1 | Redraw | 0.502 / 0.386 | — |
-| 1 | Stream | 2.491 / 1.552 | 0.144 / 0.084 |
-| 16 | Redraw | 8.030 / 7.249 | — |
-| 16 | Stream | 9.861 / 8.034 | 0.311 / 0.223 |
-| 300 | Redraw | 201.924 / 190.665 | — |
-| 300 | Stream | 146.440 / 143.248 | 42.365 / 40.997 |
+| ------ | -------- | -------------------- | -------------------- |
+| 1      | Redraw   | 0.502 / 0.386        | —                    |
+| 1      | Stream   | 2.491 / 1.552        | 0.144 / 0.084        |
+| 16     | Redraw   | 8.030 / 7.249        | —                    |
+| 16     | Stream   | 9.861 / 8.034        | 0.311 / 0.223        |
+| 300    | Redraw   | 201.924 / 190.665    | —                    |
+| 300    | Stream   | 146.440 / 143.248    | 42.365 / 40.997      |
 
 No builds or other agent-run benchmarks ran concurrently. Garbage collection is
 enabled: timings charge collection to whichever measured operation triggers it.

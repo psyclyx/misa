@@ -75,4 +75,4 @@
                 {:spans [(span model.overflow :choice.hint)]}))
         {:lines rendered})))
 
-{:render-completions render-completions :render-input render-input}
+{: render-completions : render-input}

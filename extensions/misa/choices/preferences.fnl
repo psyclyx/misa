@@ -94,9 +94,9 @@
       {:patch {:preferences (misa.replace (configured-favorites preferences
                                                                 config.favorites))}})))
 
-{:on-app-start on-app-start
- :on-choice-used on-choice-used
- :on-preferences-loaded on-preferences-loaded
- :on-preferences-toggle on-preferences-toggle
- :use use
- :valid? valid?}
+{: on-app-start
+ : on-choice-used
+ : on-preferences-loaded
+ : on-preferences-toggle
+ : use
+ : valid?}

@@ -34,4 +34,4 @@
                :width preview.width})))
     {: lines}))
 
-{:render-image render-image}
+{: render-image}

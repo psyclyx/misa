@@ -312,8 +312,7 @@
                                                           item.source_start)
                                                        (length item.text)))
                                   first (+ item.source_start
-                                           (if nonliteral
-                                               0
+                                           (if nonliteral 0
                                                at))
                                   last (if nonliteral
                                            item.source_end
@@ -389,7 +388,7 @@
       {:patch {:selection (misa.replace {:anchor current
                                          :anchor_document frame.index
                                          : indices
-                                         :documents documents
+                                         : documents
                                          :sources origins
                                          :frames [frame]})}
        :fx [{:type :terminal/read}]})))
@@ -409,7 +408,7 @@
                               (misa.replace (misa.patch next
                                                         {:copied misa.delete}))
                               (misa.replace next))}
-       :fx fx})))
+       : fx})))
 
 (fn on-selection [db cofx]
   "Project the selection layer for the accepted document."
@@ -520,20 +519,20 @@
                   (or state.visual (= name :extend_next)
                       (= name :extend_previous)))}))
 
-{:apply-motion apply-motion
- :child child
- :copy copy
- :move-direction move-direction
- :on-selection on-selection
- :on-selection-action on-selection-action
- :on-selection-open on-selection-open
- :parent parent
- :route-terminal-input route-terminal-input
- :selection-actions selection-actions
- :selection-decorate selection-decorate
- :selection-geometry selection-geometry
- :selection-open? selection-open?
- :selection-ranges selection-ranges
- :selection-sources selection-sources
- :selection-state selection-state
- :visual visual}
+{: apply-motion
+ : child
+ : copy
+ : move-direction
+ : on-selection
+ : on-selection-action
+ : on-selection-open
+ : parent
+ : route-terminal-input
+ : selection-actions
+ : selection-decorate
+ : selection-geometry
+ : selection-open?
+ : selection-ranges
+ : selection-sources
+ : selection-state
+ : visual}

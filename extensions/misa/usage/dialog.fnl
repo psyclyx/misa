@@ -1,6 +1,6 @@
 ;; Usage projects normalized provider facts into generic data rows and actions.
 ;; Transport and account mutations remain provider-owned.
-(fn text [value] {:type :text :value value})
+(fn text [value] {:type :text : value})
 (fn tokens [value] {:type :tokens :value (or value 0)})
 (fn sequence [parts] {:type :sequence :values parts})
 (fn datetime [instant now prefix fallback]
@@ -15,7 +15,7 @@
                  (and window.limit window.remaining
                       (- window.limit window.remaining)))
         instant (or window.reset_at_unix window.reset_at)]
-    {:label (or window.label "Quota")
+    {:label (or window.label :Quota)
      :meter {: used :limit window.limit}
      :fact (if (and used (= window.unit :percent))
                (sequence [{:type :percent
@@ -26,7 +26,7 @@
      :detail (when instant (datetime instant now "Resets "))}))
 
 (fn extra-row [provider extra actions]
-  (let [facts [(text (if extra.enabled "On" "Off"))]]
+  (let [facts [(text (if extra.enabled :On :Off))]]
     (when extra.used
       (table.insert facts (text " · "))
       (table.insert facts {:type :money
@@ -38,15 +38,16 @@
                       {:type :money
                        :amount extra.limit
                        :currency extra.currency}))
-      (table.insert facts (text (if extra.unlimited " used · no monthly limit"
+      (table.insert facts (text (if extra.unlimited
+                                    " used · no monthly limit"
                                     " this month"))))
     (let [ids []]
       (when extra.manage_url
-        (let [id (.. provider "/extra-manage")]
+        (let [id (.. provider :/extra-manage)]
           (table.insert ids id)
           (table.insert actions
                         {: id
-                         :label "Manage"
+                         :label :Manage
                          :inline true
                          :persistent true
                          :event {:type :link/open :url extra.manage_url}
@@ -64,31 +65,35 @@
           (each [_ credit (ipairs (or provider.reset_credits []))]
             (when (= credit.status :available)
               (table.insert expiries
-                            (if credit.expires_never "No expiry"
+                            (if credit.expires_never
+                                "No expiry"
                                 (value-text (datetime (or credit.expires_at_unix
                                                           credit.expires_at)
                                                       now "Expires "
                                                       "Expiry unavailable"))))))
-          (table.insert actions
-                        {:id :codex-reset
-                         :label (if provider.reset_attempt "Retry reset"
-                                    "Use reset")
-                         :inline true
-                         :persistent true
-                         :event {:type :provider/codex-reset}
-                         :disabled (or provider.reset_request
-                                       provider.reset_refresh)
-                         :binding {:context :usage :action :codex-reset}
-                         :confirm {:title "Use a Codex quota reset?"
-                                   :label "Use reset"
-                                   :message (.. (if provider.reset_attempt
-                                                    "Check the previous redemption again; a retry uses the same request key."
-                                                    "Consume one earned reset to reset eligible Codex usage limits.")
-                                                (if (> (length expiries) 0)
-                                                    (.. "\n"
-                                                        (table.concat expiries
-                                                                      "\n"))
-                                                    "\nReset expiry details are unavailable."))}})))
+          (table.insert actions {:id :codex-reset
+                                 :label (if provider.reset_attempt
+                                            "Retry reset"
+                                            "Use reset")
+                                 :inline true
+                                 :persistent true
+                                 :event {:type :provider/codex-reset}
+                                 :disabled (or provider.reset_request
+                                               provider.reset_refresh)
+                                 :binding {:context :usage
+                                           :action :codex-reset}
+                                 :confirm {:title "Use a Codex quota reset?"
+                                           :label "Use reset"
+                                           :message (.. (if provider.reset_attempt
+                                                            "Check the previous redemption again; a retry uses the same request key."
+                                                            "Consume one earned reset to reset eligible Codex usage limits.")
+                                                        (if (> (length expiries)
+                                                               0)
+                                                            (.. "\n"
+                                                                (table.concat expiries
+                                                                              "\n"))
+                                                            "
+Reset expiry details are unavailable."))}})))
       (table.insert rows {:label "Quota resets"
                           :fact (text (.. count " available"))
                           :actions ids})
@@ -105,7 +110,7 @@
                       {:label "Reset expiry"
                        :fact (text (if provider.reset_credits_request
                                        "Loading…"
-                                       "Unavailable"))}))))
+                                       :Unavailable))}))))
   (when provider.reset_message
     (table.insert rows {:label "" :fact (text provider.reset_message)})))
 
@@ -115,12 +120,12 @@
         selected (and misa.models misa.models.selected
                       (misa.models.selected db))
         sections [{:id :model
-                   :rows [{:label "Model"
-                           :fact (text (or (and selected selected.label) "None"))}
+                   :rows [{:label :Model
+                           :fact (text (or (and selected selected.label) :None))}
                           {:label "Context window"
                            :fact (if (and selected selected.context_window)
                                      (tokens selected.context_window)
-                                     (text "Unknown"))}]}
+                                     (text :Unknown))}]}
                   {:id :session
                    :title "Session usage"
                    :heading true
@@ -161,7 +166,7 @@
                          (window-row window now))]
               (when quota.unavailable
                 (table.insert rows
-                              {:label "Quotas"
+                              {:label :Quotas
                                :fact (text "Temporarily unavailable")}))
               (when quota.extra_usage
                 (table.insert rows (extra-row id quota.extra_usage actions)))
@@ -169,7 +174,7 @@
                 (reset-rows (or (and db.providers (. db.providers id)) {}) now
                             rows actions))
               (table.insert sections
-                            {:id id
+                            {: id
                              :title (.. id
                                         (if provider.plan
                                             (.. " · " provider.plan)
@@ -194,7 +199,7 @@
     {:fx [{:type :dispatch
            :event {:type :dialog/open
                    :id :usage
-                   :title "Usage"
+                   :title :Usage
                    :sections display.sections
                    :actions display.actions
                    :cancellable true
@@ -222,7 +227,4 @@
           (when (and action action.event (not action.disabled))
             {:fx [{:type :dispatch :event (misa.snapshot action.event)}]})))))
 
-{:open-dashboard open-dashboard
- :invoke-action invoke-action
- :tick tick
- :update update}
+{: open-dashboard : invoke-action : tick : update}

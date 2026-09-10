@@ -51,7 +51,4 @@
             "config.tools.shell.executable must be nonempty")
     name))
 
-{:output-text output-text
- :process-effect process-effect
- :completed completed
- :executable executable}
+{: output-text : process-effect : completed : executable}

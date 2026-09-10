@@ -31,13 +31,13 @@ Results in wall milliseconds. The median column is the median of ten run
 medians; best is the fastest individual measured frame across those runs:
 
 | Blocks | Workload | Baseline median / best | Candidate median / best |
-| --- | --- | ---: | ---: |
-| 1 | Redraw | 1.357 / 0.795 | 1.402 / 1.041 |
-| 1 | Stream | 2.364 / 1.599 | 2.307 / 1.630 |
-| 16 | Redraw | 2.235 / 1.599 | 2.122 / 1.666 |
-| 16 | Stream | 3.671 / 2.913 | 3.547 / 2.690 |
-| 300 | Redraw | 4.153 / 3.382 | 4.125 / 3.402 |
-| 300 | Stream | 7.242 / 6.241 | 7.550 / 5.799 |
+| ------ | -------- | ---------------------: | ----------------------: |
+| 1      | Redraw   |          1.357 / 0.795 |           1.402 / 1.041 |
+| 1      | Stream   |          2.364 / 1.599 |           2.307 / 1.630 |
+| 16     | Redraw   |          2.235 / 1.599 |           2.122 / 1.666 |
+| 16     | Stream   |          3.671 / 2.913 |           3.547 / 2.690 |
+| 300    | Redraw   |          4.153 / 3.382 |           4.125 / 3.402 |
+| 300    | Stream   |          7.242 / 6.241 |           7.550 / 5.799 |
 
 Frame hashes matched throughout, but this does not establish a whole-application
 win. The target 300-block streaming median was worse and small-workload results

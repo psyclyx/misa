@@ -279,4 +279,4 @@
                (assert (. styles name) (.. "theme has no style token: " name))))
       result)))
 
-{:normalize normalize :compose compose}
+{: normalize : compose}

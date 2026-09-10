@@ -21,11 +21,11 @@ per executable ran sequentially, alternating baseline/candidate order by round.
 Each invocation contains three trials and had to pass its correctness assertions.
 No builds or other tests ran concurrently. CPU affinity was not set.
 
-| Statistic | Serial baseline | Terminal thread |
-| --- | ---: | ---: |
-| Median of invocation-reported trial medians | 16.2 ms | 16.2 ms |
-| Best invocation-reported trial median | 16.1 ms | 16.1 ms |
-| Largest reported trial maximum | 17.4 ms | 17.1 ms |
+| Statistic                                   | Serial baseline | Terminal thread |
+| ------------------------------------------- | --------------: | --------------: |
+| Median of invocation-reported trial medians |         16.2 ms |         16.2 ms |
+| Best invocation-reported trial median       |         16.1 ms |         16.1 ms |
+| Largest reported trial maximum              |         17.4 ms |         17.1 ms |
 
 These are summaries of three-trial invocations, not raw individual latency
 samples. The results support retaining the ownership separation with no observed

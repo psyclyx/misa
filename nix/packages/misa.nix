@@ -15,7 +15,13 @@ stdenv.mkDerivation {
   version = "0.1.0";
   src = lib.cleanSourceWith {
     src = lib.cleanSource ../..;
-    filter = path: _type: !(builtins.elem (baseNameOf path) [ ".zig-cache" "zig-out" ".direnv" ]);
+    filter =
+      path: _type:
+      !(builtins.elem (baseNameOf path) [
+        ".zig-cache"
+        "zig-out"
+        ".direnv"
+      ]);
   };
 
   nativeBuildInputs = [

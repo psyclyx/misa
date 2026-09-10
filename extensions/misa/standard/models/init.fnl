@@ -30,54 +30,52 @@
                     :description "Assign a model to a role (default or summarizer)"
                     :event :model/role
                     :complete complete-model-role}}
- :events {"models/app/start" {:event :app/start
-                              :handler (fn [db event cofx]
-                                         (on-app-start cofx.config db event
-                                                       cofx))
+ :events {:models/app/start {:event :app/start
+                             :handler (fn [db event cofx]
+                                        (on-app-start cofx.config db event cofx))
+                             :priority 58000}
+          :models/model/picker-open {:event :model/picker-open
+                                     :handler on-model-picker-open
+                                     :priority 58000}
+          :models/model/open {:event :model/open
+                              :handler on-model-open
                               :priority 58000}
-          "models/model/picker-open" {:event :model/picker-open
-                                      :handler on-model-picker-open
-                                      :priority 58000}
-          "models/model/open" {:event :model/open
-                               :handler on-model-open
-                               :priority 58000}
-          "models/models/provider-availability" {:event :models/provider-availability
-                                                 :handler (fn [db event cofx]
-                                                            (on-models-provider-availability cofx.config
-                                                                                             db
-                                                                                             event))
-                                                 :priority 58000}
-          "models/models/update" {:event :models/update
-                                  :handler (fn [db event cofx]
-                                             (on-models-update cofx.config db
-                                                               event))
-                                  :priority 58000}
-          "models/models/replace-provider" {:event :models/replace-provider
-                                            :handler (fn [db event cofx]
-                                                       (on-models-replace-provider cofx.config
-                                                                                   db
-                                                                                   event))
-                                            :priority 58000}
-          "models/model/select" {:event :model/select
-                                 :handler on-model-select
+          :models/models/provider-availability {:event :models/provider-availability
+                                                :handler (fn [db event cofx]
+                                                           (on-models-provider-availability cofx.config
+                                                                                            db
+                                                                                            event))
+                                                :priority 58000}
+          :models/models/update {:event :models/update
+                                 :handler (fn [db event cofx]
+                                            (on-models-update cofx.config db
+                                                              event))
                                  :priority 58000}
-          "models/model/role" {:event :model/role
-                               :handler on-model-role
-                               :priority 58000}
-          "models/model/roles-loaded" {:event :model/roles-loaded
-                                       :handler (fn [db event cofx]
-                                                  (on-model-roles-loaded cofx.config
-                                                                         db
-                                                                         event))
-                                       :priority 58000}}
+          :models/models/replace-provider {:event :models/replace-provider
+                                           :handler (fn [db event cofx]
+                                                      (on-models-replace-provider cofx.config
+                                                                                  db
+                                                                                  event))
+                                           :priority 58000}
+          :models/model/select {:event :model/select
+                                :handler on-model-select
+                                :priority 58000}
+          :models/model/role {:event :model/role
+                              :handler on-model-role
+                              :priority 58000}
+          :models/model/roles-loaded {:event :model/roles-loaded
+                                      :handler (fn [db event cofx]
+                                                 (on-model-roles-loaded cofx.config
+                                                                        db event))
+                                      :priority 58000}}
  :indicators {:model {:icon "◆"
                       :id :model
                       :label :model
                       :hotkey {:action :open_model_picker :context :global}
                       :query [:models/indicator]}}
- :keybindings {"global/open_model_picker" {:action :open_model_picker
-                                           :context :global
-                                           :default [:alt+m]}}
+ :keybindings {:global/open_model_picker {:action :open_model_picker
+                                          :context :global
+                                          :default [:alt+m]}}
  :services {:models.selected (fn [db] "Return the currently selected model."
                                (misa.sub db [:models/selected]))
             :models.state (fn [db]

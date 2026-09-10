@@ -63,7 +63,4 @@
                                    "invalid command palette invocation")]
             {:fx [{:event invocation :type :dispatch}]}))))
 
-{:command-items command-items
- :open-picker open-picker
- :select-command select-command
- :session session}
+{: command-items : open-picker : select-command : session}

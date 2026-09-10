@@ -98,9 +98,9 @@
                        (or (= (or editor.text "") "") (= editor.mode :normal)))
               {:type :actions/open :query (event.text:sub 2)}))))))
 
-{:hover hover
- :resolve-global-input resolve-global-input
- :select-action select-action
- :palette-shortcut palette-shortcut
- :invoke-action invoke-action
- :open-palette open-palette}
+{: hover
+ : resolve-global-input
+ : select-action
+ : palette-shortcut
+ : invoke-action
+ : open-palette}

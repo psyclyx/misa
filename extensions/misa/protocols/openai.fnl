@@ -192,8 +192,10 @@
       (when spec.max_tokens
         (set body.max_completion_tokens spec.max_tokens))
       (let [request-options (misa.request-options.serialize serializer-id
-                                                            (misa.patch (or spec.request_options {})
-                                                                        (or effect.request_options {})))
+                                                            (misa.patch (or spec.request_options
+                                                                            {})
+                                                                        (or effect.request_options
+                                                                            {})))
             headers [{:name :content-type :value :application/json}]]
         (each [_ header (ipairs (or spec.headers {}))]
           (tset headers (+ (length headers) 1) header))
@@ -269,10 +271,10 @@
               {:event {:provider spec.id :type :models/discovery-complete}
                :type :dispatch}]})))
 
-{:messages messages
- :request request
- :discover-models discover-models
- :stream stream
- :model-api model-api
- :models-complete models-complete
- :delta-projections delta-projections}
+{: messages
+ : request
+ : discover-models
+ : stream
+ : model-api
+ : models-complete
+ : delta-projections}

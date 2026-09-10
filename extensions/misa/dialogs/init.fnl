@@ -17,19 +17,17 @@
 
 (fn token [state action]
   "Return a dialog-scoped token for an action."
-  (.. "dialog.action/" (length state.id) ":" state.id
-      (length state.correlation) ":" state.correlation action.id))
+  (.. :dialog.action/ (length state.id) ":" state.id (length state.correlation)
+      ":" state.correlation action.id))
 
 (fn buttons [state]
   "Build button descriptors for the current dialog."
   (if state.confirmation
-      [{:id :confirm
-        :label (or state.confirmation.label "Confirm")
-        :key :enter}
-       {:id :cancel-confirmation :label "Cancel" :key :escape}]
+      [{:id :confirm :label (or state.confirmation.label :Confirm) :key :enter}
+       {:id :cancel-confirmation :label :Cancel :key :escape}]
       (let [result (misa.snapshot (or state.actions []))]
         (when state.cancellable
-          (table.insert result {:id :dialog-close :label "Close" :key :escape}))
+          (table.insert result {:id :dialog-close :label :Close :key :escape}))
         result)))
 
 (fn updated [state patch fx]
@@ -42,7 +40,7 @@
                                                  {:confirmation misa.delete}))
                        misa.delete)}
    :fx [{:type :dispatch
-         :event {:action action
+         :event {: action
                  :cancelled (= cancelled true)
                  :correlation state.correlation
                  :id state.id
@@ -76,7 +74,7 @@
                  :input (if event.protected "" (or event.initial ""))
                  :input_enabled (= event.input true)
                  :input_length 0
-                 :kind kind
+                 : kind
                  :message (or event.message "")
                  :progress event.progress
                  :sections event.sections
@@ -211,9 +209,7 @@
         room (if (and misa.ui misa.ui.overlay-room)
                  (misa.ui.overlay-room db terminal)
                  terminal.lines)
-        rendered (misa.dialogs.layout db
-                                      {:terminal terminal
-                                       :available_lines room})
+        rendered (misa.dialogs.layout db {: terminal :available_lines room})
         maximum (math.max 0 (or rendered.max_scroll 0))
         current (math.max 0 (math.min maximum (or state.scroll 0)))
         page (math.max 1 (or rendered.scroll_page (- room 3)))
@@ -268,17 +264,17 @@
   "Validate a dialog input transition."
   (assert (= (type handler) :function) "transition must be a function"))
 
-{:buttons buttons
- :close close
- :dialog-inputs dialog-inputs
- :input input
- :on-dialog-action on-dialog-action
- :open open
- :protected-input protected-input
- :route-ui-action route-ui-action
- :token token
- :update update
- :cancel cancel
- :backspace backspace
- :insert-text insert-text
- :enter enter}
+{: buttons
+ : close
+ : dialog-inputs
+ : input
+ : on-dialog-action
+ : open
+ : protected-input
+ : route-ui-action
+ : token
+ : update
+ : cancel
+ : backspace
+ : insert-text
+ : enter}

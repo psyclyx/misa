@@ -24,11 +24,11 @@ debug.sethook()
 print(ok, result, ticks)
 ```
 
-| Mode change after warm-up | Observed outcome | Hook calls |
-| --- | --- | ---: |
-| None | Success, sum `5.00000005e+15` | 0 |
-| `jit.off()` | Success, same sum | 0 |
-| `jit.off(); jit.flush()` | Error `budget` | 11 |
+| Mode change after warm-up | Observed outcome              | Hook calls |
+| ------------------------- | ----------------------------- | ---------: |
+| None                      | Success, sum `5.00000005e+15` |          0 |
+| `jit.off()`               | Success, same sum             |          0 |
+| `jit.off(); jit.flush()`  | Error `budget`                |         11 |
 
 This is a correctness probe, not a timing benchmark. A count hook alone does not
 bound already compiled hot loops. Disabling compilation alone leaves those traces
@@ -86,11 +86,11 @@ sequentially with alternating order. Every invocation passed correctness checks.
 No builds, agent work, or other tests ran concurrently; CPU affinity was not set.
 Both executables were ReleaseSafe builds using the pinned Zig 0.16 toolchain.
 
-| Statistic | Before | Candidate |
-| --- | ---: | ---: |
-| Median of invocation-reported trial medians | 16.2 ms | 16.1 ms |
-| Best invocation-reported trial median | 16.1 ms | 16.1 ms |
-| Largest reported trial maximum | 17.1 ms | 17.1 ms |
+| Statistic                                   |  Before | Candidate |
+| ------------------------------------------- | ------: | --------: |
+| Median of invocation-reported trial medians | 16.2 ms |   16.1 ms |
+| Best invocation-reported trial median       | 16.1 ms |   16.1 ms |
+| Largest reported trial maximum              | 17.1 ms |   17.1 ms |
 
 The difference is below 2% and treated as noise. This workload shows no meaningful
 latency regression; it does not measure syntax throughput or prove a general

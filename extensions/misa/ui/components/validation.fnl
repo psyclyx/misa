@@ -10,7 +10,7 @@
   value)
 
 (fn printable [text]
-  (assert (and (= (type text) :string) (not (text:find "[%z\1-\31\127]")))
+  (assert (and (= (type text) :string) (not (text:find "[%z\001-\031\127]")))
           "span text must be printable text on one line"))
 
 (fn validate [rendered]
@@ -77,4 +77,4 @@
           (set start (+ start (length span.text)))))))
   rendered)
 
-{:view validate :integer? integer?}
+{:view validate : integer?}

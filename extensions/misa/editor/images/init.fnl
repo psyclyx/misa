@@ -76,8 +76,8 @@
           (updated current {:next_id next-id :pending {id true}}
                    [effect {:type :terminal/read}])))))
 
-{:available-images-remove available-images-remove
- :compute-images-lifecycle compute-images-lifecycle
- :on-agent-reset on-agent-reset
- :on-images-loaded on-images-loaded
- :request request}
+{: available-images-remove
+ : compute-images-lifecycle
+ : on-agent-reset
+ : on-images-loaded
+ : request}

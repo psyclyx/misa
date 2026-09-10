@@ -12,7 +12,7 @@
      :fx [{:type :process/run
            :id (.. "link:" sequence)
            :completion :link/completed
-           :argv argv}
+           : argv}
           {:type :terminal/read}]}))
 
 (fn link-completed [_ event]
@@ -26,7 +26,7 @@
 
 (fn opener [config]
   "Validate and return the configured browser command."
-  (let [command (or config.command ["xdg-open"])]
+  (let [command (or config.command [:xdg-open])]
     (assert (and (= (type command) :table) (< 0 (length command)))
             "links.command must be a nonempty argv array")
     (each [_ argument (ipairs command)]
@@ -35,4 +35,4 @@
               "invalid link opener argument"))
     command))
 
-{:open link-open :completed link-completed :opener opener}
+{:open link-open :completed link-completed : opener}

@@ -38,7 +38,4 @@
                            (.. "unknown preview renderer: " kind))]
         (misa.layout.wrap-spans (render model context) context.columns))))
 
-{:choice-previews choice-previews
- :choices-preview choices-preview
- :line line
- :metadata metadata}
+{: choice-previews : choices-preview : line : metadata}

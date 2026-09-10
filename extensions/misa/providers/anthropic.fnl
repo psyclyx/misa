@@ -12,4 +12,4 @@
      :timeouts config.timeouts
      :url (or config.url "https://api.anthropic.com/v1/messages")}))
 
-{:settings settings}
+{: settings}

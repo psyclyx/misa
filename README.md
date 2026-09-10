@@ -182,21 +182,21 @@ contracts. Moving editor code does not rename `misa.editor.layout` or
 
 Catalogs use the following entries (the outer map key is the entry's ID):
 
-| Catalog | Entry |
-| --- | --- |
-| `events` | `{event, handler, priority?}`; handlers receive `(db,event,cofx)` |
-| `routes` | `{event,priority,context,resolve}`; one pure event route |
-| `coeffects` | `function(cofx,event,db)`; derives a transaction input |
-| `effects` | `function(effect,cofx,db)`; translates policy effects |
-| `views` | `function(db,context)`; exactly one root semantic view |
-| `view-layers` | `function(db,context)`; optional semantic overlay |
-| `subscriptions` | `{inputs,compute}` or `{read}`; a pure query |
-| `projections` | `{inputs,render}`; an independently cached presentation owner |
-| `services` | A function or immutable value, named `namespace.member` |
-| `models`, `auth-providers`, `commands`, `actions`, `tools` | Domain declarations; their owning APIs validate and expose them |
-| `completions` | `{group,value={value,label?,description?}}` |
-| `requirements` | An array of service paths, keyed by consumer ID |
-| `validators` | A pure `(id,value)` validator, keyed by catalog name |
+| Catalog                                                    | Entry                                                             |
+| ---------------------------------------------------------- | ----------------------------------------------------------------- |
+| `events`                                                   | `{event, handler, priority?}`; handlers receive `(db,event,cofx)` |
+| `routes`                                                   | `{event,priority,context,resolve}`; one pure event route          |
+| `coeffects`                                                | `function(cofx,event,db)`; derives a transaction input            |
+| `effects`                                                  | `function(effect,cofx,db)`; translates policy effects             |
+| `views`                                                    | `function(db,context)`; exactly one root semantic view            |
+| `view-layers`                                              | `function(db,context)`; optional semantic overlay                 |
+| `subscriptions`                                            | `{inputs,compute}` or `{read}`; a pure query                      |
+| `projections`                                              | `{inputs,render}`; an independently cached presentation owner     |
+| `services`                                                 | A function or immutable value, named `namespace.member`           |
+| `models`, `auth-providers`, `commands`, `actions`, `tools` | Domain declarations; their owning APIs validate and expose them   |
+| `completions`                                              | `{group,value={value,label?,description?}}`                       |
+| `requirements`                                             | An array of service paths, keyed by consumer ID                   |
+| `validators`                                               | A pure `(id,value)` validator, keyed by catalog name              |
 
 Additional catalogs belong to their domain modules: components, themes, tool
 presentations, input policies, and protocol adapters remain ordinary named data.
@@ -349,7 +349,6 @@ serialized with a trailing newline for JSONL subprocess protocols.
 A view is modest semantic data. The root UI composes ordered region descriptors
 with shared height budgets and cursor placement. Dialog fields, transcript roles,
 and tool status styles are data tables interpreted by their component owners:
-
 
 ```fennel
 {:lines [{:spans [{:text "working"

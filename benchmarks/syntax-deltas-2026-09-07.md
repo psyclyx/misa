@@ -20,14 +20,14 @@ fixture also checks stream contents, retained block identity and OSC links.
 Wall milliseconds per frame: **median / best of the ten run medians**, not
 individual-frame percentiles:
 
-| Blocks | Workload | Baseline | Candidate |
-| --- | --- | ---: | ---: |
-| 1 | Redraw | 1.248 / 1.175 | 1.302 / 1.106 |
-| 1 | Stream | 2.286 / 2.054 | 2.323 / 1.996 |
-| 16 | Redraw | 2.151 / 2.027 | 2.141 / 1.879 |
-| 16 | Stream | 3.855 / 3.433 | 3.758 / 3.367 |
-| 300 | Redraw | 4.206 / 3.790 | 3.245 / 2.204 |
-| 300 | Stream | 7.839 / 7.139 | 4.474 / 3.882 |
+| Blocks | Workload |      Baseline |     Candidate |
+| ------ | -------- | ------------: | ------------: |
+| 1      | Redraw   | 1.248 / 1.175 | 1.302 / 1.106 |
+| 1      | Stream   | 2.286 / 2.054 | 2.323 / 1.996 |
+| 16     | Redraw   | 2.151 / 2.027 | 2.141 / 1.879 |
+| 16     | Stream   | 3.855 / 3.433 | 3.758 / 3.367 |
+| 300    | Redraw   | 4.206 / 3.790 | 3.245 / 2.204 |
+| 300    | Stream   | 7.839 / 7.139 | 4.474 / 3.882 |
 
 The 300-block streaming run median improved in every pair. One-block redraw
 has a small unfavorable aggregate difference. A fresh ten-pair check with the
@@ -39,10 +39,10 @@ numbers are retained rather than claiming all workloads improved.
 A separate longer run, candidate first, used 200 measured streaming frames at
 300 blocks. Output hashes matched:
 
-| Variant | Median | Best individual frame | Maximum |
-| --- | ---: | ---: | ---: |
-| Baseline | 8.030 | 6.332 | 22.204 |
-| Candidate | 4.299 | 3.194 | 18.926 |
+| Variant   | Median | Best individual frame | Maximum |
+| --------- | -----: | --------------------: | ------: |
+| Baseline  |  8.030 |                 6.332 |  22.204 |
+| Candidate |  4.299 |                 3.194 |  18.926 |
 
 That longer run is a tail-latency observation, not another interleaved A/B study.
 The maximum still exceeds the 16.7 ms frame budget. This change does **not** prove

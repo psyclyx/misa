@@ -64,23 +64,23 @@
                                     :id :claude/claude-fable-5-1
                                     :label "Claude Fable 5.1"
                                     :model :claude-fable-5-1
-                                    :api api
+                                    : api
                                     :provider :claude}
           :claude/claude-opus-5 {:context_window 200000
                                  :id :claude/claude-opus-5
                                  :label "Claude Opus 5"
                                  :model :claude-opus-5
-                                 :api api
+                                 : api
                                  :provider :claude}
           :claude/claude-sonnet-5 {:context_window 1000000
                                    :id :claude/claude-sonnet-5
                                    :label "Claude Sonnet 5"
                                    :model :claude-sonnet-5
-                                   :api api
+                                   : api
                                    :provider :claude}
           :claude/claude-haiku-4-5-20251001 {:context_window 200000
                                              :id :claude/claude-haiku-4-5-20251001
                                              :label "Claude Haiku 4.5"
                                              :model :claude-haiku-4-5-20251001
-                                             :api api
+                                             : api
                                              :provider :claude}}}

@@ -187,12 +187,12 @@
                    :word_next editing.word-next
                    :word_previous editing.word-previous
                    :word_end editing.word-end}
- :events {"editing/editing/action" {:event :editing/action
-                                    :handler editing.action
-                                    :priority 71000}
-          "editing/editing/interrupt" {:event :editing/interrupt
-                                       :handler editing.on-editing-interrupt
-                                       :priority 71000}}
+ :events {:editing/editing/action {:event :editing/action
+                                   :handler editing.action
+                                   :priority 71000}
+          :editing/editing/interrupt {:event :editing/interrupt
+                                      :handler editing.on-editing-interrupt
+                                      :priority 71000}}
  :keybindings {:editor.normal/append {:action :append
                                       :context :editor.normal
                                       :default [:a]}

@@ -52,4 +52,4 @@
                :type :dispatch}))
     {: fx}))
 
-{:request request :complete complete}
+{: request : complete}

@@ -17,4 +17,4 @@
       (table.remove lines))
     {:dock :input :input_disabled true : lines}))
 
-{:render-selection render-selection}
+{: render-selection}

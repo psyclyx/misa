@@ -206,8 +206,7 @@
 
 (fn thematic [line]
   (let [compact (: (trim line) :gsub "%s" "")]
-    (if (< (length compact) 3)
-        false
+    (if (< (length compact) 3) false
         (or (compact:match "^%*+$") (compact:match "^%-+$")
             (compact:match "^_+$")))))
 

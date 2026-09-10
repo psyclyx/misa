@@ -5,31 +5,31 @@ The checklist and handoff summary are current; dated audit notes below preserve
 the implementation history and may describe gaps closed by later entries.
 
 - [x] State: migrate bundled reducers, services, and interceptors to immutable
-  updates; remove the transaction draft and whole-database reconciliation.
+      updates; remove the transaction draft and whole-database reconciliation.
 - [x] Patches: settle empty-table semantics, validate data and controls, preserve
-  sharing and rollback, and cover nested replacement/deletion and collections.
+      sharing and rollback, and cover nested replacement/deletion and collections.
 - [x] Subscriptions: explicit query dependencies, safe query keys, nil inputs,
-  cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
+      cycle errors, bounded cache ownership, rollback, and UI-independent consumers.
 - [x] Dispatch cutover: remove the global interceptor chain; command policy uses
-  explicit handlers and input routing uses an extensible, scoped dispatcher with
-  verified modal precedence rather than extension registration order.
+      explicit handlers and input routing uses an extensible, scoped dispatcher with
+      verified modal precedence rather than extension registration order.
 - [x] Presentation: semantic render data, open dispatch registries, unified
-  renderable composition, and subscriptions replacing ad-hoc projections.
+      renderable composition, and subscriptions replacing ad-hoc projections.
 - [x] Rendering performance: verify selective recomputation and streaming costs
-  with representative transcripts, preserving interaction metadata through layout.
+      with representative transcripts, preserving interaction metadata through layout.
 - [x] Startup: profile and improve default startup; record reproducible measurements.
 - [x] Default theme: remove unwanted angled decoration; model value and picker
-  binding must be distinct from semantic labels and correctly presented.
+      binding must be distinct from semantic labels and correctly presented.
 - [x] Hover: pointer motion highlights clickable backgrounds only while hovered,
-  with unchanged resting appearance and working click routing.
+      with unchanged resting appearance and working click routing.
 - [x] Transcript interaction: structural navigation, Vim-style visual ranges,
-  Markdown list structure, and a selection model independent of copying.
+      Markdown list structure, and a selection model independent of copying.
 - [x] Claude: tool calls appear once across streamed and final records; regression
-  fixtures cover provider-owned tools and completion boundaries.
+      fixtures cover provider-owned tools and completion boundaries.
 - [x] Usage: actual Claude, Codex OAuth, and Kimi coding-plan usage retrieval,
-  a common dashboard, selected-provider indicators, and graceful unavailable states.
+      a common dashboard, selected-provider indicators, and graceful unavailable states.
 - [x] Verification and handoff: focused commits, complete relevant tests, accurate
-  documentation and measured performance claims.
+      documentation and measured performance claims.
 
 Annotations and conversation forking were identified as future consumers; their
 product workflows require later data-model decisions. The interaction architecture
@@ -43,7 +43,7 @@ checks map to the accepted requirements as follows:
 Final gates passed:
 
 - `zig build test -Doptimize=ReleaseSafe -Dcpu=baseline
-  "-Dtree-sitter-dir=$MISA_TREE_SITTER_DIR" --summary all`: 250/250 tests,
+"-Dtree-sitter-dir=$MISA_TREE_SITTER_DIR" --summary all`: 250/250 tests,
   101/101 build steps, no skips. The development environment supplies the grammar
   directory; explicitly setting it also exercises the four grammar-dependent
   native tests skipped by the ordinary build configuration.
@@ -55,18 +55,18 @@ The final follow-up updates the Nix catalog expectation and removes a stale
 subscription-documentation statement about unfinished rendering work. No further
 production change was needed after the dispatcher cutover.
 
-| Requirement | Evidence |
-| --- | --- |
-| Ordinary-table immutable updates, structural sharing, no drafts | `state-patches`, generated `patch-properties`, `state-dispatch`, and bundled reducer ownership tests |
-| UI-independent re-frame-style subscriptions | `subscriptions`, `subscription-transactions`, declared query inputs and consumer-owned scopes in `docs/subscriptions.md` |
-| Open dispatch and no global interception | `command-state`, real forward/reverse `routing-state`, `editor-lifecycle`, and rejection of the removed setup API |
-| Raw facts separated from presentation | `indicator-values`, `component-resolution`, `component-projections`, `choice-preview`, `cost-state`, native response-metadata fixture |
-| Theme, model picker, hover-only backgrounds | `model-affordances`, input-layer component tests, installed Ghostty PTY click/key/motion/leave checks |
-| Structural navigation, visual ranges, Markdown, non-copy consumers | `selection-state`, transcript interaction fixture, installed PTY `v` range checks |
-| Claude tool-call deduplication | `claude-stream-state` streamed/final record fixtures and batching/ownership assertions |
-| Coding-plan usage for all three providers | `claude-usage`, `codex-usage`, `kimi-usage`, shared `usage-dashboard`, plus the dated live native retrieval checks below |
-| Startup and streaming/rendering costs | Recorded AOT and mixed-transcript evidence in `benchmarks/architecture-handoff-2026-09-07.md`; current selective recomputation and settled-frame tests |
-| Small reusable property-test generators | `tests/generators.lua`, generator composition/replay/shrinking tests, and generated patch/editor/routing/selection/stream cases |
+| Requirement                                                        | Evidence                                                                                                                                               |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ordinary-table immutable updates, structural sharing, no drafts    | `state-patches`, generated `patch-properties`, `state-dispatch`, and bundled reducer ownership tests                                                   |
+| UI-independent re-frame-style subscriptions                        | `subscriptions`, `subscription-transactions`, declared query inputs and consumer-owned scopes in `docs/subscriptions.md`                               |
+| Open dispatch and no global interception                           | `command-state`, real forward/reverse `routing-state`, `editor-lifecycle`, and rejection of the removed setup API                                      |
+| Raw facts separated from presentation                              | `indicator-values`, `component-resolution`, `component-projections`, `choice-preview`, `cost-state`, native response-metadata fixture                  |
+| Theme, model picker, hover-only backgrounds                        | `model-affordances`, input-layer component tests, installed Ghostty PTY click/key/motion/leave checks                                                  |
+| Structural navigation, visual ranges, Markdown, non-copy consumers | `selection-state`, transcript interaction fixture, installed PTY `v` range checks                                                                      |
+| Claude tool-call deduplication                                     | `claude-stream-state` streamed/final record fixtures and batching/ownership assertions                                                                 |
+| Coding-plan usage for all three providers                          | `claude-usage`, `codex-usage`, `kimi-usage`, shared `usage-dashboard`, plus the dated live native retrieval checks below                               |
+| Startup and streaming/rendering costs                              | Recorded AOT and mixed-transcript evidence in `benchmarks/architecture-handoff-2026-09-07.md`; current selective recomputation and settled-frame tests |
+| Small reusable property-test generators                            | `tests/generators.lua`, generator composition/replay/shrinking tests, and generated patch/editor/routing/selection/stream cases                        |
 
 The Nix API evaluation now includes both shared presentation modules; it checks
 the standard extension catalog and exported configuration/module contracts.
@@ -487,15 +487,15 @@ commit/rollback, the native decoding-rejection test, and subscription test sourc
 establishes the core guarantees below. This closes the subscription-core checklist
 item, not the separate migration of all presentation consumers or rendering costs.
 
-| Requirement | Implementation and evidence |
-| --- | --- |
-| Explicit dependencies | Registration validates static query vectors; dynamic declarations are checked during evaluation. Tests cover constant/static/dynamic computations and invalid declarations. |
-| Safe keys | Typed, length-delimited canonical encoding rejects nonfinite numbers, metatables, cycles and invalid vectors. Generated tests compare copied queries and distinguish extended queries. |
-| Missing values | Dependency vectors carry `n`; tests distinguish trailing nil from false and verify memoization identity. |
-| Cycles/depth/re-entry | Active-query and depth guards reject recursive graphs; tests cover changing-key deep chains and callback attempts to query/clear/close/fork the evaluating scope. |
-| Bounded ownership | Per-consumer caches evict to capacity, copy only their index on fork, and clear references on close. Capacity must now be a positive finite integer; public construction cannot inject inherited entries. |
+| Requirement           | Implementation and evidence                                                                                                                                                                                           |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit dependencies | Registration validates static query vectors; dynamic declarations are checked during evaluation. Tests cover constant/static/dynamic computations and invalid declarations.                                           |
+| Safe keys             | Typed, length-delimited canonical encoding rejects nonfinite numbers, metatables, cycles and invalid vectors. Generated tests compare copied queries and distinguish extended queries.                                |
+| Missing values        | Dependency vectors carry `n`; tests distinguish trailing nil from false and verify memoization identity.                                                                                                              |
+| Cycles/depth/re-entry | Active-query and depth guards reject recursive graphs; tests cover changing-key deep chains and callback attempts to query/clear/close/fork the evaluating scope.                                                     |
+| Bounded ownership     | Per-consumer caches evict to capacity, copy only their index on fork, and clear references on close. Capacity must now be a positive finite integer; public construction cannot inject inherited entries.             |
 | Transaction isolation | Staged entries publish only after successful evaluation; framework forks commit with state. Lua-failure, explicit rollback, component-cache rollback and native-decoding rejection tests retain committed identities. |
-| UI independence | The core imports no renderer or framework globals; standalone scope tests use ordinary data. Explicit consumer tests query and close a separate scope without rendering. |
+| UI independence       | The core imports no renderer or framework globals; standalone scope tests use ordinary data. Explicit consumer tests query and close a separate scope without rendering.                                              |
 
 The audit found and fixed two constructor boundary holes: false silently selected
 the default capacity, and the internal inherited cache argument was exposed

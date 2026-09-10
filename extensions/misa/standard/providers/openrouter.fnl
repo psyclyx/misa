@@ -2,7 +2,9 @@
 (local options (require :misa.providers.openai-options))
 (local protocol (require :misa.protocols.openai))
 
-(local serializer (options.compose [adapter.routing adapter.reasoning options.standard]))
+(local serializer (options.compose [adapter.routing
+                                    adapter.reasoning
+                                    options.standard]))
 
 (fn settings []
   (or (. (or (. (misa.configuration) :providers) {}) :openrouter) {}))

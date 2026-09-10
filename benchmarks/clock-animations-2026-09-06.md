@@ -19,11 +19,11 @@ correctness assertions. No builds or other tests ran concurrently. Both binaries
 use Zig 0.16 ReleaseSafe; CPU affinity was not set. Load average before the run
 was 1.19 / 0.97 / 0.77.
 
-| Statistic | Previous commit | Clock animations |
-| --- | ---: | ---: |
-| Median of invocation-reported trial medians | 16.20 ms | 16.15 ms |
-| Best invocation-reported trial median | 16.1 ms | 16.1 ms |
-| Largest reported trial maximum | 17.1 ms | 17.0 ms |
+| Statistic                                   | Previous commit | Clock animations |
+| ------------------------------------------- | --------------: | ---------------: |
+| Median of invocation-reported trial medians |        16.20 ms |         16.15 ms |
+| Best invocation-reported trial median       |         16.1 ms |          16.1 ms |
+| Largest reported trial maximum              |         17.1 ms |          17.0 ms |
 
 The median difference is below 2% and is treated as noise. These invocation
 summaries show no meaningful latency regression in this workload; they do not

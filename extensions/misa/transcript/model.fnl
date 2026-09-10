@@ -315,7 +315,7 @@
                        :arguments (when (not= value.arguments nil)
                                     (misa.replace (copy-structural value.arguments
                                                                    policy 0)))
-                       :name name
+                       : name
                        :call_id (when (not= value.call_id nil)
                                   (printable-text (tostring value.call_id)))
                        :argument_text (if has-arguments misa.delete
@@ -540,8 +540,7 @@
       (each [index source (ipairs (or event.content []))]
         (set next (append-block next owner
                                 {:id (.. event.request_id "/" index)
-                                 :kind (if (= source.type :text)
-                                           :assistant
+                                 :kind (if (= source.type :text) :assistant
                                            source.type)
                                  :streaming false
                                  :text source.text})))))

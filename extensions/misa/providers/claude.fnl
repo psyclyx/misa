@@ -85,7 +85,7 @@
         state)))
 
 (fn tool-name [name]
-  (if (= (type name) :string) (name:gsub "^mcp__misa__" "") name))
+  (if (= (type name) :string) (name:gsub :^mcp__misa__ "") name))
 
 (fn tool [state index block complete fx id]
   (let [call-id (assert block.id "Claude tool call requires an id")
@@ -392,11 +392,11 @@
                                           :source :stream
                                           :label (or (. quota-labels
                                                         (or kind ""))
-                                                     kind "Claude")
+                                                     kind :Claude)
                                           :unit :percent
-                                          :status status
+                                          : status
                                           :reset_at_unix reset
-                                          :used used
+                                          : used
                                           :limit (when used 100)
                                           :remaining (when used
                                                        (math.max 0 (- 100 used)))}]}}}]}))))
@@ -606,12 +606,12 @@
                                                                     event.usage))}}}
      :fx [{:type :dispatch :event {:type :usage/updated}}]}))
 
-{:partials partials
- :records records
- :stream stream
- :refresh-usage refresh-usage
- :receive-usage receive-usage
- :provider-availability provider-availability
- :request request
- :receive-quota receive-quota
- :quota-snapshot quota-snapshot}
+{: partials
+ : records
+ : stream
+ : refresh-usage
+ : receive-usage
+ : provider-availability
+ : request
+ : receive-quota
+ : quota-snapshot}

@@ -23,10 +23,10 @@ empty to prevent provider CLI execution. All twenty runs passed this oracle.
 No builds or other agent workloads ran concurrently. CPU affinity and OS caches
 were not controlled. Load average immediately before measurement was about 1.6.
 
-| Binary | Median wall ms | Best wall ms |
-| --- | ---: | ---: |
-| Baseline | 81.000 | 78.390 |
-| Translated core | 33.557 | 31.409 |
+| Binary          | Median wall ms | Best wall ms |
+| --------------- | -------------: | -----------: |
+| Baseline        |         81.000 |       78.390 |
+| Translated core |         33.557 |       31.409 |
 
 This is a 58.6% median reduction in process startup through EOF shutdown, **not**
 interactive first-frame latency or authenticated-provider readiness. The compiler

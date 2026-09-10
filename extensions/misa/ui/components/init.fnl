@@ -1,5 +1,4 @@
-(local {:view validate :integer? integer?}
-       (require :misa.ui.components.validation))
+(local {:view validate : integer?} (require :misa.ui.components.validation))
 
 ;; Semantic visual component registry. Implementations are immutable registration
 ;; data; every role selection lives in transactional application state.

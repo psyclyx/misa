@@ -51,7 +51,7 @@
 
 (fn tokens [key]
   "Split a key binding into display tokens, preserving key case."
-  (let [normalized (: (tostring (or key "")) :gsub "^ctrl_" "ctrl+")]
+  (let [normalized (: (tostring (or key "")) :gsub :^ctrl_ :ctrl+)]
     (icollect [part (: normalized :gmatch "[^+]+")]
       {:kind (if (. modifiers part) :modifier :key)
        :text (or (. symbols part) part)})))
@@ -79,9 +79,4 @@
                      :text (.. " " entry.label)}))
     spans))
 
-{:resolve-action resolve-action
- :tokens tokens
- :hint hint
- :text text
- :render render
- :reference reference}
+{: resolve-action : tokens : hint : text : render : reference}

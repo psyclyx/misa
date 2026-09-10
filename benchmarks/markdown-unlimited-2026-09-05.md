@@ -30,13 +30,13 @@ unchanged redraws), not per-frame latency. Both baseline and candidate columns
 use their incremental document API. The raw CSV also contains the candidate full
 parser for attribution.
 
-| Workload | Bytes / updates | Before median / best (s) | After median / best (s) |
-| --- | --- | --- | --- |
-| Paragraph | 16,500 / 129 | .046241 / .045920 | .036120 / .035611 |
-| Headings and paragraphs | 16,800 / 132 | .014163 / .013985 | .003156 / .003051 |
-| Fence | 17,110 / 134 | .028863 / .028710 | .016744 / .016665 |
-| Table | 16,830 / 132 | .326475 / .316565 | .317764 / .310311 |
-| Unchanged redraw | 16,500 / 128 | .002793 / .002688 | .002556 / .002510 |
+| Workload                | Bytes / updates | Before median / best (s) | After median / best (s) |
+| ----------------------- | --------------- | ------------------------ | ----------------------- |
+| Paragraph               | 16,500 / 129    | .046241 / .045920        | .036120 / .035611       |
+| Headings and paragraphs | 16,800 / 132    | .014163 / .013985        | .003156 / .003051       |
+| Fence                   | 17,110 / 134    | .028863 / .028710        | .016744 / .016665       |
+| Table                   | 16,830 / 132    | .326475 / .316565        | .317764 / .310311       |
+| Unchanged redraw        | 16,500 / 128    | .002793 / .002688        | .002556 / .002510       |
 
 The table remains dominated by reparsing its active block; no table-specific
 improvement is claimed. Removing limits is a behavior correction, not a claim
@@ -49,14 +49,14 @@ and incomplete-link ASTs must match exactly. Quotes intentionally retain their
 full depth now, so the harness checks unchanged body inlines and the exact new
 depth as well as each variant's deterministic full AST.
 
-| Input | Bytes | Before median / best (s) | After median / best (s) |
-| --- | --- | --- | --- |
-| Unmatched brackets | 2,004 | .021214 / .021083 | .000360 / .000338 |
-| Unmatched brackets | 4,004 | .082249 / .081800 | .000696 / .000676 |
-| Unmatched brackets | 8,004 | .327736 / .325792 | .001372 / .001337 |
-| Nested quotes | 4,004 | .001468 / .001460 | .000172 / .000168 |
-| Nested quotes | 8,004 | .005142 / .005090 | .000343 / .000334 |
-| Nested quotes | 16,004 | .019037 / .018442 | .000678 / .000663 |
+| Input              | Bytes  | Before median / best (s) | After median / best (s) |
+| ------------------ | ------ | ------------------------ | ----------------------- |
+| Unmatched brackets | 2,004  | .021214 / .021083        | .000360 / .000338       |
+| Unmatched brackets | 4,004  | .082249 / .081800        | .000696 / .000676       |
+| Unmatched brackets | 8,004  | .327736 / .325792        | .001372 / .001337       |
+| Nested quotes      | 4,004  | .001468 / .001460        | .000172 / .000168       |
+| Nested quotes      | 8,004  | .005142 / .005090        | .000343 / .000334       |
+| Nested quotes      | 16,004 | .019037 / .018442        | .000678 / .000663       |
 
 The doubling sweep distinguishes the former quadratic scans from the new
 approximately linear scans on these inputs. No general linear-time Markdown

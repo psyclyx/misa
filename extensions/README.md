@@ -6,26 +6,26 @@ ranking, so it lives at `misa.choices.matching`. Markdown owns parsing and
 rendering under `misa.markdown`. A shared input type or component interface does
 not establish shared ownership.
 
-| Owner | Responsibility |
-| --- | --- |
-| `misa.standard` | Stock application data, settings, and registration wiring |
-| `misa.agent` | Conversation lifecycle, response correlation, tool continuation, and stream normalization |
-| `misa.models` | Model discovery and selection, request options, effort, and model previews |
-| `misa.costs` | Model pricing and response cost accounting |
-| `misa.usage` | Usage capture and refresh policy; its `dialog` provides the optional dashboard |
-| `misa.choices` | Choice state, ranking, geometry, previews, preferences, and picker behavior |
-| `misa.commands` | Command discovery, invocation, and the command palette |
-| `misa.actions`, `misa.keybindings` | Action routing and contextual keyboard interpretation |
-| `misa.dialogs` | Dialog lifecycle, composition, and rendering |
-| `misa.editor` | Input state, editing, history, attachments, images, queued input, and presentation |
-| `misa.selection` | Selection state, source documents, and presentation |
-| `misa.markdown` | Markdown documents and rendering |
-| `misa.transcript` | Response models, viewport, groups, syntax, and tool presentation |
-| `misa.protocols`, `misa.providers` | Wire formats, transport adapters, and authentication policy |
-| `misa.tools` | File and shell operations |
-| `misa.clipboard`, `misa.links` | Clipboard and external link effects |
-| `misa.ui` | Frame composition, layout, typed values, and shared presentation machinery |
-| `misa.json` | JSON encoding and decoding at data boundaries |
+| Owner                              | Responsibility                                                                            |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| `misa.standard`                    | Stock application data, settings, and registration wiring                                 |
+| `misa.agent`                       | Conversation lifecycle, response correlation, tool continuation, and stream normalization |
+| `misa.models`                      | Model discovery and selection, request options, effort, and model previews                |
+| `misa.costs`                       | Model pricing and response cost accounting                                                |
+| `misa.usage`                       | Usage capture and refresh policy; its `dialog` provides the optional dashboard            |
+| `misa.choices`                     | Choice state, ranking, geometry, previews, preferences, and picker behavior               |
+| `misa.commands`                    | Command discovery, invocation, and the command palette                                    |
+| `misa.actions`, `misa.keybindings` | Action routing and contextual keyboard interpretation                                     |
+| `misa.dialogs`                     | Dialog lifecycle, composition, and rendering                                              |
+| `misa.editor`                      | Input state, editing, history, attachments, images, queued input, and presentation        |
+| `misa.selection`                   | Selection state, source documents, and presentation                                       |
+| `misa.markdown`                    | Markdown documents and rendering                                                          |
+| `misa.transcript`                  | Response models, viewport, groups, syntax, and tool presentation                          |
+| `misa.protocols`, `misa.providers` | Wire formats, transport adapters, and authentication policy                               |
+| `misa.tools`                       | File and shell operations                                                                 |
+| `misa.clipboard`, `misa.links`     | Clipboard and external link effects                                                       |
+| `misa.ui`                          | Frame composition, layout, typed values, and shared presentation machinery                |
+| `misa.json`                        | JSON encoding and decoding at data boundaries                                             |
 
 A small independent owner can be one file. An owner with children uses
 `init.fnl`: `misa.editor` loads `misa/editor/init.fnl`, while

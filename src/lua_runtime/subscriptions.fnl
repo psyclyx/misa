@@ -22,30 +22,28 @@
   (fn encode [value depth]
     (assert (< depth 128) "subscription query is too deep")
     (local kind (type value))
-    (if (= kind :string) (.. "s" (length value) ":" value) (= kind :boolean)
-        (if value "b1" "b0") (= kind :number)
+    (if (= kind :string) (.. :s (length value) ":" value) (= kind :boolean)
+        (if value :b1 :b0) (= kind :number)
         (do
           (assert (and (= value value) (< (math.abs value) math.huge))
                   "query number must be finite")
-          (.. "n" (if (= value 0) "0" (string.format "%.17g" value)) ";"))
-        (= kind :table) (do
-                         (assert (and (= (getmetatable value) nil)
-                                      (not (. active value)))
-                                 "invalid or cyclic query table")
-                         (tset active value true)
-                         (local entries [])
-                         (each [key item (pairs value)]
-                           (assert (or (= (type key) :string)
-                                       (= (type key) :number)
-                                       (= (type key) :boolean))
-                                   "invalid query key")
-                           (table.insert entries
-                                         (.. (encode key (+ depth 1))
-                                             (encode item (+ depth 1)))))
-                         (table.sort entries)
-                         (tset active value nil)
-                         (.. "t" (length entries) ":" (table.concat entries)
-                             "e"))
+          (.. :n (if (= value 0) :0 (string.format "%.17g" value)) ";"))
+        (= kind :table)
+        (do
+          (assert (and (= (getmetatable value) nil) (not (. active value)))
+                  "invalid or cyclic query table")
+          (tset active value true)
+          (local entries [])
+          (each [key item (pairs value)]
+            (assert (or (= (type key) :string) (= (type key) :number)
+                        (= (type key) :boolean))
+                    "invalid query key")
+            (table.insert entries
+                          (.. (encode key (+ depth 1))
+                              (encode item (+ depth 1)))))
+          (table.sort entries)
+          (tset active value nil)
+          (.. :t (length entries) ":" (table.concat entries) :e))
         (error (.. "unsupported query value: " kind))))
 
   (encode query 0))
@@ -126,7 +124,7 @@
                                                     (definition.inputs q)
                                                     definition.inputs)
                                         n (vector-size queries)
-                                        inputs {:n n}]
+                                        inputs {: n}]
                                     (for [i 1 n]
                                       (tset inputs i (evaluate (. queries i))))
                                     (var same

@@ -14,10 +14,7 @@
 
 (fn messages-detail-indicator-value [inputs]
   "Describe the selected transcript detail level."
-  {:type :text
-   :value (if (. inputs 1)
-              :verbose
-              :summary)})
+  {:type :text :value (if (. inputs 1) :verbose :summary)})
 
 (fn terminal-input [scroll-inputs db event cofx]
   "Resolve transcript navigation and detail actions from an input event."

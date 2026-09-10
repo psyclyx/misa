@@ -40,7 +40,7 @@
                 (sign zh zm) (suffix:match "^([+-])(%d%d):(%d%d)$")]
             (when (and (<= 1 month 12) (<= 1 day 31) (< (tonumber h) 24)
                        (< (tonumber minute) 60) (< (tonumber second) 61)
-                       (or (= suffix "Z")
+                       (or (= suffix :Z)
                            (and sign (< (tonumber zh) 24) (< (tonumber zm) 60))))
               (- (+ (* days 86400) (* (tonumber h) 3600)
                     (* (tonumber minute) 60) (tonumber second))
@@ -52,12 +52,15 @@
 (fn relative-time [instant now]
   (let [seconds (- instant now)
         minutes (math.ceil (/ (math.abs seconds) 60))
-        duration (if (< minutes 1) "<1m" (< minutes 60) (.. minutes "m")
+        duration (if (< minutes 1)
+                     :<1m
+                     (< minutes 60)
+                     (.. minutes :m)
                      (< minutes 1440)
-                     (.. (math.floor (/ minutes 60)) "h " (% minutes 60) "m")
+                     (.. (math.floor (/ minutes 60)) "h " (% minutes 60) :m)
                      (.. (math.floor (/ minutes 1440)) "d "
-                         (math.floor (/ (% minutes 1440) 60)) "h"))]
-    (if (= seconds 0) "now"
+                         (math.floor (/ (% minutes 1440) 60)) :h))]
+    (if (= seconds 0) :now
         (< seconds 0) (.. duration " ago")
         (.. "in " duration))))
 
@@ -106,16 +109,16 @@
   (let [milliseconds (finite fact.value)]
     (assert (>= milliseconds 0) "duration must be nonnegative")
     (text-value (if (< milliseconds 1000)
-                    (.. (math.floor milliseconds) "ms")
+                    (.. (math.floor milliseconds) :ms)
                     (< milliseconds 60000)
                     (string.format "%.1fs" (/ milliseconds 1000))
                     (.. (math.floor (/ milliseconds 60000)) "m "
-                        (math.floor (/ (% milliseconds 60000) 1000)) "s")))))
+                        (math.floor (/ (% milliseconds 60000) 1000)) :s)))))
 
 (fn format-rate [fact]
   "Render a rate fact as semantic text spans."
   (assert (= (type fact.unit) :string) "rate requires a unit")
-  (text-value (.. (string.format "%.1f" (finite fact.value)) " " fact.unit "/s")))
+  (text-value (.. (string.format "%.1f" (finite fact.value)) " " fact.unit :/s)))
 
 (fn format-ratio [fact]
   "Render a ratio fact as semantic text spans."
@@ -133,7 +136,7 @@
 
 (fn format-unavailable []
   "Render a unavailable fact as semantic text spans."
-  (text-value "unavailable"))
+  (text-value :unavailable))
 
 (fn format-timestamp [fact]
   "Render a timestamp fact as semantic text spans."
@@ -154,8 +157,8 @@
       (let [amount (finite fact.amount)]
         (assert (>= amount 0) "money amount must be nonnegative")
         (let [currency (if (= fact.currency :USD) "$" (.. fact.currency " "))
-              value (if (= amount 0) (.. currency "0") (< amount 0.0001)
-                        (.. "<" currency "0.0001")
+              value (if (= amount 0) (.. currency :0) (< amount 0.0001)
+                        (.. "<" currency :0.0001)
                         (.. currency
                             (string.format (if (< amount 1) "%.4f" "%.2f")
                                            amount)))]

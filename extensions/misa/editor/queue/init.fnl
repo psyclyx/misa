@@ -27,15 +27,13 @@
 
 (fn drain [db queue]
   "Submit pending input when the agent can accept it."
-  (if (or (empty? queue) (not (ready? db queue))) {:patch {:queue queue}}
+  (if (or (empty? queue) (not (ready? db queue))) {:patch {: queue}}
       (let [prompt queue.pending
             attachments queue.attachments]
         {:patch {:queue {:pending ""
                          :attachments (misa.replace {})
                          :sending true}}
-         :fx [{:event {:attachments attachments
-                       :prompt prompt
-                       :type :agent/submit}
+         :fx [{:event {: attachments : prompt :type :agent/submit}
                :type :dispatch}
               {:type :dispatch :event {:type :queue/submission-settled}}]})))
 
@@ -44,7 +42,7 @@
   (let [queue (append (state db) (or event.prompt "") event.attachments)]
     (if (empty? queue) nil
         (if (ready? db queue) (drain db queue)
-            {:patch {:queue queue}
+            {:patch {: queue}
              :fx [{:event {:type :agent/cancel-active} :type :dispatch}]}))))
 
 (fn take [db]
@@ -92,15 +90,15 @@
     {:hold_exit (and (not= queue nil)
                      (or (not (empty? queue)) (= queue.sending true)))}))
 
-{:acknowledge acknowledge
- :append append
- :compute-queue-lifecycle compute-queue-lifecycle
- :drain drain
- :empty? empty?
- :on-agent-reset on-agent-reset
- :on-agent-status on-agent-status
- :on-queue-submission-settled on-queue-submission-settled
- :state state
- :steer steer
- :submit submit
- :take take}
+{: acknowledge
+ : append
+ : compute-queue-lifecycle
+ : drain
+ : empty?
+ : on-agent-reset
+ : on-agent-status
+ : on-queue-submission-settled
+ : state
+ : steer
+ : submit
+ : take}

@@ -14,14 +14,14 @@ or other benchmarks ran concurrently.
 Wall milliseconds: median / best **of the ten run medians**, not individual-frame
 percentiles or minimum individual-frame latency:
 
-| Blocks | Workload | Baseline | Candidate |
-| --- | --- | ---: | ---: |
-| 1 | Redraw | 1.345 / 1.197 | 1.382 / 1.225 |
-| 1 | Stream | 2.314 / 2.116 | 2.281 / 2.058 |
-| 16 | Redraw | 2.207 / 2.021 | 2.211 / 2.065 |
-| 16 | Stream | 3.890 / 3.653 | 3.716 / 3.317 |
-| 300 | Redraw | 5.162 / 4.512 | 4.507 / 3.961 |
-| 300 | Stream | 9.995 / 8.795 | 7.571 / 6.828 |
+| Blocks | Workload |      Baseline |     Candidate |
+| ------ | -------- | ------------: | ------------: |
+| 1      | Redraw   | 1.345 / 1.197 | 1.382 / 1.225 |
+| 1      | Stream   | 2.314 / 2.116 | 2.281 / 2.058 |
+| 16     | Redraw   | 2.207 / 2.021 | 2.211 / 2.065 |
+| 16     | Stream   | 3.890 / 3.653 | 3.716 / 3.317 |
+| 300    | Redraw   | 5.162 / 4.512 | 4.507 / 3.961 |
+| 300    | Stream   | 9.995 / 8.795 | 7.571 / 6.828 |
 
 The main mechanism is eliminating 299 repeated query-key/dependency evaluations
 per 300-block transcript projection. The same immutable collection is now read

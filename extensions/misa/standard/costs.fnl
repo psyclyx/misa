@@ -10,7 +10,7 @@
 (fn complete [db event cofx]
   (when db.costs (costs.complete (pricing cofx.config) db event)))
 
-{:services {:costs.estimate costs.estimate
+{:services {: costs.estimate
             :costs.model (fn [db id]
                            "Return pricing and availability for a model."
                            (costs.costs-model (pricing (misa.configuration)) db

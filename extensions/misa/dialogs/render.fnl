@@ -66,7 +66,7 @@
           (append footer-spans
                   (misa.keybindings.reference [{:key :arrow_up :label ""}
                                                {:key :arrow_down
-                                                :label "Scroll"}]))
+                                                :label :Scroll}]))
           (set footer (wrap-footer))
           (set input-room (if input
                               (math.min (length input.lines)
@@ -76,8 +76,7 @@
         (let [maximum (math.max 0 (- (length body) body-room))
               offset (math.min maximum (math.max 0 (or model.scroll 0)))
               lines [{:spans [(span "┌─ " :dialog.label)
-                              (span (or model.title "Interaction")
-                                    :dialog.title)]}]]
+                              (span (or model.title :Interaction) :dialog.title)]}]]
           (for [index (+ offset 1) (math.min (length body) (+ offset body-room))]
             (table.insert lines (. body index)))
           (var cursor nil)
@@ -103,4 +102,4 @@
            :overlay true
            :surface :surface.dialog})))))
 
-{:render render}
+{: render}

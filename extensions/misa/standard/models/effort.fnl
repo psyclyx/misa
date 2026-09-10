@@ -20,21 +20,21 @@
                       :name :/effort
                       :preference_scope :request-options/effort
                       :selected selected-effort-select}}
- :events {"effort/effort/unsupported" {:event :effort/unsupported
-                                       :handler (fn [db] (unavailable db))
-                                       :priority 62000}
-          "effort/effort/select" {:event :effort/select
-                                  :handler on-effort-select
-                                  :priority 62000}
-          "effort/effort/cycle" {:event :effort/cycle
-                                 :handler on-effort-cycle
-                                 :priority 62000}}
+ :events {:effort/effort/unsupported {:event :effort/unsupported
+                                      :handler (fn [db] (unavailable db))
+                                      :priority 62000}
+          :effort/effort/select {:event :effort/select
+                                 :handler on-effort-select
+                                 :priority 62000}
+          :effort/effort/cycle {:event :effort/cycle
+                                :handler on-effort-cycle
+                                :priority 62000}}
  :indicators {:effort {:hotkey {:action :cycle_effort :context :global}
                        :icon "◈"
                        :id :effort
                        :label :effort
                        :query [:request-options/indicator option-name]}}
- :keybindings {"global/cycle_effort" {:action :cycle_effort
-                                      :context :global
-                                      :default [:alt+f]}}
+ :keybindings {:global/cycle_effort {:action :cycle_effort
+                                     :context :global
+                                     :default [:alt+f]}}
  :requirements {:effort [:request-options.choices]}}

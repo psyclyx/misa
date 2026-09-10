@@ -38,12 +38,12 @@ pinned; normal GC remained enabled.
 Wall milliseconds from the final input write to receipt of the completed frame
 showing its final row. These are per-hold latencies, not CPU time per key.
 
-| Models | Presses/s | Baseline median / best / max | Final median / best / max | Max pending rows, before → after |
-| --- | ---: | ---: | ---: | ---: |
-| 1,000 | 30 | 23.006 / 20.485 / 34.407 | 8.524 / 7.627 / 13.307 | 2 → 1 |
-| 1,000 | 60 | 353.158 / 266.535 / 412.575 | 18.593 / 10.894 / 25.664 | 18 → 2 |
-| 3,000 | 30 | 1,067.914 / 934.090 / 1,214.527 | 19.014 / 16.361 / 22.806 | 17 → 1 |
-| 3,000 | 60 | 3,046.735 / 2,840.800 / 3,274.053 | 30.948 / 20.463 / 36.367 | 47 → 3 |
+| Models | Presses/s |      Baseline median / best / max | Final median / best / max | Max pending rows, before → after |
+| ------ | --------: | --------------------------------: | ------------------------: | -------------------------------: |
+| 1,000  |        30 |          23.006 / 20.485 / 34.407 |    8.524 / 7.627 / 13.307 |                            2 → 1 |
+| 1,000  |        60 |       353.158 / 266.535 / 412.575 |  18.593 / 10.894 / 25.664 |                           18 → 2 |
+| 3,000  |        30 |   1,067.914 / 934.090 / 1,214.527 |  19.014 / 16.361 / 22.806 |                           17 → 1 |
+| 3,000  |        60 | 3,046.735 / 2,840.800 / 3,274.053 |  30.948 / 20.463 / 36.367 |                           47 → 3 |
 
 Raw summaries and final-frame hashes: `picker-key-repeat-2026-09-07.csv`.
 Raw injected-key and observed-focus timestamps, including warm-ups and resets:

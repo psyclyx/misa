@@ -784,12 +784,10 @@
       (let [update {:type :dispatch
                     :event {:type :transcript/tool-result
                             :id event.tool_call_id
-                            :cancelled (when agent.cancel_requested
-                                         true)
+                            :cancelled (when agent.cancel_requested true)
                             :is_error (= event.is_error true)
                             :text (or event.text
-                                      (if agent.cancel_requested
-                                          :Cancelled
+                                      (if agent.cancel_requested :Cancelled
                                           ""))}}]
         (if agent.cancel_requested
             (if (= agent.pending_tool_count 0)
@@ -826,18 +824,18 @@
                 {:patch {:agent (misa.replace agent)} : fx})))))))
 
 {:cancel cancel-active
- :start start
- :continue-startup continue-startup
- :reset reset
- :submit submit
- :stream-start stream-start
- :stream-delta stream-delta
- :stream-tool-result stream-tool-result
- :stream-usage stream-usage
- :stream-state stream-state
- :stream-end stream-end
- :legacy-result legacy-result
- :receive-tool-result receive-tool-result
- :stream-error stream-error
- :text-delta text-delta
- :tool-delta tool-delta}
+ : start
+ : continue-startup
+ : reset
+ : submit
+ : stream-start
+ : stream-delta
+ : stream-tool-result
+ : stream-usage
+ : stream-state
+ : stream-end
+ : legacy-result
+ : receive-tool-result
+ : stream-error
+ : text-delta
+ : tool-delta}

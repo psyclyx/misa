@@ -67,10 +67,10 @@
                  :type :dispatch}
                 {:type :terminal/read}]}))))
 
-{:choices choices
- :complete-effort-select complete-effort-select
- :on-effort-cycle on-effort-cycle
- :on-effort-select on-effort-select
- :option-name option-name
- :selected-effort-select selected-effort-select
- :unavailable unavailable}
+{: choices
+ : complete-effort-select
+ : on-effort-cycle
+ : on-effort-select
+ : option-name
+ : selected-effort-select
+ : unavailable}

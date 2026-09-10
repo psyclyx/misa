@@ -324,19 +324,19 @@
                           :selected (when roles.default
                                       roles.default)}}}))))
 
-{:complete-model-open complete-model-open
- :complete-model-role complete-model-role
- :compute-models-indicator compute-models-indicator
- :compute-models-projection compute-models-projection
- :compute-models-selected compute-models-selected
- :models-for-role models-for-role
- :on-app-start on-app-start
- :on-model-open on-model-open
- :on-model-picker-open on-model-picker-open
- :on-model-role on-model-role
- :on-model-roles-loaded on-model-roles-loaded
- :on-model-select on-model-select
- :on-models-provider-availability on-models-provider-availability
- :on-models-replace-provider on-models-replace-provider
- :on-models-update on-models-update
- :selected-model-open selected-model-open}
+{: complete-model-open
+ : complete-model-role
+ : compute-models-indicator
+ : compute-models-projection
+ : compute-models-selected
+ : models-for-role
+ : on-app-start
+ : on-model-open
+ : on-model-picker-open
+ : on-model-role
+ : on-model-roles-loaded
+ : on-model-select
+ : on-models-provider-availability
+ : on-models-replace-provider
+ : on-models-update
+ : selected-model-open}

@@ -73,13 +73,13 @@
 (fn collapsed [model context previous]
   "Render a bounded preview of a thinking message."
   (let [(lines cache) (interactive-message model context :thinking previous 3)]
-    (values {:lines lines} cache)))
+    (values {: lines} cache)))
 
 (fn harness [model context previous]
   "Render a harness message using its severity."
   (let [(lines cache) (message model context
                                (if (= model.level :error) :error :plain)
                                previous)]
-    (values {:lines lines} cache)))
+    (values {: lines} cache)))
 
 {: collapsed : harness : render-message}

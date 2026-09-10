@@ -14,10 +14,10 @@ CLI execution. Every run exited successfully with exactly
 `misa> enter a prompt:\n` on stdout and empty stderr. No builds or other agent
 workloads ran concurrently. CPU affinity and OS caches were not controlled.
 
-| Mode | Median wall ms | Best wall ms |
-| --- | ---: | ---: |
-| Source catalog | 582.319 | 570.858 |
-| Installed generated catalog | 82.402 | 78.919 |
+| Mode                        | Median wall ms | Best wall ms |
+| --------------------------- | -------------: | -----------: |
+| Source catalog              |        582.319 |      570.858 |
+| Installed generated catalog |         82.402 |       78.919 |
 
 This measures process startup through EOF shutdown, not interactive time to the
 first usable frame or authenticated-provider readiness. The embedded framework,

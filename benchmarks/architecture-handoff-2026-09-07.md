@@ -17,10 +17,10 @@ Ten fresh processes per mode, alternating source/installed order, same binary.
 Every process exited zero, emitted exactly `misa> enter a prompt:\n`, and had
 empty stderr. Credentials/state were isolated and child PATH was empty.
 
-| Catalog | Median wall ms | Best wall ms |
-| --- | ---: | ---: |
-| Source Fennel | 588.329 | 571.594 |
-| Installed generated Lua | 44.032 | 43.439 |
+| Catalog                 | Median wall ms | Best wall ms |
+| ----------------------- | -------------: | -----------: |
+| Source Fennel           |        588.329 |      571.594 |
+| Installed generated Lua |         44.032 |       43.439 |
 
 These are process-start-through-EOF-shutdown numbers, not interactive readiness
 or authenticated-provider readiness. Build-time extension translation remains
@@ -51,10 +51,10 @@ code/syntax, and response metadata. Each workload uses warm-up frames before ten
 measured inputs. The 25 ms untimed gap avoids deliberately colliding with the
 presenter's 16 ms pacing interval. No provider/network requests are made.
 
-| Workload | Median ms | Best ms | Maximum ms |
-| --- | ---: | ---: | ---: |
-| Redraw | 2.426 | 2.201 | 2.859 |
-| Stream delta | 8.115 | 6.991 | 19.983 |
+| Workload     | Median ms | Best ms | Maximum ms |
+| ------------ | --------: | ------: | ---------: |
+| Redraw       |     2.426 |   2.201 |      2.859 |
+| Stream delta |     8.115 |   6.991 |     19.983 |
 
 All synchronized-frame marker, stream-content, unchanged-block identity, and
 frame-hash assertions passed. Normalized frame SHA256:

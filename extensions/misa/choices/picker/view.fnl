@@ -15,4 +15,4 @@
                            (set rendered.priority 20)
                            rendered))))
 
-{:on-picker on-picker}
+{: on-picker}

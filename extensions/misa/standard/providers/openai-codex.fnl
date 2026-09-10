@@ -73,11 +73,11 @@
                                  :id :openai-codex/gpt-5.4
                                  :label "GPT-5.4 (ChatGPT)"
                                  :model :gpt-5.4
-                                 :api api
+                                 : api
                                  :provider :openai-codex}
           :openai-codex/gpt-5.3-codex {:context_window 400000
                                        :id :openai-codex/gpt-5.3-codex
                                        :label "GPT-5.3 Codex"
                                        :model :gpt-5.3-codex
-                                       :api api
+                                       : api
                                        :provider :openai-codex}}}

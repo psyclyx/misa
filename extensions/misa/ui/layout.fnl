@@ -566,18 +566,18 @@
       (tset widths index (+ base (or (and (<= index extra) 1) 0))))
     widths))
 
-(local api {:boundary-at-or-before boundary-at-or-before
-            :cell-width cell-width
+(local api {: boundary-at-or-before
+            : cell-width
             : clip
             : columns
             : fit
-            :flow-spans flow-spans
-            :next-boundary next-boundary
-            :previous-boundary previous-boundary
+            : flow-spans
+            : next-boundary
+            : previous-boundary
             : take
             : width
-            :wrap-input wrap-input
-            :wrap-ranges wrap-ranges
-            :wrap-spans wrap-spans})
+            : wrap-input
+            : wrap-ranges
+            : wrap-spans})
 
 api

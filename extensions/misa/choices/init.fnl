@@ -32,7 +32,7 @@
               alphabet (if (= level depth) (if right right-home left-home)
                            (if right right-branch left-branch))]
           (table.insert keys (. alphabet digit)))))
-    (.. "alt+" (table.concat keys " "))))
+    (.. :alt+ (table.concat keys " "))))
 
 (fn position-rank [bank slot]
   ;; Reserve the easiest single keys for the primary panel, then interleave
@@ -262,7 +262,7 @@
 
 (fn key-text [event]
   (let [alt (alt-text event)]
-    (or (and alt (.. "alt+" alt)) (and (= event.kind :key) event.key)
+    (or (and alt (.. :alt+ alt)) (and (= event.kind :key) event.key)
         (and (= event.kind :text) event.text))))
 
 (fn sequence-targets [targets]
@@ -589,9 +589,7 @@
     (when (and session
                (or session.combo
                    (and (alt-text event) (. starters (alt-text event)))))
-      (misa.patch event {:type (if db.picker
-                                   :picker/input
-                                   :terminal/input)}))))
+      (misa.patch event {:type (if db.picker :picker/input :terminal/input)}))))
 
 (fn route-ui-action [db event]
   "Route a UI action to the active choice session."
@@ -724,8 +722,7 @@
                          (not= value.browse_visible false))
                 (table.insert result
                               (misa.patch value
-                                          {:section (if curated
-                                                        :Suggested
+                                          {:section (if curated :Suggested
                                                         :All)}))))
             result)))))
 
@@ -742,8 +739,7 @@
       (tset ids index (if (= index 1) id value)))
     (when session.custom_views
       (each [index value (ipairs session.custom_views)]
-        (tset custom index (if (= index 1)
-                               false
+        (tset custom index (if (= index 1) false
                                value))))
     (refresh (misa.patch session
                          {:view_ids (misa.replace ids)
@@ -779,43 +775,43 @@
          (or (not= action-name :favorite) (not= session.preference_scope nil))
          (or (not= action-name :open_overlay) (= db.picker nil)))))
 
-{:accept accept
- :action action
- :action-available? action-available?
- :banks banks
- :browse browse
- :choice-inputs choice-inputs
- :choice-sources choice-sources
- :choice-views choice-views
- :choices-hotkeys choices-hotkeys
- :choices-pending choices-pending
- :choices-positional choices-positional
- :choices-projected-rows choices-projected-rows
- :choices-registered-views choices-registered-views
- :choices-replace-view choices-replace-view
- :choices-rows choices-rows
- :choices-set-items choices-set-items
- :choices-source choices-source
- :compute-choices-builtin-items compute-choices-builtin-items
- :favorite? favorite?
- :first first
- :hint hint
- :input input
- :key-context key-context
- :needs-targets needs-targets
- :new new
- :on-choices-dispatch on-choices-dispatch
- :options options
- :recent-before? recent-before?
- :refresh refresh
- :route-terminal-input route-terminal-input
- :route-ui-action route-ui-action
- :session-open? session-open?
- :used? used?
- :backspace backspace
- :move move
- :cancel cancel
- :favorite favorite
- :insert-text insert-text
- :cycle cycle
- :accept-focused accept-focused}
+{: accept
+ : action
+ : action-available?
+ : banks
+ : browse
+ : choice-inputs
+ : choice-sources
+ : choice-views
+ : choices-hotkeys
+ : choices-pending
+ : choices-positional
+ : choices-projected-rows
+ : choices-registered-views
+ : choices-replace-view
+ : choices-rows
+ : choices-set-items
+ : choices-source
+ : compute-choices-builtin-items
+ : favorite?
+ : first
+ : hint
+ : input
+ : key-context
+ : needs-targets
+ : new
+ : on-choices-dispatch
+ : options
+ : recent-before?
+ : refresh
+ : route-terminal-input
+ : route-ui-action
+ : session-open?
+ : used?
+ : backspace
+ : move
+ : cancel
+ : favorite
+ : insert-text
+ : cycle
+ : accept-focused}

@@ -355,7 +355,8 @@
             ;; One gutter: removed lines refer to the old file; context and
             ;; additions refer to the new file. The diff marker supplies the side.
             (set number
-                 (if metadata ""
+                 (if metadata
+                     ""
                      (tostring (if (= marker "-") old-line new-line))))
             (when (not metadata)
               (each [_ item (ipairs line.spans)]
@@ -552,7 +553,7 @@
                                       (and previous previous.entries))]
           {:source text
            : document
-           :base base
+           : base
            :columns opts.columns
            :captures opts.captures
            :outer_inset opts.outer_inset

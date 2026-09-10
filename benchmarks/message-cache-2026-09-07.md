@@ -28,10 +28,10 @@ No builds or other agent workloads ran concurrently. Affinity and OS caches
 were not controlled. This excludes theme resolution, native output, and dispatch.
 
 | Messages | Baseline median/best ms | Prototype median/best ms |
-| ---: | ---: | ---: |
-| 1 | 0.063 / 0.053 | 0.132 / 0.101 |
-| 16 | 1.334 / 0.874 | 1.935 / 1.441 |
-| 300 | 34.399 / 28.524 | 1075.684 / 1061.682 |
+| -------: | ----------------------: | -----------------------: |
+|        1 |           0.063 / 0.053 |            0.132 / 0.101 |
+|       16 |           1.334 / 0.874 |            1.935 / 1.441 |
+|      300 |         34.399 / 28.524 |      1075.684 / 1061.682 |
 
 Raw CPU milliseconds for the discriminating 300-message workload:
 

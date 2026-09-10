@@ -14,13 +14,13 @@ document, as the UI does. The redraw workload parses once and repeats the same
 source 127 times. Reported times are total parser CPU seconds per complete run,
 not per update or end-to-end frame latency.
 
-| Workload | Updates | Old full median / best (s) | New full median / best (s) | Incremental median / best (s) |
-| --- | --- | --- | --- | --- |
-| Paragraph, 16,500 bytes | 129 | .386323 / .384476 | .045986 / .045833 | .046114 / .045704 |
-| Headings/paragraphs, 16,800 bytes | 132 | .409049 / .407054 | .190119 / .185896 | .014056 / .013942 |
-| One fence, 17,110 bytes | 134 | .030389 / .030005 | .029636 / .029140 | .029607 / .029013 |
-| One table, 16,830 bytes | 132 | .528594 / .527163 | .300789 / .298620 | .299959 / .297453 |
-| Unchanged redraws, 16,500 bytes | 128 | 1.027895 / 1.020415 | .432707 / .428349 | .002675 / .002615 |
+| Workload                          | Updates | Old full median / best (s) | New full median / best (s) | Incremental median / best (s) |
+| --------------------------------- | ------- | -------------------------- | -------------------------- | ----------------------------- |
+| Paragraph, 16,500 bytes           | 129     | .386323 / .384476          | .045986 / .045833          | .046114 / .045704             |
+| Headings/paragraphs, 16,800 bytes | 132     | .409049 / .407054          | .190119 / .185896          | .014056 / .013942             |
+| One fence, 17,110 bytes           | 134     | .030389 / .030005          | .029636 / .029140          | .029607 / .029013             |
+| One table, 16,830 bytes           | 132     | .528594 / .527163          | .300789 / .298620          | .299959 / .297453             |
+| Unchanged redraws, 16,500 bytes   | 128     | 1.027895 / 1.020415        | .432707 / .428349          | .002675 / .002615             |
 
 The multi-block stream improves about 29× overall, including a 13.5× improvement
 over the new full parser. Single active blocks still parse as a unit: incremental

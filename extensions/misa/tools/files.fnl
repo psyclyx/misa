@@ -103,9 +103,4 @@
                  :type :tool/result}
          :type :dispatch}]})
 
-{:read-effect read-effect
- :edit-effect edit-effect
- :write-effect write-effect
- :schema schema
- :list-effect list-effect
- :completed completed}
+{: read-effect : edit-effect : write-effect : schema : list-effect : completed}

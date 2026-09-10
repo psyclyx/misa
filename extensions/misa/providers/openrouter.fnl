@@ -43,4 +43,4 @@
   "Serialize OpenRouter's reasoning setting."
   (when (= name :reasoning_effort) {:reasoning {:effort value}}))
 
-{:model-pricing model-pricing :reasoning reasoning :routing routing :settings settings}
+{: model-pricing : reasoning : routing : settings}

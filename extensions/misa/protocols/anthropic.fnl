@@ -1,5 +1,5 @@
 (fn emit [id kind data]
-  {:type :dispatch :event (misa.patch (or data {}) {:id id :type kind})})
+  {:type :dispatch :event (misa.patch (or data {}) {: id :type kind})})
 
 (fn delta [id value] (emit id :agent/stream-delta {:delta value}))
 
@@ -24,7 +24,7 @@
                    :name record.content_block.name
                    :index record.index})]})
 
-(local starts {:thinking thinking
+(local starts {: thinking
                :redacted_thinking (fn [_ record id provider]
                                     {:fx [(provider-state id provider
                                                           record.content_block)]})
@@ -159,7 +159,7 @@
                           {:type :dispatch
                            :event {:type :models/provider-availability
                                    :available false
-                                   :provider provider
+                                   : provider
                                    :reason :relogin-required}}))
           (stream-update event.id nil fx))
         (or state.terminal state.failed)
@@ -353,13 +353,13 @@
   (when (or (not event.provider) (= event.provider spec.id))
     (discover spec db)))
 
-{:messages messages
- :request request
- :serialize serialize
- :discover-models discover-models
- :stream stream
- :model-api model-api
- :page page
- :records records
- :starts starts
- :deltas deltas}
+{: messages
+ : request
+ : serialize
+ : discover-models
+ : stream
+ : model-api
+ : page
+ : records
+ : starts
+ : deltas}
