@@ -248,6 +248,16 @@
                                              :number)
                                       item.popularity_rank)
                    :context_window (or item.context_length item.context_window)
+                   :metadata {:active item.active
+                              :architecture item.architecture
+                              :capabilities item.capabilities
+                              :max_output_tokens (or item.max_completion_tokens
+                                                     item.max_output_tokens)
+                              :object item.object
+                              :owned_by (or item.owned_by item.owner)
+                              :provider item.provider
+                              :raw_pricing item.pricing
+                              :vendor item.metadata}
                    :id (.. spec.id "/" item.id)
                    :label (or item.name item.id)
                    :model item.id

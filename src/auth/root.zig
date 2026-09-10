@@ -82,6 +82,8 @@ pub const Store = struct {
             const value = self.parsed.value.object.get(id) orelse return error.CredentialMissing;
             if (value == .string) return value.string;
             const credential = if (value == .object) value.object else return error.InvalidCredential;
+            if (optionalString(credential, "type")) |credential_type|
+                if (std.mem.eql(u8, credential_type, "api_key")) return self.get(id) orelse return error.InvalidCredential;
             const expires = if (credential.get("expires")) |v| if (v == .integer) v.integer else return error.InvalidCredential else return error.InvalidCredential;
             if (expires == std.math.maxInt(i64) or expires > std.Io.Clock.real.now(self.io).toSeconds() + 60)
                 return self.get(id) orelse return error.InvalidCredential;
@@ -101,7 +103,7 @@ pub const Store = struct {
         defer if (refresh_data.api_base) |v| self.allocator.free(v);
 
         // Refresh can block on DNS/network and must never own either lock.
-        const refreshed = try oauth.refresh(self.allocator, self.io, id, refresh_data.token, refresh_data.token_url);
+        const refreshed = try oauth.refresh(self.allocator, self.io, id, refresh_data.token, refresh_data.token_url, refresh_data.profile);
         defer refreshed.deinit(self.allocator);
         return self.publishOAuthRefresh(id, refresh_data.token, refresh_data.profile, refresh_data.version, refreshed.access, refreshed.refresh, refreshed.expires, refreshed.account_id, refresh_data.token_url, refresh_data.api_base);
     }
@@ -128,6 +130,24 @@ pub const Store = struct {
         try self.reload(directory);
         const arena = self.parsed.arena.allocator();
         try self.parsed.value.object.put(arena, try arena.dupe(u8, id), .{ .string = try arena.dupe(u8, secret) });
+        try self.save(directory);
+    }
+
+    pub fn putApiKeyMetadata(self: *Store, id: []const u8, secret: []const u8, api_base: []const u8) !void {
+        if (id.len == 0 or secret.len == 0 or api_base.len == 0 or std.mem.indexOfScalar(u8, id, 0) != null) return error.InvalidCredential;
+        try credential_mutex.lock(self.io);
+        defer credential_mutex.unlock(self.io);
+        var directory = try self.prepareDirectory();
+        defer directory.close(self.io);
+        var lock = try lockDirectoryFile(self.io, directory);
+        defer lock.close(self.io);
+        try self.reload(directory);
+        const arena = self.parsed.arena.allocator();
+        var credential: std.json.ObjectMap = .{};
+        try credential.put(arena, "type", .{ .string = "api_key" });
+        try credential.put(arena, "access", .{ .string = try arena.dupe(u8, secret) });
+        try credential.put(arena, "api_base", .{ .string = try arena.dupe(u8, api_base) });
+        try self.parsed.value.object.put(arena, try arena.dupe(u8, id), .{ .object = credential });
         try self.save(directory);
     }
 
@@ -299,8 +319,42 @@ pub fn validateCredentialOrigin(id: []const u8, url: []const u8, store: ?*Store,
             return error.CredentialProfileMismatch;
         return;
     }
+    if (isGenericProvider(id)) {
+        const credential_store = store orelse return error.CredentialStoreUnavailable;
+        const api_base = credential_store.getField(id, "api_base") orelse return error.CredentialProfileMissing;
+        if (!validGenericApiBase(api_base) or !urlUnder(url, api_base)) return error.CredentialProfileMismatch;
+        return;
+    }
     const trusted: ?[]const u8 = if (std.mem.eql(u8, id, "openai"))
         "https://api.openai.com"
+    else if (std.mem.eql(u8, id, "deepseek"))
+        "https://api.deepseek.com"
+    else if (std.mem.eql(u8, id, "groq"))
+        "https://api.groq.com"
+    else if (std.mem.eql(u8, id, "together"))
+        "https://api.together.ai"
+    else if (std.mem.eql(u8, id, "fireworks"))
+        "https://api.fireworks.ai"
+    else if (std.mem.eql(u8, id, "xai"))
+        "https://api.x.ai"
+    else if (std.mem.eql(u8, id, "mistral"))
+        "https://api.mistral.ai"
+    else if (std.mem.eql(u8, id, "cerebras"))
+        "https://api.cerebras.ai"
+    else if (std.mem.eql(u8, id, "deepinfra"))
+        "https://api.deepinfra.com"
+    else if (std.mem.eql(u8, id, "huggingface"))
+        "https://router.huggingface.co"
+    else if (std.mem.eql(u8, id, "nvidia"))
+        "https://integrate.api.nvidia.com"
+    else if (std.mem.eql(u8, id, "moonshot"))
+        "https://api.moonshot.ai"
+    else if (std.mem.eql(u8, id, "novita"))
+        "https://api.novita.ai"
+    else if (std.mem.eql(u8, id, "siliconflow"))
+        "https://api.siliconflow.com"
+    else if (std.mem.eql(u8, id, "venice"))
+        "https://api.venice.ai"
     else if (std.mem.eql(u8, id, "anthropic"))
         "https://api.anthropic.com"
     else if (std.mem.eql(u8, id, "openrouter"))
@@ -330,6 +384,15 @@ fn validGrant(value: []const u8) bool {
     return std.mem.indexOfAny(u8, rest, "/?#\r\n\x00") == null;
 }
 
+fn isGenericProvider(provider: []const u8) bool {
+    return std.mem.startsWith(u8, provider, "generic/") and provider.len > "generic/".len;
+}
+
+fn validGenericApiBase(value: []const u8) bool {
+    if (!std.mem.startsWith(u8, value, "https://") or value.len <= "https://".len) return false;
+    return std.mem.indexOfAny(u8, value["https://".len..], "?#\r\n\x00") == null and value[value.len - 1] != '/';
+}
+
 fn urlUnder(url: []const u8, base: []const u8) bool {
     return std.mem.startsWith(u8, url, base) and (url.len == base.len or url[base.len] == '/' or url[base.len] == '?' or url[base.len] == '#');
 }
@@ -345,6 +408,7 @@ pub const Declaration = struct {
     authorization_url: ?[]const u8 = null,
     token_url: ?[]const u8 = null,
     api_base: ?[]const u8 = null,
+    provision_url: ?[]const u8 = null,
 
     pub fn parse(provider: []const u8, strategy_name: []const u8, profile_value: std.json.Value) !Declaration {
         const strategy = std.meta.stringToEnum(Strategy, strategy_name) orelse return error.UntrustedAuthDeclaration;
@@ -355,13 +419,14 @@ pub const Declaration = struct {
             result.authorization_url = objectString(object, "authorization_url");
             result.token_url = objectString(object, "token_url");
             result.api_base = objectString(object, "api_base");
+            result.provision_url = objectString(object, "provision_url");
         } else if (profile_value != .null) return error.UntrustedAuthDeclaration;
         try result.validate();
         return result;
     }
     pub fn validate(self: Declaration) !void {
-        if (std.mem.eql(u8, self.provider, "openai") or std.mem.eql(u8, self.provider, "anthropic")) {
-            if (self.strategy != .api_key) return error.UntrustedAuthDeclaration;
+        if (apiKeyProvider(self.provider)) {
+            if (self.strategy != .api_key or (self.provision_url != null and !validGenericApiBase(self.provision_url.?))) return error.UntrustedAuthDeclaration;
         } else if (std.mem.eql(u8, self.provider, "claude")) {
             if (self.strategy != .cli_handoff) return error.UntrustedAuthDeclaration;
         } else if (std.mem.eql(u8, self.provider, "openrouter")) {
@@ -373,6 +438,13 @@ pub const Declaration = struct {
             const global = optionalEqual(self.profile_id, "global") and optionalEqual(self.authorization_url, "https://auth.kimi.ai/api/oauth/device_authorization") and optionalEqual(self.token_url, "https://auth.kimi.ai/api/oauth/token") and optionalEqual(self.api_base, "https://api.kimi.ai/coding/v1");
             const mainland = optionalEqual(self.profile_id, "mainland") and optionalEqual(self.authorization_url, "https://auth.kimi.com/api/oauth/device_authorization") and optionalEqual(self.token_url, "https://auth.kimi.com/api/oauth/token") and optionalEqual(self.api_base, "https://api.kimi.com/coding/v1");
             if (!global and !mainland) return error.UntrustedAuthDeclaration;
+        } else if (isGenericProvider(self.provider)) {
+            if (!validGenericApiBase(self.api_base orelse return error.UntrustedAuthDeclaration)) return error.UntrustedAuthDeclaration;
+            if (self.strategy == .api_key) {
+                if (self.provision_url != null and !validGenericApiBase(self.provision_url.?)) return error.UntrustedAuthDeclaration;
+            } else if (self.strategy == .device_oauth) {
+                if (self.profile_id == null or !validGenericApiBase(self.authorization_url orelse return error.UntrustedAuthDeclaration) or !validGenericApiBase(self.token_url orelse return error.UntrustedAuthDeclaration)) return error.UntrustedAuthDeclaration;
+            } else return error.UntrustedAuthDeclaration;
         } else return error.UnknownProvider;
     }
 };
@@ -382,6 +454,17 @@ fn objectString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 }
 fn optionalEqual(value: ?[]const u8, expected: []const u8) bool {
     return value != null and std.mem.eql(u8, value.?, expected);
+}
+
+fn apiKeyProvider(provider: []const u8) bool {
+    return std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "deepseek") or
+        std.mem.eql(u8, provider, "anthropic") or std.mem.eql(u8, provider, "groq") or
+        std.mem.eql(u8, provider, "together") or std.mem.eql(u8, provider, "fireworks") or
+        std.mem.eql(u8, provider, "xai") or std.mem.eql(u8, provider, "mistral") or
+        std.mem.eql(u8, provider, "cerebras") or std.mem.eql(u8, provider, "deepinfra") or
+        std.mem.eql(u8, provider, "huggingface") or std.mem.eql(u8, provider, "nvidia") or
+        std.mem.eql(u8, provider, "moonshot") or std.mem.eql(u8, provider, "novita") or
+        std.mem.eql(u8, provider, "siliconflow") or std.mem.eql(u8, provider, "venice");
 }
 
 pub const CommandResult = struct {
@@ -407,13 +490,28 @@ pub const Interaction = struct {
 };
 
 pub fn commandTerminal(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, action: Action, provider: []const u8) !CommandResult {
-    const declaration: Declaration = if (std.mem.eql(u8, provider, "openai")) .{ .provider = provider, .strategy = .api_key } else if (std.mem.eql(u8, provider, "anthropic")) .{ .provider = provider, .strategy = .api_key } else if (std.mem.eql(u8, provider, "claude")) .{ .provider = provider, .strategy = .cli_handoff } else if (std.mem.eql(u8, provider, "openrouter")) .{ .provider = provider, .strategy = .loopback_pkce, .profile_id = "default" } else if (std.mem.eql(u8, provider, "openai-codex")) .{ .provider = provider, .strategy = .device_oauth, .profile_id = "default", .authorization_url = "https://auth.openai.com/api/accounts/deviceauth/usercode", .token_url = "https://auth.openai.com/oauth/token" } else if (std.mem.eql(u8, provider, "kimi-coding")) .{ .provider = provider, .strategy = .device_oauth, .profile_id = "global", .authorization_url = "https://auth.kimi.ai/api/oauth/device_authorization", .token_url = "https://auth.kimi.ai/api/oauth/token", .api_base = "https://api.kimi.ai/coding/v1" } else return error.UnknownProvider;
+    const declaration: Declaration = if (apiKeyProvider(provider)) .{ .provider = provider, .strategy = .api_key, .provision_url = provisioningUrl(provider) } else if (std.mem.eql(u8, provider, "claude")) .{ .provider = provider, .strategy = .cli_handoff } else if (std.mem.eql(u8, provider, "openrouter")) .{ .provider = provider, .strategy = .loopback_pkce, .profile_id = "default" } else if (std.mem.eql(u8, provider, "openai-codex")) .{ .provider = provider, .strategy = .device_oauth, .profile_id = "default", .authorization_url = "https://auth.openai.com/api/accounts/deviceauth/usercode", .token_url = "https://auth.openai.com/oauth/token" } else if (std.mem.eql(u8, provider, "kimi-coding")) .{ .provider = provider, .strategy = .device_oauth, .profile_id = "global", .authorization_url = "https://auth.kimi.ai/api/oauth/device_authorization", .token_url = "https://auth.kimi.ai/api/oauth/token", .api_base = "https://api.kimi.ai/coding/v1" } else return error.UnknownProvider;
     var context = TerminalInteraction{ .allocator = allocator, .io = io };
     defer if (context.owned_input) |value| {
         std.crypto.secureZero(u8, value);
         allocator.free(value);
     };
     return command(allocator, io, environ, action, declaration, .{ .context = &context, .emitFn = TerminalInteraction.emit, .inputFn = TerminalInteraction.input });
+}
+
+fn provisioningUrl(provider: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, provider, "deepseek")) return "https://platform.deepseek.com/api_keys";
+    if (std.mem.eql(u8, provider, "groq")) return "https://console.groq.com/keys";
+    if (std.mem.eql(u8, provider, "together")) return "https://api.together.ai/settings/api-keys";
+    if (std.mem.eql(u8, provider, "xai")) return "https://console.x.ai";
+    if (std.mem.eql(u8, provider, "mistral")) return "https://console.mistral.ai/api-keys";
+    if (std.mem.eql(u8, provider, "cerebras")) return "https://cloud.cerebras.ai";
+    if (std.mem.eql(u8, provider, "deepinfra")) return "https://deepinfra.com/dash/api_keys";
+    if (std.mem.eql(u8, provider, "huggingface")) return "https://huggingface.co/settings/tokens";
+    if (std.mem.eql(u8, provider, "nvidia")) return "https://build.nvidia.com";
+    if (std.mem.eql(u8, provider, "novita")) return "https://novita.ai/settings/key-management";
+    if (std.mem.eql(u8, provider, "venice")) return "https://venice.ai/settings/api";
+    return null;
 }
 const TerminalInteraction = struct {
     allocator: std.mem.Allocator,
@@ -449,9 +547,11 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
         },
         .login => {},
     }
-    if (std.mem.eql(u8, provider, "openai-codex") or std.mem.eql(u8, provider, "kimi-coding")) {
+    if (std.mem.eql(u8, provider, "openai-codex") or std.mem.eql(u8, provider, "kimi-coding") or (isGenericProvider(provider) and declaration.strategy == .device_oauth)) {
         const credential = if (std.mem.eql(u8, provider, "openai-codex"))
             try oauth.loginOpenAI(allocator, io, interaction)
+        else if (isGenericProvider(provider))
+            try oauth.loginDevice(allocator, io, declaration.authorization_url.?, declaration.token_url.?, declaration.profile_id.?, interaction)
         else
             try oauth.loginKimi(allocator, io, declaration.authorization_url.?, declaration.token_url.?, interaction);
         defer credential.deinit(allocator);
@@ -466,17 +566,19 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
         try store.putOAuth(provider, credential.access, credential.refresh, credential.expires, credential.account_id);
     } else {
         if (interaction.protected_input) {
-            try interaction.emit(.{ .correlation = "api-key", .kind = "modal", .title = "API key", .message = "Enter your API key. Characters are hidden.", .input = true, .protected = true });
+            try interaction.emit(.{ .correlation = "api-key", .kind = "modal", .title = "API key", .message = if (declaration.provision_url == null) "Enter your API key. Characters are hidden." else "Open the key page, create a key, then paste it here. Characters are hidden.", .url = declaration.provision_url, .input = true, .protected = true });
             const secret = try interaction.input("api-key");
             if (secret.len == 0) return error.EmptyCredential;
-            try store.put(provider, secret);
+            if (isGenericProvider(provider)) try store.putApiKeyMetadata(provider, secret, declaration.api_base.?) else try store.put(provider, secret);
         } else {
+            if (declaration.provision_url) |url|
+                try interaction.emit(.{ .correlation = "api-key", .kind = "progress", .title = "Create an API key", .message = "Open this page to create an API key, then paste it here.", .url = url });
             const secret = try readSecret(allocator, io, "API key: ");
             defer {
                 std.crypto.secureZero(u8, secret);
                 allocator.free(secret);
             }
-            try store.put(provider, secret);
+            if (isGenericProvider(provider)) try store.putApiKeyMetadata(provider, secret, declaration.api_base.?) else try store.put(provider, secret);
         }
     }
     if (!interaction.protected_input) std.debug.print("misa: saved {s} credential to {s}\n", .{ provider, store.path });
@@ -484,9 +586,9 @@ pub fn command(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
 }
 
 fn managedProvider(provider: []const u8) bool {
-    return std.mem.eql(u8, provider, "openai") or std.mem.eql(u8, provider, "openai-codex") or
-        std.mem.eql(u8, provider, "anthropic") or std.mem.eql(u8, provider, "openrouter") or
-        std.mem.eql(u8, provider, "kimi-coding");
+    return apiKeyProvider(provider) or std.mem.eql(u8, provider, "openai-codex") or
+        std.mem.eql(u8, provider, "openrouter") or
+        std.mem.eql(u8, provider, "kimi-coding") or isGenericProvider(provider);
 }
 
 /// CLI adapter takes its executable explicitly; fixture composition supplies
@@ -589,6 +691,24 @@ test "trusted Kimi regions are exact endpoint bundles" {
     var drifted = global;
     drifted.token_url = "https://evil.example/token";
     try std.testing.expectError(error.UntrustedAuthDeclaration, drifted.validate());
+}
+
+test "generic API-key providers require an HTTPS base URL" {
+    const valid: Declaration = .{ .provider = "generic/local", .strategy = .api_key, .api_base = "https://llm.example/v1" };
+    try valid.validate();
+    const deepseek: Declaration = .{ .provider = "deepseek", .strategy = .api_key };
+    try deepseek.validate();
+    var invalid = valid;
+    invalid.api_base = "http://llm.example/v1";
+    try std.testing.expectError(error.UntrustedAuthDeclaration, invalid.validate());
+}
+
+test "generic device OAuth requires trusted HTTPS endpoints and a client ID" {
+    const valid: Declaration = .{ .provider = "generic/acme", .strategy = .device_oauth, .profile_id = "acme-cli", .authorization_url = "https://login.example/device", .token_url = "https://login.example/token", .api_base = "https://api.example/v1" };
+    try valid.validate();
+    var invalid = valid;
+    invalid.profile_id = null;
+    try std.testing.expectError(error.UntrustedAuthDeclaration, invalid.validate());
 }
 
 test "credential stores reload under mutation lock to avoid lost updates" {

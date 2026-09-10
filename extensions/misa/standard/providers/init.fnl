@@ -4,6 +4,20 @@
                          :misa.standard.providers.anthropic
                          :misa.standard.providers.kimi
                          :misa.standard.providers.openai
+                         :misa.standard.providers.cerebras
+                         :misa.standard.providers.deepinfra
+                         :misa.standard.providers.huggingface
+                         :misa.standard.providers.nvidia
+                         :misa.standard.providers.moonshot
+                         :misa.standard.providers.novita
+                         :misa.standard.providers.siliconflow
+                         :misa.standard.providers.venice
+                         :misa.standard.providers.deepseek
+                         :misa.standard.providers.groq
+                         :misa.standard.providers.together
+                         :misa.standard.providers.fireworks
+                         :misa.standard.providers.xai
+                         :misa.standard.providers.mistral
                          :misa.standard.providers.openrouter
                          :misa.standard.providers.openai-codex
                          :misa.standard.providers.claude

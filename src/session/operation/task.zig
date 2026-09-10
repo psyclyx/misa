@@ -497,7 +497,7 @@ pub const Task = struct {
 };
 
 fn cloneDeclaration(a: std.mem.Allocator, source: auth.Declaration) !auth.Declaration {
-    return .{ .provider = try a.dupe(u8, source.provider), .strategy = source.strategy, .profile_id = if (source.profile_id) |value| try a.dupe(u8, value) else null, .authorization_url = if (source.authorization_url) |value| try a.dupe(u8, value) else null, .token_url = if (source.token_url) |value| try a.dupe(u8, value) else null, .api_base = if (source.api_base) |value| try a.dupe(u8, value) else null };
+    return .{ .provider = try a.dupe(u8, source.provider), .strategy = source.strategy, .profile_id = if (source.profile_id) |value| try a.dupe(u8, value) else null, .authorization_url = if (source.authorization_url) |value| try a.dupe(u8, value) else null, .token_url = if (source.token_url) |value| try a.dupe(u8, value) else null, .api_base = if (source.api_base) |value| try a.dupe(u8, value) else null, .provision_url = if (source.provision_url) |value| try a.dupe(u8, value) else null };
 }
 
 fn cloneJson(a: std.mem.Allocator, value: std.json.Value) !std.json.Value {

@@ -1303,7 +1303,7 @@ continues to own and refresh its existing subscription credentials.
 
 For a smaller application, import the desired `misa.standard.providers.*` and
 `misa.standard.protocols.*` catalog fragments. HTTP adapters also need the stock
-JSON and stream services. OpenAI and OpenRouter share the OpenAI protocol;
+JSON and stream services. OpenAI, DeepSeek, and OpenRouter share the OpenAI protocol;
 Anthropic and Kimi share the Anthropic protocol. ChatGPT subscription access uses
 the independent `misa.standard.providers.openai-codex` fragment. UI and tool
 presentation fragments can be selected separately.
@@ -1322,6 +1322,53 @@ Remove other model entries with `nil` when a fixed catalogue is desired.
 executable; model lists, discovery flags, authentication profiles, and fixed
 context limits live in their corresponding declaration maps. Provider request
 and model-normalization operations are public functions for custom adapters.
+
+DeepSeek is available through `misa login deepseek` or `/login deepseek`. It uses
+DeepSeek's OpenAI-compatible streaming chat-completions API, including tool calls
+and reasoning, and discovers its model catalogue from
+`https://api.deepseek.com/models`.
+
+Groq, Together, Fireworks, xAI, Mistral, Cerebras, DeepInfra, Hugging Face,
+NVIDIA, Moonshot, Novita, SiliconFlow, and Venice are also included as API-key
+providers. They use their OpenAI-compatible chat-completions and model-listing
+endpoints, so `/login PROVIDER` and `/model` work consistently across them.
+Where a provider has a known key-management page, the login dialog links to it
+before accepting the pasted key.
+
+For an OpenAI-compatible endpoint that is not shipped as a preset, add the
+fragment returned by `misa.standard.providers.generic` to your application
+definitions. Provider IDs begin with `generic/`; Misa stores the HTTPS base URL
+alongside its key and injects that key only for requests below the saved URL.
+
+```fennel
+(local generic (require :misa.standard.providers.generic))
+(local local-ai (generic.provider "generic/local-ai"
+                                  {:api :openai
+                                   :base_url "https://llm.example/v1"
+                                   :label "Local AI"}))
+;; Merge local-ai into application.definitions, then use /login generic/local-ai.
+```
+
+The generic module also exports `api-key` and `device-oauth` credential-flow
+constructors. `device-oauth` implements RFC 8628-style device authorization,
+opens the provider's verification page, shows the user code, polls for the
+token, and refreshes it with the same client ID. Supply it through `:auth` when
+the provider publishes a public device-flow client:
+
+```fennel
+(generic.provider "generic/acme"
+                  {:api :openai
+                   :base_url "https://api.acme.example/v1"
+                   :auth (generic.device-oauth
+                          "https://api.acme.example/v1"
+                          "https://login.acme.example/oauth/device/code"
+                          "https://login.acme.example/oauth/token"
+                          "acme-cli-public-client")})
+```
+
+Use `(generic.api-key base-url provisioning-url)` to give a custom API-key
+provider the same key-provisioning link. New OAuth strategies fit beside these
+constructors without changing the provider transport.
 
 OpenAI-compatible delta projections can be extended with
 `{["openai-deltas"]={["my_delta"]=function(delta, record) ... end}}`.

@@ -40,8 +40,8 @@ pub const Prompt = struct {
     hints: []const []const u8 = &.{},
 };
 
-pub fn loginKimi(allocator: std.mem.Allocator, io: std.Io, authorization_url: []const u8, token_url: []const u8, interaction: anytype) !Credential {
-    const form = try formEncode(allocator, &.{.{ "client_id", kimi_client_id }});
+pub fn loginDevice(allocator: std.mem.Allocator, io: std.Io, authorization_url: []const u8, token_url: []const u8, client_id: []const u8, interaction: anytype) !Credential {
+    const form = try formEncode(allocator, &.{.{ "client_id", client_id }});
     defer allocator.free(form);
     const started = try post(allocator, io, authorization_url, "application/x-www-form-urlencoded", form);
     defer started.deinit(allocator);
@@ -64,7 +64,7 @@ pub fn loginKimi(allocator: std.mem.Allocator, io: std.Io, authorization_url: []
         defer allocator.free(progress);
         try interaction.emit(.{ .correlation = "device", .title = "Authorize device", .message = "Open the URL and enter the code.", .url = verification, .code = user_code, .progress = progress });
         const token_form = try formEncode(allocator, &.{
-            .{ "client_id", kimi_client_id },
+            .{ "client_id", client_id },
             .{ "device_code", device_code },
             .{ "grant_type", "urn:ietf:params:oauth:grant-type:device_code" },
         });
@@ -80,6 +80,10 @@ pub fn loginKimi(allocator: std.mem.Allocator, io: std.Io, authorization_url: []
         return error.DeviceTokenFailed;
     }
     return error.DeviceAuthorizationExpired;
+}
+
+pub fn loginKimi(allocator: std.mem.Allocator, io: std.Io, authorization_url: []const u8, token_url: []const u8, interaction: anytype) !Credential {
+    return loginDevice(allocator, io, authorization_url, token_url, kimi_client_id, interaction);
 }
 
 pub fn loginOpenAI(allocator: std.mem.Allocator, io: std.Io, interaction: anytype) !Credential {
@@ -132,15 +136,19 @@ pub fn loginOpenAI(allocator: std.mem.Allocator, io: std.Io, interaction: anytyp
     return error.DeviceAuthorizationExpired;
 }
 
-pub fn refresh(allocator: std.mem.Allocator, io: std.Io, provider: []const u8, refresh_token: []const u8, stored_endpoint: ?[]const u8) !Credential {
+pub fn refresh(allocator: std.mem.Allocator, io: std.Io, provider: []const u8, refresh_token: []const u8, stored_endpoint: ?[]const u8, stored_profile: ?[]const u8) !Credential {
     const endpoint: []const u8 = if (std.mem.eql(u8, provider, "openai-codex"))
         "https://auth.openai.com/oauth/token"
     else if (std.mem.eql(u8, provider, "kimi-coding")) blk: {
         const candidate = stored_endpoint orelse return error.RefreshProfileMissing;
         if (!std.mem.eql(u8, candidate, "https://auth.kimi.ai/api/oauth/token") and !std.mem.eql(u8, candidate, "https://auth.kimi.com/api/oauth/token")) return error.UntrustedRefreshEndpoint;
         break :blk candidate;
+    } else if (std.mem.startsWith(u8, provider, "generic/")) blk: {
+        const candidate = stored_endpoint orelse return error.RefreshProfileMissing;
+        if (!std.mem.startsWith(u8, candidate, "https://") or std.mem.indexOfAny(u8, candidate["https://".len..], "?#\r\n\x00") != null) return error.UntrustedRefreshEndpoint;
+        break :blk candidate;
     } else return error.RefreshUnsupported;
-    const client_id = if (std.mem.eql(u8, provider, "openai-codex")) openai_client_id else kimi_client_id;
+    const client_id = if (std.mem.eql(u8, provider, "openai-codex")) openai_client_id else if (std.mem.eql(u8, provider, "kimi-coding")) kimi_client_id else stored_profile orelse return error.RefreshProfileMissing;
     const body = try formEncode(allocator, &.{
         .{ "grant_type", "refresh_token" }, .{ "client_id", client_id }, .{ "refresh_token", refresh_token },
     });

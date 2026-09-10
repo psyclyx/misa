@@ -6,6 +6,7 @@
    :context_window model.context_window
    :id model.id
    :label model.label
+   :metadata model.metadata
    :model model.model
    :created model.created
    :recommended model.recommended
