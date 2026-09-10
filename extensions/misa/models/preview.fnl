@@ -1,6 +1,37 @@
 (fn line [text]
   {:spans [{: text :style :choice.preview}]})
 
+(local weekday-names [:Sun :Mon :Tue :Wed :Thu :Fri :Sat])
+
+(fn hour-text [hour]
+  (string.format "%02d:00" hour))
+
+(fn days-text [weekdays]
+  "Render weekday numbers as contiguous name ranges."
+  (let [names (icollect [_ day (ipairs weekdays)]
+                (or (. weekday-names day) "?"))
+        groups []]
+    (var index 1)
+    (while (<= index (length names))
+      (let [first index]
+        (while (and (< index (length weekdays))
+                    (= (. weekdays (+ index 1)) (+ (. weekdays index) 1)))
+          (set index (+ index 1)))
+        (table.insert groups
+                      (if (= first index) (. names index)
+                          (.. (. names first) "–" (. names index)))))
+      (set index (+ index 1)))
+    (table.concat groups ", ")))
+
+(fn peak-note [peak]
+  "Describe the windows that multiply a model's base prices."
+  (let [windows (icollect [_ window (ipairs (or peak.windows []))]
+                  (.. (hour-text window.start_hour) "–"
+                      (hour-text window.end_hour)))]
+    (.. "Peak " (string.format "%.6g" peak.multiplier) "× at "
+        (table.concat windows ", ") " UTC"
+        (if peak.weekdays (.. " on " (days-text peak.weekdays)) ""))))
+
 (fn model-preview [model context]
   "Render model capabilities and pricing as preview data."
   (let [cost model.cost
@@ -53,6 +84,8 @@
                                                                                        : currency}))]
                                               (table.insert spans span))
                                             spans)}))
+                  (when cost.peak
+                    (table.insert result (line (peak-note cost.peak))))
                   (table.insert result
                                 (line "Estimates; reported usage cost takes precedence")))
                 (table.insert result

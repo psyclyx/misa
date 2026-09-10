@@ -68,6 +68,13 @@
   (local (ok value) (pcall locale-date "%x %X %Z" seconds))
   (when ok value))
 
+;; Calendar parts for explicit instants, used by policies such as time-of-day
+;; prices. Current time still comes from the clock coeffect.
+(fn misa.time.utc-parts [seconds]
+  "Return an instant's UTC hour and weekday, where Sunday is one."
+  (local (ok value) (pcall locale-date :!*t (math.floor seconds)))
+  (when ok {:hour value.hour :weekday value.wday}))
+
 (local state-updates ((require :misa.runtime.state) misa.json-null))
 (set misa.delete state-updates.delete)
 (set misa.replace state-updates.replace)

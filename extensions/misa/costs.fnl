@@ -6,6 +6,74 @@
 (fn valid? [value]
   (and (= (type value) :number) (>= value 0) (< value math.huge)))
 
+(fn hour? [value]
+  (and (= (type value) :number) (= (% value 1) 0) (<= 0 value) (<= value 23)))
+
+(fn peak-spec [value]
+  "Validate peak/off-peak windows as UTC hours and optional weekdays."
+  (when (not= value nil)
+    (assert (= (type value) :table) "cost peak must be an object")
+    (assert (and (valid? value.multiplier) (> value.multiplier 0))
+            "cost peak multiplier must be a positive number")
+    (assert (and (= (type value.windows) :table) (> (length value.windows) 0))
+            "cost peak windows must be a nonempty array")
+    (let [windows []
+          weekdays []]
+      (each [_ window (ipairs value.windows)]
+        (assert (and (= (type window) :table) (hour? window.start_hour)
+                     (hour? window.end_hour))
+                "cost peak windows need start_hour and end_hour")
+        (table.insert windows
+                      {:end_hour window.end_hour :start_hour window.start_hour}))
+      (when (not= value.weekdays nil)
+        (assert (= (type value.weekdays) :table)
+                "cost peak weekdays must be an array")
+        (each [_ day (ipairs value.weekdays)]
+          (assert (and (= (type day) :number) (= (% day 1) 0) (<= 1 day)
+                       (<= day 7))
+                  "cost peak weekdays are 1-7, where 1 is Sunday")
+          (table.insert weekdays day)))
+      {:multiplier value.multiplier
+       :weekdays (and (> (length weekdays) 0) weekdays)
+       : windows})))
+
+(fn within? [window hour]
+  (if (< window.end_hour window.start_hour)
+      (or (>= hour window.start_hour) (< hour window.end_hour))
+      (and (>= hour window.start_hour) (< hour window.end_hour))))
+
+(fn weekday-allowed? [spec weekday]
+  (or (= spec.weekdays nil) (accumulate [found false _ day (ipairs spec.weekdays)
+                                         &until found]
+                              (= day weekday))))
+
+(fn peak-multiplier [pricing at-ms]
+  "Return the price multiplier in effect at a UTC instant.
+
+  Windows are half-open `[start_hour, end_hour)`; a window whose start exceeds
+  its end wraps midnight. Without a declared peak or an instant, prices are
+  multiplied by one."
+  (let [spec (and pricing pricing.peak)
+        stamp (and spec at-ms (misa.time.utc-parts (math.floor (/ at-ms 1000))))]
+    (if (or (not spec) (not stamp))
+        1
+        (if (and (weekday-allowed? spec stamp.weekday)
+                 (accumulate [found false _ window (ipairs spec.windows)
+                              &until found]
+                   (within? window stamp.hour)))
+            spec.multiplier
+            1))))
+
+(fn effective [pricing at-ms]
+  "Return prices with the peak multiplier for an instant applied."
+  (let [multiplier (peak-multiplier pricing at-ms)]
+    (if (or (not pricing) (= multiplier 1)) pricing
+        (collect [name value (pairs pricing)]
+          name
+          (if (and (not= name :peak) (valid? value))
+              (* value multiplier)
+              value)))))
+
 (fn rates [value]
   (if (not= (type value) :table) nil
       (let [result {}]
@@ -15,6 +83,8 @@
                     (.. "cost rate " name
                         " must be a finite nonnegative number"))
             (tset result name (. value name))))
+        (let [peak (peak-spec value.peak)]
+          (when peak (tset result :peak peak)))
         (or (and (next result) result) nil))))
 
 (fn estimate [pricing usage]
@@ -50,11 +120,14 @@
         (when model (rates model.pricing)))))
 
 (fn costs-model [overrides db id]
-  "Return configured pricing and availability for a model."
+  "Return configured pricing and availability for a model.
+
+  Prices are base rates; `peak` describes the windows that multiply them."
   (let [pricing (model-rates overrides db id)]
     {:currency :USD
      :token_unit 1000000
      : pricing
+     :peak (and pricing pricing.peak)
      :estimated true
      :unavailable (= pricing nil)}))
 
@@ -165,11 +238,15 @@
                                                                    usage))}))))))
 
 (fn start-response [overrides db event]
-  "Capture pricing when a response starts."
+  "Capture pricing when a response starts.
+
+  Peak windows resolve against the request's wall-clock start, so later
+  calculations and retries cannot move a response between price tiers."
   (when (and db.costs event.model)
     (response-patch event.response_id
                     {:model event.model
-                     :pricing (model-rates overrides db event.model)})))
+                     :pricing (effective (model-rates overrides db event.model)
+                                         event.started_wall_ms)})))
 
 (fn interrupt-response [db event]
   "Record known usage or an unknown cost for an interrupted response."
@@ -205,4 +282,6 @@
  : complete
  : start-response
  : interrupt-response
- : overrides}
+ : effective
+ : overrides
+ : peak-multiplier}

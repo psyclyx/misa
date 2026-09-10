@@ -118,6 +118,7 @@
            :url spec.models_url}]}))
 
 (fn text [content]
+  "Join an OpenAI message's text blocks."
   (if (= (type content) :string) content
       (let [parts {}]
         (each [_ block (ipairs (or content {}))]
@@ -125,9 +126,22 @@
             (tset parts (+ (length parts) 1) block.text)))
         (table.concat parts ""))))
 
-(fn messages [items]
-  "Serialize conversation messages for the OpenAI protocol."
-  (let [result {}]
+(fn thinking-text [content]
+  "Join an assistant message's thinking blocks for reasoning replay."
+  (let [parts []]
+    (each [_ block (ipairs (or content {}))]
+      (when (= block.type :thinking)
+        (table.insert parts block.text)))
+    (table.concat parts "\n")))
+
+(fn messages [items spec]
+  "Serialize conversation messages for the OpenAI protocol.
+
+  A provider declaring `reasoning_content_field` receives captured thinking
+  back on that wire field, which providers such as DeepSeek require for
+  tool-call turns and ignore otherwise."
+  (let [reasoning-field (and spec spec.reasoning_content_field)
+        result {}]
     (each [_ message (ipairs items)]
       (if (= message.role :user)
           (do
@@ -159,6 +173,10 @@
                        :id block.id
                        :type :function})))
             (when (> (length calls) 0) (set item.tool_calls calls))
+            (when reasoning-field
+              (let [reasoning (thinking-text message.content)]
+                (when (or (not= reasoning "") (> (length calls) 0))
+                  (tset item reasoning-field reasoning))))
             (tset result (+ (length result) 1) item))
           (= message.role :tool)
           (tset result (+ (length result) 1)
@@ -178,8 +196,11 @@
     result))
 
 (fn request [spec serializer-id effect]
-  "Describe a protocol operation."
-  (let [converted (messages effect.messages)]
+  "Describe a protocol operation.
+
+  `max_tokens_field` selects the output-token field name for providers such as
+  DeepSeek that only accept `max_tokens`."
+  (let [converted (messages effect.messages spec)]
     (when effect.system_prompt
       (table.insert converted 1 {:content effect.system_prompt :role :system}))
     (let [body {:messages converted
@@ -190,7 +211,8 @@
       (when (> (length definitions) 0)
         (set body.tools definitions))
       (when spec.max_tokens
-        (set body.max_completion_tokens spec.max_tokens))
+        (tset body (or spec.max_tokens_field :max_completion_tokens)
+              spec.max_tokens))
       (let [request-options (misa.request-options.serialize serializer-id
                                                             (misa.patch (or spec.request_options
                                                                             {})

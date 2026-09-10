@@ -51,6 +51,9 @@
           :costs/tool-summary/usage {:event :tool-summary/usage
                                      :priority 59000
                                      :handler (patch-event complete)}
+          :costs/compaction/usage {:event :compaction/usage
+                                   :priority 59000
+                                   :handler (patch-event complete)}
           :costs/transcript/response-interrupted {:event :transcript/response-interrupted
                                                   :priority 59000
                                                   :handler (patch-event costs.interrupt-response)}}}
