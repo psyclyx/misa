@@ -5,6 +5,7 @@
                (require :misa.standard.clipboard)
                (require :misa.standard.commands)
                (require :misa.standard.commands.palette)
+               (require :misa.standard.compaction)
                (require :misa.standard.costs)
                (require :misa.standard.json)
                (require :misa.standard.keybindings)

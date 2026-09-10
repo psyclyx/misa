@@ -15,6 +15,7 @@
         :misa.clipboard (require :misa.standard.clipboard)
         :misa.commands (require :misa.standard.commands)
         :misa.commands.palette (require :misa.standard.commands.palette)
+        :misa.compaction (require :misa.standard.compaction)
         :misa.costs (require :misa.standard.costs)
         :misa.dialogs (require :misa.standard.dialogs)
         :misa.dialogs.render (require :misa.standard.dialogs.render)

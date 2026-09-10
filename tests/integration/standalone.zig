@@ -373,6 +373,18 @@ test "tool summary role keeps background requests out of canonical conversation"
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-summary.fnl"} }, "tool summary lifecycle passed\n");
 }
 
+test "compaction controller preserves history and request ownership" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/compaction.fnl"} }, "compaction policy contracts passed\n");
+}
+
+test "installed compaction stays inert without a summarizer and applies a handoff" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/compaction-cascade.fnl"} }, "compaction cascade contracts passed\n");
+}
+
 test "Codex discovers the authenticated model catalogue" {
     var h = try Harness.init();
     defer h.deinit();
@@ -395,6 +407,12 @@ test "projection regions isolate editor and transcript invalidation" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/projection-regions.fnl"} }, "projection region ownership passed\n");
+}
+
+test "deepseek model contracts passed" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/deepseek-models.fnl"} }, "deepseek model contracts passed\n");
 }
 
 test "feature policy seams passed" {

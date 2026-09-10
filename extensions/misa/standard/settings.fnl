@@ -8,6 +8,13 @@
                       :models [:browse :favorites]
                       :auth [:all]
                       :actions [:browse :favorites]}}
+ :compaction {:enabled true
+              :max_input_bytes 400000
+              :max_summary_bytes 64000
+              :min_messages 6
+              :reserve_tokens 16000
+              :role :summarizer
+              :threshold 0.8}
  :components {:roles {:root.header :default.root.header
                       :editor.input :default.editor.input
                       :editor.completions :default.editor.completions
