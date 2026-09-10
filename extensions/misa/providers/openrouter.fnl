@@ -28,8 +28,10 @@
      :model_pricing model-pricing
      :models_credential false
      :models_url models-url
-     :request_options (misa.patch (or config.request_options {})
-                                  (when config.routing {:provider config.routing}))
+     :request_options (if config.routing
+                          (misa.patch (or config.request_options {})
+                                      {:provider config.routing})
+                          (or config.request_options {}))
      :timeouts config.timeouts
      :url (or config.url "https://openrouter.ai/api/v1/chat/completions")}))
 

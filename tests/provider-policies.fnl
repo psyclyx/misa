@@ -87,6 +87,10 @@
   (assert (= (. (serializer.serialize :reasoning_effort :high) :reasoning :effort)
              :high)))
 
+(let [plain (router.settings {})]
+  (assert (= (next plain.request_options) nil)
+          "OpenRouter settings must work without a routing policy"))
+
 (let [windows (kimi.usage-windows {:usage {:limit 100 :remaining 25}})]
   (assert (= (. windows 1 :used) 75))
   (assert (= (. windows 1 :remaining) 25)))
