@@ -12,6 +12,7 @@ not establish shared ownership.
 | `misa.agent`                       | Conversation lifecycle, response correlation, tool continuation, and stream normalization |
 | `misa.models`                      | Model discovery and selection, request options, effort, and model previews                |
 | `misa.costs`                       | Model pricing and response cost accounting                                                |
+| `misa.compaction`                  | Conversation summarization and history compaction under a model role                      |
 | `misa.usage`                       | Usage capture and refresh policy; its `dialog` provides the optional dashboard            |
 | `misa.choices`                     | Choice state, ranking, geometry, previews, preferences, and picker behavior               |
 | `misa.commands`                    | Command discovery, invocation, and the command palette                                    |
@@ -143,3 +144,33 @@ Direct policy tests exercise state transitions and request construction without
 installing an application. Integration tests cover stock wiring and host
 contracts. `tests/extension-style.fnl` checks module exports, public docstrings,
 and lexical/control-flow conventions; these checks supplement review.
+
+# Static tooling
+
+Editor language servers describe a different language than the one this tree
+executes, so their diagnostics are not evidence. The known limits, in the order
+they mislead:
+
+- Bundled sources are Fennel. A Lua server parses `:keyword` literals, `(fn ...)`,
+  and `#( ... )` as syntax errors. Configure Fennel support, or read `.fnl` files
+  as Fennel rather than expecting Lua semantics.
+- `misa` is created at runtime by the embedded framework and populated by the
+  installed services; nothing declares it statically. Every `misa.<namespace>`
+  access therefore reports an undefined global, and no member completion exists
+  for services such as `misa.models`, `misa.costs`, `misa.time`, or
+  `misa.request-options`. Read the owning module for the real surface.
+- The framework removes `os`, `io`, `print`, `debug`, `ffi`, `jit`, and
+  `package.loadlib` before extension code runs, while keeping its own private
+  references (`os.date`, `debug.traceback`) in `src/lua_runtime/framework.fnl`.
+  A server that resolves those private uses may suggest IO, clock, or native
+  loading inside extensions. Extensions must describe effects instead; new host
+  capabilities belong in Zig or in a framework helper such as
+  `misa.time.utc-parts`.
+- `require` paths are rooted at `extensions/`, not at the repository root, so
+  `(require :misa.costs)` resolves to `extensions/misa/costs.fnl`. Servers using
+  the default package root report unresolved modules.
+- Definition catalogs are open, string-keyed registries (`value-renderers`,
+  `transcript-presentations`, `agent-deltas`, `codex-records`,
+  `selection-sources`, `dialog-inputs`, and others). No server knows their entry
+  shapes. Registration-time validation in `src/lua_runtime/framework.fnl`, the
+  domain module's own checks, and the focused policy tests are authoritative.

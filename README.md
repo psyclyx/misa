@@ -1348,9 +1348,45 @@ context limits live in their corresponding declaration maps. Provider request
 and model-normalization operations are public functions for custom adapters.
 
 DeepSeek is available through `misa login deepseek` or `/login deepseek`. It uses
-DeepSeek's OpenAI-compatible streaming chat-completions API, including tool calls
-and reasoning, and discovers its model catalogue from
-`https://api.deepseek.com/models`.
+DeepSeek's OpenAI-compatible streaming chat-completions API, including tool calls,
+image input, and reasoning, and discovers its model catalogue from
+`https://api.deepseek.com/models`. That endpoint reports identifiers only, so
+`misa.providers.deepseek` declares the published facts for known identifiers —
+context window, prices, and the reasoning ladder — and merges them onto the
+discovered rows. An identifier without published facts keeps its row without
+invented limits or prices, so a new release appears in `/model` as soon as the API
+lists it. V4.1 Flash (`deepseek-flash`) is the current multimodal release; the
+retired `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` names are served and
+billed as V4.1 Flash. `deepseek-v4-pro` remains text-only at its own rates.
+
+DeepSeek's request surface is provider-owned. `/effort` offers `none`, `low`,
+`high`, and `max` for the V4 family, where `none` disables thinking mode; the
+ladder mirrors the mapping DeepSeek publishes for `minimal`, `medium`, and
+`xhigh`, and one ladder covers both Flash and Pro even though third-party
+catalogues still list Pro as `high`/`max` only. Requests carry `max_tokens` rather than
+`max_completion_tokens`, never carry `tool_choice` (DeepSeek rejects forced choice
+while thinking), and replay captured thinking as `reasoning_content`, which DeepSeek
+requires when the conversation carries tools. A reasoning turn emits no stream bytes
+while the model thinks, so `config.providers.deepseek.timeouts` defaults its
+first-byte and idle budgets to five minutes; `config.providers.deepseek.max_tokens`
+and the remaining request options work as they do for other providers.
+
+DeepSeek doubles its prices during its published peak hours (01:00–04:00 and
+06:00–10:00 UTC, Monday through Friday). Cost accounting resolves that multiplier
+when a response starts and snapshots the resulting rates, so a retry or a later
+estimate cannot move a turn between price tiers, and model previews state the peak
+windows beside the off-peak rates. Any model or `config.costs.models` entry may
+declare the same shape:
+
+```fennel
+{:input 0.15 :output 0.6 :cache_read 0.003
+ :peak {:multiplier 2
+        :windows [{:start_hour 1 :end_hour 4} {:start_hour 6 :end_hour 10}]
+        :weekdays [2 3 4 5 6]}}
+```
+
+Windows are half-open UTC hours that wrap midnight when the start exceeds the end,
+and weekday numbers follow `Sunday = 1`.
 
 Groq, Together, Fireworks, xAI, Mistral, Cerebras, DeepInfra, Hugging Face,
 NVIDIA, Moonshot, Novita, SiliconFlow, and Venice are also included as API-key
@@ -1489,3 +1525,27 @@ the role, for example `config.models.roles.summarizer = "provider/model"`.
 Turning the role off or losing model availability cancels active summaries and
 clears the queue; changing the role model restarts unfinished work on the new
 model. Late completions from cancelled requests cannot change the transcript.
+
+The `misa.compaction` extension (included in the default profile) frees context in
+long sessions by replacing canonical history with one summarizer handoff. `/compact`
+(also the `compaction.compact` action) runs a tool-free summarization request under
+the `summarizer` role, with a cancellable progress dialog; `config.compaction.role`
+and `.prompt` select the model and instructions, and typed `/compact` arguments are
+appended to the prompt. A model must be assigned to that role first, for example
+`/role summarizer provider/model` or `config.models.roles.summarizer`; until one is
+assigned, `/compact` reports that it needs one and automatic compaction stays
+inactive. Only a summary produced for an unchanged conversation replaces canonical
+history, and it is installed as a user handoff message followed by a short assistant
+continuation so the next request still alternates roles. The visible transcript and
+scrollback are never rewritten, so reading position and selection are preserved.
+`config.compaction.enabled` (default `true`) enables automatic compaction, which
+starts from a ready agent once the estimated prompt reaches
+`threshold * (context_window - reserve_tokens)` with at least `min_messages`
+messages; the selected conversation model must also declare a `context_window`,
+otherwise the budget is unknown and no automatic attempt is made. The summarizer
+input is bounded by `max_input_bytes`, keeping the beginning and the most recent work
+with an explicit omission marker, and the accumulated summary by `max_summary_bytes`.
+An empty summary, a failure, or a summary no shorter than its input leaves history
+untouched and reports why. Changing the summarizer role model or losing its
+availability cancels an active request, and draft submission is held while a
+compaction runs. Usage is recorded through `misa.costs` like any other request.

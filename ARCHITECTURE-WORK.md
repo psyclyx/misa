@@ -84,6 +84,109 @@ selection and subscription architecture.
 
 ## Dated audit and implementation history
 
+### Conversation compaction under a background model role (2026-09-10)
+
+`misa.compaction` replaces a long canonical conversation with one summarizer
+handoff when it approaches the selected model's context window, or on demand
+through `/compact`. Summarization is an independent, tool-free provider request
+resolved through `misa.models.for-role(db, "summarizer")`; the request carries a
+bounded plain-text rendering of history and a handoff prompt, and the extension
+owns no rendering. Only a summary produced for an unchanged conversation replaces
+canonical history, installed as a user handoff plus a short assistant continuation
+so the next request still alternates roles; empty, failed, unhelpful, or stale
+summaries leave history untouched and report the reason. The visible transcript is
+never rewritten, so scrollback and selection are preserved.
+
+Automatic compaction starts from an `agent/status` ready event once the estimated
+prompt reaches `threshold * (context_window - reserve_tokens)` with at least
+`min_messages` messages, and a conversation that already triggered an attempt is not
+retried until its scalar signature changes. The controller is pure: it patches
+`db.compaction` (active request, monotonic sequence, last-attempt signature) and
+emits ordered effects without mutating prior state. Role or catalogue changes
+reconcile an active request through explicit `model/*` events rather than
+registration order; draft submission is held through the editor lifecycle service
+while a request runs. Usage is published as `compaction/usage` and consumed by
+`misa.costs`.
+
+Automatic compaction is gated on a resolvable summarizer model: an unconfigured
+session queues nothing rather than repeating a refusal on every turn, matching the
+tool-summary extension's documented behaviour. The trigger therefore fires only when
+a model is assigned to the role _and_ the selected conversation model declares a
+`context_window`, since the budget is unknown without one.
+
+Evidence: `tests/compaction.fnl` (registered in `tests/integration/standalone.zig`)
+covers settings validation, canonical history rendering and byte budgeting,
+provider-reported versus heuristic token estimates, the automatic trigger and its
+guards, explicit refusal paths, the tool-free request, streamed summary
+accumulation and usage, applied/discarded/failed outcomes, cancellation,
+reconciliation, reset sequencing, and the command/action/lifecycle declarations.
+`tests/compaction-cascade.fnl` installs the fragment and drives real dispatch: it
+pins both required conditions (an assigned summarizer and a declared context window),
+asserts an unconfigured session stays silent and keeps history, follows the applied
+handoff from trigger through the streamed summary to a two-message history, checks
+the lifecycle query holds and releases draft submission, and covers `/compact` both
+refusing and opening its dialog. `tests/extension-style.fnl` checks the module
+surface, and `tests/stock.fnl` exposes `misa.compaction` as a stock fragment
+alongside the catalog and settings entries. The installed fragment is part of
+`tests/integration/configs/providers.fnl`, so application validation covers it.
+
+### DeepSeek V4.1 Flash facts, wire contract, and peak pricing (2026-09-10)
+
+DeepSeek replaced V4 Flash with V4.1 Flash (`deepseek-flash`) and retired
+`deepseek-v4-flash-vision-exp`; both legacy names are still accepted, served, and
+billed as V4.1 Flash. This adapts the review in
+[oh-my-pi#11509](https://github.com/can1357/oh-my-pi/pull/11509) without adopting
+its catalog format: the model list still comes from the provider, and the published
+facts are declared separately.
+
+`misa.providers.deepseek` declares facts for known identifiers only — context
+window, off-peak prices, and the reasoning ladder — and the wiring merges them onto
+discovered rows through the existing `models/update` mechanism, the same path
+Claude uses for account-derived context windows. `deepseek-flash`,
+`deepseek-v4-flash`, and `deepseek-v4-flash-vision-exp` share the V4.1 Flash facts;
+`deepseek-v4-pro` keeps its own. An identifier outside that table stays catalogued
+without invented limits or prices, so a future release appears in `/model` while its
+facts remain explicitly unknown. No static model list is introduced, and a
+declared fixed catalogue still supplies its own facts because enrichment runs only
+after discovery.
+
+Protocol-level changes are provider-requested rather than DeepSeek-specific.
+`misa.protocols.openai` gained an optional `max_tokens_field` for the output-limit
+field name and an optional `reasoning_content_field` that replays captured thinking
+blocks onto that wire field; the DeepSeek transport selects `max_tokens` and
+`reasoning_content`. DeepSeek requires reasoning replay when a conversation carries
+tools and ignores it otherwise, so the adapter emits the field whenever thinking was
+captured or the message carries tool calls. DeepSeek's own serializer fragment omits
+`tool_choice` and `parallel_tool_calls` entirely, since forced tool choice is
+rejected in thinking mode, and `reasoning_effort` is declared as `none`, `low`,
+`high`, `max` for the whole V4 family, defaulting to `high`. One ladder covers both
+SKUs because DeepSeek's API advertises it for both; third-party catalogues still list
+Pro as `high`/`max`, the same stale curation
+[oh-my-pi#8406](https://github.com/can1357/oh-my-pi/pull/8406) corrected for `low`.
+`none` is DeepSeek's documented thinking-mode toggle. Reasoning turns emit
+no stream bytes while the model thinks, so the transport defaults its first-byte and
+idle budgets to five minutes; configured `timeouts` still override either value.
+
+Cost accounting gained time-of-day prices. A rates record may declare
+`peak = {multiplier, windows = [{start_hour, end_hour}], weekdays?}` with half-open
+UTC hours and Lua weekday numbers (`1` is Sunday). `misa.costs.start-response`
+resolves the multiplier against the request's wall-clock start and snapshots the
+resulting rates, so retries, late completions, and interrupted responses cannot move
+a turn between price tiers, and `interrupt-response` reuses that snapshot. Because
+extension code cannot reach the OS library, `misa.time.utc-parts` exposes an
+instant's UTC hour and weekday beside the existing `misa.time.local-datetime`; the
+framework still owns all clock and locale access, and current time remains a
+clock coeffect. Model previews state the peak windows beside the off-peak rates
+instead of hiding the multiplier.
+
+Evidence: `tests/deepseek-models.fnl` (registered in `tests/integration/standalone.zig`)
+covers declared facts and the absent-facts case, alias pricing, the reasoning
+ladders, serializer acceptance and rejection, both output-limit paths, the request
+body, reasoning replay with and without the transport field, enrichment onto a
+discovered catalogue through the real `models/update` handler, peak/off-peak/weekend
+multipliers, and preview wording. `tests/integration/configs/providers.fnl` now
+installs the DeepSeek fragment so application validation covers it.
+
 ### Event-scoped routing replaces global middleware (2026-09-07)
 
 The framework no longer registers or executes global before/after interceptors.
