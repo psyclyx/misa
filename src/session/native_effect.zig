@@ -7,6 +7,7 @@ const syntax = @import("misa_syntax");
 const http = @import("misa_http");
 const process = @import("misa_process");
 const state = @import("misa_state");
+const conversation = @import("misa_conversation");
 const terminal = @import("misa_terminal");
 const timer = @import("timer.zig");
 const protected_input = @import("protected_input.zig");
@@ -14,6 +15,12 @@ const protected_input = @import("protected_input.zig");
 pub const JsonDecode = struct { source: []const u8, completion: []const u8, id: []const u8 };
 pub const StateLoad = struct { namespace: []const u8, completion: []const u8 };
 pub const StateSave = struct { namespace: []const u8, data: std.json.Value };
+pub const ConversationAppend = struct {
+    conversation: []const u8,
+    entries: []const std.json.Value,
+    completion: []const u8,
+    id: []const u8,
+};
 pub const AuthCommand = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8 };
 pub const AuthRespond = struct { id: []const u8, correlation: []const u8, action: []const u8, value: []const u8 };
 pub const CancelOperation = struct { id: []const u8 };
@@ -37,6 +44,7 @@ pub const Effect = union(enum) {
     auth_respond: AuthRespond,
     state_load: StateLoad,
     state_save: StateSave,
+    conversation_append: ConversationAppend,
     operation_cancel: CancelOperation,
     operation_finish: FinishOperation,
     timer_start: timer.Start,
@@ -136,6 +144,30 @@ pub const Effect = union(enum) {
                 .data = object.get("data") orelse return error.InvalidEffect,
             } };
         }
+        if (std.mem.eql(u8, kind, "conversation/append")) {
+            const conversation_id = nonEmptyStringField(object, "conversation") orelse return error.InvalidEffect;
+            conversation.validateConversationId(conversation_id) catch return error.InvalidEffect;
+            const entries = switch (object.get("entries") orelse return error.InvalidEffect) {
+                .array => |array| array.items,
+                else => return error.InvalidEffect,
+            };
+            if (entries.len == 0 or entries.len > conversation.max_entries_per_append) return error.InvalidEffect;
+            for (entries) |entry| {
+                const entry_object = switch (entry) {
+                    .object => |item| item,
+                    else => return error.InvalidEffect,
+                };
+                const entry_kind = nonEmptyStringField(entry_object, "kind") orelse return error.InvalidEffect;
+                conversation.validateKind(entry_kind) catch return error.InvalidEffect;
+                if (entry_object.get("data") == null) return error.InvalidEffect;
+            }
+            return .{ .conversation_append = .{
+                .conversation = conversation_id,
+                .entries = entries,
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            } };
+        }
         return error.UnknownNativeEffect;
     }
 };
@@ -204,4 +236,15 @@ test "validation covers the whole native contract" {
     var unsafe_state = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"state/load\",\"namespace\":\"../other\",\"completion\":\"done\"}", .{});
     defer unsafe_state.deinit();
     try std.testing.expectError(error.InvalidEffect, Effect.parse(unsafe_state.value));
+    var append = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/append\",\"conversation\":\"main\",\"entries\":[{\"kind\":\"message\",\"data\":{\"role\":\"user\"}}],\"completion\":\"conversation/appended\",\"id\":\"log-1\"}", .{});
+    defer append.deinit();
+    const append_effect = try Effect.parse(append.value);
+    try std.testing.expectEqualStrings("main", append_effect.conversation_append.conversation);
+    try std.testing.expectEqual(@as(usize, 1), append_effect.conversation_append.entries.len);
+    var bad_append = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/append\",\"conversation\":\"has space\",\"entries\":[{\"kind\":\"message\",\"data\":null}],\"completion\":\"conversation/appended\",\"id\":\"log-1\"}", .{});
+    defer bad_append.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_append.value));
+    var empty_append = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/append\",\"conversation\":\"main\",\"entries\":[],\"completion\":\"conversation/appended\",\"id\":\"log-1\"}", .{});
+    defer empty_append.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(empty_append.value));
 }

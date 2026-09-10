@@ -192,6 +192,7 @@ pub const Session = struct {
             .auth_respond => |spec| try self.operations.respond(spec.id, spec.correlation, spec.action, spec.value),
             .state_load => |spec| try self.operations.startStateLoad(spec.namespace, spec.completion, self.environ),
             .state_save => |spec| try self.operations.startStateSave(spec.namespace, spec.data, self.environ),
+            .conversation_append => |spec| try self.operations.startConversation(spec, self.environ),
             .operation_cancel => |spec| try self.cancelOperation(spec.id),
             .operation_finish => |spec| try self.finishOperation(spec.id),
             .timer_start => |spec| try self.timers.start(spec, std.Io.Timestamp.now(self.io, .awake).nanoseconds),

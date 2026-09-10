@@ -19,6 +19,7 @@ mkShell {
     pkgs.tree-sitter
     pkgs.libpng
     pkgs.libjpeg
+    pkgs.sqlite
     pkg-config
     treefmt
     nixfmt

@@ -326,6 +326,7 @@ The fixed native effects are:
 completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
 correlation=..., action=..., value=...}`
 - `{type="state/load", namespace=..., completion=...}` / `{type="state/save", namespace=..., data=...}`
+- `{type="conversation/append", conversation=<id>, entries=<array of {kind=..., data=...}>, completion=..., id=...}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
 
@@ -345,6 +346,16 @@ is repaired before completion events are dispatched. Completion events include
 `records` array instead of being returned as an opaque string. `process/run`
 also accepts bounded `stdin` text or one `stdin_json` value; the latter is
 serialized with a trailing newline for JSONL subprocess protocols.
+
+`conversation/append` persists durable, ordered conversation records to a SQLite
+database opened in WAL mode. Each append is one transaction, so concurrent Misa
+processes serialize without lost updates or duplicated sequence numbers;
+`busy_timeout` plus bounded retries absorb ordinary lock contention. Entry `data`
+is any JSON value and is stored as text, so the transcript model can evolve
+without a schema migration; the completion event reports `{count, last_seq}`.
+The database path is `$MISA_CONVERSATION_DB`, otherwise
+`$XDG_STATE_HOME/misa/conversations.sqlite3`, otherwise
+`$HOME/.local/state/misa/conversations.sqlite3`.
 
 A view is modest semantic data. The root UI composes ordered region descriptors
 with shared height budgets and cursor placement. Dialog fields, transcript roles,
@@ -1230,7 +1241,8 @@ Outside Nix, install tree-sitter (including its pkg-config metadata) and point
 `MISA_TREE_SITTER_DIR` at a directory of `<language>.so` parsers. A default can
 instead be compiled with `zig build -Dtree-sitter-dir=/path/to/grammars`.
 Grammar libraries must export their conventional `tree_sitter_<language>`
-symbol.
+symbol. Conversation persistence also requires SQLite development files
+(`sqlite3.h` and its pkg-config metadata), like the other system libraries.
 
 `default.nix` exports the package, overlay, shell, modules, `lib`, and
 `standardExtensions`. Nix can package the same configuration file:

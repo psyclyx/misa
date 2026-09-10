@@ -35,6 +35,7 @@ stdenv.mkDerivation {
     pkgs.tree-sitter
     pkgs.libpng
     pkgs.libjpeg
+    pkgs.sqlite
   ];
 
   buildPhase = ''

@@ -8,6 +8,8 @@ const image = @import("misa_image");
 const syntax = @import("misa_syntax");
 const process = @import("misa_process");
 const state = @import("misa_state");
+const conversation = @import("misa_conversation");
+const native_effect = @import("../native_effect.zig");
 const http = @import("misa_http");
 const buffered_records = @import("../buffered_records.zig");
 const channel_module = @import("channel.zig");
@@ -15,6 +17,7 @@ const result_json = @import("result_json.zig");
 
 const AuthSpec = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool };
 const StateSpec = struct { namespace: []const u8, completion: []const u8, id: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map };
+const ConversationSpec = struct { spec: conversation.Spec, environ: *const std.process.Environ.Map };
 const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
 const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
 const SyntaxSpec = struct { spec: syntax.Spec, service: *syntax.Service };
@@ -22,7 +25,7 @@ const ProcessRequest = struct {
     spec: process.Spec,
     execution: union(enum) { tool, provider: *const std.process.Environ.Map },
 };
-const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, auth: AuthSpec };
+const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, conversation: ConversationSpec, auth: AuthSpec };
 
 pub const Task = struct {
     pub const max_records_per_event = 32;
@@ -165,6 +168,32 @@ pub const Task = struct {
         const spec: StateSpec = .{ .namespace = try a.dupe(u8, namespace), .completion = try a.dupe(u8, completion), .id = try std.fmt.allocPrint(a, "state:{s}:{d}", .{ namespace, serial }), .data = if (data) |value| try cloneJson(a, value) else null, .environ = environ };
         task.kind = if (data == null) .{ .state_load = spec } else .{ .state_save = spec };
         try task.prepare(spec.completion, spec.id, .{});
+        return task;
+    }
+
+    pub fn createConversation(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: native_effect.ConversationAppend, environ: *const std.process.Environ.Map) !*Task {
+        const task = try create(owner_allocator, io, wakeup);
+        errdefer task.destroy();
+        const a = task.arena.allocator();
+        const entries = try a.alloc(conversation.Entry, source.entries.len);
+        for (source.entries, entries) |raw, *copy| {
+            const object = raw.object;
+            copy.* = .{
+                .kind = try a.dupe(u8, object.get("kind").?.string),
+                .data = try cloneJson(a, object.get("data").?),
+            };
+        }
+        const spec: conversation.Spec = .{
+            .conversation = try a.dupe(u8, source.conversation),
+            .entries = entries,
+            .completion = try a.dupe(u8, source.completion),
+            .id = try a.dupe(u8, source.id),
+        };
+        task.kind = .{ .conversation = .{ .spec = spec, .environ = environ } };
+        try task.prepare(spec.completion, spec.id, .{});
+        // SQLite may block on another process's write lock; that wait is not a
+        // transport deadline, so completion is bounded by the store, not here.
+        task.timeout_kind = .none;
         return task;
     }
 
@@ -315,6 +344,7 @@ pub const Task = struct {
             .image, .syntax => .ordinary,
             .state_load => |spec| .{ .state_load = spec.namespace },
             .state_save => .state_save,
+            .conversation => .conversation_append,
         };
     }
 
@@ -483,6 +513,30 @@ pub const Task = struct {
                     return;
                 };
                 self.result = .{ .ok = true, .message = null };
+            },
+            .conversation => |request| {
+                const entries = request.spec.entries;
+                var store = conversation.Store.open(self.arena.allocator(), self.io, request.environ) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                defer store.deinit();
+                const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+                const last = store.append(.{ .conversation = request.spec.conversation, .entries = entries, .at_ms = now_ms }) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                const a = self.arena.allocator();
+                var object: std.json.ObjectMap = .empty;
+                object.put(a, "count", .{ .integer = @intCast(entries.len) }) catch {
+                    self.result = .{ .message = "OutOfMemory" };
+                    return;
+                };
+                object.put(a, "last_seq", .{ .integer = last }) catch {
+                    self.result = .{ .message = "OutOfMemory" };
+                    return;
+                };
+                self.result = .{ .ok = true, .data = .{ .object = object }, .message = null };
             },
             .auth => |spec| {
                 const command_result = provider_auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction, .protected_input = spec.managed_input }) catch |err| {

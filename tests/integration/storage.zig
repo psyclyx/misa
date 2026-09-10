@@ -13,6 +13,22 @@ test "state saves privately and reloads in a fresh process" {
     try support.contains(try h.read("application-state.json"), "\"integration\"");
 }
 
+test "conversation appends persist privately and continue in a fresh process" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/conversation.fnl"));
+    try h.expect(.{}, "appended 2 at 2\n");
+
+    // The database lives under XDG_STATE_HOME in a directory Misa creates for
+    // itself, and the sequence number continues where the first process left
+    // off rather than restarting.
+    const directory = try h.temporary.dir.statFile(support.io, "misa", .{});
+    try std.testing.expectEqual(@as(u32, 0o700), directory.permissions.toMode() & 0o777);
+    const database = try h.temporary.dir.statFile(support.io, "misa/conversations.sqlite3", .{});
+    try std.testing.expect(database.size > 0);
+    try h.expect(.{}, "appended 2 at 4\n");
+}
+
 test "invalid persistence reaches the asynchronous completion event" {
     var h = try Harness.init();
     defer h.deinit();

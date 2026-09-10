@@ -84,6 +84,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const conversation = b.createModule(.{
+        .root_source_file = b.path("src/conversation/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    conversation.linkSystemLibrary("sqlite3", .{ .use_pkg_config = .force });
     const http = b.createModule(.{
         .root_source_file = b.path("src/http/root.zig"),
         .target = target,
@@ -118,6 +125,7 @@ pub fn build(b: *std.Build) void {
     session.addImport("misa_lua_runtime", lua_runtime);
     session.addImport("misa_process", process_effect);
     session.addImport("misa_state", state);
+    session.addImport("misa_conversation", conversation);
     session.addImport("misa_terminal", terminal);
     const mcp = b.createModule(.{
         .root_source_file = b.path("src/mcp/root.zig"),
@@ -225,12 +233,14 @@ pub fn build(b: *std.Build) void {
     operation_test_module.addImport("misa_file", file_effect);
     operation_test_module.addImport("misa_process", process_effect);
     operation_test_module.addImport("misa_state", state);
+    operation_test_module.addImport("misa_conversation", conversation);
     const operation_unit = b.addTest(.{ .root_module = operation_test_module });
     const runtime_unit = b.addTest(.{ .root_module = lua_runtime });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
     const process_unit = b.addTest(.{ .root_module = process_effect });
     const file_unit = b.addTest(.{ .root_module = file_effect });
     const state_unit = b.addTest(.{ .root_module = state });
+    const conversation_unit = b.addTest(.{ .root_module = conversation });
     const image_unit = b.addTest(.{ .root_module = image });
     const syntax_unit = b.addTest(.{ .root_module = syntax });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
@@ -244,6 +254,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(process_unit).step);
     test_step.dependOn(&b.addRunArtifact(file_unit).step);
     test_step.dependOn(&b.addRunArtifact(state_unit).step);
+    test_step.dependOn(&b.addRunArtifact(conversation_unit).step);
     test_step.dependOn(&b.addRunArtifact(image_unit).step);
     test_step.dependOn(&b.addRunArtifact(syntax_unit).step);
     test_step.dependOn(&b.addRunArtifact(terminal_unit).step);

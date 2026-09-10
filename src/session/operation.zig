@@ -3,6 +3,8 @@ const std = @import("std");
 const posix = std.posix;
 const auth = @import("misa_auth");
 const file = @import("misa_file");
+const conversation = @import("misa_conversation");
+const native_effect = @import("native_effect.zig");
 const image = @import("misa_image");
 const syntax = @import("misa_syntax");
 const process = @import("misa_process");
@@ -110,6 +112,13 @@ pub const Owner = struct {
 
     pub fn startStateSave(self: *Owner, namespace: []const u8, data: std.json.Value, environ: *const std.process.Environ.Map) !void {
         try self.startState(namespace, "state/saved", data, environ);
+    }
+
+    pub fn startConversation(self: *Owner, spec: native_effect.ConversationAppend, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(spec.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createConversation(self.allocator, self.io, self.wakeup, spec, environ);
+        self.startPrepared(task);
     }
 
     fn startState(self: *Owner, namespace: []const u8, completion: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map) !void {
