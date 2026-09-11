@@ -208,6 +208,13 @@ Source names, service paths, event types, and registration IDs are separate
 contracts. Moving editor code does not rename `misa.editor.layout` or
 `editor/restore`. See the [standard library layout](extensions/README.md).
 
+The installed catalog and service reference is generated from the stock
+application: [docs/catalogs.md](docs/catalogs.md) lists every catalog, its
+entries, and each entry's shape, and [docs/services.md](docs/services.md) lists
+every installed service path. Both come from
+[`tools/generate-docs.fnl`](tools/generate-docs.fnl), which the suite runs in
+`--check` mode so a stale document fails the build.
+
 Catalogs use the following entries (the outer map key is the entry's ID):
 
 | Catalog                                                    | Entry                                                             |
