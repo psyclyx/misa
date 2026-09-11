@@ -81,6 +81,9 @@ zig-out/bin/misa-fixture`, `python3 tests/settled-frames.py zig-out/bin/misa-fix
 `python3 tests/threaded-terminal.py zig-out/bin/misa-fixture`, and
 `python3 tests/terminal-failure.py zig-out/bin/misa-fixture`. They
 use a PTY and local provider fixtures, with no account or network dependency.
+`python3 tests/policy-fault.py zig-out/bin/misa-fixture` checks that an
+interactive session reports and survives an invalid effect and a raising
+handler.
 `python3 tests/http-cancellation.py zig-out/bin/misa` exercises cancellation,
 idle timeouts, and compressed responses through the real HTTP transport using
 a local server; build the production executable with `zig build` first.
@@ -210,10 +213,11 @@ Catalogs use the following entries (the outer map key is the entry's ID):
 | `coeffects`                                                | `function(cofx,event,db)`; derives a transaction input            |
 | `effects`                                                  | `function(effect,cofx,db)`; translates policy effects             |
 | `views`                                                    | `function(db,context)`; exactly one root semantic view            |
-| `view-layers`                                              | `function(db,context)`; optional semantic overlay                 |
+| `view-layers`                                              | `{handler=function(db,context)}`; overlay, exclusive, or dock     |
 | `subscriptions`                                            | `{inputs,compute}` or `{read}`; a pure query                      |
 | `projections`                                              | `{inputs,render}`; an independently cached presentation owner     |
 | `services`                                                 | A function or immutable value, named `namespace.member`           |
+| `serializers`                                              | `{accepts,serialize}`; a model request-option serializer          |
 | `models`, `auth-providers`, `commands`, `actions`, `tools` | Domain declarations; their owning APIs validate and expose them   |
 | `completions`                                              | `{group,value={value,label?,description?}}`                       |
 | `requirements`                                             | An array of service paths, keyed by consumer ID                   |
@@ -226,6 +230,9 @@ returns entries in priority and ID order. Both return borrowed immutable values.
 Service results and query inputs follow the same ownership contract unless an API
 explicitly documents fresh mutable storage. Copy or use `misa.patch` to derive a
 changed value; never edit a borrowed catalog, model, projection, or service table.
+A catalog kind the host does not recognize is installed and readable through
+`misa.catalog(kind)` and `misa.catalog-entries(kind)`; it simply has no
+registration semantics of its own.
 
 Event handlers run by ascending finite integer `priority` (default zero), then
 by their stable definition IDs. Coeffects run by ID; do not encode hidden module
@@ -237,6 +244,10 @@ and path. Runtime effects cannot add definitions or reopen installation.
 Handlers return nil or `{patch=<map>, fx=<ordered array>}`. Patches recursively
 merge maps and replace nonempty arrays and scalars. Empty patches do nothing;
 `(misa.replace {})` clears a collection and `misa.delete` removes a key.
+`(misa.at index value)` writes one array element and `misa.append value` grows an
+array at its end; both are bounded by the current length, reject a control nested
+in replacement data, and keep the target array when the write changes nothing.
+Appending is the one patch operation that is not idempotent.
 `misa.json-null` stores JSON null. Returning a whole `db` is rejected. State
 contains finite JSON data, never callbacks, metatables, cycles, or patch controls;
 unchanged branches retain identity. Allocate new values rather than mutating
@@ -331,10 +342,11 @@ The fixed native effects are:
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="provider/process", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="http/request", url=..., json=..., credential=..., completion=..., id=..., timeouts={first_byte_ms=?,idle_ms=?,overall_ms=?}}`
-- `{type="file/read", path=..., completion=..., id=...}`
+- `{type="file/read", path=..., completion=..., id=..., start_line=?, max_lines=?, anchored=?}`
 - `{type="file/list", path=..., completion=..., id=...}`
 - `{type="file/write", path=..., content=..., completion=..., id=...}`
 - `{type="file/edit", path=..., content=..., replacement=..., completion=..., id=...}`
+- `{type="file/edit_lines", path=..., snapshot=..., start=..., end=..., position=..., content=..., completion=..., id=...}`
 - `{type="json/decode", source=..., completion=..., id=...}`
 - `{type="terminal/read"}`
 - `{type="clipboard/write", text=<up to 1 MiB>}`
@@ -342,7 +354,7 @@ The fixed native effects are:
 - `{type="image/paste", argv=<optional clipboard command>, id=..., completion=...}`
 - `{type="input/protected", id=..., correlation=..., completion=...}`
 - `{type="timer/start", interval_ms=<10..60000>, completion=..., id=...}` / `{type="timer/stop", id=...}`
-- `{type="operation/cancel", id=...}`
+- `{type="operation/cancel", id=...}` / `{type="operation/finish", id=...}`
 - `{type="auth/command", action=..., provider=..., strategy=..., profile=...,
 completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
 correlation=..., action=..., value=...}`
@@ -351,7 +363,13 @@ correlation=..., action=..., value=...}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
 
-Unknown native effects fail the session. `http/request` injects credentials by
+A policy fault is contained in an interactive session and fatal in a headless
+run. An unknown native effect, an invalid handler result, or a handler that
+raises rolls its transaction back and reports `runtime/effect-error` or
+`runtime/handler-error`, carrying `event_type` and `text`; the session keeps
+reading input afterwards. A headless run exits with the same diagnostic as
+before. A rejected frame reports `runtime/presentation-error` once per episode,
+keeps the last valid frame, and retries after a later event. `http/request` injects credentials by
 ID inside Zig, so secret bytes never cross into Fennel policy. Provider adapters
 use `provider/process`, whose execution dependency is selected by application
 composition. General-purpose tools use `process/run`. Both invoke direct argv,
@@ -377,6 +395,10 @@ without a schema migration; the completion event reports `{count, last_seq}`.
 The database path is `$MISA_CONVERSATION_DB`, otherwise
 `$XDG_STATE_HOME/misa/conversations.sqlite3`, otherwise
 `$HOME/.local/state/misa/conversations.sqlite3`.
+
+The preference document behind themes, component roles, model selection, editor
+history, and choice recency is a separate atomic JSON file: `$MISA_STATE_FILE`,
+otherwise `$XDG_STATE_HOME/misa/state`, otherwise `$HOME/.local/state/misa/state`.
 
 A view is modest semantic data. The root UI composes ordered region descriptors
 with shared height budgets and cursor placement. Dialog fields, transcript roles,
@@ -1258,7 +1280,10 @@ Stock composition defines actions as `actions[id] = {label,event,binding?,availa
 `binding` selects a semantic `{context,action}` keybinding, and `available(db)`
 controls contextual discovery. Keyboard mappings live separately in
 `definitions.keybindings[id] = {context,action,default=[...]}`. Set that entry's
-`default` array to change its keys or `[]` to leave it unbound. The `misa.actions`
+`default` array to change its keys or `[]` to leave it unbound. An action may
+instead carry `keys=[...]` with an optional `context` (default `global`): the
+host registers a keybinding for the action under its own ID, which is the same
+declaration the separate `keybindings` catalog makes. The `misa.actions`
 implementation routes global actions and supplies the palette.
 `misa.selection` accepts `{["selection-sources"]={[id]=function(db) ... end}}`
 in definition catalogs, with the function returning
