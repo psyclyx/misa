@@ -609,6 +609,23 @@
   "Copy projection data while preserving registered callback identities."
   (snapshot value))
 
+;; A directory's module exports its own declarations merged with its children's.
+;; Merging is by catalog and ID, so composition order never selects a winner.
+(fn misa.merge-definitions [groups]
+  "Merge catalog maps into one map, rejecting duplicate entry identities."
+  (local result {})
+  (each [_ group (ipairs groups)]
+    (assert (= (type group) :table) "definition group must be a table")
+    (each [kind entries (pairs group)]
+      (assert (and (= (type kind) :string) (= (type entries) :table))
+              "definition group must map catalog kinds to tables")
+      (local target (or (. result kind) {}))
+      (tset result kind target)
+      (each [id value (pairs entries)]
+        (assert (= (. target id) nil) (.. "duplicate definition: " kind "/" id))
+        (tset target id value))))
+  result)
+
 (fn misa.projections.publish [id value]
   "Publish data for input handlers when the containing frame is accepted."
   (assert projecting

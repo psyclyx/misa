@@ -1,57 +1,43 @@
+;; The stock combined application. Each entry is a direct child of this
+;; directory, and nothing here reaches past its immediate children.
 (local settings (require :misa.standard.settings))
-(local groups [(require :misa.standard.actions)
-               (require :misa.standard.agent)
-               (require :misa.standard.agent.stream)
-               (require :misa.standard.clipboard)
-               (require :misa.standard.commands)
-               (require :misa.standard.commands.palette)
-               (require :misa.standard.compaction)
-               (require :misa.standard.costs)
-               (require :misa.standard.json)
-               (require :misa.standard.keybindings)
-               (require :misa.standard.links)
-               (require :misa.standard.providers)
-               (require :misa.standard.presentation)
-               (require :misa.standard.tools.files)
-               (require :misa.standard.tools.shell)
-               (require :misa.standard.tools.web-search)
-               (require :misa.standard.usage)
-               (require :misa.standard.usage.dialog)
-               (require :misa.standard.choices)
-               (require :misa.standard.choices.layout)
-               (require :misa.standard.choices.matching)
-               (require :misa.standard.choices.picker)
-               (require :misa.standard.choices.picker.render)
-               (require :misa.standard.choices.picker.view)
-               (require :misa.standard.choices.preferences)
-               (require :misa.standard.choices.preview)
-               (require :misa.standard.dialogs)
-               (require :misa.standard.dialogs.render)
-               (require :misa.standard.dialogs.view)
-               (require :misa.standard.editor.attachments)
-               (require :misa.standard.editor.editing)
-               (require :misa.standard.editor.history)
-               (require :misa.standard.editor.images)
-               (require :misa.standard.editor.images.render)
-               (require :misa.standard.editor)
-               (require :misa.standard.editor.queue)
-               (require :misa.standard.editor.queue.view)
-               (require :misa.standard.editor.render)
-               (require :misa.standard.models.effort)
-               (require :misa.standard.models)
-               (require :misa.standard.models.options)
-               (require :misa.standard.models.preview)
-               (require :misa.standard.selection.document)
-               (require :misa.standard.selection)
-               (require :misa.standard.selection.render)])
+(local actions (require :misa.standard.actions))
+(local agent (require :misa.standard.agent))
+(local choices (require :misa.standard.choices))
+(local clipboard (require :misa.standard.clipboard))
+(local commands (require :misa.standard.commands))
+(local compaction (require :misa.standard.compaction))
+(local costs (require :misa.standard.costs))
+(local dialogs (require :misa.standard.dialogs))
+(local editor (require :misa.standard.editor))
+(local json (require :misa.standard.json))
+(local keybindings (require :misa.standard.keybindings))
+(local links (require :misa.standard.links))
+(local models (require :misa.standard.models))
+(local presentation (require :misa.standard.presentation))
+(local protocols (require :misa.standard.protocols))
+(local providers (require :misa.standard.providers))
+(local selection (require :misa.standard.selection))
+(local tools (require :misa.standard.tools))
+(local usage (require :misa.standard.usage))
 
-(local catalogs {})
-(each [_ group (ipairs groups)]
-  (each [kind entries (pairs group)]
-    (when (not (. catalogs kind)) (tset catalogs kind {}))
-    (each [id value (pairs entries)]
-      (assert (= (. catalogs kind id) nil)
-              (.. "duplicate stock definition: " kind "/" id))
-      (tset catalogs kind id value))))
-
-{:config settings :definitions catalogs}
+{:config settings
+ :definitions (misa.merge-definitions [actions
+                                       agent
+                                       choices
+                                       clipboard
+                                       commands
+                                       compaction
+                                       costs
+                                       dialogs
+                                       editor
+                                       json
+                                       keybindings
+                                       links
+                                       models
+                                       presentation
+                                       protocols
+                                       providers
+                                       selection
+                                       tools
+                                       usage])}

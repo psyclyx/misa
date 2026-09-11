@@ -70,17 +70,27 @@ independently replaceable handlers may observe the same event. Source names,
 service paths, event names, and registration IDs are also separate contracts.
 Moving a file does not rename its public service or event vocabulary.
 
-[`misa.standard`](misa/standard/init.fnl) combines the stock fragments into
+[`misa.standard`](misa/standard/init.fnl) combines the stock application into
 `{:config settings :definitions catalogs}`. Its
-[`settings`](misa/standard/settings.fnl) contains runtime defaults. Individual
-fragments remain available through ordinary `require`:
+[`settings`](misa/standard/settings.fnl) contains runtime defaults.
 
-- `misa.standard.editor` contains editor wiring.
+Composition stays local. A directory's [`init.fnl`](misa/standard/init.fnl) is the
+module for that directory: its own declarations from the sibling `core.fnl`, if it
+has any, merged with its children. It names only modules under its own directory,
+so every module below `misa.standard` is reachable from `misa.standard` without a
+list that spans directories;
+[`tests/extension-composition.fnl`](../tests/extension-composition.fnl) enforces
+both properties. Merging is by catalog and ID, so composition order never selects
+a winner and a duplicate identity is a load error. Individual modules remain
+available through ordinary `require`:
+
+- `misa.standard.editor` is the stock editor; `misa.standard.editor.core` is its
+  own declarations, and `misa.standard.editor.history` is one child.
 - `misa.standard.providers.openai` contains OpenAI provider wiring;
   `misa.standard.protocols.openai` contains the shared protocol catalogs.
 - `misa.standard.agent.stream` selects stream normalization independently of the
   conversation lifecycle.
-- `misa.standard.presentation.*` contains shared presentation composition.
+- `misa.standard.presentation` combines the shared presentation modules.
 - `misa.standard.tools.files` contains file tool registrations;
   `misa.standard.tools.web-search` contains the web-search tool and its backends.
 

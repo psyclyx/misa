@@ -1302,3 +1302,19 @@ after subsequent updates, alongside the independent reference evaluator and
 structural-sharing assertions. Generator contracts cover deterministic replay,
 shrinking, bounds, and rejected invalid options; `tests/GENERATORS.md` documents
 the deliberately small API and its shrinking limits.
+
+The stock application is now assembled one directory at a time. A directory's
+`init.fnl` is the module for that directory, and it merges the directory's own
+declarations from the sibling `core.fnl`, when it has one, with its children. It
+names only modules under its own directory, so `misa.standard` requires its
+immediate children instead of enumerating 46 modules across four levels, and
+`misa.standard.editor` is the stock editor while `misa.standard.editor.core`
+stays the editor's own declarations. `misa.merge-definitions` merges catalog maps
+while preserving function values and rejecting duplicate identities; composition
+order stays irrelevant because installation still sorts by priority and ID. The
+installed application is identical before and after: 44 catalogs and 923 entries,
+and `tests/stock.fnl` points its eleven aggregate keys at the `core` modules, so
+every existing fixture installs exactly the modules it did before.
+`tests/extension-composition.fnl` enforces reachability from `misa.standard` and
+per-directory locality, and names the three deliberately unstocked provider
+modules (`command`, `fake`, `generic`) so omissions stay explicit.

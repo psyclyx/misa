@@ -187,6 +187,14 @@ shows the stock combination, and
 runtime defaults. Keep function definitions in implementation modules and choose
 registration identities in application composition.
 
+The stock application is assembled one directory at a time. A directory's
+`init.fnl` is the module for that directory: its own declarations from the sibling
+`core.fnl`, if it has any, merged with its children. It names only modules under
+its own directory, so `misa.standard.editor` is the stock editor,
+`misa.standard.editor.core` is the editor's own declarations, and
+`misa.standard.editor.history` is one child. Growing a directory means editing that
+directory's module, never a list that spans directories.
+
 Source names follow ownership paths: `misa.editor` resolves to
 `misa/editor/init.fnl`, and `misa.editor.history` to `misa/editor/history.fnl`.
 Source names, service paths, event types, and registration IDs are separate
