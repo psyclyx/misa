@@ -23,22 +23,22 @@ python3 tests/policy-fault.py zig-out/bin/misa-fixture
 
 ## Status
 
-| Slice | Scope                                                         | State   | Evidence                             |
-| ----- | ------------------------------------------------------------- | ------- | ------------------------------------ |
-| 1     | Contract documentation matches the code                       | done    | review                               |
-| 2     | Registration and view-layer diagnostics                       | done    | 294/294 suite                        |
-| 3     | Indexed and appended state patches                            | done    | `tests/indexed-patches.fnl`, 294/294 |
-| 4     | Recoverable policy faults with an interactive fault boundary  | done    | `tests/policy-fault.py`, suite       |
-| 5     | Documentation generation and repository hygiene               | planned | —                                    |
-| 6     | Retry for transient provider transport failures               | planned | —                                    |
-| 7     | Extension discovery outside `MISA_EXTENSION_DIR`              | planned | —                                    |
-| 8     | Decide the fate of unwired native capability                  | planned | —                                    |
-| 9     | Presentation cost: window-scoped projection and a keyed cache | planned | —                                    |
-| 10    | Single native implementation of terminal cell layout          | planned | —                                    |
+| Slice | Scope                                                        | State    | Evidence                                                 |
+| ----- | ------------------------------------------------------------ | -------- | -------------------------------------------------------- |
+| 1     | Contract documentation matches the code                      | done     | review                                                   |
+| 2     | Registration and view-layer diagnostics                      | done     | suite                                                    |
+| 3     | Indexed and appended state patches                           | done     | `tests/indexed-patches.fnl`, `patch-controls` case       |
+| 4     | Recoverable policy faults with an interactive fault boundary | done     | `tests/policy-fault.py`                                  |
+| 5     | Documentation generation and repository hygiene              | done     | `tools/generate-docs.fnl`, catalog/mirror checks         |
+| 6     | Retry for transient provider transport failures              | done     | `tests/http-cancellation.py` retry modes                 |
+| 7     | Extension discovery outside `MISA_EXTENSION_DIR`             | done     | runtime case in `tests/integration/runtime.zig`          |
+| 8     | Wire the unwired capability: conversation log and `/resume`  | done     | `tests/conversation-state.fnl`, `conversation-read` case |
+| 9     | Presentation cost: window-scoped projection                  | measured | see below; no change made, and why                       |
+| 10    | Single native implementation of terminal cell layout         | partial  | parity guard landed; the Lua copies remain               |
 
-The suite grew from 292 to 294 cases: one standalone patch-control program and
-one runtime case. Slice 4's interactive behavior is additionally covered by a
-PTY regression, because the fixture harness runs headless.
+The suite grew from 292 to 303 cases. Slice 4's interactive behavior and every
+PTY regression are separate Python checks, because the fixture harness runs
+headless.
 
 ## Verified findings behind the plan
 
@@ -116,61 +116,88 @@ Details and file references are in the review. The short version:
 - `tests/policy-fault.py` fails against the previous binary ("session failed:
   UnknownNativeEffect" before any notice) and passes with the change.
 
-## Slice 5 — documentation generation and hygiene
+## Slice 5 — documentation generation and hygiene (done)
 
-Deliverable: generated catalogs and services reference; formatter coverage.
+- `tools/generate-docs.fnl` installs the stock application and writes
+  `docs/catalogs.md` and `docs/services.md`; the suite runs it in `--check` mode
+  so a stale document fails the build. The generated documents are excluded
+  from the formatter, which would otherwise rewrite them and break that check.
+- The bundled catalog is compared with `find extensions -name '*.fnl'`, captured
+  by `build.zig` as a build input, in both directions.
+- `tests/extension-composition.fnl` asserts that `tests/stock.fnl` mirrors every
+  `misa.standard.*` module except the configuration, builder, and deliberately
+  unstocked ones.
+- `treefmt.toml` now covers Fennel under `tests/`, `benchmarks/`, `tools/`, and
+  all of `src/lua_runtime/`; the 123 files that had drifted were formatted in
+  one commit.
+- `ARCHITECTURE-WORK.md` keeps the accepted scope, the checklist, and the
+  handoff evidence; the dated audit notes moved to
+  `docs/history/architecture-audit.md`.
 
-- Generate `docs/catalogs.md` and `docs/services.md` from an installed stock
-  application.
-- Derive the standard-extension catalog and `tests/stock.fnl` from the
-  filesystem rather than restating it.
-- Extend `treefmt.toml` to Fennel under `tests/` and `benchmarks/`, then
-  reformat once (99 files under the two directories are currently not
-  fnlfmt-clean, and `src/lua_runtime/*.fnl` fixtures are covered by a narrower
-  glob than they appear to be).
-- Split `ARCHITECTURE-WORK.md` into current architecture and dated history.
+## Slice 6 — transport retry (done)
 
-## Slice 6 — transport retry
+`http/request` retries a transport failure that leaves the request unjudged and
+the transient statuses 408, 425, 429, 500, 502, 503, 504, bounded by
+`retries={attempts,backoff_ms,max_ms}` and honoring `Retry-After` up to the
+ceiling. Cancellation and timeouts are never retried, and a stream that already
+delivered a record is never replayed.
 
-Deliverable: bounded retry with backoff for transient provider failures.
+Evidence: three unit tests over the policy helpers and declaration validation,
+and two new modes in `tests/http-cancellation.py` that drive the real transport
+against a local server (503 then 200 with exactly two requests; 401 with
+exactly one).
 
-- Retry connection failures, HTTP 408/429/5xx and truncated streams, honoring
-  `Retry-After`, bounded by attempts and the effect's `overall_ms`.
-- Never retry after response bytes have been committed to the transcript, and
-  never retry a credential or write effect.
+## Slice 7 — extension discovery (done)
 
-## Slice 7 — extension discovery
+`XDG_CONFIG_HOME/misa/extensions`, otherwise `$HOME/.config/misa/extensions`, is
+searched between the configuration's own directory and the installed catalog.
+A runtime case writes a plugin there, requires it by name from a configuration
+in another directory, and asserts its view is committed.
 
-Deliverable: third-party extensions install without `MISA_EXTENSION_DIR`.
+## Slice 8 — conversation log and `/resume` (done)
 
-- Search `$XDG_CONFIG_HOME/misa/extensions` (then `$HOME/.config/...`) after
-  the installed catalog, plus an explicit `config.extensions` array.
-- Report a load error that names the module and the searched roots.
+The policy in `misa.conversation` journals the canonical messages a settled turn
+added, records a reset entry when history was replaced, and can list, load, and
+install a stored conversation; `misa.agent` gained the one event that performs
+the handover. `tests/conversation-state.fnl` covers the cursor, the reset entry,
+page accumulation, picker tokens, and failure reporting; the `conversation-read`
+case proves the stored round trip including the new header `metadata`.
 
-## Slice 8 — unwired capability
+## Slice 9 — presentation cost (measured, no change)
 
-Deliverable: each capability is either reachable or removed.
+The review predicted that a frame costs the whole transcript. Measured with
+`benchmarks/native-transcript.py` against the worktree extensions (Debug build,
+mixed scenario, six samples): 1 block 3.240 ms, 16 blocks 4.892 ms, 300 blocks
+4.887 ms redraw, 7.2–7.7 ms per stream delta. Redraw is flat from 16 to 300
+blocks and the 16- and 300-block frames are byte-identical, so the per-frame
+cost is dominated by fixed work (frame construction, ANSI encoding, terminal
+write) rather than by transcript traversal.
 
-- Conversation store: add `conversation/load`, `conversation/list` and a
-  `/resume` command, or delete the module and its SQLite dependency.
-- `json/decode` and `file/edit`: remove, or document them as supported.
-- The six unread services: remove or document as extension-facing API.
+Two candidate caches were implemented and rejected on evidence or soundness:
 
-## Slice 9 — presentation cost
+- Memoizing `misa.syntax.for-model` changed nothing measurable (5.031 ms vs
+  4.887 ms redraw, 7.179 ms vs 7.734 ms stream), so it was reverted.
+- Caching the selection lookup per block is unsound: the selection service is a
+  replaceable catalog entry that may read any state, so no key short of the
+  database itself is safe, and that key removes the benefit.
 
-Deliverable: a frame's cost follows the viewport, not the transcript.
+Conclusion: window-scoped projection is not justified by this workload. The
+streaming delta path (7.2 ms, dominated by reparsing and re-rendering the
+streaming block rather than by the traversal) is the remaining cost worth
+attacking, and the natural place is the component collection's per-item cache,
+not a windowing refactor.
 
-- Project and render only the blocks intersecting the viewport, reusing stored
-  per-item geometry.
-- Keep more than one projection entry per definition, keyed by the context
-  fields a projection declares.
-- Reuse owned output lines for unchanged items.
+## Slice 10 — single native cell layout (parity guard landed)
 
-## Slice 10 — native terminal cell layout
+`src/width/root.zig` (moved out of `src/terminal/` so both the terminal module
+and the Lua runtime can import it as `misa_width`) is now reachable from Lua as
+`misa.native.width`, `misa.native.cell-width`, and `misa.native.clusters`, and a
+layout-parity case asserts that the Lua layout and the native measurement agree
+over a corpus of the rules that matter.
 
-Deliverable: one width and grapheme-segmentation implementation.
-
-- Expose the native implementation as a service, delete the mirrored Lua
-  tables, and add a parity test to the suite (the existing
-  `benchmarks/layout-parity.fnl` needs a saved baseline file and is not run by
-  `zig build test`).
+They do agree today. What remains is deleting the Lua tables and grapheme rules
+and rebuilding `misa.ui.layout` on `misa.native.clusters`; that work is now
+gated by a test rather than by reading two tables. Note that a per-codepoint
+native call would be slower than the current JIT-compiled tables, so the swap
+must go through the batched `clusters` call, and the Lua side keeps its own
+boundary walk only where it already has one.
