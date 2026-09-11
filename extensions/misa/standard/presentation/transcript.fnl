@@ -176,6 +176,12 @@
           :messages/transcript/interrupted {:event :transcript/interrupted
                                             :handler model.append-interrupted}
           :messages/runtime/dispatch-limit {:event :runtime/dispatch-limit
-                                            :handler transcript.runtime-dispatch-limit}}
+                                            :handler transcript.runtime-fault}
+          :messages/runtime/handler-error {:event :runtime/handler-error
+                                           :handler transcript.runtime-fault}
+          :messages/runtime/effect-error {:event :runtime/effect-error
+                                          :handler transcript.runtime-fault}
+          :messages/runtime/presentation-error {:event :runtime/presentation-error
+                                                :handler transcript.runtime-fault}}
  :validators {:transcript-presentations transcript.validate-presentation
               :transcript-deltas transcript.validate-delta}}

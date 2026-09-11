@@ -29,8 +29,8 @@
   "Return the current visible transcript window."
   (. (viewport db context room) :lines))
 
-(fn runtime-dispatch-limit [_ event]
-  "Present an exhausted event budget as a harness error."
+(fn runtime-fault [_ event]
+  "Present a runtime fault as a harness error."
   {:fx [{:type :dispatch
          :event {:type :transcript/harness :level :error :text event.text}}]})
 
@@ -62,7 +62,7 @@
 {: messages-detail-indicator-value
  : noninteractive-commit
  : projection-inputs
- : runtime-dispatch-limit
+ : runtime-fault
  : terminal-input
  : transcript-window
  : validate-delta

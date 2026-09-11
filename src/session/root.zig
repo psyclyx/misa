@@ -26,6 +26,21 @@ pub fn dispatchChainLimit(config: std.json.Value) !usize {
     return @intCast(limit.integer);
 }
 
+/// A policy fault an interactive session reports and survives.
+const Fault = enum { handler_error, effect_error, presentation_error };
+
+/// The first line of a multi-line diagnostic, for a one-line notice.
+fn firstLine(value: []const u8) []const u8 {
+    return value[0 .. std.mem.indexOfScalar(u8, value, 0x0a) orelse value.len];
+}
+
+/// Name the type of a native effect that failed validation.
+fn effectType(value: std.json.Value) []const u8 {
+    if (value != .object) return "unknown";
+    const kind = value.object.get("type") orelse return "unknown";
+    return if (kind == .string) kind.string else "unknown";
+}
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -45,6 +60,7 @@ pub const Session = struct {
     timers: timer.Collection,
     pending_view: ?terminal_module.Driver.View = null,
     projection_dirty: bool = false,
+    presentation_fault_reported: bool = false,
     protected: ?protected_input.Input = null,
     protected_wait: ?[]u8 = null,
 
@@ -119,12 +135,44 @@ pub const Session = struct {
                 .wall_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds(),
                 .monotonic_ms = std.Io.Timestamp.now(self.io, .awake).toMilliseconds(),
             };
-            var transaction = self.runtime.dispatch(event, clock) catch return error.LuaTransactionFailed;
+            var transaction = self.runtime.dispatch(event, clock) catch {
+                // A policy fault must not end an interactive session. Dispatch
+                // already rolled the transaction back, so report it and keep
+                // consuming events. A headless run keeps its exit status.
+                if (!self.interactive) return error.LuaTransactionFailed;
+                const name = try self.ownedEventName(event);
+                defer self.allocator.free(name);
+                try self.reportFault(.handler_error, name, firstLine(self.runtime.lastError()));
+                // A reported fault still owns the terminal: keep reading so the
+                // session stays interactive after the transaction was dropped.
+                self.read_requested = true;
+                continue;
+            };
             defer transaction.deinit();
             errdefer self.runtime.rollbackTransaction();
             var effects: std.ArrayList(native_effect.Effect) = .empty;
             defer effects.deinit(self.allocator);
-            for (transaction.effects) |effect| try effects.append(self.allocator, try .parse(effect));
+            var invalid: ?anyerror = null;
+            var invalid_type: []const u8 = "unknown";
+            for (transaction.effects) |value| {
+                const parsed = native_effect.Effect.parse(value) catch |err| {
+                    invalid = err;
+                    invalid_type = effectType(value);
+                    break;
+                };
+                try effects.append(self.allocator, parsed);
+            }
+            if (invalid) |failure| {
+                self.runtime.rollbackTransaction();
+                if (!self.interactive) return failure;
+                const name = try self.ownedEventName(event);
+                defer self.allocator.free(name);
+                const detail = try std.fmt.allocPrint(self.allocator, "'{s}': {s}", .{ invalid_type, @errorName(failure) });
+                defer self.allocator.free(detail);
+                try self.reportFault(.effect_error, name, detail);
+                self.read_requested = true;
+                continue;
+            }
             try self.runtime.commitTransaction();
             self.projection_dirty = true;
             for (effects.items) |effect| try self.execute(effect);
@@ -421,13 +469,53 @@ pub const Session = struct {
         }
     }
 
+    /// Report a policy fault as an ordinary event. Interactive sessions
+    /// carry on; a headless run reports the same fault by exiting.
+    fn reportFault(self: *Session, kind: Fault, event_type: []const u8, detail: []const u8) !void {
+        const message = try switch (kind) {
+            .handler_error => std.fmt.allocPrint(self.allocator, "Handler failed for '{s}': {s} The transaction was rolled back.", .{ event_type, detail }),
+            .effect_error => std.fmt.allocPrint(self.allocator, "Invalid native effect from '{s}': {s} The transaction was rolled back.", .{ event_type, detail }),
+            .presentation_error => std.fmt.allocPrint(self.allocator, "Presentation failed: {s} The previous frame stays visible and the model is unchanged.", .{detail}),
+        };
+        defer self.allocator.free(message);
+        const notice = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .type = switch (kind) {
+                .handler_error => "runtime/handler-error",
+                .effect_error => "runtime/effect-error",
+                .presentation_error => "runtime/presentation-error",
+            },
+            .event_type = event_type,
+            .text = message,
+        }, .{});
+        defer self.allocator.free(notice);
+        try self.enqueue(notice);
+    }
+
+    /// Name a queued event for a fault notice. The caller frees the result.
+    fn ownedEventName(self: *Session, json: []const u8) ![]u8 {
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json, .{}) catch return self.allocator.dupe(u8, "unknown");
+        defer parsed.deinit();
+        if (parsed.value != .object) return self.allocator.dupe(u8, "unknown");
+        const kind = parsed.value.object.get("type") orelse return self.allocator.dupe(u8, "unknown");
+        return self.allocator.dupe(u8, if (kind == .string) kind.string else "unknown");
+    }
+
     fn publishView(self: *Session) !void {
         if (self.projection_dirty) {
             // A failed projection cannot undo committed model changes or
             // effects. Retain the last valid frame and try only after a later
             // transaction; otherwise a broken view would spin without input.
             self.projection_dirty = false;
-            self.projectView() catch {};
+            self.projectView() catch |err| {
+                // Report the first fault of an episode: reporting every
+                // attempt would keep the queue non-empty indefinitely.
+                if (!self.presentation_fault_reported) {
+                    self.presentation_fault_reported = true;
+                    try self.reportFault(.presentation_error, "presentation", @errorName(err));
+                }
+                return;
+            };
+            self.presentation_fault_reported = false;
         }
         const view = self.pending_view orelse return;
         try self.terminal.publish(view);
