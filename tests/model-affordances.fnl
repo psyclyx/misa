@@ -168,15 +168,27 @@
 (assert (= (. filtered 1 :browse_visible) false))
 (assert (= (. filtered 2 :browse_visible) true))
 (assert (= (. filtered 3 :browse_visible) true))
-(local assigned
-       ((. handlers :model/role) catalogue {:arguments "summarizer current"}))
-(local role-db (misa.patch catalogue assigned.patch))
-(assert (= (. (misa.models.for-role role-db :summarizer) :id) :current))
-(assert (= (. assigned.fx 1 :type) :state/save))
-(assert (= (misa.models.for-role catalogue :summarizer) nil))
-(local restored ((. handlers :model/roles-loaded) catalogue
-                                                  {:found true
-                                                   :data {:summarizer :current}}
-                                                  {:config {}}))
-(assert (= (. (misa.models.for-role (misa.patch catalogue restored.patch)
-                                    :summarizer) :id) :current))
+;; A picker selection is persisted and restored after a restart.
+(local picked ((. handlers :model/select) catalogue {:id :popular}))
+(assert (= (. picked.patch :models :selected) :popular))
+(assert (= (. picked.fx 1 :type) :state/save))
+(assert (= (. picked.fx 1 :namespace) :model-selection))
+(assert (= (. picked.fx 1 :data :selected) :popular))
+(local relaunched
+       ((. handlers :model/selection-loaded)
+        (misa.patch catalogue picked.patch)
+        {:found true :data (. picked.fx 1 :data)}))
+(assert (= (. relaunched.patch :models :selected) :popular)
+        "saved selection was not restored")
+
+;; The /model command path persists the same record.
+(local opened ((. handlers :model/open) catalogue {:arguments "popular"}))
+(assert (= (. opened.patch :models :selected) :popular))
+(assert (= (. opened.fx 1 :namespace) :model-selection))
+(assert (= (. opened.fx 1 :data :selected) :popular))
+
+;; A saved model that is no longer offered is ignored rather than selected.
+(local gone ((. handlers :model/selection-loaded) catalogue
+             {:found true :data {:selected :removed}}))
+(assert (= gone nil))
+(assert (= ((. handlers :model/selection-loaded) catalogue {:found false}) nil))

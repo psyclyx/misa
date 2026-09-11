@@ -104,13 +104,13 @@
                           nil)]
       (when (not= result-text nil)
         (let [collapsed model.collapsed
+              ;; Collapsed error results show only their first line.
               summary (and collapsed (not views.prefer_result)
                            (not (and views.result
                                      views.result.model.preview_tail))
-                           (if model.is_error
-                               (: (or (result-text:match "[^\r\n]+") "") :gsub
-                                  "^.-:%d+:%s*" "")
-                               model.summary))
+                           model.is_error
+                           (: (or (result-text:match "[^\r\n]+") "") :gsub
+                              "^.-:%d+:%s*" ""))
               view (if (and summary views.result
                             (= views.result.role :content.code))
                        {:role :content.code

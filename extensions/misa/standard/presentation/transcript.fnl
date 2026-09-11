@@ -160,8 +160,6 @@
                                            :handler model.start-tool}
           :messages/transcript/tool-result {:event :transcript/tool-result
                                             :handler model.finish-tool}
-          :messages/transcript/tool-summary {:event :transcript/tool-summary
-                                             :handler model.summarize-tool}
           :messages/transcript/tool-call {:event :transcript/tool-call
                                           :handler (fn [db event cofx]
                                                      (model.append-tool (policy cofx.config)

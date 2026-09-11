@@ -40,7 +40,7 @@
 (assert (= finished.db.costs.responses.earlier original.costs.responses.earlier))
 (local summarized
        (account {:db finished.db
-                 :event {:type :tool-summary/usage
+                 :event {:type :compaction/usage
                          :response_id :summary
                          :model :test
                          :usage {:output_tokens 1000000}}}))
@@ -183,7 +183,7 @@
 ;; Group accounting includes its background work, while provider facts stay exact.
 (local attached
        (account {:db finished.db
-                 :event {:type :tool-summary/usage
+                 :event {:type :compaction/usage
                          :response_id :summary
                          :parent_response_id :current
                          :call_id :call
@@ -201,7 +201,7 @@
 (assert (= attached.db.costs.responses.summary.call_id :call))
 (local duplicate
        (account {:db attached.db
-                 :event {:type :tool-summary/usage
+                 :event {:type :compaction/usage
                          :response_id :summary
                          :parent_response_id :current
                          :call_id :call

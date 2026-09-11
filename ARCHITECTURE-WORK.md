@@ -84,6 +84,113 @@ selection and subscription architecture.
 
 ## Dated audit and implementation history
 
+### Single selected model replaces role assignments (2026-09-10)
+
+Model roles are removed. `misa.models` owns exactly one active selection
+(`db.models.selected`), and every consumer resolves it through the same
+`models/selected` projection: the conversation request, request options, the
+status indicator, and `misa.compaction`. The `/role` command, the `model/role`
+and `model/roles-loaded` events, the `models.for-role` service, `models.roles`,
+and `config.models.roles` are gone. `config.models.default` remains only as the
+initial value when nothing is persisted; `rebuild` takes it as its sole fallback.
+
+The selection persists under a dedicated `model-selection` namespace
+(`{:selected id}`): `model/select` and `model/open` save it, `app/start` loads
+it, and `model/selection-loaded` restores a still-offered model. This replaces
+the overloaded `model-roles` record and the role persistence it carried; old
+`model-roles` data is ignored rather than migrated.
+
+Summarization is now a single, explicit feature. `misa.compaction` runs its
+tool-free handoff request on the selected model, and its automatic trigger
+requires an available selected model that declares a `context_window`; settings
+no longer carry a role. The separate tool-result summary extension
+(`misa.transcript.tools.summary`), its `tool_summary` state, the
+`transcript/tool-summary` presentation and `model.summarize-tool` handler, the
+costs handler, and the tool-block summary render path are removed; the
+transcript keeps only the collapsed-error first-line preview. This supersedes the
+background-model-role compaction design above.
+
+Evidence: `tests/model-affordances.fnl` covers the persisted `model-selection`
+round trip, the `/model` command path, and that a vanished saved model is
+ignored; `tests/compaction.fnl` and `tests/compaction-cascade.fnl` pin the
+selected-model trigger, its inert cases (no model, no context window), and the
+`/compact` refusal; `tests/transcript-stream-interleave.fnl` keeps the
+block-window regression through compaction on the shared model;
+`tests/cost-state.fnl` exercises background usage accounting through
+`compaction/usage`; `tests/model-role-input.fnl` and `tests/tool-summary.fnl` are
+removed, and `tests/extension-style.fnl` audits the updated extension graph.
+
+### Transcript block windows under concurrent messages (2026-09-10)
+
+`misa.transcript.model` keeps one contiguous window of `db.messages.blocks` per
+response (`block_start`, `block_count`), and every scoped read — `find-block` for
+stream deltas, the `transcript.blocks` service used by presentation and selection —
+resolves blocks inside that window. A response's next block was appended at the end
+of the array, which only holds while nothing else arrives during the stream. A
+standalone message can: a harness notice, a released turn, or a tool result with no
+matching section. Appending at the array end then placed the response's block after
+that message, outside its own window, so the block never reached the viewport and
+its very next delta failed the `find-block` assertion with "unknown transcript
+block", ending the session (interactive `zig build run` reported it as an event
+dispatch failure).
+
+`append-block` now inserts at `block_start + block_count` and increments the
+`block_start` of the responses that follow, so an interleaved message is ordered
+after the response's blocks and every window stays its own. `inserted` clamps the
+position to the array so a pre-existing inconsistency cannot build a sparse patch
+sequence. The compaction path is the observed trigger: `complete-response`
+publishes the ready status and then the completion, so an automatic compaction
+starts while the queued prompt drains, and the summarizer survives long enough to
+finish against a busy agent and report the discarded compaction into a streaming
+turn.
+
+Evidence: `tests/transcript-stream-interleave.fnl` (registered in
+`tests/integration/standalone.zig`) drives real dispatch over the stock agent,
+queue, compaction, and transcript fragments with session ordering: the ready status
+and the completion, the queued turn's starting request, a first streamed block, the
+discarded compaction's notice, then the turn's second block. It asserts that every
+response's window holds exactly its own blocks, that the second block is created and
+resolved, and that the notice follows the blocks it arrived during.
+`tests/transcript-delta-state.fnl` keeps its generated creation/reset sequences and
+scoped-lookup contracts unchanged.
+
+### Web search tool and pluggable provider backends (2026-09-10)
+
+`web_search` searches the web through one open `search-backends` registry, so the
+agent sees a single tool schema while applications choose any provider.
+`misa.search` owns vendor-neutral policy: argument validation, backend selection,
+percent encoding, result and citation rendering, and the `misa.patch` overlay of
+per-backend settings. Each `misa.search.*` backend owns one wire shape and one
+completion normalizer. `misa.standard.tools.web-search` wires the tool, the
+`tool.web-search/run` effect, the shared `tool/web-search-complete` handler, the
+`search-backends` validator, and the Brave/Tavily API-key declarations.
+
+Model providers are first-class search backends: `codex` reuses the ChatGPT
+subscription credential and `openai` the OpenAI API key, both against their
+existing Responses endpoints with the hosted `web_search` tool. `brave` and
+`tavily` call dedicated search APIs through new native API-key providers, and
+`searxng` queries a configured self-hosted instance. `config.tools.web_search`
+selects the backend (default `codex`), bounds `max_results`, sets shared
+`timeouts`, and carries per-backend overrides without changing the tool schema or
+agent continuation. The native trust table binds the `brave` and `tavily` keys to
+exactly their search origins, and both appear in `misa login`. A backend entry is
+`{build, complete}`: `build` returns one native effect and `complete` renders its
+completion, and the shared validator enforces the shape at install. The
+provider-backed Responses backend additionally lets its own settings override
+`model`, `url`, `instructions`, `tool_choice`, and `tools`, so a different
+hosted search tool is configuration rather than a new adapter.
+
+Evidence: `tests/web-search.fnl` (registered in `tests/integration/standalone.zig`)
+covers settings defaults and malformed sections, shared argument validation,
+percent encoding, result and citation rendering, every backend's request and
+completion shape, per-backend overrides, failure text, backend validation,
+backend selection, input immutability, and an installed application whose
+`misa.catalog :search-backends` drives the effect and completion handler. Native
+`src/auth/root.zig` tests cover the new trusted origins and API-key providers.
+`tests/stock.fnl` and `tests/integration/configs/native-tools.fnl` install the
+fragment, and the MCP listing assertion confirms `web_search` reaches the shared
+tool registry. No live search service or provider request is part of the suite.
+
 ### Conversation compaction under a background model role (2026-09-10)
 
 `misa.compaction` replaces a long canonical conversation with one summarizer

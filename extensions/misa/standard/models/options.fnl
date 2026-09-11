@@ -13,12 +13,9 @@
           :request_options/model/open {:event :model/open
                                        :handler options.schedule-reconcile
                                        :priority 61000}
-          :request_options/model/role {:event :model/role
-                                       :handler options.schedule-reconcile
-                                       :priority 61000}
-          :request_options/model/roles-loaded {:event :model/roles-loaded
-                                               :handler options.schedule-reconcile
-                                               :priority 61000}
+          :request_options/model/selection-loaded {:event :model/selection-loaded
+                                                   :handler options.schedule-reconcile
+                                                   :priority 61000}
           :request_options/model/select {:event :model/select
                                          :handler options.schedule-reconcile
                                          :priority 61000}

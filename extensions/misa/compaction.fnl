@@ -1,5 +1,5 @@
 ;; Conversation compaction for long sessions. Summarization is an independent,
-;; tool-free request under a configured model role. Only a successful summary for
+;; tool-free request under the selected model. Only a successful summary for
 ;; an unchanged conversation replaces canonical history, and the visible
 ;; transcript is never rewritten, so scrollback and selection stay intact.
 
@@ -8,7 +8,6 @@
                  :max_summary_bytes 64000
                  :min_messages 6
                  :reserve_tokens 16000
-                 :role :summarizer
                  :threshold 0.8})
 
 (local handoff-header "The earlier conversation was compacted to free context. Continuation summary of the work so far (a handoff note, not a new request):
@@ -29,7 +28,7 @@
         :changed "Compaction was discarded because the conversation changed."
         :empty "Compaction produced no usable summary; the conversation is unchanged."
         :failed "Compaction failed; the conversation is unchanged."
-        :model-changed "Compaction was discarded because the summarizer changed."
+        :model-changed "Compaction was discarded because the selected model changed."
         :unhelpful "Compaction produced no shorter summary; the conversation is unchanged."})
 
 (fn fresh []
@@ -56,8 +55,6 @@
       (let [value (. merged name)]
         (assert (and (= (type value) :number) (>= value 0) (= (% value 1) 0))
                 (.. :compaction. name " must be a nonnegative integer"))))
-    (assert (and (= (type merged.role) :string) (not= merged.role ""))
-            "compaction.role must name a model role")
     (assert (or (= merged.prompt nil) (= (type merged.prompt) :string))
             "compaction.prompt must be a string")
     merged))
@@ -83,11 +80,6 @@
     (accumulate [found nil _ model (ipairs (or (and models models.entries) []))
                  &until found]
       (when (= model.id (and models models.selected)) model))))
-
-(fn role-model [db role]
-  "Resolve the model assigned to a role, if any."
-  (when (and misa.models misa.models.for-role)
-    (misa.models.for-role db role)))
 
 (fn prepare [db model]
   "Build validated request options for a background model request."
@@ -224,7 +216,7 @@
   Runs when the agent becomes ready. A ready status published by compaction
   itself is ignored so one finished summary cannot immediately start another,
   a conversation that already triggered an attempt is not retried, and nothing
-  is queued while no model is assigned to the summarizer role."
+  is queued while no model is available."
   (let [current (state db)
         agent db.agent
         settings (settings config)
@@ -232,7 +224,7 @@
     (when (and (= event.status :ready) (not event.compaction) agent
                (= agent.status :ready) (= (type messages) :table)
                (not current.active) (not agent.exit_after_response)
-               (role-model db settings.role)
+               (selected-model db)
                (not (and current.signature
                          (unchanged? current.signature (signature db))))
                (due? settings db))
@@ -257,12 +249,11 @@
    :system_prompt (request-prompt config instructions)
    :tools []})
 
-(fn unavailable [role]
-  {:fx [(notice :warning (.. "compaction needs a model for the \"" role
-                             "\" role; assign one with /role " role
-                             " provider/model"))]})
+(fn unavailable []
+  {:fx [(notice :warning
+                "compaction needs an available model; select one with /model")]})
 
-(fn begin [config db current agent messages role model automatic event]
+(fn begin [config db current agent messages model automatic event]
   (let [(options problem) (prepare db model)]
     (if problem
         {:fx [(notice :error (.. "compaction is blocked: " problem.message))]}
@@ -275,7 +266,6 @@
                        :dialog (= event.dialog true)
                        : id
                        :model model.id
-                       : role
                        :signature (signature db)
                        :summary ""
                        :usage {}}
@@ -312,8 +302,7 @@
         current (state db)
         agent db.agent
         messages (and agent agent.messages)
-        role (or (and (= (type event.role) :string) event.role) config.role)
-        model (role-model db role)]
+        model (selected-model db)]
     (if current.active
         {:fx [(notice :warning "Compaction is already running.")]}
         (if (not (and agent (= (type messages) :table) (> (length messages) 0)))
@@ -322,9 +311,9 @@
                 {:fx [(notice :warning
                               "The agent is busy; compact once the response completes.")]}
                 (if model
-                    (begin config db current agent messages role model
+                    (begin config db current agent messages model
                            (= event.automatic true) event)
-                    (unavailable role)))))))
+                    (unavailable)))))))
 
 (fn cancel [db event]
   "Cancel the active compaction request."
@@ -375,7 +364,7 @@
   (let [current (active db event)]
     (when current
       (let [request current.active
-            model (role-model db request.role)
+            model (selected-model db)
             raw (if (= event.type :agent/result)
                     (content-text event.content)
                     request.summary)
@@ -418,15 +407,15 @@
   (finish config db event true))
 
 (fn model-changed [db]
-  "Request reconciliation after a role assignment or catalogue change."
+  "Request reconciliation after the selected model or catalogue change."
   (when (and db.compaction db.compaction.active)
     {:fx [(dispatch :compaction/reconcile)]}))
 
 (fn reconcile [db]
-  "Cancel a compaction request whose role model changed or disappeared."
+  "Cancel a compaction request whose model changed or disappeared."
   (let [current (state db)]
     (when current.active
-      (let [model (role-model db current.active.role)]
+      (let [model (selected-model db)]
         (when (not= (and model model.id) current.active.model)
           (cancel db {:reason :quiet}))))))
 
@@ -465,7 +454,6 @@
  : on-request
  : reconcile
  : reset
- : role-model
  : selected-model
  : settings
  : signature

@@ -57,12 +57,15 @@
           :compaction/stream-error {:event :agent/stream-error
                                     :handler stream-error
                                     :priority 55000}
-          :compaction/model/role {:event :model/role
+          :compaction/model/open {:event :model/open
                                   :handler compaction.model-changed
                                   :priority 55000}
-          :compaction/model/roles-loaded {:event :model/roles-loaded
-                                          :handler compaction.model-changed
-                                          :priority 55000}
+          :compaction/model/select {:event :model/select
+                                    :handler compaction.model-changed
+                                    :priority 55000}
+          :compaction/model/selection-loaded {:event :model/selection-loaded
+                                              :handler compaction.model-changed
+                                              :priority 55000}
           :compaction/models/update {:event :models/update
                                      :handler compaction.model-changed
                                      :priority 55000}

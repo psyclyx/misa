@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     while (args_iterator.next()) |arg| try argv.append(allocator, arg);
 
     if (argv.items.len > 1 and (std.mem.eql(u8, argv.items[1], "login") or std.mem.eql(u8, argv.items[1], "logout") or std.mem.eql(u8, argv.items[1], "status"))) {
-        if (argv.items.len != 3) fatal("usage: misa <login|logout|status> <openai|deepseek|groq|together|fireworks|xai|mistral|cerebras|deepinfra|huggingface|nvidia|moonshot|novita|siliconflow|venice|openai-codex|anthropic|openrouter|kimi-coding|claude>");
+        if (argv.items.len != 3) fatal("usage: misa <login|logout|status> <openai|deepseek|groq|together|fireworks|xai|mistral|cerebras|deepinfra|huggingface|nvidia|moonshot|novita|siliconflow|venice|brave|tavily|openai-codex|anthropic|openrouter|kimi-coding|claude>");
         const action: auth.Action = if (std.mem.eql(u8, argv.items[1], "login")) .login else if (std.mem.eql(u8, argv.items[1], "logout")) .logout else .status;
         const result = provider_auth.commandTerminal(allocator, init.io, init.environ_map, action, argv.items[2]) catch |err| {
             if (err == error.UnknownProvider) fatal("unknown provider");

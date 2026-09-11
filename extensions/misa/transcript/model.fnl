@@ -134,6 +134,17 @@
     (table.insert next value)
     next))
 
+(fn inserted [items position value]
+  "Return a new sequence with value inserted at a clamped position."
+  (let [index (math.max 1 (math.min position (+ (length items) 1)))
+        next []]
+    (for [slot 1 (- index 1)]
+      (table.insert next (. items slot)))
+    (table.insert next value)
+    (for [slot index (length items)]
+      (table.insert next (. items slot)))
+    next))
+
 (fn updated-fx [fx response-id block-id]
   (appended (or fx []) {:type :dispatch
                         :event {:type :transcript/updated
@@ -210,8 +221,14 @@
      :tokens_per_second owner.tokens_per_second}))
 
 (fn append-block [db response-model block]
+  "Append a block at the end of its response's window.
+   Standalone messages (harness notices, standalone tools, a released turn) may
+   arrive while a response is still streaming, so its next block belongs before
+   them: insertion keeps every response's window contiguous for scoped lookups
+   and grouped presentation."
   (let [owner (assert (response db response-model.id)
                       "unknown transcript response")
+        position (+ owner.block_start owner.block_count)
         next-block (misa.patch block
                                {:response_id owner.id
                                 :role owner.role
@@ -220,8 +237,12 @@
                     (if (= previous.id owner.id)
                         (misa.patch previous
                                     {:block_count (+ owner.block_count 1)})
-                        previous))]
-    (values (misa.patch db {:messages {:blocks (misa.replace (appended db.messages.blocks
+                        (if (>= previous.block_start position)
+                            (misa.patch previous
+                                        {:block_start (+ previous.block_start 1)})
+                            previous)))]
+    (values (misa.patch db {:messages {:blocks (misa.replace (inserted db.messages.blocks
+                                                                       position
                                                                        next-block))
                                        :responses (misa.replace responses)
                                        :scroll 0}}) next-block)))
@@ -510,12 +531,6 @@
                                        {: status :call_id event.id})]
           (message-update next (updated-fx nil block.response_id block.id))))))
 
-(fn summarize-tool [db event]
-  "Attach a summary to an existing tool call."
-  (let [section (find-tool-section db event.id)]
-    (when (and section (= (type event.text) :string))
-      (replace-transcript-block db section {:summary event.text}))))
-
 (fn append-tool [policy db event cofx]
   "Append a standalone tool call with bounded argument data."
   (let [name (printable-text (tostring (or event.name :tool)))
@@ -661,5 +676,4 @@
  : start-response
  : append-tool
  : finish-tool
- : start-tool
- : summarize-tool}
+ : start-tool}

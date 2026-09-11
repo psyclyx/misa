@@ -121,12 +121,6 @@ test "model picker controls and value-only status presentation" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/model-affordances.fnl"} }, "model affordance contracts passed\n");
 }
 
-test "summarizer input preserves the main model and supports tab completion" {
-    var h = try Harness.init();
-    defer h.deinit();
-    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/model-role-input.fnl"} }, "model role input contracts passed\n");
-}
-
 test "tool presentation uses reusable components and preserves source geometry" {
     var h = try Harness.init();
     defer h.deinit();
@@ -367,22 +361,22 @@ test "file tool contracts expose hashline reads and compatible edits" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/file-tools.fnl"} }, "file tool contracts passed\n");
 }
 
-test "tool summary role keeps background requests out of canonical conversation" {
-    var h = try Harness.init();
-    defer h.deinit();
-    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-summary.fnl"} }, "tool summary lifecycle passed\n");
-}
-
 test "compaction controller preserves history and request ownership" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/compaction.fnl"} }, "compaction policy contracts passed\n");
 }
 
-test "installed compaction stays inert without a summarizer and applies a handoff" {
+test "installed compaction stays inert without a model and applies a handoff" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/compaction-cascade.fnl"} }, "compaction cascade contracts passed\n");
+}
+
+test "a transcript message during a streaming response keeps block ownership" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/transcript-stream-interleave.fnl"} }, "transcript stream interleave contracts passed\n");
 }
 
 test "Codex discovers the authenticated model catalogue" {
@@ -431,6 +425,12 @@ test "tool and keybinding policy contracts passed" {
     var h = try Harness.init();
     defer h.deinit();
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/tool-policy.fnl"} }, "tool and keybinding policy contracts passed\n");
+}
+
+test "web search backends keep provider and transport policy separate" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/web-search.fnl"} }, "web search policy contracts passed\n");
 }
 
 test "extensions follow lexical scope and module API conventions" {

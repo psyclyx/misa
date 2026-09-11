@@ -76,6 +76,7 @@
         :misa.selection.render (require :misa.standard.selection.render)
         :misa.tools.files (require :misa.standard.tools.files)
         :misa.tools.shell (require :misa.standard.tools.shell)
+        :misa.tools.web_search (require :misa.standard.tools.web-search)
         :misa.transcript (let [stock (require :misa.standard.presentation.transcript)]
                            {:actions {:transcript.detail (. stock :actions
                                                             :transcript.detail)
@@ -115,9 +116,6 @@
                                      :messages/transcript/tool-result (. stock
                                                                          :events
                                                                          :messages/transcript/tool-result)
-                                     :messages/transcript/tool-summary (. stock
-                                                                          :events
-                                                                          :messages/transcript/tool-summary)
                                      :messages/transcript/tool-call (. stock
                                                                        :events
                                                                        :messages/transcript/tool-call)
@@ -282,52 +280,6 @@
                                          :requirements {:component.tool (. stock
                                                                            :requirements
                                                                            :component.tool)}})
-        :misa.transcript.tools.summary (let [stock (require :misa.standard.presentation.tools)]
-                                         {:events {:tool_summary/tool-summary/reconcile (. stock
-                                                                                           :events
-                                                                                           :tool_summary/tool-summary/reconcile)
-                                                   :tool_summary/agent/result (. stock
-                                                                                 :events
-                                                                                 :tool_summary/agent/result)
-                                                   :tool_summary/agent/stream-end (. stock
-                                                                                     :events
-                                                                                     :tool_summary/agent/stream-end)
-                                                   :tool_summary/agent/stream-error (. stock
-                                                                                       :events
-                                                                                       :tool_summary/agent/stream-error)
-                                                   :tool_summary/agent/reset (. stock
-                                                                                :events
-                                                                                :tool_summary/agent/reset)
-                                                   :tool_summary/transcript/reset (. stock
-                                                                                     :events
-                                                                                     :tool_summary/transcript/reset)
-                                                   :tool_summary/transcript/tool-result (. stock
-                                                                                           :events
-                                                                                           :tool_summary/transcript/tool-result)
-                                                   :tool_summary/tool-summary/next (. stock
-                                                                                      :events
-                                                                                      :tool_summary/tool-summary/next)
-                                                   :tool_summary/agent/stream-delta (. stock
-                                                                                       :events
-                                                                                       :tool_summary/agent/stream-delta)
-                                                   :tool_summary/agent/stream-usage (. stock
-                                                                                       :events
-                                                                                       :tool_summary/agent/stream-usage)
-                                                   :tool_summary/model/role (. stock
-                                                                               :events
-                                                                               :tool_summary/model/role)
-                                                   :tool_summary/model/roles-loaded (. stock
-                                                                                       :events
-                                                                                       :tool_summary/model/roles-loaded)
-                                                   :tool_summary/models/update (. stock
-                                                                                  :events
-                                                                                  :tool_summary/models/update)
-                                                   :tool_summary/models/provider-availability (. stock
-                                                                                                 :events
-                                                                                                 :tool_summary/models/provider-availability)
-                                                   :tool_summary/models/replace-provider (. stock
-                                                                                            :events
-                                                                                            :tool_summary/models/replace-provider)}})
         :misa.ui (let [stock (require :misa.standard.presentation.ui)]
                    {:services {:ui.input-budgets (. stock :services
                                                     :ui.input-budgets)

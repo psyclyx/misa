@@ -34,8 +34,7 @@
                         (* (or config.max_age_days 365) 86400))))))))
 
 (fn rebuild [state preferred]
-  (let [entries {}
-        preferred (or (and state.roles state.roles.default) preferred)]
+  (let [entries {}]
     (each [_ model (ipairs state.catalogue)]
       (when (not= (. state.available model.provider) false)
         (tset entries (+ (length entries) 1) model)))
@@ -50,6 +49,10 @@
 
 (fn updated [state]
   {:patch {:models (misa.replace state)}})
+
+(fn save-selection [selected]
+  "Persist the active model so a selection survives a restart."
+  {:type :state/save :namespace :model-selection :data {: selected}})
 
 (fn compute-models-indicator [inputs]
   "Project the selected model indicator."
@@ -112,65 +115,27 @@
              :type :dispatch}]}))
 
 (fn on-model-open [db event]
-  "Select a model from command input."
+  "Select a model from command input and persist the active selection."
   (let [state (assert db.models "model state is not initialized")
         requested (or (and (= (type event.arguments) :string)
                            (event.arguments:match "^%s*(%S+)%s*$"))
                       nil)]
     (assert (and requested (find state.entries requested))
             "unknown or unavailable model")
-    {:patch {:models {:selected requested}} :fx [{:type :terminal/read}]}))
+    {:patch {:models {:selected requested}}
+     :fx [(save-selection requested) {:type :terminal/read}]}))
 
 (fn on-model-select [db event]
-  "Select an available model."
+  "Select an available model and persist the active selection."
   (assert (and (= (type event.id) :string) (find db.models.entries event.id))
           "unknown or unavailable model")
-  {:patch {:models {:selected event.id}}})
-
-(fn models-for-role [db role]
-  "Resolve the model selected for a named role."
-  (let [state db.models]
-    (when state
-      (find state.entries
-            (if (= role :default) state.selected
-                (and state.roles (. state.roles role)))))))
-
-(fn complete-model-role [_ db]
-  "Return completion items for assigning model roles."
-  (let [items []]
-    (each [_ role (ipairs [:default :summarizer])]
-      (each [_ model (ipairs (or (and db.models db.models.entries) []))]
-        (table.insert items {:value (.. role " " model.id)})))
-    (table.insert items {:value "summarizer off"})
-    items))
-
-(fn on-model-role [db event]
-  "Assign and persist a model role."
-  (let [(role id) (: (or event.arguments "") :match "^(%S+)%s+(%S+)$")]
-    (assert (and role id (or (= role :default) (= role :summarizer))
-                 (or (and (= role :summarizer) (= id :off))
-                     (find db.models.entries id)))
-            "use /role default|summarizer provider/model (or summarizer off)")
-    (let [roles (misa.patch (or db.models.roles {})
-                            {role (if (= id :off)
-                                      misa.delete
-                                      id)})]
-      {:patch {:models {:roles (misa.replace roles)
-                        :selected (when (= role :default)
-                                    id)}}
-       :fx [{:type :state/save :namespace :model-roles :data roles}
-            {:type :terminal/read}]})))
+  {:patch {:models {:selected event.id}} :fx [(save-selection event.id)]})
 
 (fn options [config]
-  "Validate configured model roles and catalogue filters."
+  "Validate the configured default model and catalogue filters."
   (let [configured (or config.models {})
-        roles (or configured.roles {})
-        filter (or configured.catalogue_filter {})
-        default (or roles.default configured.default)]
-    (assert (= (type roles) :table) "config.models.roles must be an object")
-    (each [role id (pairs roles)]
-      (assert (and (= (type role) :string) (= (type id) :string) (not= id ""))
-              "model roles must map names to nonempty model IDs"))
+        default configured.default
+        filter (or configured.catalogue_filter {})]
     (assert (= (type filter) :table)
             "config.models.catalogue_filter must be an object")
     (each [_ key (ipairs [:max_age_days :popular_limit])]
@@ -180,10 +145,10 @@
     (assert (or (= default nil)
                 (and (= (type default) :string) (not= default "")))
             "config.models.default must be a nonempty string")
-    {: roles :catalogue_filter filter : default}))
+    {:catalogue_filter filter : default}))
 
 (fn on-app-start [config db _ cofx]
-  "Initialize the model catalogue and restore saved roles."
+  "Initialize the model catalogue and restore the saved selection."
   (let [configured (options config)
         default configured.default]
     (when (not db.models)
@@ -192,9 +157,6 @@
                                       :catalogue (icollect [_ model (ipairs (misa.models.all))]
                                                    (copy-model model))
                                       :configured_default default
-                                      :roles (or (and configured
-                                                      configured.roles)
-                                                 {})
                                       :catalogue_filter (or (and configured
                                                                  configured.catalogue_filter)
                                                             {})
@@ -208,9 +170,17 @@
                                      default))]
         (set result.fx
              [{:type :state/load
-               :namespace :model-roles
-               :completion :model/roles-loaded}])
+               :namespace :model-selection
+               :completion :model/selection-loaded}])
         result))))
+
+(fn on-model-selection-loaded [db event]
+  "Restore the last selected model after a restart."
+  (when (and (not= event.found false) (= (type event.data) :table)
+             (= (type event.data.selected) :string)
+             (find (or (and db.models db.models.entries) [])
+                   event.data.selected))
+    {:patch {:models {:selected event.data.selected}}}))
 
 (fn on-models-provider-availability [config db event]
   "Update provider availability and reconcile model selection."
@@ -309,33 +279,15 @@
       (updated (rebuild (misa.patch state {:catalogue (misa.replace catalogue)})
                         default)))))
 
-(fn on-model-roles-loaded [config db event]
-  "Restore saved model roles with configured assignments taking precedence."
-  (let [configured (options config)
-        default configured.default]
-    (when (and (not= event.found false) (= (type event.data) :table))
-      (let [roles {}]
-        (each [role id (pairs event.data)]
-          (when (and (= (type role) :string) (= (type id) :string))
-            (tset roles role id)))
-        (each [role id (pairs (or (and configured configured.roles) {}))]
-          (tset roles role id))
-        {:patch {:models {:roles (misa.replace roles)
-                          :selected (when roles.default
-                                      roles.default)}}}))))
-
 {: complete-model-open
- : complete-model-role
  : compute-models-indicator
  : compute-models-projection
  : compute-models-selected
- : models-for-role
  : on-app-start
  : on-model-open
  : on-model-picker-open
- : on-model-role
- : on-model-roles-loaded
  : on-model-select
+ : on-model-selection-loaded
  : on-models-provider-availability
  : on-models-replace-provider
  : on-models-update

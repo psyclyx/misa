@@ -1,7 +1,7 @@
 ;; Installed-cascade contracts for conversation compaction. The pure policy lives in
 ;; tests/compaction.fnl; this file installs the stock wiring and drives real dispatch,
 ;; because those fixtures supply state the application never provides (models.entries,
-;; a resolvable summarizer) and so cannot show that an unconfigured session is inert.
+;; a resolvable model) and so cannot show that an unconfigured session is inert.
 ;; Nothing here is a performance claim.
 (local fennel (require :fennel))
 (local output io.write)
@@ -83,8 +83,8 @@
                  {:role :assistant :content [{:type :text :text "six"}]}
                  {:role :user :content [{:type :text :text "seven"}]}])
 
-(fn seed [{:roles roles :window window}]
-  {:models {:selected :test/model
+(fn seed [{:selected? selected? :window window}]
+  {:models {:selected (if (= selected? false) misa.delete :test/model)
             :entries [(if window
                           {:id :test/model
                            :context_window window
@@ -94,10 +94,7 @@
                       {:id :test/small
                        :context_window 200000
                        :provider :test
-                       :model :small}]
-            ;; Roles is a collection and this patch merges into the installed models,
-            ;; so unassigning a summarizer needs a replace control to survive the merge.
-            :roles (misa.replace (or roles {}))}
+                       :model :small}]}
    :agent {:messages messages :status :ready}
    :usage {:last_request {:input_tokens 190000 :output_tokens 1000}}})
 
@@ -107,27 +104,27 @@
 (local settings (compaction.settings {}))
 
 ;; Above the budget: the conversation is due, so the trigger is what is under test.
-(seed! {:window 200000})
+(seed! {:window 200000 :selected? false})
 (assert (= (compaction.due? settings (seed {:window 200000})) true)
         "the seeded conversation is not due")
 
-;; An unconfigured session queues nothing. No summarizer is assigned, so compaction
+;; An unconfigured session queues nothing. No model is selected, so compaction
 ;; must stay silent rather than refusing on every turn above the budget.
 (local idle (settle {:type :agent/status :status :ready}))
-(assert (not (seen? idle :compaction/start)) "compaction started without a summarizer")
+(assert (not (seen? idle :compaction/start)) "compaction started without a selected model")
 (assert (= (notice-text idle) nil) "an unconfigured session reported a refusal")
 (assert (= (length (messages-of)) 7) "an unconfigured session changed history")
 
-;; Both documented conditions are required. An assigned summarizer is not enough when
-;; the selected model declares no context window, because the budget is then unknown.
-(seed! {:roles {:summarizer :test/small}})
+;; Both conditions are required: a model must be selected and declare a context
+;; window, because the budget is unknown without one.
+(seed! {})
 (local no-window (settle {:type :agent/status :status :ready}))
 (assert (not (seen? no-window :compaction/start))
         "compaction started without a known context window")
 (assert (= (notice-text no-window) nil) "an unknown budget reported a refusal")
 
 ;; With both conditions met the trigger starts a tool-free summarization request.
-(seed! {:window 200000 :roles {:summarizer :test/small}})
+(seed! {:window 200000})
 (local started (settle {:type :agent/status :status :ready}))
 (local start-event (event-of started :compaction/start))
 (assert (= (type start-event) :table) "automatic compaction did not start")
@@ -136,7 +133,7 @@
         "automatic compaction did not report why it started")
 (local request (effect-of started :provider.test))
 (assert (= (type request) :table) "compaction did not issue a provider request")
-(assert (= request.model :small) "compaction did not use the summarizer model")
+(assert (= request.model :model) "compaction did not use the selected model")
 (assert (= (length request.tools) 0) "the compaction request carried tools")
 (assert (= (length request.messages) 1) "the compaction request carried extra turns")
 (assert (contains? request.system_prompt "handoff note")
@@ -168,24 +165,24 @@
 (assert (= (. observed.lifecycle :block_draft) false)
         "a finished compaction still holds draft submission")
 
-;; /compact asks the controller to start, and the controller refuses without an
-;; assigned summarizer instead of issuing a request.
-(seed! {:window 200000})
+;; /compact asks the controller to start, and the controller refuses without a
+;; selected model instead of issuing a request.
+(seed! {:window 200000 :selected? false})
 (local refused (settle {:type :compaction/request :arguments "focus"}))
 (assert (seen? refused :compaction/start) "/compact did not reach the controller")
 (assert (= nil (effect-of refused :provider.test))
-        "/compact issued a request without a summarizer")
-(assert (contains? (notice-text refused) "summarizer")
-        "/compact did not name the missing role")
-(assert (contains? (notice-text refused) "/role summarizer")
-        "/compact did not say how to assign the role")
+        "/compact issued a request without a model")
+(assert (contains? (notice-text refused) "available model")
+        "/compact did not name the missing model")
+(assert (contains? (notice-text refused) "/model")
+        "/compact did not say how to choose a model")
 (read-state)
 (assert (= (. observed.db.compaction :active) nil)
         "/compact booked a request it could not start")
-(assert (= (length (messages-of)) 7) "/compact changed history without a summarizer")
+(assert (= (length (messages-of)) 7) "/compact changed history without a model")
 
-;; With the role assigned, /compact opens the cancellable progress dialog.
-(seed! {:window 200000 :roles {:summarizer :test/small}})
+;; With a model selected, /compact opens the cancellable progress dialog.
+(seed! {:window 200000})
 (local dialog (settle {:type :compaction/request :arguments "focus"}))
 (local open (event-of dialog :dialog/open))
 (assert (= (type open) :table) "/compact did not open the progress dialog")
@@ -194,6 +191,6 @@
 (assert (= open.cancellable true))
 (assert (= open.correlation :compaction))
 (assert (= open.completion :compaction/action))
-(assert (= (notice-text dialog) nil) "/compact refused with the role assigned")
+(assert (= (notice-text dialog) nil) "/compact refused with a model selected")
 
 (output "compaction cascade contracts passed\n")

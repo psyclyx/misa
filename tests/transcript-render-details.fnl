@@ -49,12 +49,6 @@
 (assert (not (text:find :four 1 true)))
 (assert (text:find "…" 1 true))
 (output "transcript rendering details passed\n")
-(local summarized (tool {:kind :tool_call :name :read_file :collapsed true
-                         :arguments {} :result "raw verbose result"
-                         :summary "Read 24 lines from settings."} {:columns 80}))
-(local summarized-text (table.concat (icollect [_ line (ipairs summarized.lines)] (line-text line)) "\n"))
-(assert (summarized-text:find "Read 24 lines from settings." 1 true))
-(assert (not (summarized-text:find "raw verbose result" 1 true)))
 
 ;; component.tool's optional JSON extension is not a rendering dependency.
 (local json misa.json)

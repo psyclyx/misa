@@ -14,6 +14,7 @@
                (require :misa.standard.presentation)
                (require :misa.standard.tools.files)
                (require :misa.standard.tools.shell)
+               (require :misa.standard.tools.web-search)
                (require :misa.standard.usage)
                (require :misa.standard.usage.dialog)
                (require :misa.standard.choices)

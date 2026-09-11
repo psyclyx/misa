@@ -12,7 +12,7 @@ not establish shared ownership.
 | `misa.agent`                       | Conversation lifecycle, response correlation, tool continuation, and stream normalization |
 | `misa.models`                      | Model discovery and selection, request options, effort, and model previews                |
 | `misa.costs`                       | Model pricing and response cost accounting                                                |
-| `misa.compaction`                  | Conversation summarization and history compaction under a model role                      |
+| `misa.compaction`                  | Conversation summarization and history compaction on the selected model                   |
 | `misa.usage`                       | Usage capture and refresh policy; its `dialog` provides the optional dashboard            |
 | `misa.choices`                     | Choice state, ranking, geometry, previews, preferences, and picker behavior               |
 | `misa.commands`                    | Command discovery, invocation, and the command palette                                    |
@@ -23,7 +23,7 @@ not establish shared ownership.
 | `misa.markdown`                    | Markdown documents and rendering                                                          |
 | `misa.transcript`                  | Response models, viewport, groups, syntax, and tool presentation                          |
 | `misa.protocols`, `misa.providers` | Wire formats, transport adapters, and authentication policy                               |
-| `misa.tools`                       | File and shell operations                                                                 |
+| `misa.tools`, `misa.search`        | File, shell, and web-search operations; search backends and tool policy                   |
 | `misa.clipboard`, `misa.links`     | Clipboard and external link effects                                                       |
 | `misa.ui`                          | Frame composition, layout, typed values, and shared presentation machinery                |
 | `misa.json`                        | JSON encoding and decoding at data boundaries                                             |
@@ -81,7 +81,8 @@ fragments remain available through ordinary `require`:
 - `misa.standard.agent.stream` selects stream normalization independently of the
   conversation lifecycle.
 - `misa.standard.presentation.*` contains shared presentation composition.
-- `misa.standard.tools.files` contains file tool registrations.
+- `misa.standard.tools.files` contains file tool registrations;
+  `misa.standard.tools.web-search` contains the web-search tool and its backends.
 
 Importing a fragment does not install it. Its entries can be selected, combined,
 changed, or omitted with ordinary table operations. The complete application
@@ -170,7 +171,7 @@ they mislead:
   `(require :misa.costs)` resolves to `extensions/misa/costs.fnl`. Servers using
   the default package root report unresolved modules.
 - Definition catalogs are open, string-keyed registries (`value-renderers`,
-  `transcript-presentations`, `agent-deltas`, `codex-records`,
+  `transcript-presentations`, `agent-deltas`, `codex-records`, `search-backends`,
   `selection-sources`, `dialog-inputs`, and others). No server knows their entry
   shapes. Registration-time validation in `src/lua_runtime/framework.fnl`, the
   domain module's own checks, and the focused policy tests are authoritative.

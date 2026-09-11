@@ -12,6 +12,7 @@
   (app.include (. (require :tests.stock) :misa.providers.openrouter))
   (app.include (. (require :tests.stock) :misa.providers.openai-codex))
   (app.include (. (require :tests.stock) :misa.providers.claude))
+  (app.include (. (require :tests.stock) :misa.tools.web_search))
   (app.include (. (require :tests.stock) :misa.ui.themes))
   (app.include (. (require :tests.stock) :misa.ui.themes.default))
   (app.include (. (require :tests.stock) :misa.ui.components))

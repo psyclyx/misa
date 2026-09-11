@@ -53,7 +53,7 @@ test "MCP initialization listing and file writes share the tool registry" {
         \\
     ) });
     try support.success(result);
-    for ([_][]const u8{ "\"name\":\"read_file\"", "\"name\":\"list_directory\"", "\"isError\":false" }) |needle| try support.contains(result.stdout, needle);
+    for ([_][]const u8{ "\"name\":\"read_file\"", "\"name\":\"list_directory\"", "\"name\":\"web_search\"", "\"isError\":false" }) |needle| try support.contains(result.stdout, needle);
     try std.testing.expectEqualStrings("from mcp", try h.read("mcp-tool.txt"));
 }
 

@@ -51,7 +51,6 @@
 ;; Settings validation and documented defaults.
 (local defaults (compaction.settings {}))
 (assert (= defaults.enabled true))
-(assert (= defaults.role :summarizer))
 (assert (= defaults.threshold 0.8))
 (assert (= defaults.reserve_tokens 16000))
 (assert (= defaults.min_messages 6))
@@ -59,23 +58,20 @@
 (assert (= defaults.max_summary_bytes 64000))
 (local configured (compaction.settings {:compaction {:enabled false
                                                      :prompt "Summarize tersely."
-                                                     :role :default
                                                      :threshold 0.5}}))
 (assert (= configured.enabled false))
-(assert (= configured.role :default))
 (assert (= configured.prompt "Summarize tersely."))
 (assert (= configured.min_messages defaults.min_messages))
 (each [_ invalid (ipairs [{:threshold 0}
                           {:threshold 1.5}
                           {:enabled :yes}
-                          {:role ""}
                           {:reserve_tokens -1}
                           {:prompt 5}])]
   (local (ok _) (pcall compaction.settings {:compaction invalid}))
   (assert (not ok) "invalid compaction settings were accepted"))
 
 ;; Canonical history renders role-tagged plain text, including tool calls and
-;; results, so the summarizer sees paths, commands, and outcomes.
+;; results, so the model sees paths, commands, and outcomes.
 (local messages [{:role :user :content [{:type :text :text "fix the parser"}]}
                  {:role :assistant
                   :content [{:type :thinking :text "reading"}
@@ -115,7 +111,14 @@
 
 ;; The budget follows the selected model's context window and the message floor.
 (local catalog {:models {:selected :test/model
-                         :entries [{:id :test/model :context_window 200000}]}})
+                         :entries [{:id :test/model
+                                    :provider :test
+                                    :model :model
+                                    :context_window 200000}
+                                   {:id :test/other
+                                    :provider :test
+                                    :model :other
+                                    :context_window 200000}]}})
 (assert (= (compaction.due? (compaction.settings {}) catalog) false))
 (local many [(. messages 1)
              (. messages 2)
@@ -126,6 +129,8 @@
 (local almost {:models catalog.models
                :agent {:messages many :status :ready}
                :usage {:last_request {:input_tokens 150000 :output_tokens 1000}}})
+(local without-model
+       (misa.patch almost {:models {:selected misa.delete}}))
 (assert (= (compaction.due? (compaction.settings {}) almost) true))
 (assert (= (compaction.due? (compaction.settings {:compaction {:enabled false}})
                             almost)
@@ -133,7 +138,6 @@
 
 ;; Automatic compaction starts only from a ready agent above the budget, never
 ;; from compaction's own completion, and never for a one-shot argv run.
-(set misa.models.for-role (fn [_ _] {:id :test/small :provider :test :model :small}))
 (local (_ check-fx) (transition almost {:type :agent/status :status :ready}))
 (assert (= (length check-fx) 1))
 (assert (= (. check-fx 1 :event :type) :compaction/start))
@@ -155,16 +159,14 @@
        (transition attempted {:type :agent/status :status :ready}))
 (assert (= retried attempted))
 (assert (= (length retried-fx) 0))
-;; Nothing is queued while no summarizer is assigned, so an unconfigured
+;; Nothing is queued while no model is selected, so an unconfigured
 ;; session does not repeat a refusal on every turn.
-(set misa.models.for-role (fn [_ _] nil))
 (local (unassigned unassigned-fx)
-       (transition almost {:type :agent/status :status :ready}))
-(assert (= unassigned almost))
+       (transition without-model {:type :agent/status :status :ready}))
+(assert (= unassigned without-model))
 (assert (= (length unassigned-fx) 0))
-(set misa.models.for-role (fn [_ _] {:id :test/small :provider :test :model :small}))
 
-;; Starting a request requires a ready agent, an assigned role model, and
+;; Starting a request requires a ready agent, a selected model, and
 ;; something to compact; each refusal names its reason and changes no state.
 (local (busy busy-fx) (transition busy-agent {:type :compaction/start}))
 (assert (= busy busy-agent))
@@ -172,23 +174,21 @@
 (assert (contains? (notice-text busy-fx) "agent is busy"))
 (local empty {:agent {:messages [] :status :ready}})
 (assert (= (transition empty {:type :compaction/start}) empty))
-(set misa.models.for-role (fn [_ _] nil))
-(local (missing missing-fx) (transition almost {:type :compaction/start}))
-(assert (= missing almost))
+(local (missing missing-fx) (transition without-model {:type :compaction/start}))
+(assert (= missing without-model))
 (assert (= (. (notice-of missing-fx) :level) :warning))
-(assert (contains? (notice-text missing-fx) "summarizer"))
-(assert (contains? (notice-text missing-fx) "/role summarizer"))
+(assert (contains? (notice-text missing-fx) "available model"))
+(assert (contains? (notice-text missing-fx) "/model"))
 
 ;; A successful start issues one tool-free provider request holding the rendered
 ;; conversation, the handoff prompt, and a progress status.
-(set misa.models.for-role (fn [_ _] {:id :test/small :provider :test :model :small}))
 (local (started start-fx) (transition almost {:type :compaction/start}))
 (assert (= (. start-fx 1 :event :type) :agent/status))
 (assert (= (. start-fx 1 :event :status) :compacting))
 (assert (= (notice-of start-fx) nil))
 (assert (= (length start-fx) 2))
 (local request (provider-request start-fx))
-(assert (= request.model :small))
+(assert (= request.model :model))
 (assert (= (length request.tools) 0))
 (assert (= (length request.messages) 1))
 (assert (= (. request.messages 1 :role) :user))
@@ -196,8 +196,7 @@
 (assert (contains? (. request.messages 1 :content 1 :text)
                    "user: fix the parser"))
 (assert (= started.compaction.active.id request.id))
-(assert (= started.compaction.active.model :test/small))
-(assert (= started.compaction.active.role :summarizer))
+(assert (= started.compaction.active.model :test/model))
 (assert (= started.compaction.active.dialog false))
 (assert (= started.compaction.active.automatic false))
 (assert (= (misa.json.encode started.compaction.signature)
@@ -261,7 +260,7 @@
 (assert (= applied.compaction.sequence 1))
 (local reported (effect-of applied-fx :compaction/usage))
 (assert (= reported.usage.output_tokens 40))
-(assert (= reported.model :test/small))
+(assert (= reported.model :test/model))
 (assert (= reported.response_id request-id))
 (assert (= (. (effect-of applied-fx :agent/status) :status) :ready))
 (assert (= (. (effect-of applied-fx :agent/status) :compaction) true))
@@ -283,7 +282,7 @@
 (assert (= (. (effect-of discarded-fx :agent/status) :status) :ready))
 
 ;; An empty summary, one no shorter than its input, a failed request, and a
-;; summarizer that disappeared are all refused without touching history.
+;; selected model that disappeared are all refused without touching history.
 (local (blank blank-fx) (transition started {:type :agent/stream-end
                                              :id request-id}))
 (assert (= blank.agent almost.agent))
@@ -301,15 +300,14 @@
 (assert (= failed.agent almost.agent))
 (assert (= (. (notice-of failed-fx) :level) :error))
 (assert (contains? (notice-text failed-fx) "Compaction failed"))
-(set misa.models.for-role (fn [_ _] nil))
-(local (unavailable _) (transition streamed {:type :agent/stream-end
-                                            :id request-id}))
+(local (unavailable _)
+       (transition (misa.patch streamed {:models {:selected misa.delete}})
+                   {:type :agent/stream-end :id request-id}))
 (assert (= unavailable.agent almost.agent))
 (assert (= unavailable.compaction.active nil))
-(set misa.models.for-role (fn [_ _] {:id :test/small :provider :test :model :small}))
 
 ;; Cancellation stops the request, restores the ready status, and leaves history
-;; untouched; reconciliation cancels only when the summarizer model changed.
+;; untouched; reconciliation cancels only when the selected model changed.
 (local (cancelled cancel-fx) (transition started {:type :compaction/cancel}))
 (assert (= cancelled.compaction.active nil))
 (assert (= (. cancel-fx 1 :type) :operation/cancel))
@@ -329,10 +327,10 @@
 (assert (= (length reconcile-fx) 0))
 (assert (= (notice-of reconcile-fx) nil))
 (assert (= (transition almost {:type :compaction/reconcile}) almost))
-(set misa.models.for-role (fn [_ _] {:id :test/other :provider :test :model :other}))
-(local (stale _) (transition started {:type :compaction/reconcile}))
+(local (stale _)
+       (transition (misa.patch started {:models {:selected :test/other}})
+                   {:type :compaction/reconcile}))
 (assert (= stale.compaction.active nil))
-(set misa.models.for-role (fn [_ _] {:id :test/small :provider :test :model :small}))
 
 ;; Reset clears bookkeeping while keeping the request sequence monotonic, so a
 ;; later request reuses the incrementing identity.

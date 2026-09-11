@@ -604,8 +604,12 @@ section to disable persistence. These registries contain no input or agent behav
 `db.messages.blocks` for user, assistant, thinking, tool call/result,
 authentication, and harness entries. The root managed view reprojects those
 models. Stable `transcript/response-*` and `transcript/block-*` lifecycle events
-append stream chunks without repeatedly copying accumulated responses, then
-compact each block once at finalization. Thinking and active assistant blocks
+append stream chunks without repeatedly copying accumulated responses, then compact
+each block once at finalization. A response owns one contiguous window of
+`db.messages.blocks`, so a standalone message that arrives while a response is
+still streaming — a harness notice, a released turn, an unmatched tool result — is
+ordered after that response's blocks instead of splitting its window. Thinking and
+active assistant blocks
 carry pending indicators. Tool calls remain one correlated section from pending
 through success, error, or cancellation: their result updates the matching call
 in place, while unmatched custom results may fall back to a standalone section.
@@ -973,8 +977,9 @@ interleaves terminal reads with stream batches. Slow policy handling therefore
 applies backpressure instead of growing the session queue, and Ctrl-C can cancel
 the active socket or child promptly without invoking Lua from an I/O thread.
 `misa.standard.tools.files` declares `read_file`, `list_directory`, `write_file`,
-and `edit_file`; `misa.standard.tools.shell` declares `shell`. Their implementations
-live under `misa.tools`. These are ordinary application choices. `misa mcp` exposes
+and `edit_file`; `misa.standard.tools.shell` declares `shell`; and
+`misa.standard.tools.web-search` declares `web_search`. Their implementations
+live under `misa.tools` and `misa.search`. These are ordinary application choices. `misa mcp` exposes
 the application's tool schemas and effect translators as an MCP stdio server. The
 Claude provider supplies this bridge through `--mcp-config` whenever tools are
 registered, while retaining `--tools ""` so Claude's own tools remain disabled.
@@ -982,6 +987,44 @@ The MCP child inherits `MISA_CONFIG`; configurations selected with `--config`
 should set `config.providers.claude.mcp_arguments` to
 `["mcp", "--config", "/the/same/config.fnl"]`. `mcp_command` defaults to
 `misa` and may be set to an absolute executable path.
+
+`web_search` is a single tool over an open `search-backends` registry, so the
+agent sees one schema while applications choose how results are obtained.
+`config.tools.web_search.backend` (default `codex`) selects the backend, and
+`config.tools.web_search.max_results` and `.timeouts` apply to every backend. A
+backend's own map overrides those shared settings, for example
+`config.tools.web_search.brave = {url = "..."}`. Model providers that expose
+the hosted Responses `web_search` tool are backends in their own right: `codex`
+reuses the ChatGPT subscription credential and `openai` reuses an OpenAI API
+key on their existing Responses endpoints, so a Codex login is already enough.
+`brave` and `tavily` call dedicated search APIs and are registered with
+`misa login` as API-key providers; `searxng` queries a self-hosted instance and
+requires an explicit `url`. Because the wire detail stays in the backend, a
+provider or service fits without changing the tool schema or agent policy.
+Results enter canonical history, the transcript, the MCP bridge, and the
+optional tool summary like any other tool, and a missing credential fails as an
+ordinary tool error.
+
+A backend is an entry in `app.definitions["search-backends"]` named
+`{build, complete}`. `build(config, arguments, id)` returns exactly one native
+effect (any of the fixed effects, so an HTTP API, a process, or a local
+transport all fit), and `complete(config, event)` returns
+`{text, is_error?}` for that effect's completion. `build` receives the merged
+settings for its own backend, so it can read URLs, models, and limits without
+knowing the shared `max_results` policy. Register a custom backend without
+touching the tool or agent:
+
+```fennel
+(tset app.definitions["search-backends"] :my-search
+      {:build (fn [config arguments id] ...)
+       :complete (fn [config event] ...)})
+(tset app.config.tools :web_search {:backend :my-search})
+```
+
+The bundled `search-backends` entries validate the same shape at install time.
+A Responses-compatible provider backend additionally accepts `model`, `url`,
+`instructions`, `tool_choice`, and `tools` overrides under its own config map,
+so a different hosted search tool needs no code change.
 `misa.providers.fake` keeps its state under
 `db.providers.fake`; `misa.providers.command` adapts user executables.
 `misa.providers.claude` invokes Claude Code's stream-JSON process protocol and reuses
@@ -1091,11 +1134,12 @@ recently used models, and provider recommendations remain visible regardless of 
 Search and the All view retain the full available catalogue. No popularity score
 is inferred from a model name or price.
 
-Assign models with `/role default provider/model` and
-`/role summarizer provider/model`; `/role summarizer off` removes the latter.
-Assignments persist and can be overridden by `config.models.roles`.
-Extensions resolve full available models through `misa.models.for-role(db, role)`;
-an unassigned or unavailable background role resolves to nil.
+Misa uses one selected model for every request. Choose it with `/model
+provider/model` or the picker (Alt-M); `config.models.default` supplies the
+initial value when nothing has been selected yet. The choice persists across
+restarts. Extensions read the resolved model from `db.models.selected` (the
+`models/selected` subscription), and automatic compaction runs on the same
+selected model.
 
 The default theme inherits terminal body text and base background. Choose
 `config.themes.appearance = "light"` for light terminal backgrounds (default
@@ -1393,7 +1437,9 @@ NVIDIA, Moonshot, Novita, SiliconFlow, and Venice are also included as API-key
 providers. They use their OpenAI-compatible chat-completions and model-listing
 endpoints, so `/login PROVIDER` and `/model` work consistently across them.
 Where a provider has a known key-management page, the login dialog links to it
-before accepting the pasted key.
+before accepting the pasted key. `brave` and `tavily` are API-key providers for
+the `web_search` tool rather than model providers: `/login brave` and
+`/login tavily` store the same native credentials the search backends inject.
 
 OpenAI-compatible request options are composed from provider fragments instead
 of being embedded in the shared chat protocol. All compatible providers accept
@@ -1498,7 +1544,6 @@ gutter: removed lines use old-file numbers; other lines use new-file numbers.
 File reads, writes, edit diffs, and shell commands/output share that renderer's
 surface, spacing, and wrapping. Collapsed shell output shows its last three
 rendered rows, with the omitted-row count above; expanding shows the full output.
-Shell previews retain that output tail even when a background summary exists.
 Snapshot hashes remain in the
 tool result but are hidden in the normal view. Pending replacement snippets are
 unnumbered; completed edits show the actual diff instead of repeating the snippet.
@@ -1513,39 +1558,24 @@ Claude's CLI requires `mcp__misa__` names for its MCP transport and allowlist.
 Misa removes that private bridge prefix from observed tool names in canonical
 history and the transcript; names belonging to other MCP servers remain intact.
 
-The optional `misa.transcript.tools.summary` extension (included in the default profile) uses the
-`summarizer` model role for tool-free background summaries of successful tool
-results longer than 240 bytes. Requests run one at a time; short results and
-errors keep their direct previews. Summaries affect collapsed presentation only;
-canonical tool results remain unchanged, and provider failures retain the direct
-preview. Summary usage is included in both its originating response group's cost
-and the session total, while provider throughput remains independent. Resetting the conversation
-cancels pending summaries. No summary requests run until a model is assigned to
-the role, for example `config.models.roles.summarizer = "provider/model"`.
-Turning the role off or losing model availability cancels active summaries and
-clears the queue; changing the role model restarts unfinished work on the new
-model. Late completions from cancelled requests cannot change the transcript.
-
 The `misa.compaction` extension (included in the default profile) frees context in
-long sessions by replacing canonical history with one summarizer handoff. `/compact`
-(also the `compaction.compact` action) runs a tool-free summarization request under
-the `summarizer` role, with a cancellable progress dialog; `config.compaction.role`
-and `.prompt` select the model and instructions, and typed `/compact` arguments are
-appended to the prompt. A model must be assigned to that role first, for example
-`/role summarizer provider/model` or `config.models.roles.summarizer`; until one is
-assigned, `/compact` reports that it needs one and automatic compaction stays
-inactive. Only a summary produced for an unchanged conversation replaces canonical
-history, and it is installed as a user handoff message followed by a short assistant
-continuation so the next request still alternates roles. The visible transcript and
-scrollback are never rewritten, so reading position and selection are preserved.
-`config.compaction.enabled` (default `true`) enables automatic compaction, which
-starts from a ready agent once the estimated prompt reaches
-`threshold * (context_window - reserve_tokens)` with at least `min_messages`
-messages; the selected conversation model must also declare a `context_window`,
-otherwise the budget is unknown and no automatic attempt is made. The summarizer
-input is bounded by `max_input_bytes`, keeping the beginning and the most recent work
-with an explicit omission marker, and the accumulated summary by `max_summary_bytes`.
-An empty summary, a failure, or a summary no shorter than its input leaves history
-untouched and reports why. Changing the summarizer role model or losing its
-availability cancels an active request, and draft submission is held while a
-compaction runs. Usage is recorded through `misa.costs` like any other request.
+long sessions by replacing canonical history with one handoff summary. `/compact`
+(also the `compaction.compact` action) runs a tool-free summarization request on the
+selected model, with a cancellable progress dialog; `config.compaction.prompt`
+overrides the instructions and typed `/compact` arguments are appended to them.
+Automatic compaction requires an available selected model that declares a
+`context_window`; otherwise the budget is unknown, no automatic attempt is made,
+and `/compact` reports that it needs a model. Only a summary produced for an
+unchanged conversation replaces canonical history, and it is installed as a user
+handoff message followed by a short assistant continuation so the next request
+still alternates roles. The visible transcript and scrollback are never rewritten,
+so reading position and selection are preserved. `config.compaction.enabled`
+(default `true`) enables automatic compaction, which starts from a ready agent once
+the estimated prompt reaches `threshold * (context_window - reserve_tokens)` with at
+least `min_messages` messages. The model input is bounded by `max_input_bytes`,
+keeping the beginning and the most recent work with an explicit omission marker, and
+the accumulated summary by `max_summary_bytes`. An empty summary, a failure, or a
+summary no shorter than its input leaves history untouched and reports why. Changing
+the selected model or losing its availability cancels an active request, and draft
+submission is held while a compaction runs. Usage is recorded through `misa.costs`
+like any other request.

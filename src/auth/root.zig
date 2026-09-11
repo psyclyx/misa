@@ -361,6 +361,10 @@ pub fn validateCredentialOrigin(id: []const u8, url: []const u8, store: ?*Store,
         "https://openrouter.ai"
     else if (std.mem.eql(u8, id, "openai-codex"))
         "https://chatgpt.com/backend-api/codex"
+    else if (std.mem.eql(u8, id, "brave"))
+        "https://api.search.brave.com"
+    else if (std.mem.eql(u8, id, "tavily"))
+        "https://api.tavily.com"
     else
         null;
     if (trusted) |origin| if (urlUnder(url, origin)) return;
@@ -464,7 +468,8 @@ fn apiKeyProvider(provider: []const u8) bool {
         std.mem.eql(u8, provider, "cerebras") or std.mem.eql(u8, provider, "deepinfra") or
         std.mem.eql(u8, provider, "huggingface") or std.mem.eql(u8, provider, "nvidia") or
         std.mem.eql(u8, provider, "moonshot") or std.mem.eql(u8, provider, "novita") or
-        std.mem.eql(u8, provider, "siliconflow") or std.mem.eql(u8, provider, "venice");
+        std.mem.eql(u8, provider, "siliconflow") or std.mem.eql(u8, provider, "venice") or
+        std.mem.eql(u8, provider, "brave") or std.mem.eql(u8, provider, "tavily");
 }
 
 pub const CommandResult = struct {
@@ -511,6 +516,8 @@ fn provisioningUrl(provider: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, provider, "nvidia")) return "https://build.nvidia.com";
     if (std.mem.eql(u8, provider, "novita")) return "https://novita.ai/settings/key-management";
     if (std.mem.eql(u8, provider, "venice")) return "https://venice.ai/settings/api";
+    if (std.mem.eql(u8, provider, "brave")) return "https://api-dashboard.search.brave.com/app/keys";
+    if (std.mem.eql(u8, provider, "tavily")) return "https://app.tavily.com/home";
     return null;
 }
 const TerminalInteraction = struct {
@@ -703,6 +710,19 @@ test "generic API-key providers require an HTTPS base URL" {
     try std.testing.expectError(error.UntrustedAuthDeclaration, invalid.validate());
 }
 
+test "dedicated search credentials are API-key providers" {
+    const brave: Declaration = .{ .provider = "brave", .strategy = .api_key, .provision_url = "https://api-dashboard.search.brave.com/app/keys" };
+    try brave.validate();
+    const tavily: Declaration = .{ .provider = "tavily", .strategy = .api_key, .provision_url = "https://app.tavily.com/home" };
+    try tavily.validate();
+    try std.testing.expect(apiKeyProvider("brave"));
+    try std.testing.expect(apiKeyProvider("tavily"));
+    try std.testing.expect(managedProvider("brave"));
+    try std.testing.expect(managedProvider("tavily"));
+    const drifted: Declaration = .{ .provider = "brave", .strategy = .device_oauth };
+    try std.testing.expectError(error.UntrustedAuthDeclaration, drifted.validate());
+}
+
 test "generic device OAuth requires trusted HTTPS endpoints and a client ID" {
     const valid: Declaration = .{ .provider = "generic/acme", .strategy = .device_oauth, .profile_id = "acme-cli", .authorization_url = "https://login.example/device", .token_url = "https://login.example/token", .api_base = "https://api.example/v1" };
     try valid.validate();
@@ -772,6 +792,10 @@ test "standard credential origins require native trust or explicit user grant" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     try validateCredentialOrigin("openai", "https://api.openai.com/v1/responses", null, &environ);
+    try validateCredentialOrigin("brave", "https://api.search.brave.com/res/v1/web/search", null, &environ);
+    try validateCredentialOrigin("tavily", "https://api.tavily.com/search", null, &environ);
+    try std.testing.expectError(error.CredentialOriginDenied, validateCredentialOrigin("brave", "https://evil.example/v1", null, &environ));
+    try std.testing.expectError(error.CredentialOriginDenied, validateCredentialOrigin("tavily", "https://api.tavily.com.evil/search", null, &environ));
     try std.testing.expectError(error.CredentialOriginDenied, validateCredentialOrigin("openai", "https://evil.example/collect", null, &environ));
     try environ.put("MISA_CREDENTIAL_ORIGINS", "{\"openai\":[\"https://gateway.example\"]}");
     try validateCredentialOrigin("openai", "https://gateway.example/v1", null, &environ);

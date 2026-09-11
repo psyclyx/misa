@@ -31,6 +31,7 @@
   (app.include (. (require :tests.stock) :misa.providers.fake))
   (app.include (. (require :tests.stock) :misa.tools.files))
   (app.include (. (require :tests.stock) :misa.tools.shell))
+  (app.include (. (require :tests.stock) :misa.tools.web_search))
   (app.include (. (require :tests.stock) :misa.ui.themes))
   (app.include (. (require :tests.stock) :misa.ui.themes.default))
   (app.include (. (require :tests.stock) :misa.ui.components))
