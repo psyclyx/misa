@@ -188,6 +188,7 @@ pub const Task = struct {
         const spec: conversation.Spec = .{
             .conversation = try a.dupe(u8, source.conversation),
             .entries = entries,
+            .metadata = if (source.metadata) |metadata| try cloneJson(a, metadata) else null,
             .completion = try a.dupe(u8, source.completion),
             .id = try a.dupe(u8, source.id),
         };
@@ -603,7 +604,7 @@ pub const Task = struct {
                 };
                 defer store.deinit();
                 const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
-                const last = store.append(.{ .conversation = request.spec.conversation, .entries = entries, .at_ms = now_ms }) catch |err| {
+                const last = store.append(.{ .conversation = request.spec.conversation, .entries = entries, .metadata = request.spec.metadata, .at_ms = now_ms }) catch |err| {
                     self.result = .{ .message = @errorName(err) };
                     return;
                 };

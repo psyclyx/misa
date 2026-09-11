@@ -16,6 +16,7 @@
         :misa.commands (require :misa.standard.commands.core)
         :misa.commands.palette (require :misa.standard.commands.palette)
         :misa.compaction (require :misa.standard.compaction)
+        :misa.conversation (require :misa.standard.conversation)
         :misa.costs (require :misa.standard.costs)
         :misa.dialogs (require :misa.standard.dialogs.core)
         :misa.dialogs.render (require :misa.standard.dialogs.render)

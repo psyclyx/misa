@@ -1,9 +1,11 @@
 {:models {:default :claude/claude-sonnet-5}
+ :conversation {:enabled true}
  :choices {:overlay {:padding 2
                      :preferred_height 14
                      :min_height 4
                      :max_height 18}
-           :purposes {:command-completion [:all]
+           :purposes {:conversations [:all]
+                      :command-completion [:all]
                       :command [:browse :favorites]
                       :models [:browse :favorites]
                       :auth [:all]

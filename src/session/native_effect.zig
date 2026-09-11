@@ -18,6 +18,7 @@ pub const StateSave = struct { namespace: []const u8, data: std.json.Value };
 pub const ConversationAppend = struct {
     conversation: []const u8,
     entries: []const std.json.Value,
+    metadata: ?std.json.Value = null,
     completion: []const u8,
     id: []const u8,
 };
@@ -175,9 +176,12 @@ pub const Effect = union(enum) {
                 conversation.validateKind(entry_kind) catch return error.InvalidEffect;
                 if (entry_object.get("data") == null) return error.InvalidEffect;
             }
+            const metadata = object.get("metadata");
+            if (metadata != null and metadata.? != .object) return error.InvalidEffect;
             return .{ .conversation_append = .{
                 .conversation = conversation_id,
                 .entries = entries,
+                .metadata = metadata,
                 .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
                 .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
             } };

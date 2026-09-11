@@ -139,6 +139,7 @@ pub const Fork = struct {
 pub const Spec = struct {
     conversation: []const u8,
     entries: []const Entry,
+    metadata: ?std.json.Value = null,
     completion: []const u8,
     id: []const u8,
 };

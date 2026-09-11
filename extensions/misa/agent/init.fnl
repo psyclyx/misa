@@ -574,6 +574,23 @@
               (table.insert fx {:type :operation/cancel : id}))
             {:patch {:agent {:cancel_requested true :status :cancelling}} : fx}))))))
 
+(fn conversation-loaded [db event]
+  "Replace canonical history with a resumed conversation."
+  (let [agent (assert db.agent "agent state is not initialized")]
+    (assert (and (= (type event.messages) :table) (> (length event.messages) 0))
+            "a resumed conversation needs messages")
+    (assert (= agent.status :ready)
+            "cannot resume a conversation while a request is active")
+    {:patch {:agent (misa.patch agent
+                                {:messages (misa.replace event.messages)
+                                 :active_request_id misa.delete
+                                 :accepted_request_id misa.delete
+                                 :pending_tool_count 0
+                                 :pending_tools (misa.replace {})
+                                 :stream misa.delete
+                                 :tool_batch misa.delete
+                                 :error misa.delete})}}))
+
 (fn reset [db]
   "Clear conversation state and cancel outstanding operations."
   (let [agent (assert db.agent "agent state is not initialized")
@@ -812,6 +829,7 @@
                 {:patch {:agent (misa.replace agent)} : fx})))))))
 
 {:cancel cancel-active
+ : conversation-loaded
  : start
  : continue-startup
  : reset

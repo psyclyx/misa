@@ -7,6 +7,7 @@
 (local clipboard (require :misa.standard.clipboard))
 (local commands (require :misa.standard.commands))
 (local compaction (require :misa.standard.compaction))
+(local conversation (require :misa.standard.conversation))
 (local costs (require :misa.standard.costs))
 (local dialogs (require :misa.standard.dialogs))
 (local editor (require :misa.standard.editor))
@@ -28,6 +29,7 @@
                                        clipboard
                                        commands
                                        compaction
+                                       conversation
                                        costs
                                        dialogs
                                        editor
