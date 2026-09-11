@@ -217,6 +217,12 @@ test "persistent patch data and sharing contracts" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/state-patches.fnl"} }, "state patch contracts passed\n");
 }
 
+test "conversation journaling and reopening follow the stored cursor" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/conversation-state.fnl"} }, "conversation journal contracts passed\n");
+}
+
 test "indexed and appended patch controls are validated and bounded" {
     var h = try Harness.init();
     defer h.deinit();

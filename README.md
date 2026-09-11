@@ -360,7 +360,9 @@ The fixed native effects are:
 completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
 correlation=..., action=..., value=...}`
 - `{type="state/load", namespace=..., completion=...}` / `{type="state/save", namespace=..., data=...}`
-- `{type="conversation/append", conversation=<id>, entries=<array of {kind=..., data=...}>, completion=..., id=...}`
+- `{type="conversation/append", conversation=<id>, entries=<array of {kind=..., data=...}>, metadata=?, completion=..., id=...}`
+- `{type="conversation/load", conversation=<id>, after_seq=?, limit=?, completion=..., id=...}`
+- `{type="conversation/list", limit=?, completion=..., id=...}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
 
@@ -396,6 +398,26 @@ without a schema migration; the completion event reports `{count, last_seq}`.
 The database path is `$MISA_CONVERSATION_DB`, otherwise
 `$XDG_STATE_HOME/misa/conversations.sqlite3`, otherwise
 `$HOME/.local/state/misa/conversations.sqlite3`.
+
+`conversation/load` reopens one conversation as a bounded page of entries in
+ascending order, with its header metadata and fork provenance, and
+`conversation/list` returns recent headers with their entry counts. Both run on
+a worker like the append, because opening the database can wait on another
+process's write lock.
+
+The stock profile journals canonical history through `misa.conversation`. A
+session names its conversation from `config.conversation.id` or from its own
+start clock, and each settled turn appends the messages the log has not seen
+yet, labelling the conversation from its first user message. A shorter history
+means the branch was replaced, as compaction does, so the log records an
+explicit reset entry instead of silently diverging from canonical history.
+`/resume` lists the stored conversations through the ordinary picker and
+installs the chosen one as canonical history, replaying its user, assistant,
+and tool messages into the transcript; `/resume ID` loads one directly.
+`config.conversation.enabled` (default `true`) turns journalling off, `id`
+pins one conversation across sessions, `label` names it explicitly, and
+`list_limit` bounds the picker. The log is a journal of turns: resuming
+restores the branch a session wrote, not the terminal scrollback.
 
 The preference document behind themes, component roles, model selection, editor
 history, and choice recency is a separate atomic JSON file: `$MISA_STATE_FILE`,

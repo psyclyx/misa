@@ -29,6 +29,13 @@ test "conversation appends persist privately and continue in a fresh process" {
     try h.expect(.{}, "appended 2 at 4\n");
 }
 
+test "a stored conversation lists and reopens with its label" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/conversation-read.fnl"));
+    try h.expect(.{}, "read 2 entries\n");
+}
+
 test "invalid persistence reaches the asynchronous completion event" {
     var h = try Harness.init();
     defer h.deinit();
