@@ -44,6 +44,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     standard_extensions.addOptions("misa_build_options", standard_extension_options);
+    // The catalog is the single source for discovery and translation, so a file
+    // that is not listed would silently never load. Capture the tree itself and
+    // let the catalog's own test compare against it.
+    const extension_manifest = b.addSystemCommand(&.{ "sh", "-c", "cd extensions && find . -name '*.fnl' | sed 's|^\\./||' | LC_ALL=C sort" });
+    standard_extensions.addAnonymousImport("misa_extension_manifest", .{ .root_source_file = extension_manifest.captureStdOut(.{}) });
     const lua_runtime = b.createModule(.{
         .root_source_file = b.path("src/lua_runtime/root.zig"),
         .target = target,

@@ -65,4 +65,28 @@
           (assert (under? owner target)
                   (.. path ": must name only modules under " owner)))))))
 
+;; `tests/stock.fnl` mirrors the stock fragments for fixture profiles. It must
+;; name every module the application is assembled from, so a new module cannot
+;; be silently absent from the fixtures.
+;; Modules that carry configuration or composition rather than catalog
+;; fragments, so the fixture catalog has nothing to mirror.
+(local not-fragments
+       {:misa.standard true
+        :misa.standard.settings true
+        ;; Builders that construct catalogs for other modules.
+        :misa.standard.providers.openai-compatible true})
+
+(let [stock (source :tests/stock.fnl)]
+  (fn mirrored? [name]
+    (or (stock:find (.. "(require :" name ")") 1 true)
+        ;; A directory's module is mirrored by its children, which carry the
+        ;; individual fragments.
+        (accumulate [found false child _ (pairs modules) &until found]
+          (and (= (child:sub 1 (+ (length name) 1)) (.. name "."))
+               (stock:find (.. "(require :" child ")") 1 true) true))))
+
+  (each [name _ (pairs modules)]
+    (when (and (not (. unstocked name)) (not (. not-fragments name)))
+      (assert (mirrored? name) (.. "tests/stock.fnl does not mirror " name)))))
+
 (output "extension composition contracts passed\n")

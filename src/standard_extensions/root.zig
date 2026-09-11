@@ -272,6 +272,22 @@ test "catalog paths mirror sorted namespaced IDs" {
     }
 }
 
+test "catalog covers every bundled extension file" {
+    // The manifest is `find extensions -name '*.fnl'` captured by the build.
+    const manifest = @embedFile("misa_extension_manifest");
+    var listed: usize = 0;
+    var iterator = std.mem.tokenizeScalar(u8, manifest, '\n');
+    while (iterator.next()) |path| {
+        listed += 1;
+        var found = false;
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.path, path)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+    try std.testing.expectEqual(listed, entries.len);
+}
+
 test "catalog accepts namespaced leaf and owner IDs only" {
     try std.testing.expectEqualStrings("misa/agent/init.fnl", catalogPath("misa.agent").?);
     try std.testing.expectEqualStrings("misa/choices/layout.fnl", catalogPath("misa.choices.layout").?);
