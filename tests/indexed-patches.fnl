@@ -45,6 +45,7 @@
 (local written (state.patch input {:items (state.at 2 {:id 9})}))
 (assert (= (length written.items) 3)
         "an indexed write changed the array length")
+
 (assert (= (. written.items 2 :id) 9)
         "an indexed write did not replace the element")
 
@@ -69,9 +70,37 @@
 (assert (= (. appended.items 4 :id) 4) "an append did not write the value")
 (assert (= (. appended.items 1) (. input.items 1))
         "an append copied an element")
+
 (assert (= (length (. (state.patch appended {:items (state.append {:id 5})})
                       :items)) 5)
         "a second append did not grow the array")
+
+;; Appending a list keeps its order and its element identities.
+(let [first {:id 1}
+      second {:id 2}
+      many (state.patch {:items []} {:items (state.append-all [first second])})]
+  (assert (= (length many.items) 2) "an appended list did not grow the array")
+  (assert (same? (. many.items 1) first)
+          "an appended list reordered its elements")
+  (assert (same? (. many.items 2) second)
+          "an appended list reordered its elements")
+  (local grown
+         (state.patch input {:items (state.append-all [{:id 4} {:id 5}])}))
+  (assert (= (length grown.items) 5)
+          "an appended list did not follow the existing elements")
+  (assert (= (. grown.items 4 :id) 4) "an appended list lost its order")
+  (assert (= (. grown.items 5 :id) 5) "an appended list lost its order")
+  (assert (not (pcall state.append-all []))
+          "an appended list accepted no elements")
+  (assert (not (pcall state.append-all {:id 1}))
+          "an appended list accepted a map")
+  (assert (not (pcall state.append-all [nil]))
+          "an appended list accepted a hole")
+  (assert (not (pcall state.patch input {:left (state.append-all [1])}))
+          "an appended list accepted a map target")
+  (assert (not (pcall state.patch input
+                      {:items (state.replace [(state.append-all [1])])}))
+          "an appended list was accepted inside replacement data"))
 
 ;; An empty or absent target is an empty array.
 (assert (= (. (state.patch {:items []} {:items (state.append 1)}) :items 1) 1)
@@ -111,6 +140,7 @@
 (assert (not (pcall state.append nil)) "an append accepted a nil value")
 (rejects {:items (state.at 2 (fn [] nil))}
          "an indexed write accepted a function")
+
 (rejects {:items (state.at 2 (/ 0 0))}
          "an indexed write accepted a non-finite number")
 

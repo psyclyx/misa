@@ -87,14 +87,21 @@
     (local base (array-base old))
     (assert (dense? base) "an indexed patch needs an array target")
     (local size (length base))
-    (local index (or entry.index (+ size 1)))
-    (assert (<= index (+ size 1))
-            "indexed patch index is past the end of the array")
-    (local next (materialize (. base index) entry.value active (+ depth 1)))
-    (if (= next (. base index)) old
+    (if entry.values
+        ;; Appending always grows the array, so it never keeps its identity.
         (let [result (shallow base)]
-          (tset result index next)
-          result)))
+          (each [_ value (ipairs entry.values)]
+            (table.insert result (materialize nil value active (+ depth 1))))
+          result)
+        (let [index (or entry.index (+ size 1))]
+          (assert (<= index (+ size 1))
+                  "indexed patch index is past the end of the array")
+          (local next (materialize (. base index) entry.value active
+                                   (+ depth 1)))
+          (if (= next (. base index)) old
+              (let [result (shallow base)]
+                (tset result index next)
+                result)))))
 
   (fn sequence? [value]
     (var count 0)
@@ -153,11 +160,19 @@
          (tset indexed token {: index : value})
          token)
    :append (fn [value]
-             "Mark a value for appending to the end of an array."
+             "Mark one value for appending to the end of an array."
              (assert (not= value nil) "an appended patch needs a value")
              (local token {})
              (tset indexed token {: value})
              token)
+   :append-all (fn [items]
+                 "Mark every element of an array for appending, in order."
+                 (assert (and (= (type items) :table) (dense? items)
+                              (> (length items) 0))
+                         "appending a list needs a nonempty array")
+                 (local token {})
+                 (tset indexed token {:values items})
+                 token)
    :patch (fn [state patch]
             "Apply a validated patch while sharing unchanged state branches."
             (assert (and (= (type state) :table) (not= state json-null))

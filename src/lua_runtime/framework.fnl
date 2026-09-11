@@ -80,6 +80,7 @@
 (set misa.replace state-updates.replace)
 (set misa.at state-updates.at)
 (set misa.append state-updates.append)
+(set misa.append-all state-updates.append-all)
 (set misa.patch state-updates.patch)
 
 (local registrations {})

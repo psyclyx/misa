@@ -244,10 +244,11 @@ and path. Runtime effects cannot add definitions or reopen installation.
 Handlers return nil or `{patch=<map>, fx=<ordered array>}`. Patches recursively
 merge maps and replace nonempty arrays and scalars. Empty patches do nothing;
 `(misa.replace {})` clears a collection and `misa.delete` removes a key.
-`(misa.at index value)` writes one array element and `misa.append value` grows an
-array at its end; both are bounded by the current length, reject a control nested
-in replacement data, and keep the target array when the write changes nothing.
-Appending is the one patch operation that is not idempotent.
+`(misa.at index value)` writes one array element, `misa.append value` grows an
+array at its end, and `misa.append-all values` appends every element of a
+nonempty array in order. All three are bounded by the current length, reject a
+control nested in replacement data, and keep the target array when the write
+changes nothing. Appending is the one patch operation that is not idempotent.
 `misa.json-null` stores JSON null. Returning a whole `db` is rejected. State
 contains finite JSON data, never callbacks, metatables, cycles, or patch controls;
 unchanged branches retain identity. Allocate new values rather than mutating

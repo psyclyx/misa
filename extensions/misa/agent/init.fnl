@@ -24,12 +24,6 @@
     (accumulate [selected nil _ model (ipairs (or state.entries []))]
       (or selected (when (= model.id state.selected) model)))))
 
-(fn appended [items value]
-  (let [next (icollect [_ item (ipairs (or items []))]
-               item)]
-    (table.insert next value)
-    next))
-
 (fn request [db agent cofx]
   (let [selected (assert (selected-model db)
                          "selected model became unavailable")]
@@ -99,13 +93,12 @@
 
 (fn flush-tool-results [agent]
   (let [batch (assert agent.tool_batch "tool result batch is missing")
-        messages (icollect [_ message (ipairs agent.messages)] message)]
-    (each [_ call-id (ipairs batch.order)]
-      (let [result (assert (. batch.results call-id)
-                           (.. "tool result is missing: " call-id))]
-        (table.insert messages result)))
-    (misa.patch agent {:messages (misa.replace messages)
-                       :tool_batch misa.delete})))
+        results (icollect [_ call-id (ipairs batch.order)]
+                  (assert (. batch.results call-id)
+                          (.. "tool result is missing: " call-id)))
+        messages (if (= (length results) 0) (misa.replace agent.messages)
+                     (misa.append-all results))]
+    (misa.patch agent {: messages :tool_batch misa.delete})))
 
 (fn normalize-tool-arguments [blocks]
   (let [failures {}
@@ -149,11 +142,10 @@
                                   {:transcript_id misa.delete
                                    :execution misa.delete}))]
       (var agent (misa.patch (record-usage previous usage)
-                             {:messages (misa.replace (appended previous.messages
-                                                                {:content canonical
-                                                                 :provider_state (and stream
-                                                                                      stream.provider_state)
-                                                                 :role :assistant}))
+                             {:messages (misa.append {:content canonical
+                                                      :provider_state (and stream
+                                                                           stream.provider_state)
+                                                      :role :assistant})
                               :active_request_id misa.delete
                               :accepted_request_id id
                               :stream misa.delete
@@ -225,10 +217,7 @@
                                 (tool-result block.id
                                              "Provider did not report a tool result"
                                              true)))
-                (set agent
-                     (misa.patch agent
-                                 {:messages (misa.replace (appended agent.messages
-                                                                    result))}))
+                (set agent (misa.patch agent {:messages (misa.append result)}))
                 ;; Stream observations already completed the visible call.
                 (when (not (and stream stream.tool_results
                                 (. stream.tool_results block.id)))
@@ -249,8 +238,7 @@
                         "duplicate tool call id")
                 (set agent
                      (misa.patch agent
-                                 {:tool_batch {:order (misa.replace (appended agent.tool_batch.order
-                                                                              block.id))}}))
+                                 {:tool_batch {:order (misa.append block.id)}}))
                 (let [tool (misa.tools.lookup block.name)]
                   (if tool
                       (do
@@ -406,9 +394,7 @@
   (let [sequence (+ stream.block_seq 1)
         next-block (misa.patch block {:transcript_id (.. id "/" sequence)})]
     (values (misa.patch stream
-                        {:block_seq sequence
-                         :blocks (misa.replace (appended stream.blocks
-                                                         next-block))})
+                        {:block_seq sequence :blocks (misa.append next-block)})
             next-block (transcript-event id :transcript/block-start
                                         {:block_id next-block.transcript_id
                                          :call_id next-block.id
@@ -435,9 +421,7 @@
           (set stream next)
           (set block created)
           (table.insert fx effect)))
-      (let [next-block (misa.patch block
-                                   {:chunks (misa.replace (appended block.chunks
-                                                                    delta.text))})]
+      (let [next-block (misa.patch block {:chunks (misa.append delta.text)})]
         (table.insert fx
                       (transcript-event id :transcript/block-delta
                                         {:block_id block.transcript_id
@@ -466,18 +450,24 @@
           (set block created)
           (set index (length stream.blocks))
           (table.insert fx effect)))
-      (var chunks (if (not= delta.arguments nil) nil
-                      block.arguments_json_chunks))
-      (when (not= delta.arguments_json nil) (set chunks [delta.arguments_json]))
-      (when (not= delta.arguments_json_delta nil)
-        (set chunks (appended chunks delta.arguments_json_delta)))
       (let [next-block (misa.patch block
                                    {:execution delta.execution
                                     :id delta.id
                                     :name delta.name
                                     :arguments (when (not= delta.arguments nil)
                                                  (misa.replace delta.arguments))
-                                    :arguments_json_chunks (misa.replace chunks)})]
+                                    ;; A replacement resets the chunks, a delta
+                                    ;; appends, and metadata alone leaves them.
+                                    :arguments_json_chunks (if (not= delta.arguments
+                                                                     nil)
+                                                               (misa.replace nil)
+                                                               (not= delta.arguments_json_delta
+                                                                     nil)
+                                                               (misa.append delta.arguments_json_delta)
+                                                               (not= delta.arguments_json
+                                                                     nil)
+                                                               (misa.replace [delta.arguments_json])
+                                                               (misa.replace block.arguments_json_chunks))})]
         (table.insert fx
                       (transcript-event id :transcript/block-delta
                                         {:block_id block.transcript_id
@@ -653,9 +643,8 @@
                     "invalid image attachment")
             (table.insert blocks image))
           (let [history (misa.patch agent
-                                    {:messages (misa.replace (appended agent.messages
-                                                                       {:content blocks
-                                                                        :role :user}))})
+                                    {:messages (misa.append {:content blocks
+                                                             :role :user})})
                 (next provider problem) (request db history cofx)]
             (if problem
                 (let [(ready fx) (blocked agent problem)]
@@ -734,9 +723,8 @@
       (assert (and (= (type event.provider) :string)
                    (= (type event.value) :table))
               "invalid provider continuation state")
-      {:patch {:agent {:stream {:provider_state (misa.replace (appended stream.provider_state
-                                                                        {:provider event.provider
-                                                                         :value event.value}))}}}})))
+      {:patch {:agent {:stream {:provider_state (misa.append {:provider event.provider
+                                                              :value event.value})}}}})))
 
 (fn stream-end [db event cofx]
   "Complete response assembly and continue the conversation."
