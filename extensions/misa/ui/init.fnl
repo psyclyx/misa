@@ -140,6 +140,9 @@
                                            {:available_lines frame.available
                                             : projecting
                                             : terminal}))]
+      (assert (or layer.exclusive layer.overlay (= layer.dock :input))
+              (.. "view layer '" (tostring layer.id) "' declares no"
+                  " exclusive, overlay, or dock = :input role"))
       (when (not exclusive)
         (if layer.exclusive (set exclusive layer)
             (and layer.overlay

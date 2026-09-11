@@ -93,8 +93,10 @@
 
 (fn registrations.event! [name handler]
   (open)
-  (assert (and (= (type name) :string) (not= name "")))
-  (assert (= (type handler) :function))
+  (assert (and (= (type name) :string) (not= name ""))
+          "event handler needs a nonempty event type")
+  (assert (= (type handler) :function)
+          (.. "event handler must be a function: " (tostring name)))
   (local handlers (or (. events name) {}))
   (tset events name handlers)
   (tset handlers (+ (length handlers) 1) handler)
@@ -122,29 +124,32 @@
 
 (fn registrations.cofx! [name handler]
   (open)
-  (assert (and (= (type name) :string) (not= name "")))
+  (assert (and (= (type name) :string) (not= name ""))
+          "cofx name must be a nonempty string")
   (assert (and (and (and (not= name :config) (not= name :argv))
                     (not= name :terminal)) (not= name :clock)
-               (not= name :host)))
-  (assert (and (= (type handler) :function) (= (. cofx-fns name) nil))
-          "duplicate cofx")
+               (not= name :host))
+          "cofx name is reserved by the runtime")
+  (assert (= (type handler) :function) "cofx must be a function")
+  (assert (= (. cofx-fns name) nil) (.. "duplicate cofx: " (tostring name)))
   (tset cofx-fns name handler)
   (tset cofx-order (+ (length cofx-order) 1) name)
   nil)
 
 (fn registrations.fx! [name handler]
   (open)
-  (assert (and (= (type name) :string) (not= name "")))
+  (assert (and (= (type name) :string) (not= name ""))
+          "effect type must be a nonempty string")
   (runtime-effect {:type name})
-  (assert (and (= (type handler) :function) (= (. fx-fns name) nil))
-          "duplicate fx")
+  (assert (= (type handler) :function) "effect translator must be a function")
+  (assert (= (. fx-fns name) nil) (.. "duplicate fx: " (tostring name)))
   (tset fx-fns name handler)
   nil)
 
 (fn registrations.view! [handler]
   (open)
-  (assert (and (= (type handler) :function) (= view nil))
-          "view already registered")
+  (assert (= (type handler) :function) "view must be a function")
+  (assert (= view nil) "view already registered")
   (set view handler)
   nil)
 
@@ -152,10 +157,10 @@
   (open)
   (assert (and (= (type id) :string) (not= id ""))
           "view layer ID must be nonempty")
-  (assert (and (= (type handler) :function) (not (. view-layer-ids id)))
-          "duplicate view layer")
+  (assert (= (type handler) :function) "view layer handler must be a function")
+  (assert (not (. view-layer-ids id)) "duplicate view layer")
   (tset view-layer-ids id true)
-  (tset view-layers (+ (length view-layers) 1) handler)
+  (tset view-layers (+ (length view-layers) 1) {: id : handler})
   nil)
 
 (fn registrations.sub! [definition]
@@ -173,12 +178,16 @@
 (fn misa.ui.layers [state cofx]
   "Project registered layers in their declared order."
   (let [result {}]
-    (each [_ project (ipairs view-layers)]
-      (local layer (project state cofx))
+    (each [_ registered (ipairs view-layers)]
+      (local layer (registered.handler state cofx))
       (assert (or (= layer nil) (= (type layer) :table))
-              "view layer must be a table")
+              (.. "view layer must return nil or a table: " registered.id))
       (when layer
-        (tset result (+ (length result) 1) layer)))
+        ;; Carry the registered ID so composition can name a layer that
+        ;; declares no role. The projector output is unchanged.
+        (local tagged (collect [key value (pairs layer)] key value))
+        (set tagged.id registered.id)
+        (tset result (+ (length result) 1) tagged)))
     result))
 
 (fn scalar? [value]
