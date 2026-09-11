@@ -28,11 +28,13 @@ not establish shared ownership.
 | `misa.ui`                          | Frame composition, layout, typed values, and shared presentation machinery                |
 | `misa.json`                        | JSON encoding and decoding at data boundaries                                             |
 
-A small independent owner can be one file. An owner with children uses
-`init.fnl`: `misa.editor` loads `misa/editor/init.fnl`, while
-`misa.editor.history` loads `misa/editor/history.fnl`. Do not add a sibling
-`editor.fnl`. Use hyphens within multiword names and plural names for families
-such as `providers`, `tools`, and `components`.
+A small independent owner can be one file. An owner with children owns
+`init.fnl`, which is the module for that directory: `misa.editor` loads
+`misa/editor/init.fnl` and combines the directory's own declarations from
+`misa/editor/core.fnl` with its children, while `misa.editor.history` loads
+`misa/editor/history.fnl`. Do not add a sibling `editor.fnl`. Use hyphens within
+multiword names and plural names for families such as `providers`, `tools`, and
+`components`.
 
 Use `render.fnl` for component implementations and `view.fnl` for preparing
 semantic child views from feature state. A dialog renderer stays beside dialog
