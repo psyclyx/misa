@@ -4,6 +4,7 @@
   "Create persistent update operations with an explicit JSON null sentinel."
   (local delete {})
   (local replacements (setmetatable {} {:__mode :k}))
+  (local indexed (setmetatable {} {:__mode :k}))
   (local max-depth 128)
 
   (fn shallow [value]
@@ -32,7 +33,8 @@
 
   (fn materialize [old value active depth]
     (assert (<= depth max-depth) "maximum state nesting depth exceeded")
-    (assert (and (not= value delete) (not (. replacements value)))
+    (assert (and (not= value delete) (not (. replacements value))
+                 (not (. indexed value)))
             "patch control inside replacement data")
     (local kind (type value))
     (if (or (= value json-null) (= kind :nil) (= kind :string)
@@ -62,6 +64,38 @@
           (tset active value nil)
           (or result old))))
 
+  ;; An indexed patch writes one array element; `index` is nil for an append.
+  ;; The write keeps the target array's identity when the element is unchanged,
+  ;; so re-applying an in-range indexed patch is a no-op. Appending is
+  ;; therefore the one patch control that is not idempotent.
+
+  (fn array-base [old]
+    (if (and (= (type old) :table) (not= old json-null)) old {}))
+
+  (fn dense? [value]
+    (var count 0)
+    (var dense true)
+    (each [key _ (pairs value)]
+      (set count (+ count 1))
+      (when (not (and (= (type key) :number) (>= key 1) (= (% key 1) 0)))
+        (set dense false)))
+    (when (and dense (not= (length value) count))
+      (set dense false))
+    dense)
+
+  (fn indexed-write [old entry active depth]
+    (local base (array-base old))
+    (assert (dense? base) "an indexed patch needs an array target")
+    (local size (length base))
+    (local index (or entry.index (+ size 1)))
+    (assert (<= index (+ size 1))
+            "indexed patch index is past the end of the array")
+    (local next (materialize (. base index) entry.value active (+ depth 1)))
+    (if (= next (. base index)) old
+        (let [result (shallow base)]
+          (tset result index next)
+          result)))
+
   (fn sequence? [value]
     (var count 0)
     (var numeric false)
@@ -79,8 +113,10 @@
   (fn merge [old patch active depth]
     (assert (<= depth max-depth) "maximum patch nesting depth exceeded")
     (local replacement (. replacements patch))
+    (local indexed-entry (. indexed patch))
     (if (= patch delete) nil replacement
-        (materialize old replacement.value active depth)
+        (materialize old replacement.value active depth) indexed-entry
+        (indexed-write old indexed-entry active depth)
         (or (not= (type patch) :table) (= patch json-null))
         (materialize old patch active depth) (sequence? patch)
         (materialize old patch active depth)
@@ -106,13 +142,29 @@
               (local token {})
               (tset replacements token {: value})
               token)
+   :at (fn [index value]
+         "Mark one array element for replacement, or the end for an append."
+         (assert (and (= (type index) :number) (finite? index) (>= index 1)
+                      (= (% index 1) 0))
+                 "an indexed patch needs a positive integer index")
+         (assert (not= value nil)
+                 "an indexed patch needs a value; rebuild the array to shorten it")
+         (local token {})
+         (tset indexed token {: index : value})
+         token)
+   :append (fn [value]
+             "Mark a value for appending to the end of an array."
+             (assert (not= value nil) "an appended patch needs a value")
+             (local token {})
+             (tset indexed token {: value})
+             token)
    :patch (fn [state patch]
             "Apply a validated patch while sharing unchanged state branches."
             (assert (and (= (type state) :table) (not= state json-null))
                     "patch state must be a table")
             (assert (and (= (type patch) :table) (not= patch delete)
                          (not= patch json-null) (not (. replacements patch))
-                         (not (sequence? patch)))
+                         (not (. indexed patch)) (not (sequence? patch)))
                     "root patch must be a map")
             (merge state patch {} 0))})
 

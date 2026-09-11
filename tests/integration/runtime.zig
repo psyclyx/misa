@@ -209,3 +209,10 @@ test "component resolution preserves cached semantic spans across themes" {
     try h.config("(let [config {\"themes\" {\"persist\" false} \"components\" {\"persist\" false}}\n      app ((require :tests.application) {:config config})]\n  (app.include (. (require :tests.stock) :misa.ui.themes))\n  (app.include (. (require :tests.stock) :misa.ui.themes.default))\n  (app.include (. (require :tests.stock) :misa.ui.components))\n  (app.include ((dofile \"@WORK@/cached-component.lua\") {:config config}))\n  {:config config :definitions app.definitions})\n");
     try h.expect(.{}, "pure components\n");
 }
+
+test "indexed and appended patch controls drive state" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/patch-controls.fnl"));
+    try h.expect(.{ .args = &.{}, .input = "" }, "patched\n");
+}

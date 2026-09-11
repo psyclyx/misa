@@ -247,6 +247,14 @@
                                        :responses (misa.replace responses)
                                        :scroll 0}}) next-block)))
 
+(fn block-index [db block]
+  "Return the position of a block in the transcript collection."
+  (var found nil)
+  (each [index previous (ipairs db.messages.blocks) &until found]
+    (when (= previous block) (set found index)))
+  (assert found "transcript block is not in the collection")
+  found)
+
 (fn find-block [db response-model id]
   (let [blocks db.messages.blocks
         after (+ response-model.block_start response-model.block_count)]
@@ -267,17 +275,11 @@
         (set found block))))
   found)
 
-(fn append-chunk [chunks text]
-  (let [next (icollect [_ chunk (ipairs (or chunks []))]
-               chunk)]
-    (table.insert next text)
-    next))
-
 (fn text-delta [block event]
   "Append printable text while retaining earlier streaming chunks."
   (let [text (printable-text (tostring (or event.text "")))]
     (when (not= text "")
-      {:chunks (misa.replace (append-chunk block.chunks text))
+      {:chunks (misa.append text)
        :byte_count (+ (or block.byte_count 0) (length text))})))
 
 (fn tool-delta [previous event policy]
@@ -303,10 +305,11 @@
      :call_id (when (not= event.call_id nil)
                 (printable-text (tostring event.call_id)))
      :argument_chunks (when (or active replacement)
-                        (misa.replace (if active
-                                          (append-chunk block.argument_chunks
-                                                        chunk)
-                                          block.argument_chunks)))
+                        (if (and active replacement)
+                            (misa.replace [chunk])
+                            active
+                            (misa.append chunk)
+                            (misa.replace block.argument_chunks)))
      :argument_bytes (when (or active replacement)
                        (if truncated policy.max_string
                            active (+ (or block.argument_bytes 0) (length value))
@@ -319,9 +322,8 @@
 
 (fn replace-transcript-block [db block patch]
   (let [replacement (misa.patch block patch)
-        blocks (icollect [_ previous (ipairs db.messages.blocks)]
-                 (if (= previous block) replacement previous))]
-    {:patch {:messages {:blocks (misa.replace blocks)}}
+        index (block-index db block)]
+    {:patch {:messages {:blocks (misa.at index replacement)}}
      :fx (when (not= replacement block)
            (updated-fx nil block.response_id block.id))}))
 
@@ -471,11 +473,8 @@
         block (assert (find-block db owner event.block_id)
                       "unknown transcript block")
         finished (finish-block block event policy)
-        blocks (icollect [_ previous (ipairs db.messages.blocks)]
-                 (if (= previous block)
-                     finished
-                     previous))]
-    {:patch {:messages {:blocks (misa.replace blocks)}}
+        index (block-index db block)]
+    {:patch {:messages {:blocks (misa.at index finished)}}
      :fx (when (not= finished block)
            (updated-fx nil owner.id block.id))}))
 

@@ -78,6 +78,8 @@
 (local state-updates ((require :misa.runtime.state) misa.json-null))
 (set misa.delete state-updates.delete)
 (set misa.replace state-updates.replace)
+(set misa.at state-updates.at)
+(set misa.append state-updates.append)
 (set misa.patch state-updates.patch)
 
 (local registrations {})
