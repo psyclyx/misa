@@ -82,6 +82,13 @@ pub fn main(init: std.process.Init) !void {
     const extension_dir = init.environ_map.get("MISA_EXTENSION_DIR");
 
     try runtime.addModuleDirectory(extension_dir orelse standard_extensions.default_extension_dir, extension_dir != null);
+    // A user extension directory is searched before the installed catalog and
+    // after the configuration's own directory, so a configuration can require
+    // its own modules by name without setting an environment override.
+    if (try userExtensionDirectory(allocator, init.io, init.environ_map)) |directory| {
+        defer allocator.free(directory);
+        try runtime.addModuleDirectory(directory, true);
+    }
     const absolute_path = std.Io.Dir.cwd().realPathFileAlloc(init.io, path, allocator) catch |err| {
         std.debug.print("misa: cannot read config '{s}': {s}\n", .{ path, @errorName(err) });
         std.process.exit(2);
@@ -142,6 +149,20 @@ fn runSession(init: std.process.Init, allocator: std.mem.Allocator, runtime: *lu
     defer session.deinit();
     try session.operations.setGrammarDir(grammar_dir);
     try session.run();
+}
+
+/// Resolve an existing user extension directory, if the user has one.
+fn userExtensionDirectory(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) !?[]u8 {
+    const root = if (environ.get("XDG_CONFIG_HOME")) |value|
+        try allocator.dupe(u8, value)
+    else if (environ.get("HOME")) |value|
+        try std.fs.path.join(allocator, &.{ value, ".config" })
+    else
+        return null;
+    defer allocator.free(root);
+    const directory = try std.fs.path.join(allocator, &.{ root, "misa", "extensions" });
+    if (std.Io.Dir.cwd().statFile(io, directory, .{})) |_| return directory else |_| allocator.free(directory);
+    return null;
 }
 
 fn fatal(message: []const u8) noreturn {

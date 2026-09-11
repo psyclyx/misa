@@ -100,7 +100,11 @@ that installed default. Arguments not consumed by `--config` are exposed as
 `cofx.argv`.
 
 Bare standard IDs use `MISA_EXTENSION_DIR` when set, otherwise the absolute
-`share/misa/extensions` path compiled from `zig build --prefix`. Relocated or
+`share/misa/extensions` path compiled from `zig build --prefix`. A user
+extension directory (the `misa/extensions` subdirectory of
+`XDG_CONFIG_HOME`, otherwise `$HOME/.config`) is searched before the installed
+catalog and after the configuration's own directory, so a configuration can
+`require` its own modules by name without an environment override. Relocated or
 copied installations must set both `MISA_CONFIG` and `MISA_EXTENSION_DIR`; misa
 never discovers its own executable path. Values containing `/` or ending in
 `.fnl` or `.lua` are literal custom paths. Standard extensions and the embedded

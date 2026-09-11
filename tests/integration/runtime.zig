@@ -210,6 +210,24 @@ test "component resolution preserves cached semantic spans across themes" {
     try h.expect(.{}, "pure components\n");
 }
 
+test "a user extension directory is searched by module name" {
+    var h = try Harness.init();
+    defer h.deinit();
+    // HOME and XDG_CONFIG_HOME point at the fixture root, so this is the
+    // directory the executable must search on its own.
+    try h.temporary.dir.createDirPath(@import("harness.zig").io, "misa/extensions");
+    try h.write("misa/extensions/user_plugin.fnl",
+        \\(fn [_context]
+        \\  {:events {:user.plugin/app/start {:event :app/start
+        \\                                    :handler (fn []
+        \\                                               {:fx [{:lines [{:spans [{:text "user plugin loaded"}]}]
+        \\                                                      :type :view/commit}
+        \\                                                     {:type :app/quit}]})}}})
+    );
+    try h.config("(let [plugin ((require :user_plugin) {})]\n  {:config {} :definitions plugin})\n");
+    try h.expect(.{}, "user plugin loaded\n");
+}
+
 test "indexed and appended patch controls drive state" {
     var h = try Harness.init();
     defer h.deinit();
