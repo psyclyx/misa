@@ -336,13 +336,21 @@ includes DNS and connection establishment, `idle_ms` applies after response-body
 activity begins, and `overall_ms` bounds the complete operation. There is no
 separately configurable connect deadline.
 
+A transport failure that leaves the request unjudged (a refused connection, a
+reset read) and the transient statuses 408, 425, 429, 500, 502, 503, and 504 are
+attempted again. `retries={attempts=2,backoff_ms=500,max_ms=8000}` bounds that:
+`attempts` counts the extra attempts, the wait doubles per attempt, and a
+server's `Retry-After` delay takes precedence up to `max_ms`. Cancellation and
+timeouts are never retried, and a stream that already delivered a record is
+never replayed, so policy never sees a duplicated record.
+
 The fixed native effects are:
 
 - `{type="dispatch", event=<table>}`
 - `{type="syntax/highlight", language=..., source=..., completion=..., id=..., timeout_ms=?}`
 - `{type="process/run", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
 - `{type="provider/process", argv={<strings>}, completion=<event type>, id=<string>, timeouts={startup_ms=?,idle_ms=?,overall_ms=?}}`
-- `{type="http/request", url=..., json=..., credential=..., completion=..., id=..., timeouts={first_byte_ms=?,idle_ms=?,overall_ms=?}}`
+- `{type="http/request", url=..., json=..., credential=..., completion=..., id=..., timeouts={first_byte_ms=?,idle_ms=?,overall_ms=?}, retries={attempts=?,backoff_ms=?,max_ms=?}}`
 - `{type="file/read", path=..., completion=..., id=..., start_line=?, max_lines=?, anchored=?}`
 - `{type="file/list", path=..., completion=..., id=...}`
 - `{type="file/write", path=..., content=..., completion=..., id=...}`

@@ -14,6 +14,16 @@ pub const Spec = struct {
     id: []const u8,
     response_format: enum { text, json, sse_json, sse_json_stream },
     timeouts: Timeouts = .{},
+    retries: Retries = .{},
+
+    /// A provider that is momentarily unavailable may be asked again. The
+    /// budget is attempts, not time: the operation deadline still bounds the
+    /// whole request.
+    pub const Retries = struct {
+        attempts: u64 = 2,
+        backoff_ms: u64 = 500,
+        max_ms: u64 = 8_000,
+    };
 
     pub const Timeouts = struct {
         // DNS and connection establishment are part of first-byte latency: the
@@ -92,6 +102,17 @@ pub const Spec = struct {
                 .overall_ms = try timeoutField(values, "overall_ms", 600_000),
             };
         } else .{};
+        const retries: Retries = if (object.get("retries")) |value| blk: {
+            const values = switch (value) {
+                .object => |item| item,
+                else => return error.InvalidEffect,
+            };
+            break :blk .{
+                .attempts = try retryField(values, "attempts", 0, 5, 2),
+                .backoff_ms = try retryField(values, "backoff_ms", 0, 60_000, 500),
+                .max_ms = try retryField(values, "max_ms", 0, 600_000, 8_000),
+            };
+        } else .{};
         return .{
             .url = url,
             .method = method,
@@ -103,6 +124,7 @@ pub const Spec = struct {
             .id = nonEmptyString(object, "id") orelse return error.InvalidEffect,
             .response_format = if (std.mem.eql(u8, response_format, "text")) .text else if (std.mem.eql(u8, response_format, "json")) .json else if (std.mem.eql(u8, response_format, "sse_json")) .sse_json else if (std.mem.eql(u8, response_format, "sse_json_stream")) .sse_json_stream else return error.InvalidEffect,
             .timeouts = timeouts,
+            .retries = retries,
         };
     }
 };
@@ -130,13 +152,26 @@ pub const Result = struct {
 };
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec, activity: ?Activity) !Result {
-    var response: BoundedWriter = .{ .allocator = allocator, .limit = 8 * 1024 * 1024, .activity = activity };
-    errdefer response.deinit();
-    const status = fetch(allocator, io, store, spec, &response.writer) catch |err| {
-        if (response.exceeded) return error.HttpResponseTooLarge;
-        return err;
-    };
-    return .{ .status = status, .body = try response.toOwnedSlice() };
+    var attempt: u64 = 0;
+    while (true) : (attempt += 1) {
+        var response: BoundedWriter = .{ .allocator = allocator, .limit = 8 * 1024 * 1024, .activity = activity };
+        var retry_after: ?u64 = null;
+        const status = fetch(allocator, io, store, spec, &response.writer, &retry_after) catch |err| {
+            const exceeded = response.exceeded;
+            response.deinit();
+            if (exceeded) return error.HttpResponseTooLarge;
+            if (!canRetry(spec, err, attempt)) return err;
+            try pause(io, spec, attempt, retry_after);
+            continue;
+        };
+        if (transientStatus(status) and attempt < spec.retries.attempts) {
+            const delay = retry_after;
+            response.deinit();
+            try pause(io, spec, attempt, delay);
+            continue;
+        }
+        return .{ .status = status, .body = try response.toOwnedSlice() };
+    }
 }
 
 const BoundedWriter = struct {
@@ -183,27 +218,40 @@ const BoundedWriter = struct {
 pub const SseResult = struct { status: u16, error_body: []const u8, failure: ?anyerror };
 
 pub fn runSse(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec, sink: StreamSink) !SseResult {
-    var parser: SseWriter = .{ .allocator = allocator, .sink = sink };
-    defer parser.deinit();
-    const status = fetch(allocator, io, store, spec, &parser.writer) catch |err| {
-        // Writer callbacks use WriteFailed as their transport error. Preserve
-        // cancellation from a backpressured sink as cancellation of the HTTP
-        // operation rather than misreporting it as an SSE parse failure.
-        if (parser.canceled) return error.Canceled;
-        if (parser.finished) return .{ .status = 200, .error_body = "", .failure = null };
-        if (parser.failure) |failure| return failure;
-        return err;
-    };
-    // EOF never completes an SSE event. A server must terminate an event with
-    // a blank line; partial line/record state is deliberately discarded.
-    const error_body = if (status >= 200 and status < 300 and parser.failure == null)
-        ""
-    else
-        try allocator.dupe(u8, parser.bounded_body.items);
-    return .{ .status = status, .error_body = error_body, .failure = parser.failure };
+    var attempt: u64 = 0;
+    while (true) : (attempt += 1) {
+        var parser: SseWriter = .{ .allocator = allocator, .sink = sink };
+        defer parser.deinit();
+        var retry_after: ?u64 = null;
+        const status = fetch(allocator, io, store, spec, &parser.writer, &retry_after) catch |err| {
+            // Writer callbacks use WriteFailed as their transport error. Preserve
+            // cancellation from a backpressured sink as cancellation of the HTTP
+            // operation rather than misreporting it as an SSE parse failure.
+            if (parser.canceled) return error.Canceled;
+            if (parser.finished) return .{ .status = 200, .error_body = "", .failure = null };
+            if (parser.failure) |failure| return failure;
+            // A stream that already reached policy cannot be replayed without
+            // duplicating records; that request is over.
+            if (parser.delivered or !canRetry(spec, err, attempt)) return err;
+            try pause(io, spec, attempt, retry_after);
+            continue;
+        };
+        if (transientStatus(status) and !parser.delivered and attempt < spec.retries.attempts) {
+            const delay = retry_after;
+            try pause(io, spec, attempt, delay);
+            continue;
+        }
+        // EOF never completes an SSE event. A server must terminate an event with
+        // a blank line; partial line/record state is deliberately discarded.
+        const error_body = if (status >= 200 and status < 300 and parser.failure == null)
+            ""
+        else
+            try allocator.dupe(u8, parser.bounded_body.items);
+        return .{ .status = status, .error_body = error_body, .failure = parser.failure };
+    }
 }
 
-fn fetch(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec, writer: *std.Io.Writer) !u16 {
+fn fetch(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Spec, writer: *std.Io.Writer, retry_after: ?*?u64) !u16 {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     for (spec.headers) |value| {
@@ -241,6 +289,7 @@ fn fetch(allocator: std.mem.Allocator, io: std.Io, store: ?*auth.Store, spec: Sp
     } else try req.sendBodiless();
     var redirect_buffer: [8 * 1024]u8 = undefined;
     var response = try req.receiveHead(&redirect_buffer);
+    if (retry_after) |slot| slot.* = headerDelaySeconds(response.head);
     const decompress_buffer = try allocator.alloc(u8, switch (response.head.content_encoding) {
         .identity => 0,
         .zstd => std.compress.zstd.default_window_len,
@@ -278,6 +327,8 @@ const SseWriter = struct {
     failure: ?anyerror = null,
     canceled: bool = false,
     finished: bool = false,
+    /// True once a record reached policy; such a stream cannot be retried.
+    delivered: bool = false,
 
     fn deinit(self: *SseWriter) void {
         self.line.deinit(self.allocator);
@@ -334,10 +385,74 @@ const SseWriter = struct {
 
     fn emitRecord(self: *SseWriter) !void {
         const value = std.mem.trim(u8, self.record.items, " \t\r\n");
-        if (value.len != 0) try self.sink.emit(self.sink.context, if (std.mem.eql(u8, value, "[DONE]")) null else value);
+        if (value.len != 0) {
+            try self.sink.emit(self.sink.context, if (std.mem.eql(u8, value, "[DONE]")) null else value);
+            self.delivered = true;
+        }
         self.record.clearRetainingCapacity();
     }
 };
+
+/// Seconds from a Retry-After header, when the server used the delay form. An
+/// HTTP-date is ignored; the retry then uses the configured backoff.
+fn headerDelaySeconds(head: std.http.Client.Response.Head) ?u64 {
+    var iterator = head.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "retry-after")) continue;
+        const trimmed = std.mem.trim(u8, header.value, " \t");
+        const seconds = std.fmt.parseInt(u64, trimmed, 10) catch return null;
+        // A day is already far past any useful wait; clamp rather than trust.
+        return @min(seconds, 86_400);
+    }
+    return null;
+}
+
+fn retryField(object: std.json.ObjectMap, name: []const u8, minimum: i64, maximum: i64, default: i64) !u64 {
+    const value = object.get(name) orelse return @intCast(default);
+    if (value != .integer or value.integer < minimum or value.integer > maximum) return error.InvalidEffect;
+    return @intCast(value.integer);
+}
+
+/// Statuses that say "ask again", not "this request is wrong".
+fn transientStatus(status: u16) bool {
+    return switch (status) {
+        408, 425, 429, 500, 502, 503, 504 => true,
+        else => false,
+    };
+}
+
+/// Transport failures that leave the request itself unjudged. Cancellation and
+/// timeouts are deliberately excluded: they are the operator's decision.
+fn retryableError(failure: anyerror) bool {
+    return switch (failure) {
+        error.ConnectionRefused,
+        error.ConnectionResetByPeer,
+        error.NetworkUnreachable,
+        error.NetworkSubsystemFailed,
+        error.TemporaryNameServerFailure,
+        error.ReadFailed,
+        => true,
+        else => false,
+    };
+}
+
+fn canRetry(spec: Spec, failure: anyerror, attempt: u64) bool {
+    return attempt < spec.retries.attempts and retryableError(failure);
+}
+
+/// Milliseconds to wait before another attempt: exponential backoff, a
+/// Retry-After delay when the server sent one, and the configured ceiling.
+fn pauseDelay(spec: Spec, attempt: u64, retry_after_s: ?u64) u64 {
+    const shifted = spec.retries.backoff_ms * (@as(u64, 1) << @intCast(@min(attempt, 16)));
+    return @min(if (retry_after_s) |seconds| seconds * 1000 else shifted, spec.retries.max_ms);
+}
+
+/// Wait before the next attempt. The wait is cancellable.
+fn pause(io: std.Io, spec: Spec, attempt: u64, retry_after_s: ?u64) !void {
+    const delay = pauseDelay(spec, attempt, retry_after_s);
+    if (delay == 0) return;
+    std.Io.sleep(io, .fromMilliseconds(@intCast(delay)), .awake) catch return error.Canceled;
+}
 
 fn timeoutField(object: std.json.ObjectMap, name: []const u8, default: u64) !u64 {
     const value = object.get(name) orelse return default;
@@ -364,6 +479,47 @@ fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = stringField(object, name) orelse return null;
     return if (value.len == 0 or std.mem.indexOfScalar(u8, value, 0) != null) null else value;
+}
+
+test "retry policy bounds attempts and honors Retry-After" {
+    const base: Spec = .{ .url = "https://example.test", .method = .POST, .body = null, .json = null, .headers = &.{}, .credential = null, .completion = "done", .id = "1", .response_format = .text };
+    try std.testing.expect(transientStatus(429) and transientStatus(503) and transientStatus(408));
+    try std.testing.expect(!transientStatus(200) and !transientStatus(401) and !transientStatus(404));
+    try std.testing.expect(retryableError(error.ConnectionRefused));
+    try std.testing.expect(retryableError(error.ReadFailed));
+    try std.testing.expect(!retryableError(error.Canceled));
+    try std.testing.expect(!retryableError(error.CredentialStoreUnavailable));
+    try std.testing.expect(canRetry(base, error.ConnectionRefused, 0));
+    try std.testing.expect(canRetry(base, error.ConnectionRefused, base.retries.attempts - 1));
+    try std.testing.expect(!canRetry(base, error.ConnectionRefused, base.retries.attempts));
+    const none: Spec = .{ .url = base.url, .method = base.method, .body = null, .json = null, .headers = &.{}, .credential = null, .completion = "done", .id = "1", .response_format = .text, .retries = .{ .attempts = 0 } };
+    try std.testing.expect(!canRetry(none, error.ConnectionRefused, 0));
+
+    // A delay never exceeds the ceiling, whatever the server asks for.
+    try std.testing.expectEqual(@as(u64, 500), pauseDelay(base, 0, null));
+    try std.testing.expectEqual(@as(u64, 1000), pauseDelay(base, 1, null));
+    try std.testing.expectEqual(@as(u64, 8000), pauseDelay(base, 9, null));
+    try std.testing.expectEqual(@as(u64, 3000), pauseDelay(base, 0, 3));
+    try std.testing.expectEqual(@as(u64, 8000), pauseDelay(base, 0, 60));
+}
+
+test "retry declarations are validated" {
+    const parse = struct {
+        fn spec(json: []const u8) !Spec {
+            var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+            defer parsed.deinit();
+            return Spec.parse(parsed.value.object);
+        }
+    }.spec;
+    const accepted = try parse("{\"url\":\"https://example.test\",\"completion\":\"c\",\"id\":\"1\",\"retries\":{\"attempts\":4,\"backoff_ms\":10,\"max_ms\":20}}");
+    try std.testing.expectEqual(@as(u64, 4), accepted.retries.attempts);
+    try std.testing.expectEqual(@as(u64, 10), accepted.retries.backoff_ms);
+    try std.testing.expectEqual(@as(u64, 20), accepted.retries.max_ms);
+    const default_retries = try parse("{\"url\":\"https://example.test\",\"completion\":\"c\",\"id\":\"1\"}");
+    try std.testing.expectEqual(@as(u64, 2), default_retries.retries.attempts);
+    try std.testing.expectError(error.InvalidEffect, parse("{\"url\":\"https://example.test\",\"completion\":\"c\",\"id\":\"1\",\"retries\":{\"attempts\":9}}"));
+    try std.testing.expectError(error.InvalidEffect, parse("{\"url\":\"https://example.test\",\"completion\":\"c\",\"id\":\"1\",\"retries\":{\"attempts\":-1}}"));
+    try std.testing.expectError(error.InvalidEffect, parse("{\"url\":\"https://example.test\",\"completion\":\"c\",\"id\":\"1\",\"retries\":5}"));
 }
 
 test "HTTP timeout contract uses observable first-byte idle and overall phases" {
