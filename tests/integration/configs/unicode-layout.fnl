@@ -1,5 +1,5 @@
 (let [config {}
-      app ((require :tests.application) {:config config})]
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.ui.themes))
@@ -11,6 +11,6 @@
   (app.include (. (require :tests.stock) :misa.choices.layout))
   (app.include (. (require :tests.stock) :misa.editor.render))
   (app.include (. (require :tests.stock) :misa.choices.picker.render))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/unicode-layout.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/unicode-layout.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.models.preview))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

@@ -1,8 +1,8 @@
-(let [config {"models" {"default" "fake/default"}
-              "providers" {"fake" {"responses" [{"stream" [{"type" "text"
-                                                            "text" "partial"}]
-                                                 "error" "stream interrupted"}]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :fake/default}
+              :providers {:fake {:responses [{:stream [{:type :text
+                                                        :text :partial}]
+                                              :error "stream interrupted"}]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
@@ -30,6 +30,6 @@
   (app.include (. (require :tests.stock) :misa.choices))
   (app.include (. (require :tests.stock) :misa.editor))
   (app.include (. (require :tests.stock) :misa.ui))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/interrupted-check.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/interrupted-check.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn [context]
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn [db event cofx]
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn [db event cofx]
                                     (assert (and (= cofx.config.value 42)
                                                  (= (. cofx.argv 1) :arg)))
                                     (assert (and (and (= cofx.terminal.interactive
@@ -15,5 +17,5 @@
                                                              :text :plain}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.context declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.context declarations {}))

@@ -1,10 +1,12 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
+  (local declarations [])
 
-          (fn nested [] (error "constructor exploded") nil)
+  (fn nested [] (error "constructor exploded") nil)
 
-          (nested)
-          nil
-          (definitions.collect :tests.integration.fixtures.constructor-trace declarations {}))
+  (nested)
+  nil
+  (definitions.collect :tests.integration.fixtures.constructor-trace
+    declarations
+    {}))

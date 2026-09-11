@@ -1,15 +1,19 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (var received nil)
-          (table.insert declarations
-                        {:catalog :components :id :test.immutable :value {:render (fn [model]
-                                           (set received model)
-                                           {:lines [{:spans [{:style :plain
-                                                              :text "plain then **bold** and é界"}]}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn [db]
+  (local declarations [])
+  (var received nil)
+  (table.insert declarations
+                {:catalog :components
+                 :id :test.immutable
+                 :value {:render (fn [model]
+                                   (set received model)
+                                   {:lines [{:spans [{:style :plain
+                                                      :text "plain then **bold** and é界"}]}]})}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn [db]
                                     (local failures
                                            [(pcall (fn []
                                                      (misa._install {} {})
@@ -24,10 +28,11 @@
                                                       (not (. failures 2)))
                                                  (not (. failures 3)))
                                             "semantic registries did not seal at app/start")
-                                    (local render-db (misa.patch db {:marker :original}))
+                                    (local render-db
+                                           (misa.patch db {:marker :original}))
                                     (local model {:text :original})
-                                    (misa.components.render render-db :test.role model
-                                                           {})
+                                    (misa.components.render render-db
+                                                            :test.role model {})
                                     (assert (= received model)
                                             "component boundary copied immutable input")
                                     (assert (and (= render-db.marker :original)
@@ -89,13 +94,17 @@
                                            :type :dispatch}
                                           {:event {:type :test/busy-done}
                                            :type :dispatch}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :test/busy-done :handler (fn [db event]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :test/busy-done
+                         :handler (fn [db event]
                                     (assert (= db.editor.text :ignored)
                                             "busy input was discarded")
                                     {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text "review regressions"}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.review-regressions declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.review-regressions
+    declarations
+    {}))

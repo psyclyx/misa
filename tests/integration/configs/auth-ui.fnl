@@ -1,5 +1,5 @@
-(let [config {"providers" {"openai" {}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:providers {:openai {}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
@@ -36,4 +36,4 @@
   (app.include (. (require :tests.stock) :misa.models.preview))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
   (tset app.definitions.auth-providers :openai :discover_models false)
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

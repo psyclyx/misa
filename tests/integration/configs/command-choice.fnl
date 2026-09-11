@@ -1,5 +1,5 @@
-(let [config {"preferences" {"persist" false}}
-      app ((require :tests.application) {:config config})]
+(let [config {:preferences {:persist false}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.choices.matching))
   (app.include (. (require :tests.stock) :misa.keybindings))
@@ -16,6 +16,6 @@
   (app.include (. (require :tests.stock) :misa.choices.picker.render))
   (app.include (. (require :tests.stock) :misa.choices.picker))
   (app.include (. (require :tests.stock) :misa.editor))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/command-choice.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/command-choice.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.models.preview))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

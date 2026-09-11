@@ -1,8 +1,8 @@
-(let [config {"models" {"default" "fake/default"}
-              "providers" {"fake" {"expect_request_options" {"reasoning_effort" "medium"}
-                                   "expect_request_options_exact" true
-                                   "responses" ["cycled"]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :fake/default}
+              :providers {:fake {:expect_request_options {:reasoning_effort :medium}
+                                 :expect_request_options_exact true
+                                 :responses [:cycled]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.keybindings))
@@ -36,13 +36,13 @@
   (app.include (. (require :tests.stock) :misa.transcript.groups))
   (each [id model (pairs app.definitions.models)]
     (when (= model.provider :fake) (tset app.definitions.models id nil)))
-  (tset app.definitions.models "fake/default"
-        {"id" "fake/default"
-         "model" "default"
-         "api" {"request_options" {"reasoning_effort" {"choices" ["low"
-                                                                  "medium"
-                                                                  "high"]
-                                                       "default" "low"}}
-                :request_options_serializer :fake.options}
+  (tset app.definitions.models :fake/default
+        {:id :fake/default
+         :model :default
+         :api {:request_options {:reasoning_effort {:choices [:low
+                                                              :medium
+                                                              :high]
+                                                    :default :low}}
+               :request_options_serializer :fake.options}
          :provider :fake})
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

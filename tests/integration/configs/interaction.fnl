@@ -1,9 +1,9 @@
-(let [config {"components" {"persist" false}
-              "themes" {"persist" false}
-              "preferences" {"persist" false}}
-      app ((require :tests.application) {:config config})]
+(let [config {:components {:persist false}
+              :themes {:persist false}
+              :preferences {:persist false}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/interaction.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/interaction.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.json))
   (app.include (. (require :tests.stock) :misa.choices.matching))
   (app.include (. (require :tests.stock) :misa.keybindings))
@@ -40,4 +40,4 @@
   (app.include (. (require :tests.stock) :misa.ui))
   (app.include (. (require :tests.stock) :misa.models.preview))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

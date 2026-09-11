@@ -1,37 +1,45 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (local lifecycle {:block_end 0
-                            :block_start 0
-                            :delta 0
-                            :finish 0
-                            :start 0})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/response-start :handler (fn []
+  (local declarations [])
+  (local lifecycle {:block_end 0 :block_start 0 :delta 0 :finish 0 :start 0})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/response-start
+                         :handler (fn []
                                     (set lifecycle.start (+ lifecycle.start 1))
                                     nil)}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/block-start :handler (fn []
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/block-start
+                         :handler (fn []
                                     (set lifecycle.block_start
                                          (+ lifecycle.block_start 1))
                                     nil)}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/block-delta :handler (fn []
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/block-delta
+                         :handler (fn []
                                     (set lifecycle.delta (+ lifecycle.delta 1))
                                     nil)}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/block-end :handler (fn []
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/block-end
+                         :handler (fn []
                                     (set lifecycle.block_end
                                          (+ lifecycle.block_end 1))
                                     nil)}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/response-end :handler (fn []
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/response-end
+                         :handler (fn []
                                     (set lifecycle.finish
                                          (+ lifecycle.finish 1))
                                     nil)}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :agent/completed
+                         :handler (fn [db]
                                     (assert (and (= db.agent.usage.input_tokens
                                                     2)
                                                  (= db.agent.usage.output_tokens
@@ -71,5 +79,5 @@
                                                     nil))
                                             "stream chunks were not compacted once")
                                     nil)}})
-          nil
-          (definitions.collect :tests.integration.fixtures.stream-check declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.stream-check declarations {}))

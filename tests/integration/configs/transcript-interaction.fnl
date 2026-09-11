@@ -1,9 +1,9 @@
-(let [config {"themes" {"persist" false}
-              "components" {"persist" false}
-              "history" {"persist" false}
-              "clipboard" {}
-              "messages" {"max_string" 20000}}
-      app ((require :tests.application) {:config config})]
+(let [config {:themes {:persist false}
+              :components {:persist false}
+              :history {:persist false}
+              :clipboard {}
+              :messages {:max_string 20000}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.clipboard))
@@ -27,6 +27,6 @@
   (app.include (. (require :tests.stock) :misa.transcript))
   (app.include (. (require :tests.stock) :misa.models))
   (app.include (. (require :tests.stock) :misa.costs))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/transcript-interaction.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/transcript-interaction.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

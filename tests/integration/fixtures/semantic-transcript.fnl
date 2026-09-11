@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn []
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn []
                                     {:fx [{:event {:text "# Heading with **emphasis**, *italics*, ~~gone~~, `code`, and [docs](https://example.test)"
                                                    :type :transcript/user}
                                            :type :dispatch}
@@ -21,13 +23,16 @@
                                                    :text :result
                                                    :type :transcript/tool-result}
                                            :type :dispatch}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/tool-result :handler (fn [db]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/tool-result
+                         :handler (fn [db]
                                     (local lines
                                            (misa.transcript.project db
-                                                                       {:columns 32
-                                                                        :interactive true}))
-                                    (assert (= (. lines 1 :spans 1 :text) "┃ ")
+                                                                    {:columns 32
+                                                                     :interactive true}))
+                                    (assert (= (. lines 1 :spans 1 :text)
+                                               "┃ ")
                                             "user content should begin directly with its rail")
                                     (var (bold italic strike linked rails)
                                          (values false false false false {}))
@@ -62,8 +67,8 @@
                                                            :tool])]
                                       (assert (. rails
                                                  (color-key (. (misa.themes.style db
-                                                                                 (.. :rail.
-                                                                                     role))
+                                                                                  (.. :rail.
+                                                                                      role))
                                                                :foreground)))
                                               "semantic message rail lost its theme color"))
                                     (var sections 0)
@@ -80,5 +85,7 @@
                                     {:fx [{:lines [{:spans [{:text :semantic}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.semantic-transcript declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.semantic-transcript
+    declarations
+    {}))

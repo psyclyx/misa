@@ -1,5 +1,5 @@
 (let [config {}
-      app ((require :tests.application) {:config config})]
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.choices.matching))
   (app.include (. (require :tests.stock) :misa.keybindings))
@@ -28,7 +28,7 @@
   (app.include (. (require :tests.stock) :misa.choices.picker.view))
   (app.include (. (require :tests.stock) :misa.editor))
   (app.include (. (require :tests.stock) :misa.ui))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/generic-command-choice.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/generic-command-choice.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.models.preview))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

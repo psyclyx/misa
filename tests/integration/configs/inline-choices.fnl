@@ -1,5 +1,5 @@
-(let [config {"choices" {"purposes" {"command-completion" ["all"]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:choices {:purposes {:command-completion [:all]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.choices.matching))
   (app.include (. (require :tests.stock) :misa.keybindings))
@@ -27,11 +27,11 @@
   (app.include (. (require :tests.stock) :misa.choices.picker.view))
   (app.include (. (require :tests.stock) :misa.editor))
   (app.include (. (require :tests.stock) :misa.ui))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/inline-choices.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/inline-choices.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.models.preview))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
   (tset app.definitions.keybindings :choices/open_overlay
-        {:context :choices :action :open_overlay :default ["alt+x"]})
+        {:context :choices :action :open_overlay :default [:alt+x]})
   (tset app.definitions.keybindings :choices/option_1_1
-        {:context :choices :action :option_1_1 :default ["alt+z"]})
-  {:config config :definitions app.definitions})
+        {:context :choices :action :option_1_1 :default [:alt+z]})
+  {: config :definitions app.definitions})

@@ -1,12 +1,12 @@
 (local fixture-fennel (require :fennel))
 (set fixture-fennel.path (.. "@ROOT@/?.fnl;" fixture-fennel.path))
-(let [config {"models" {"default" "claude/claude-sonnet-5"}
-              "providers" {"claude" {"executable" "@WORK@/claude"
-                                     "mcp_command" "@BIN@"
-                                     "mcp_arguments" ["mcp"
-                                                      "--config"
-                                                      "@WORK@/claude.fnl"]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :claude/claude-sonnet-5}
+              :providers {:claude {:executable "@WORK@/claude"
+                                   :mcp_command "@BIN@"
+                                   :mcp_arguments [:mcp
+                                                   :--config
+                                                   "@WORK@/claude.fnl"]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
@@ -36,4 +36,4 @@
   (app.include (. (require :tests.stock) :misa.editor))
   (app.include (. (require :tests.stock) :misa.ui))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

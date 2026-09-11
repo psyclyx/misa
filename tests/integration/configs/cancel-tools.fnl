@@ -1,5 +1,5 @@
-(let [config {"models" {"default" "cancel/model"}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :cancel/model}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.ui.themes))
   (app.include (. (require :tests.stock) :misa.ui.themes.default))
@@ -16,6 +16,6 @@
   (app.include (. (require :tests.stock) :misa.transcript))
   (app.include (. (require :tests.stock) :misa.models))
   (app.include (. (require :tests.stock) :misa.agent))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/cancel-tools.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/cancel-tools.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

@@ -1,19 +1,26 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        (let [definition {:description "test generic picker"
-                                 :event :test/choose
-                                 :name :/choose}] {:catalog :commands :id (. definition :name) :value definition}))
-          (table.insert declarations
-                        (let [definition {:description "test picker panels"
-                                 :event :test/panels
-                                 :name :/panels}] {:catalog :commands :id (. definition :name) :value definition}))
-          (table.insert declarations
-                        {:catalog :events  :value {:event :test/choose :handler (fn [db]
-                                    {
-                                     :fx [{:event {:completion :test/chosen
+  (local declarations [])
+  (table.insert declarations
+                (let [definition {:description "test generic picker"
+                                  :event :test/choose
+                                  :name :/choose}]
+                  {:catalog :commands
+                   :id (. definition :name)
+                   :value definition}))
+  (table.insert declarations
+                (let [definition {:description "test picker panels"
+                                  :event :test/panels
+                                  :name :/panels}]
+                  {:catalog :commands
+                   :id (. definition :name)
+                   :value definition}))
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :test/choose
+                         :handler (fn [db]
+                                    {:fx [{:event {:completion :test/chosen
                                                    :id :test
                                                    :items [{:label :Alpha
                                                             :value :alpha}
@@ -24,10 +31,11 @@
                                                    :token "test:1"
                                                    :type :picker/open}
                                            :type :dispatch}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :test/panels :handler (fn [db]
-                                    {
-                                     :fx [{:event {:completion :test/chosen
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :test/panels
+                         :handler (fn [db]
+                                    {:fx [{:event {:completion :test/chosen
                                                    :id :panels
                                                    :panels [{:id :one
                                                              :items [{:value :alpha}]
@@ -42,8 +50,10 @@
                                                    :token "panels:1"
                                                    :type :picker/open}
                                            :type :dispatch}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :test/chosen :handler (fn [_ event]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :test/chosen
+                         :handler (fn [_ event]
                                     (local text
                                            (or (and event.cancelled
                                                     (.. "cancelled "
@@ -52,5 +62,6 @@
                                     {:fx [{:lines [{:spans [{: text}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.generic-picker declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.generic-picker declarations
+    {}))

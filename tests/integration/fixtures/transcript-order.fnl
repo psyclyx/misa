@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn []
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn []
                                     {:fx [{:event {:content [{:text "ordinary **bold**"
                                                               :type :text}
                                                              {:text :thought
@@ -17,8 +19,10 @@
                                                    :request_id :ordered
                                                    :type :transcript/assistant}
                                            :type :dispatch}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/assistant :handler (fn [db]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/assistant
+                         :handler (fn [db]
                                     (local transcript db.messages.blocks)
                                     (assert (and (and (and (and (= (length transcript)
                                                                    4)
@@ -36,8 +40,8 @@
                                     (local before (. transcript 3 :detail))
                                     (local lines
                                            (misa.transcript.project db
-                                                                       {:columns 80
-                                                                        :interactive true}))
+                                                                    {:columns 80
+                                                                     :interactive true}))
                                     (assert (= (. transcript 3 :detail) before)
                                             "transcript projection mutated its model")
                                     (var bold false)
@@ -54,5 +58,7 @@
                                                              :text :ordered}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.transcript-order declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.transcript-order
+    declarations
+    {}))

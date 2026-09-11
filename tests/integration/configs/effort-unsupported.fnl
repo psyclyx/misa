@@ -1,8 +1,8 @@
-(let [config {"models" {"default" "fake/plain"}
-              "providers" {"fake" {"expect_request_options" {}
-                                   "expect_request_options_exact" true
-                                   "responses" ["plain"]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :fake/plain}
+              :providers {:fake {:expect_request_options {}
+                                 :expect_request_options_exact true
+                                 :responses [:plain]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.keybindings))
@@ -36,6 +36,6 @@
   (app.include (. (require :tests.stock) :misa.transcript.groups))
   (each [id model (pairs app.definitions.models)]
     (when (= model.provider :fake) (tset app.definitions.models id nil)))
-  (tset app.definitions.models "fake/plain"
-        {"id" "fake/plain" "model" "plain" :provider :fake})
-  {:config config :definitions app.definitions})
+  (tset app.definitions.models :fake/plain
+        {:id :fake/plain :model :plain :provider :fake})
+  {: config :definitions app.definitions})

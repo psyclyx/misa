@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn []
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn []
                                     {:fx [{:event {:response_id :rate
                                                    :role :assistant
                                                    :type :transcript/response-start}
@@ -22,8 +24,10 @@
                                            :id :rate
                                            :interval_ms 10
                                            :type :timer/start}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :rate/finish :handler (fn []
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :rate/finish
+                         :handler (fn []
                                     {:fx [{:id :rate :type :timer/stop}
                                           {:event {:block_id :rate/1
                                                    :response_id :rate
@@ -33,8 +37,10 @@
                                                    :type :transcript/response-end
                                                    :usage {:output_tokens 20}}
                                            :type :dispatch}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/response-end :handler (fn [db event]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/response-end
+                         :handler (fn [db event]
                                     (if (not= event.response_id :rate) nil
                                         (do
                                           (local response
@@ -48,5 +54,5 @@
                                                              response.elapsed_ms)))
                                                   "completion rate did not use reported output tokens and monotonic elapsed time")
                                           {:fx [{:type :app/quit}]})))}})
-          nil
-          (definitions.collect :tests.integration.fixtures.rate-check declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.rate-check declarations {}))

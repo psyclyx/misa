@@ -24,10 +24,12 @@
 (assert (= (. (require :misa.test.module) :answer) 42))
 
 (fn [context]
-          (local declarations [])
-          (assert (= context.config.missing misa.json-null))
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn []
+  (local declarations [])
+  (assert (= context.config.missing misa.json-null))
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn []
                                     {:fx [{:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.sandbox declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.sandbox declarations {}))

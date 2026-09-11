@@ -1,30 +1,30 @@
-(let [config {"models" {"default" "fake/default"}
-              "providers" {"fake" {"responses" [[{"type" "tool_call"
-                                                  "id" "write-1"
-                                                  "name" "write_file"
-                                                  "arguments" {"path" "@WORK@/native-tool.txt"
-                                                               "content" "alpha"}}]
-                                                [{"type" "tool_call"
-                                                  "id" "edit-1"
-                                                  "name" "edit_file"
-                                                  "arguments" {"path" "@WORK@/native-tool.txt"
-                                                               "snapshot" "8ED3F6AD685B959E"
-                                                               "start" "1#8ED3F6AD"
-                                                               "new_text" "beta"}}]
-                                                [{"type" "tool_call"
-                                                  "id" "read-1"
-                                                  "name" "read_file"
-                                                  "arguments" {"path" "@WORK@/native-tool.txt"}}]
-                                                [{"type" "tool_call"
-                                                  "id" "list-1"
-                                                  "name" "list_directory"
-                                                  "arguments" {"path" "@WORK@"}}]
-                                                [{"type" "tool_call"
-                                                  "id" "shell-1"
-                                                  "name" "shell"
-                                                  "arguments" {"command" "printf shell-ok"}}]
-                                                "tools done"]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :fake/default}
+              :providers {:fake {:responses [[{:type :tool_call
+                                               :id :write-1
+                                               :name :write_file
+                                               :arguments {:path "@WORK@/native-tool.txt"
+                                                           :content :alpha}}]
+                                             [{:type :tool_call
+                                               :id :edit-1
+                                               :name :edit_file
+                                               :arguments {:path "@WORK@/native-tool.txt"
+                                                           :snapshot :8ED3F6AD685B959E
+                                                           :start "1#8ED3F6AD"
+                                                           :new_text :beta}}]
+                                             [{:type :tool_call
+                                               :id :read-1
+                                               :name :read_file
+                                               :arguments {:path "@WORK@/native-tool.txt"}}]
+                                             [{:type :tool_call
+                                               :id :list-1
+                                               :name :list_directory
+                                               :arguments {:path "@WORK@"}}]
+                                             [{:type :tool_call
+                                               :id :shell-1
+                                               :name :shell
+                                               :arguments {:command "printf shell-ok"}}]
+                                             "tools done"]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
@@ -56,4 +56,4 @@
   (app.include (. (require :tests.stock) :misa.editor))
   (app.include (. (require :tests.stock) :misa.ui))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

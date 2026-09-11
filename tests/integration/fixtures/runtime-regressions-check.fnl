@@ -1,13 +1,19 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :transcript/block-start :handler (fn [db event]
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :transcript/block-start
+                         :handler (fn [db event]
                                     (when (= event.kind :tool_call)
-                                      {:patch {:test_tool_starts (+ (or db.test_tool_starts 0) 1)}}))}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
+                                      {:patch {:test_tool_starts (+ (or db.test_tool_starts
+                                                                        0)
+                                                                    1)}}))}})
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :agent/completed
+                         :handler (fn [db]
                                     (assert (= db.agent.request_seq 1)
                                             "provider tool loop was executed twice")
                                     (assert (and (= db.agent.status :ready)
@@ -17,8 +23,10 @@
                                             "provider tool results missing from history")
                                     (local blocks
                                            (. db.agent.messages 2 :content))
-                                    (assert (= (length blocks) 3) "final records duplicated agent content")
-                                    (assert (= db.test_tool_starts 2) "tool calls were displayed twice")
+                                    (assert (= (length blocks) 3)
+                                            "final records duplicated agent content")
+                                    (assert (= db.test_tool_starts 2)
+                                            "tool calls were displayed twice")
                                     (assert (and (= (. blocks 1 :id) :one)
                                                  (= (. blocks 2 :id) :two))
                                             "provider message indices merged distinct tool calls")
@@ -36,5 +44,7 @@
                                                   1 :text)
                                                "second result"))
                                     {:fx [{:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.runtime-regressions-check declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.runtime-regressions-check
+    declarations
+    {}))

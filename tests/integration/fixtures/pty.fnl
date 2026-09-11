@@ -1,10 +1,12 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (local request-id :pty-operation)
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn [_ _ cofx]
+  (local declarations [])
+  (local request-id :pty-operation)
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn [_ _ cofx]
                                     (var producer
                                          "printf '{\"part\":1}\\n'; sleep 0.70; printf '{\"part\":2}\\n'")
                                     (when cofx.config.cancel
@@ -17,8 +19,10 @@
                                            :stdout_format :json_lines_stream
                                            :type :process/run}
                                           {:type :terminal/read}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :pty/stream :handler (fn [_ event]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :pty/stream
+                         :handler (fn [_ event]
                                     (if (and (= event.phase :data)
                                              (> (length (or event.records {}))
                                                 0))
@@ -35,18 +39,22 @@
                                                      :type :view/commit}
                                                     {:type :app/quit}]})
                                             nil)))}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :terminal/resize :handler (fn [_ event]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :terminal/resize
+                         :handler (fn [_ event]
                                     {:fx [{:lines [{:spans [{:text (.. "resized "
                                                                        event.columns
                                                                        :x
                                                                        event.lines)}]}]
                                            :type :view/commit}]})}})
-          (table.insert declarations
-                        {:catalog :events  :value {:event :terminal/input :handler (fn [_ event]
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :terminal/input
+                         :handler (fn [_ event]
                                     (if (= event.kind :ctrl_c)
                                         {:fx [{:id request-id
                                                :type :operation/cancel}]}
                                         {:fx [{:type :terminal/read}]}))}})
-          nil
-          (definitions.collect :tests.integration.fixtures.pty declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.pty declarations {}))

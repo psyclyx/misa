@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn [db]
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn [db]
                                     (local source "# live
 ## second
 ***both*** and ~~**gone**~~ and `x` [docs](https://example.test)
@@ -129,10 +131,11 @@ return 42
                                                       (<= narrow-top 30))
                                                  (> wide-top narrow-top))
                                             "table columns did not respond to streaming width")
-                                    {
-                                     :fx [{:lines [{:spans [{:style {:foreground :default}
+                                    {:fx [{:lines [{:spans [{:style {:foreground :default}
                                                              :text :markdown}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.markdown-rendering declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.markdown-rendering
+    declarations
+    {}))

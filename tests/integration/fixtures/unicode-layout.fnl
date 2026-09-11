@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :app/start :handler (fn [db]
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :app/start
+                         :handler (fn [db]
                                     (assert (= (misa.layout.width "é界😀")
                                                5)
                                             "cell width disagrees with terminal semantics")
@@ -52,11 +54,11 @@
                                             "Devanagari conjunct boundaries diverged")
                                     (local input
                                            (misa.components.render db
-                                                                  :editor.input
-                                                                  {:cursor 5
-                                                                   :text "ab界é👩‍💻क्ष
+                                                                   :editor.input
+                                                                   {:cursor 5
+                                                                    :text "ab界é👩‍💻क्ष
 z"}
-                                                                  {:columns 6}))
+                                                                   {:columns 6}))
                                     (assert (and (= (length input.lines) 3)
                                                  (= (. input.lines 1 :spans 2
                                                        :text)
@@ -69,10 +71,10 @@ z"}
                                             "logical cursor did not map across a prompt-prefixed soft wrap")
                                     (local narrow
                                            (misa.components.render db
-                                                                  :editor.input
-                                                                  {:cursor 3
-                                                                   :text "界é"}
-                                                                  {:columns 1}))
+                                                                   :editor.input
+                                                                   {:cursor 3
+                                                                    :text "界é"}
+                                                                   {:columns 1}))
                                     (assert (and (and (and (= (length narrow.lines)
                                                               2)
                                                            (= (. narrow.lines 1
@@ -83,10 +85,10 @@ z"}
                                             "narrow input wrapping lost its cursor or prompt budget")
                                     (local cjk
                                            (misa.components.render db
-                                                                  :editor.input
-                                                                  {:cursor 3
-                                                                   :text "界"}
-                                                                  {:columns 2}))
+                                                                   :editor.input
+                                                                   {:cursor 3
+                                                                    :text "界"}
+                                                                   {:columns 2}))
                                     (assert (and (= (. cjk.lines 1 :spans 2
                                                        :text)
                                                     "界")
@@ -113,28 +115,28 @@ z"}
                                             "cursor inside CRLF was not normalized coherently")
                                     (local picker
                                            (misa.components.render db :picker
-                                                                  {:columns [{:active true
-                                                                              :id :all
-                                                                              :lines (misa.choices.row-lines {:active true
-                                                                                                             :description :option
-                                                                                                             :hotkey :alt+1
-                                                                                                             :label "界界界界 wrapped tail"
-                                                                                                             :marker ">"
-                                                                                                             :value :long}
-                                                                                                            28)
-                                                                              :rows [{:value :long}]
-                                                                              :title :Choices
-                                                                              :width 28}]
-                                                                   :height 8
-                                                                   :hints {}
-                                                                   :input {:cursor 0
-                                                                           :text ""
-                                                                           :title :Pick}
-                                                                   :panel_height 6
-                                                                   :preview {:height 0
-                                                                             :lines {}}
-                                                                   :width 28
-                                                                   :x 0}))
+                                                                   {:columns [{:active true
+                                                                               :id :all
+                                                                               :lines (misa.choices.row-lines {:active true
+                                                                                                               :description :option
+                                                                                                               :hotkey :alt+1
+                                                                                                               :label "界界界界 wrapped tail"
+                                                                                                               :marker ">"
+                                                                                                               :value :long}
+                                                                                                              28)
+                                                                               :rows [{:value :long}]
+                                                                               :title :Choices
+                                                                               :width 28}]
+                                                                    :height 8
+                                                                    :hints {}
+                                                                    :input {:cursor 0
+                                                                            :text ""
+                                                                            :title :Pick}
+                                                                    :panel_height 6
+                                                                    :preview {:height 0
+                                                                              :lines {}}
+                                                                    :width 28
+                                                                    :x 0}))
                                     (var text "")
                                     (each [_ line (ipairs picker.lines)]
                                       (each [_ part (ipairs line.spans)]
@@ -145,5 +147,6 @@ z"}
                                                              :text "unicode layout"}]}]
                                            :type :view/commit}
                                           {:type :app/quit}]})}})
-          nil
-          (definitions.collect :tests.integration.fixtures.unicode-layout declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.unicode-layout declarations
+    {}))

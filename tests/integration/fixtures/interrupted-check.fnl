@@ -1,9 +1,11 @@
 (local definitions (require :tests.declarations))
 
 (fn []
-          (local declarations [])
-          (table.insert declarations
-                        {:catalog :events  :value {:event :agent/completed :handler (fn [db]
+  (local declarations [])
+  (table.insert declarations
+                {:catalog :events
+                 :value {:event :agent/completed
+                         :handler (fn [db]
                                     (assert (= (length db.agent.messages) 1)
                                             "interrupted assistant response entered provider history")
                                     (local transcript db.messages.blocks)
@@ -17,5 +19,7 @@
                                                     :partial))
                                             "partial transcript was not retained")
                                     nil)}})
-          nil
-          (definitions.collect :tests.integration.fixtures.interrupted-check declarations {}))
+  nil
+  (definitions.collect :tests.integration.fixtures.interrupted-check
+    declarations
+    {}))

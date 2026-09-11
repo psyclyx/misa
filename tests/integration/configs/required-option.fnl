@@ -1,6 +1,6 @@
-(let [config {"models" {"default" "fake/required"}
-              "providers" {"fake" {"responses" ["must not run"]}}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :fake/required}
+              :providers {:fake {:responses ["must not run"]}}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
@@ -32,11 +32,11 @@
   (app.include (. (require :tests.stock) :misa.transcript.groups))
   (each [id model (pairs app.definitions.models)]
     (when (= model.provider :fake) (tset app.definitions.models id nil)))
-  (tset app.definitions.models "fake/required"
-        {"id" "fake/required"
-         "model" "required"
-         "api" {"request_options" {"region" {"required" true
-                                             "choices" ["east" "west"]}}
-                :request_options_serializer :fake.options}
+  (tset app.definitions.models :fake/required
+        {:id :fake/required
+         :model :required
+         :api {:request_options {:region {:required true
+                                          :choices [:east :west]}}
+               :request_options_serializer :fake.options}
          :provider :fake})
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

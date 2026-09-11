@@ -1,12 +1,12 @@
-(let [config {"models" {"default" "alpha/model"}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :alpha/model}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.agent.stream))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.json))
   (app.include (. (require :tests.stock) :misa.protocols.openai))
   (app.include (. (require :tests.stock) :misa.protocols.anthropic))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/cross-provider.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/cross-provider.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.ui.themes))
   (app.include (. (require :tests.stock) :misa.ui.themes.default))
   (app.include (. (require :tests.stock) :misa.ui.components))
@@ -31,4 +31,4 @@
   (app.include (. (require :tests.stock) :misa.editor))
   (app.include (. (require :tests.stock) :misa.ui))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

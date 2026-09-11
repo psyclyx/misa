@@ -1,5 +1,5 @@
-(let [config {"messages" {"verbose" true}}
-      app ((require :tests.application) {:config config})]
+(let [config {:messages {:verbose true}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.ui.themes))
@@ -19,6 +19,6 @@
   (app.include (. (require :tests.stock) :misa.ui.status.render))
   (app.include (. (require :tests.stock) :misa.ui.chrome))
   (app.include (. (require :tests.stock) :misa.transcript))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/transcript-order.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/transcript-order.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

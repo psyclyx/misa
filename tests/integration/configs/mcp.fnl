@@ -1,4 +1,4 @@
 (let [config {}
-      app ((require :tests.application) {:config config})]
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.tools.shell))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

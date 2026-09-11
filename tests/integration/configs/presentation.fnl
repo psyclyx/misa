@@ -1,5 +1,5 @@
 (let [config {}
-      app ((require :tests.application) {:config config})]
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.ui.values))
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.dialogs))
@@ -15,6 +15,6 @@
   (app.include (. (require :tests.stock) :misa.editor.render))
   (app.include (. (require :tests.stock) :misa.ui.components.buttons))
   (app.include (. (require :tests.stock) :misa.dialogs.render))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/presentation.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/presentation.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})

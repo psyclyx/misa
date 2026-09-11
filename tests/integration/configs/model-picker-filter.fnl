@@ -1,8 +1,8 @@
-(let [config {"models" {"default" "picker/vendor/first"}}
-      app ((require :tests.application) {:config config})]
+(let [config {:models {:default :picker/vendor/first}}
+      app ((require :tests.application) {: config})]
   (app.include (. (require :tests.stock) :misa.keybindings))
   (app.include (. (require :tests.stock) :misa.ui.values))
-  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/model-picker-filter.fnl") {:config config}))
+  (app.include (((. (require :fennel) :dofile) "@ROOT@/tests/integration/fixtures/model-picker-filter.fnl") {: config}))
   (app.include (. (require :tests.stock) :misa.choices.matching))
   (app.include (. (require :tests.stock) :misa.commands))
   (app.include (. (require :tests.stock) :misa.choices))
@@ -34,4 +34,4 @@
   (app.include (. (require :tests.stock) :misa.ui))
   (app.include (. (require :tests.stock) :misa.models.preview))
   (app.include (. (require :tests.stock) :misa.transcript.groups))
-  {:config config :definitions app.definitions})
+  {: config :definitions app.definitions})
