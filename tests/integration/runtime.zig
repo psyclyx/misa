@@ -210,6 +210,13 @@ test "component resolution preserves cached semantic spans across themes" {
     try h.expect(.{}, "pure components\n");
 }
 
+test "Lua and native text measurement agree on the layout corpus" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/layout-parity.fnl"));
+    try h.expect(.{}, "layout parity ok\n");
+}
+
 test "a user extension directory is searched by module name" {
     var h = try Harness.init();
     defer h.deinit();

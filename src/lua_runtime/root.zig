@@ -10,6 +10,7 @@ const framework = @embedFile("misa_core_framework");
 const state_updates = @embedFile("misa_core_state");
 const subscriptions = @embedFile("misa_core_subscriptions");
 const fennel = @embedFile("vendor/fennel.lua");
+const width = @import("misa_width");
 pub const max_nesting_depth: usize = 128;
 
 pub const TerminalInfo = struct {
@@ -65,6 +66,7 @@ pub const Runtime = struct {
         c.luaL_openlibs(state);
 
         try self.initializeFennel();
+        self.installNativeLayout();
         self.assertStack(0);
         c.lua_getfield(state, c.LUA_GLOBALSINDEX, "misa");
         c.lua_getfield(state, -1, "json-null");
@@ -147,6 +149,23 @@ pub const Runtime = struct {
             return error.LuaInitializationFailed;
         }
         self.pop(2);
+    }
+
+    /// Expose the terminal's own text measurement. `misa.ui.layout` measures
+    /// text in Lua for wrapping and cursor mapping while the presenter measures
+    /// it natively for frame validation, so both must answer identically.
+    fn installNativeLayout(self: *Runtime) void {
+        const state = self.state;
+        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "misa");
+        c.lua_createtable(state, 0, 3);
+        c.lua_pushcfunction(state, nativeWidth);
+        c.lua_setfield(state, -2, "width");
+        c.lua_pushcfunction(state, nativeClusters);
+        c.lua_setfield(state, -2, "clusters");
+        c.lua_pushcfunction(state, nativeCellWidth);
+        c.lua_setfield(state, -2, "cell-width");
+        c.lua_setfield(state, -2, "native");
+        self.pop(1);
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -643,6 +662,76 @@ pub const Runtime = struct {
         std.debug.assert(c.lua_gettop(self.state) == count);
     }
 };
+
+/// Terminal cells for a whole string, or nil when it is not valid UTF-8.
+fn nativeWidth(state: ?*c.lua_State) callconv(.c) c_int {
+    const lua_state = state.?;
+    var length: usize = 0;
+    const text = c.lua_tolstring(lua_state, 1, &length) orelse {
+        c.lua_pushnil(lua_state);
+        return 1;
+    };
+    const cells = width.textWidth(text[0..length]) catch {
+        c.lua_pushnil(lua_state);
+        return 1;
+    };
+    c.lua_pushnumber(lua_state, @floatFromInt(cells));
+    return 1;
+}
+
+/// Terminal cells for one codepoint.
+fn nativeCellWidth(state: ?*c.lua_State) callconv(.c) c_int {
+    const lua_state = state.?;
+    const codepoint = c.lua_tonumber(lua_state, 1);
+    if (!(codepoint >= 0 and codepoint <= 0x10ffff)) {
+        c.lua_pushnil(lua_state);
+        return 1;
+    }
+    c.lua_pushnumber(lua_state, @floatFromInt(width.displayWidth(@intFromFloat(codepoint))));
+    return 1;
+}
+
+/// Grapheme clusters as a flat table: end byte, cells, end byte, cells, ...
+/// One call per string keeps the Lua side iterating an array instead of asking
+/// per codepoint.
+fn nativeClusters(state: ?*c.lua_State) callconv(.c) c_int {
+    const lua_state = state.?;
+    var length: usize = 0;
+    const text = c.lua_tolstring(lua_state, 1, &length) orelse {
+        c.lua_pushnil(lua_state);
+        return 1;
+    };
+    const slice = text[0..length];
+    if (std.unicode.utf8ValidateSlice(slice)) {} else {
+        c.lua_pushnil(lua_state);
+        return 1;
+    }
+    var count: usize = 0;
+    var at: usize = 0;
+    while (at < slice.len) {
+        const cluster = width.nextCluster(slice, at) catch {
+            c.lua_pushnil(lua_state);
+            return 1;
+        };
+        if (cluster.end == at) break;
+        count += 1;
+        at = cluster.end;
+    }
+    c.lua_createtable(lua_state, @intCast(count * 2), 0);
+    at = 0;
+    var index: c_int = 1;
+    while (at < slice.len) {
+        const cluster = width.nextCluster(slice, at) catch unreachable;
+        if (cluster.end == at) break;
+        c.lua_pushnumber(lua_state, @floatFromInt(cluster.end));
+        c.lua_rawseti(lua_state, -2, index);
+        c.lua_pushnumber(lua_state, @floatFromInt(cluster.width));
+        c.lua_rawseti(lua_state, -2, index + 1);
+        index += 2;
+        at = cluster.end;
+    }
+    return 1;
+}
 
 test "Fennel configuration imports ordinary modules and retains callback values" {
     var temporary = std.testing.tmpDir(.{});

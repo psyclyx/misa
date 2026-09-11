@@ -1,6 +1,6 @@
 //! Action and link targets in terminal cells, retained only for shown frames.
 const std = @import("std");
-const width = @import("width.zig");
+const width = @import("misa_width");
 const Hit = struct { row: usize, first: usize, end: usize, value: []u8, kind: enum { action, link } = .action };
 pub const Map = struct {
     hits: std.ArrayList(Hit) = .empty,

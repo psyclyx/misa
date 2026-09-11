@@ -1,5 +1,5 @@
-;; Pure terminal-cell layout primitives. The width tables intentionally mirror
-;; src/terminal/width.zig so Lua projections and the native presenter agree.
+;; Pure terminal-cell layout primitives built on the native measurement, so Lua
+;; projections and the native presenter agree by construction.
 
 (local zero [[768 879]
              [1155 1161]
@@ -119,7 +119,7 @@
                   (set cp (- (+ (* cp 64) byte) 128)))))
           (if valid (values cp size) (values a 1))))))
 
-;; UAX #29 GB9c linkers, kept in lockstep with terminal/width.zig. This is
+;; UAX #29 GB9c linkers, kept in lockstep with width/root.zig. This is
 ;; deliberately conservative: only a linker followed by an Indic letter joins.
 
 (local virama {})

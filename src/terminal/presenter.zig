@@ -1,6 +1,6 @@
 //! Absolute semantic frame presentation for a managed terminal screen.
 const std = @import("std");
-const cell_width = @import("width.zig");
+const cell_width = @import("misa_width");
 const hit_map = @import("hit_map.zig");
 
 pub fn appendScreenPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {

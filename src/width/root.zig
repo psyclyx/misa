@@ -1,4 +1,7 @@
-//! Dependency-free Unicode terminal cell widths.
+//! Dependency-free Unicode terminal cell widths and grapheme clusters.
+//!
+//! The presenter measures frames with this module and `misa.ui.layout`
+//! measures text in Lua through it, so both agree by construction.
 const std = @import("std");
 
 const WidthInterval = struct { first: u21, last: u21 };

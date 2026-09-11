@@ -2,7 +2,7 @@
 //! At most 128 visible slots and 1 MiB of compiled IDs/payloads per plan.
 const std = @import("std");
 const presenter = @import("presenter.zig");
-const width = @import("width.zig");
+const width = @import("misa_width");
 pub const max_slots = 128;
 pub const max_compiled_bytes = 1024 * 1024;
 const Frame = struct { start: usize, len: usize };

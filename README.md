@@ -541,7 +541,7 @@ The terminal thread waits on stdin, commands, frame and decoder deadlines, with
 a 100 ms maximum wait to observe resize signals delivered to another thread.
 `src/wakeup/root.zig` supplies the shared nonblocking notification mechanism.
 `src/terminal/root.zig` owns tty lifetime; `terminal/input.zig`,
-`terminal/presenter.zig`, and `terminal/width.zig` own their respective mechanisms.
+`terminal/presenter.zig`, and `width/root.zig` own their respective mechanisms.
 
 The interactive presenter owns an alternate screen and repaints bounded
 semantic frames using absolute cursor positioning. Leaving Misa or temporarily

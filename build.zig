@@ -49,6 +49,13 @@ pub fn build(b: *std.Build) void {
     // let the catalog's own test compare against it.
     const extension_manifest = b.addSystemCommand(&.{ "sh", "-c", "cd extensions && find . -name '*.fnl' | sed 's|^\\./||' | LC_ALL=C sort" });
     standard_extensions.addAnonymousImport("misa_extension_manifest", .{ .root_source_file = extension_manifest.captureStdOut(.{}) });
+    // The terminal presenter and the Lua layout both measure text, so the tables
+    // and clustering live in one module each of them imports.
+    const width = b.createModule(.{
+        .root_source_file = b.path("src/width/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const lua_runtime = b.createModule(.{
         .root_source_file = b.path("src/lua_runtime/root.zig"),
         .target = target,
@@ -56,12 +63,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     lua_runtime.linkSystemLibrary("luajit", .{ .use_pkg_config = .force });
+    lua_runtime.addImport("misa_width", width);
     const terminal = b.createModule(.{
         .root_source_file = b.path("src/terminal/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     terminal.addImport("misa_wakeup", wakeup);
+    terminal.addImport("misa_width", width);
     const file_effect = b.createModule(.{
         .root_source_file = b.path("src/capability/file.zig"),
         .target = target,
@@ -252,6 +261,7 @@ pub fn build(b: *std.Build) void {
     const image_unit = b.addTest(.{ .root_module = image });
     const syntax_unit = b.addTest(.{ .root_module = syntax });
     const terminal_unit = b.addTest(.{ .root_module = terminal });
+    const width_unit = b.addTest(.{ .root_module = width });
     const session_unit = b.addTest(.{ .root_module = fixture_session });
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&b.addRunArtifact(auth_unit).step);
@@ -266,6 +276,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(image_unit).step);
     test_step.dependOn(&b.addRunArtifact(syntax_unit).step);
     test_step.dependOn(&b.addRunArtifact(terminal_unit).step);
+    test_step.dependOn(&b.addRunArtifact(width_unit).step);
     test_step.dependOn(&b.addRunArtifact(session_unit).step);
 
     const integration_options = b.addOptions();
