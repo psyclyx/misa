@@ -18,6 +18,8 @@ const result_json = @import("result_json.zig");
 const AuthSpec = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool };
 const StateSpec = struct { namespace: []const u8, completion: []const u8, id: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map };
 const ConversationSpec = struct { spec: conversation.Spec, environ: *const std.process.Environ.Map };
+const ConversationLoadSpec = struct { spec: native_effect.ConversationLoad, environ: *const std.process.Environ.Map };
+const ConversationListSpec = struct { spec: native_effect.ConversationList, environ: *const std.process.Environ.Map };
 const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
 const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
 const SyntaxSpec = struct { spec: syntax.Spec, service: *syntax.Service };
@@ -25,7 +27,7 @@ const ProcessRequest = struct {
     spec: process.Spec,
     execution: union(enum) { tool, provider: *const std.process.Environ.Map },
 };
-const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, conversation: ConversationSpec, auth: AuthSpec };
+const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, conversation: ConversationSpec, conversation_load: ConversationLoadSpec, conversation_list: ConversationListSpec, auth: AuthSpec };
 
 pub const Task = struct {
     pub const max_records_per_event = 32;
@@ -197,6 +199,39 @@ pub const Task = struct {
         return task;
     }
 
+    pub fn createConversationLoad(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: native_effect.ConversationLoad, environ: *const std.process.Environ.Map) !*Task {
+        const task = try create(owner_allocator, io, wakeup);
+        errdefer task.destroy();
+        const a = task.arena.allocator();
+        const spec: ConversationLoadSpec = .{ .spec = .{
+            .conversation = try a.dupe(u8, source.conversation),
+            .after_seq = source.after_seq,
+            .limit = source.limit,
+            .completion = try a.dupe(u8, source.completion),
+            .id = try a.dupe(u8, source.id),
+        }, .environ = environ };
+        task.kind = .{ .conversation_load = spec };
+        try task.prepare(spec.spec.completion, spec.spec.id, .{});
+        // Opening the database may wait on another process's write lock.
+        task.timeout_kind = .none;
+        return task;
+    }
+
+    pub fn createConversationList(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: native_effect.ConversationList, environ: *const std.process.Environ.Map) !*Task {
+        const task = try create(owner_allocator, io, wakeup);
+        errdefer task.destroy();
+        const a = task.arena.allocator();
+        const spec: ConversationListSpec = .{ .spec = .{
+            .limit = source.limit,
+            .completion = try a.dupe(u8, source.completion),
+            .id = try a.dupe(u8, source.id),
+        }, .environ = environ };
+        task.kind = .{ .conversation_list = spec };
+        try task.prepare(spec.spec.completion, spec.spec.id, .{});
+        task.timeout_kind = .none;
+        return task;
+    }
+
     pub fn createAuth(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool) !*Task {
         const task = try create(owner_allocator, io, wakeup);
         errdefer task.destroy();
@@ -345,6 +380,8 @@ pub const Task = struct {
             .state_load => |spec| .{ .state_load = spec.namespace },
             .state_save => .state_save,
             .conversation => .conversation_append,
+            .conversation_load => .conversation_load,
+            .conversation_list => .conversation_list,
         };
     }
 
@@ -389,6 +426,50 @@ pub const Task = struct {
         while (self.response_value == null) try self.response_ready.wait(self.io, &self.response_mutex);
         if (!std.mem.eql(u8, self.response_correlation.?, correlation)) return error.InteractionCorrelationMismatch;
         return self.response_value.?;
+    }
+
+    /// Encode a reopened conversation for a `conversation/load` completion.
+    fn snapshotJson(self: *Task, snapshot: conversation.Snapshot) !std.json.Value {
+        const a = self.arena.allocator();
+        var entries = std.json.Array.init(a);
+        try entries.ensureTotalCapacity(snapshot.entries.len);
+        for (snapshot.entries) |record| {
+            var object: std.json.ObjectMap = .empty;
+            try object.put(a, "seq", .{ .integer = record.seq });
+            try object.put(a, "at_ms", .{ .integer = record.at_ms });
+            try object.put(a, "kind", .{ .string = record.kind });
+            try object.put(a, "request_id", if (record.request_id) |value| .{ .string = value } else .null);
+            try object.put(a, "data", try std.json.parseFromSliceLeaky(std.json.Value, a, record.payload, .{ .allocate = .alloc_always }));
+            entries.appendAssumeCapacity(.{ .object = object });
+        }
+        var object: std.json.ObjectMap = .empty;
+        try object.put(a, "conversation", .{ .string = snapshot.conversation });
+        try object.put(a, "metadata", try std.json.parseFromSliceLeaky(std.json.Value, a, snapshot.metadata, .{ .allocate = .alloc_always }));
+        try object.put(a, "forked_from_id", if (snapshot.forked_from_id) |value| .{ .string = value } else .null);
+        try object.put(a, "forked_from_seq", if (snapshot.forked_from_seq) |value| .{ .integer = value } else .null);
+        try object.put(a, "entries", .{ .array = entries });
+        try object.put(a, "more_entries", .{ .bool = snapshot.more_entries });
+        return .{ .object = object };
+    }
+
+    /// Encode conversation headers for a `conversation/list` completion.
+    fn summariesJson(self: *Task, summaries: []conversation.Summary) !std.json.Value {
+        const a = self.arena.allocator();
+        var conversations = std.json.Array.init(a);
+        try conversations.ensureTotalCapacity(summaries.len);
+        for (summaries) |summary| {
+            var object: std.json.ObjectMap = .empty;
+            try object.put(a, "id", .{ .string = summary.id });
+            try object.put(a, "created_at", .{ .integer = summary.created_at });
+            try object.put(a, "updated_at", .{ .integer = summary.updated_at });
+            try object.put(a, "entry_count", .{ .integer = summary.entry_count });
+            try object.put(a, "metadata", try std.json.parseFromSliceLeaky(std.json.Value, a, summary.metadata, .{ .allocate = .alloc_always }));
+            try object.put(a, "forked_from_id", if (summary.forked_from_id) |value| .{ .string = value } else .null);
+            conversations.appendAssumeCapacity(.{ .object = object });
+        }
+        var object: std.json.ObjectMap = .empty;
+        try object.put(a, "conversations", .{ .array = conversations });
+        return .{ .object = object };
     }
 
     fn worker(self: *Task) std.Io.Cancelable!void {
@@ -537,6 +618,38 @@ pub const Task = struct {
                     return;
                 };
                 self.result = .{ .ok = true, .data = .{ .object = object }, .message = null };
+            },
+            .conversation_load => |request| {
+                var store = conversation.Store.open(self.arena.allocator(), self.io, request.environ) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                defer store.deinit();
+                const snapshot = store.load(self.arena.allocator(), request.spec.conversation, request.spec.after_seq, request.spec.limit, conversation.max_requests_per_load) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                const data = self.snapshotJson(snapshot) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                self.result = .{ .ok = true, .message = null, .data = data };
+            },
+            .conversation_list => |request| {
+                var store = conversation.Store.open(self.arena.allocator(), self.io, request.environ) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                defer store.deinit();
+                const summaries = store.list(self.arena.allocator(), request.spec.limit) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                const data = self.summariesJson(summaries) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                self.result = .{ .ok = true, .message = null, .data = data };
             },
             .auth => |spec| {
                 const command_result = provider_auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction, .protected_input = spec.managed_input }) catch |err| {

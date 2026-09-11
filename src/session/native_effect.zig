@@ -21,6 +21,18 @@ pub const ConversationAppend = struct {
     completion: []const u8,
     id: []const u8,
 };
+pub const ConversationLoad = struct {
+    conversation: []const u8,
+    after_seq: i64,
+    limit: usize,
+    completion: []const u8,
+    id: []const u8,
+};
+pub const ConversationList = struct {
+    limit: usize,
+    completion: []const u8,
+    id: []const u8,
+};
 pub const AuthCommand = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8 };
 pub const AuthRespond = struct { id: []const u8, correlation: []const u8, action: []const u8, value: []const u8 };
 pub const CancelOperation = struct { id: []const u8 };
@@ -45,6 +57,8 @@ pub const Effect = union(enum) {
     state_load: StateLoad,
     state_save: StateSave,
     conversation_append: ConversationAppend,
+    conversation_load: ConversationLoad,
+    conversation_list: ConversationList,
     operation_cancel: CancelOperation,
     operation_finish: FinishOperation,
     timer_start: timer.Start,
@@ -168,9 +182,34 @@ pub const Effect = union(enum) {
                 .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
             } };
         }
+        if (std.mem.eql(u8, kind, "conversation/load")) {
+            const conversation_id = nonEmptyStringField(object, "conversation") orelse return error.InvalidEffect;
+            conversation.validateConversationId(conversation_id) catch return error.InvalidEffect;
+            return .{ .conversation_load = .{
+                .conversation = conversation_id,
+                .after_seq = boundedIntegerField(object, "after_seq", 0, std.math.maxInt(i64), 0) orelse return error.InvalidEffect,
+                .limit = @intCast(boundedIntegerField(object, "limit", 1, conversation.max_load_limit, conversation.max_load_limit) orelse return error.InvalidEffect),
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            } };
+        }
+        if (std.mem.eql(u8, kind, "conversation/list")) {
+            return .{ .conversation_list = .{
+                .limit = @intCast(boundedIntegerField(object, "limit", 1, conversation.max_list_limit, conversation.max_list_limit) orelse return error.InvalidEffect),
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+            } };
+        }
         return error.UnknownNativeEffect;
     }
 };
+
+/// Read an optional bounded integer field; null reports an invalid value.
+fn boundedIntegerField(object: std.json.ObjectMap, name: []const u8, minimum: i64, maximum: i64, default: i64) ?i64 {
+    const value = object.get(name) orelse return default;
+    if (value != .integer or value.integer < minimum or value.integer > maximum) return null;
+    return value.integer;
+}
 
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
@@ -247,4 +286,26 @@ test "validation covers the whole native contract" {
     var empty_append = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/append\",\"conversation\":\"main\",\"entries\":[],\"completion\":\"conversation/appended\",\"id\":\"log-1\"}", .{});
     defer empty_append.deinit();
     try std.testing.expectError(error.InvalidEffect, Effect.parse(empty_append.value));
+
+    var load = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/load\",\"conversation\":\"main\",\"after_seq\":3,\"limit\":10,\"completion\":\"conversation/loaded\",\"id\":\"load-1\"}", .{});
+    defer load.deinit();
+    const load_effect = try Effect.parse(load.value);
+    try std.testing.expectEqual(@as(i64, 3), load_effect.conversation_load.after_seq);
+    try std.testing.expectEqual(@as(usize, 10), load_effect.conversation_load.limit);
+    var default_load = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/load\",\"conversation\":\"main\",\"completion\":\"conversation/loaded\",\"id\":\"load-1\"}", .{});
+    defer default_load.deinit();
+    try std.testing.expectEqual(conversation.max_load_limit, (try Effect.parse(default_load.value)).conversation_load.limit);
+    var bad_load = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/load\",\"conversation\":\"has space\",\"completion\":\"conversation/loaded\",\"id\":\"load-1\"}", .{});
+    defer bad_load.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_load.value));
+    var bad_limit = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/load\",\"conversation\":\"main\",\"limit\":0,\"completion\":\"conversation/loaded\",\"id\":\"load-1\"}", .{});
+    defer bad_limit.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_limit.value));
+
+    var list = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/list\",\"limit\":5,\"completion\":\"conversations/listed\",\"id\":\"list-1\"}", .{});
+    defer list.deinit();
+    try std.testing.expectEqual(@as(usize, 5), (try Effect.parse(list.value)).conversation_list.limit);
+    var bad_list = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/list\",\"limit\":4096,\"completion\":\"conversations/listed\",\"id\":\"list-1\"}", .{});
+    defer bad_list.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_list.value));
 }

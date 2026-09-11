@@ -22,6 +22,8 @@ pub const Kind = union(enum) {
     state_load: []const u8,
     state_save,
     conversation_append,
+    conversation_load,
+    conversation_list,
     ordinary,
 };
 
@@ -39,7 +41,7 @@ pub fn outcome(a: std.mem.Allocator, completion: []const u8, id: []const u8, kin
         .file => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .text = result.body, .message = result.message }, .{}),
         .state_load => |namespace| return std.json.Stringify.valueAlloc(a, .{ .type = completion, .namespace = namespace, .found = result.data != null, .data = result.data orelse .null, .ok = result.ok, .message = result.message }, .{}),
         .state_save => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .ok = result.ok, .message = result.message }, .{}),
-        .conversation_append => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .data = result.data orelse .null, .message = result.message }, .{}),
+        .conversation_append, .conversation_load, .conversation_list => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .data = result.data orelse .null, .message = result.message }, .{}),
         .ordinary => {},
     }
     if (result.data) |value| return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .status = result.status, .data = value, .stderr = result.body }, .{});

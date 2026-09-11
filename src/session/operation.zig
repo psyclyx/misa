@@ -121,6 +121,20 @@ pub const Owner = struct {
         self.startPrepared(task);
     }
 
+    pub fn startConversationLoad(self: *Owner, spec: native_effect.ConversationLoad, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(spec.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createConversationLoad(self.allocator, self.io, self.wakeup, spec, environ);
+        self.startPrepared(task);
+    }
+
+    pub fn startConversationList(self: *Owner, spec: native_effect.ConversationList, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(spec.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createConversationList(self.allocator, self.io, self.wakeup, spec, environ);
+        self.startPrepared(task);
+    }
+
     fn startState(self: *Owner, namespace: []const u8, completion: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map) !void {
         try self.active.ensureUnusedCapacity(self.allocator, 1);
         const serial = self.serial +% 1;

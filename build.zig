@@ -234,6 +234,9 @@ pub fn build(b: *std.Build) void {
     operation_test_module.addImport("misa_process", process_effect);
     operation_test_module.addImport("misa_state", state);
     operation_test_module.addImport("misa_conversation", conversation);
+    // The effect contract validates `view/commit` lines and decodes contained
+    // input, so this test module needs the terminal and protected-input owners.
+    operation_test_module.addImport("misa_terminal", terminal);
     const operation_unit = b.addTest(.{ .root_module = operation_test_module });
     const runtime_unit = b.addTest(.{ .root_module = lua_runtime });
     const resolver_unit = b.addTest(.{ .root_module = standard_extensions });
