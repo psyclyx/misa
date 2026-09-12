@@ -256,7 +256,8 @@ Evidence (`benchmarks/native-layout-2026-09-12.md` has the tables and scope):
   layout-parity case) and `zig build test-nix` succeeds.
 - `benchmarks/layout-parity.fnl` compares the previous implementation with the
   new one over every codepoint width and 500 generated mixed-text cases through
-  `clip`, `take`, `width`, the three boundary walks, and `wrap-spans`.
+  `clip`, `take`, `width`, the three boundary walks, `wrap-spans`, `fit`,
+  `columns`, and `wrap-input` with the column count also used as a byte cursor.
 - All 77 standalone Fennel cases, the settlement, threaded terminal, policy
   fault, and Ghostty PTY regressions pass.
 - `benchmarks/native-transcript.py --extension-dir` runs the same executable

@@ -40,10 +40,17 @@
   (local (taken rest taken-cells) (layout.take text columns))
   {:clip [head last cells]
    :take [taken rest taken-cells]
+   :fit (layout.fit text columns)
    :width (layout.width text)
    :boundary (layout.boundary-at-or-before text columns)
    :previous (layout.previous-boundary text columns)
    :next (layout.next-boundary text columns)
+   :columns (layout.columns (+ columns 1) 1 4 1)
+   ;; The editor maps its byte cursor onto wrapped rows, which is the one
+   ;; operation whose answer depends on where a grapheme is cut, so every
+   ;; column count is also probed as a cursor.
+   :input (fennel.view (layout.wrap-input text (+ columns 1) columns "> "
+                                          {:foreground :default} {:dim true}))
    :wrapped (layout.wrap-spans [{:spans [{:text text
                                           :style :accent
                                           :link "https://example.test"}]}]

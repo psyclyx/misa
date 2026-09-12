@@ -50,8 +50,10 @@ tools/fennel benchmarks/layout-parity.fnl <saved previous layout.fnl>
 
 That compares the previous Lua implementation with the new one over every
 codepoint width and 500 generated mixed-text cases through `clip`, `take`,
-`width`, the three boundary walks, and `wrap-spans`. The integration case covers
-the native side of the same corpus.
+`width`, the three boundary walks, `wrap-spans`, `fit`, `columns`, and
+`wrap-input` with the column count also used as a byte cursor, which is where a
+grapheme cut would show. The integration case covers the native side of the same
+corpus.
 
 All 77 standalone Fennel cases pass, along with the settlement, threaded
 terminal, policy-fault, and Ghostty PTY regressions.
