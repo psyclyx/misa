@@ -29,6 +29,21 @@ test "conversation appends persist privately and continue in a fresh process" {
     try h.expect(.{}, "appended 2 at 4\n");
 }
 
+test "a turn longer than one append is journaled in bounded batches" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/big-journal.fnl"));
+    // One turn adds more canonical messages than a single native append
+    // accepts, so the journal continues from each append's completion.
+    const result = try h.run(.{ .args = &.{"go"} });
+    try support.success(result);
+    try support.contains(result.stdout, "appended 256\n");
+    try support.contains(result.stdout, "appended 3\n");
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Invalid native effect") == null);
+    const database = try h.temporary.dir.statFile(support.io, "misa/conversations.sqlite3", .{});
+    try std.testing.expect(database.size > 0);
+}
+
 test "a stored conversation lists and reopens with its label" {
     var h = try Harness.init();
     defer h.deinit();

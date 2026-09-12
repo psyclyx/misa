@@ -19,6 +19,11 @@
   "Apply a handler's patch to an empty database."
   (misa.patch {} (. result :patch)))
 
+(fn journal-state [result messages]
+  "The database a journal handler patched: a named conversation and history."
+  (misa.patch {:conversation {:id :main} :agent {:messages messages}}
+              (. result :patch)))
+
 (fn entries-of [result]
   (. result :fx 1 :entries))
 
@@ -55,15 +60,50 @@
 (assert (= (length (entries-of journaled)) 1) "the wrong tail was journaled")
 (assert (= (. (entries-of journaled) 1 :kind) :message))
 (assert (= (. (entries-of journaled) 1 :data :role) :assistant))
-(assert (= (. (apply-patch journaled) :conversation :synced) 2))
 (assert (= (. journaled :fx 1 :type) :conversation/append))
 (assert (= (. journaled :fx 1 :conversation) :main))
+(assert (= (. journaled :fx 1 :id) "main/2")
+        "the append was not named by the history it covers")
 (assert (= (. journaled :fx 1 :metadata :label) :first)
         "the first user message did not label the conversation")
+;; The cursor follows the completion, so an unwritten range is not counted as
+;; recorded; a failed one is reported and skipped instead of retried forever.
+(assert (= (. (apply-patch journaled) :conversation :synced) nil)
+        "an unwritten range advanced the cursor")
+(assert (= (. (apply-patch journaled) :conversation :pending :kind) :messages))
+(assert (= (. (apply-patch journaled) :conversation :pending :last) 2))
+
+(local caught-up (conversation.appended (journal-state journaled history)
+                                        {:ok true
+                                         :id "main/2"
+                                         :data {:count 1 :last_seq 2}}))
+(assert (= (. (apply-patch caught-up) :conversation :synced) 2))
+(assert (= (. (apply-patch caught-up) :conversation :pending) nil))
+(assert (= (. caught-up :fx) nil) "a settled journal started another append")
+
+(local skipped (conversation.appended (journal-state journaled history)
+                                      {:ok false
+                                       :id "main/2"
+                                       :message :EntryTooLarge}))
+(assert (= (. (apply-patch skipped) :conversation :synced) 2)
+        "an unrecordable range was retried instead of skipped")
+(assert (= (. skipped :fx 1 :event :level) :error))
+(assert (= (. skipped :fx 1 :event :type) :transcript/harness))
+(assert (= (conversation.appended (journal-state caught-up history) {:ok true})
+           nil)
+        "a settled journal continued after it had caught up")
 
 ;; Nothing new, no name, or no history means no write at all.
 (assert (= (conversation.completed {:conversation {:id :main :synced 2}
                                     :agent {:messages history}}
+                                   {}) nil))
+
+;; An append in flight already covers what a later turn adds.
+(assert (= (conversation.completed (apply-patch (conversation.completed
+                                                    {:conversation {:id :main
+                                                                    :synced 0}
+                                                     :agent {:messages history}}
+                                                    {}))
                                    {}) nil))
 
 (assert (= (conversation.completed {:agent {:messages history}} {}) nil))
@@ -71,8 +111,38 @@
                                     :agent {:messages []}}
                                    {}) nil))
 
-;; A shorter history was replaced: record the new branch explicitly, keeping
-;; the label the conversation already had.
+;; A turn longer than one append is written in bounded batches, in order.
+(fn big-history [count]
+  (fcollect [index 1 count] (message :assistant index)))
+
+(local big (big-history 300))
+(local long (conversation.completed {:conversation {:id :main :synced 0}
+                                     :agent {:messages big}}
+                                    {}))
+(assert (= (length (. long :fx)) 1) "a long journal was not batched")
+(assert (= (length (entries-of long)) 256) "the batch ignored the native limit")
+(assert (= (. long :fx 1 :id) "main/256"))
+(assert (= (. (apply-patch long) :conversation :pending :last) 256))
+
+(local tail (conversation.appended (journal-state long big)
+                                   {:ok true
+                                    :id "main/256"
+                                    :data {:count 256 :last_seq 256}}))
+(assert (= (length (. tail :fx)) 1) "the journal did not continue")
+(assert (= (length (entries-of tail)) 44))
+(assert (= (. tail :fx 1 :id) "main/300"))
+(assert (= (. (apply-patch tail) :conversation :synced) 256)
+        "the cursor jumped past the append in flight")
+(assert (= (. (apply-patch tail) :conversation :pending :last) 300))
+
+(local end-of-long (conversation.appended (journal-state tail big)
+                                          {:ok true
+                                           :id "main/300"
+                                           :data {:count 44 :last_seq 300}}))
+(assert (= (. (apply-patch end-of-long) :conversation :synced) 300))
+(assert (= (. end-of-long :fx) nil))
+
+;; A replaced branch is marked first and journaled from the beginning after.
 (local replaced (conversation.completed {:conversation {:id :main
                                                         :label :kept
                                                         :synced 5}
@@ -80,12 +150,24 @@
                                                                      :handoff)]}}
                                         {}))
 
-(assert (= (length (entries-of replaced)) 2))
+(assert (= (length (. replaced :fx)) 1))
+(assert (= (length (entries-of replaced)) 1))
 (assert (= (. (entries-of replaced) 1 :kind) :reset))
-(assert (= (. (entries-of replaced) 2 :data :role) :user))
-(assert (= (. (apply-patch replaced) :conversation :synced) 1))
+(assert (= (. (apply-patch replaced) :conversation :synced) 0)
+        "a replaced branch kept its old cursor")
+(assert (= (. (apply-patch replaced) :conversation :pending :kind) :reset))
 (assert (= (. replaced :fx 1 :metadata :label) :kept)
         "a replaced branch forgot its label")
+
+(local rebased (conversation.appended (journal-state replaced
+                                                     [(message :user :handoff)])
+                                      {:ok true
+                                       :id "main/0"
+                                       :data {:count 1 :last_seq 6}}))
+(assert (= (length (entries-of rebased)) 1))
+(assert (= (. (entries-of rebased) 1 :data :role) :user))
+(assert (= (. (apply-patch rebased) :conversation :synced) 0))
+(assert (= (. (apply-patch rebased) :conversation :pending :last) 1))
 
 ;; Installing a stored conversation replays it and adopts its history.
 (local stored
@@ -252,9 +334,18 @@
                                         :picker_token :2})]
   (assert (= (. cancelled :fx 1 :type) :terminal/read)))
 
-;; A failed journal write is reported; a successful one is silent.
+;; A failed journal write is reported; a settled append with nothing in flight
+;; is ignored.
 (assert (= (conversation.appended {} {:ok true}) nil))
-(let [failed (conversation.appended {} {:ok false :message :DatabaseBusy})]
+(assert (= (conversation.appended {:conversation {:synced 2}} {:ok true}) nil))
+(let [in-flight {:conversation {:id :main :synced 0
+                                :pending {:kind :messages :last 2}}}
+      failed (conversation.appended in-flight
+                                    {:ok false
+                                     :id "main/2"
+                                     :message :DatabaseBusy})]
+  (assert (= (. (apply-patch failed) :conversation :synced) 2))
+  (assert (= (. (apply-patch failed) :conversation :pending) nil))
   (assert (= (. failed :fx 1 :event :type) :transcript/harness))
   (assert (= (. failed :fx 1 :event :level) :error))
   (assert (string.find (. failed :fx 1 :event :text) :DatabaseBusy 1 true))
