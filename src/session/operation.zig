@@ -143,10 +143,10 @@ pub const Owner = struct {
         self.startPrepared(task);
     }
 
-    pub fn startAuth(self: *Owner, action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool) !void {
+    pub fn startAuth(self: *Owner, action: auth.Action, declaration: auth.Declaration, account: ?[]const u8, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool) !void {
         try self.ensureUnique(id);
         try self.active.ensureUnusedCapacity(self.allocator, 1);
-        const task = try Task.createAuth(self.allocator, self.io, self.wakeup, action, declaration, completion, interaction, id, environ, terminal_lease, managed_input);
+        const task = try Task.createAuth(self.allocator, self.io, self.wakeup, action, declaration, account, completion, interaction, id, environ, terminal_lease, managed_input);
         self.startPrepared(task);
     }
 

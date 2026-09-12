@@ -22,14 +22,14 @@ composition, and commit the result.
 | `claude-records` | 5 |
 | `claude-stream-events` | 4 |
 | `codex-records` | 10 |
-| `commands` | 10 |
+| `commands` | 11 |
 | `components` | 27 |
 | `dialog-inputs` | 7 |
 | `editing-actions` | 13 |
 | `editing-motions` | 11 |
 | `editor-edits` | 6 |
 | `effects` | 26 |
-| `events` | 271 |
+| `events` | 272 |
 | `indicators` | 8 |
 | `keybindings` | 93 |
 | `models` | 6 |
@@ -308,6 +308,7 @@ composition, and commit the result.
 
 | ID | Shape |
 | --- | --- |
+| `/account` | event `auth/account` |
 | `/clear` | event `agent/reset` |
 | `/compact` | event `compaction/request` |
 | `/effort` | event `effort/select` |
@@ -471,6 +472,7 @@ composition, and commit the result.
 | `animations/animations/tick` | event `animations/tick` |
 | `animations/app/start` | event `app/start` |
 | `auth.startup` | event `app/start`, priority 11000 |
+| `auth/account` | event `auth/account`, priority 11000 |
 | `auth/complete` | event `auth/complete`, priority 11000 |
 | `auth/dialog-action` | event `auth/dialog-action`, priority 11000 |
 | `auth/discovery-complete` | event `models/discovery-complete`, priority 11000 |

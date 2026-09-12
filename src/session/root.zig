@@ -392,7 +392,7 @@ pub const Session = struct {
             if (self.protected_wait != null or self.protected != null) return error.ProtectedInputAlreadyActive;
             self.protected_wait = try self.allocator.dupe(u8, spec.id);
         }
-        self.operations.startAuth(spec.action, spec.declaration, spec.completion, spec.interaction, spec.id, self.environ, if (lease) |value| value.generation else null, self.interactive) catch |err| {
+        self.operations.startAuth(spec.action, spec.declaration, spec.account, spec.completion, spec.interaction, spec.id, self.environ, if (lease) |value| value.generation else null, self.interactive) catch |err| {
             if (lease) |value| self.terminal.releaseHandoff(value) catch {};
             return err;
         };

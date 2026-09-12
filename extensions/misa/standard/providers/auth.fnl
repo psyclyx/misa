@@ -14,7 +14,12 @@
                       :completion :auth-provider
                       :description "Show provider login state"
                       :event :auth/status
-                      :name :/status}}
+                      :name :/status}
+            :/account {:choice_purpose :auth
+                       :completion :auth-provider
+                       :description "Switch the account a provider uses"
+                       :event :auth/account
+                       :name :/account}}
  :events {:auth.startup {:event :app/start
                          :handler (fn [db]
                                     (auth.startup (misa.auth.providers) db))
@@ -54,4 +59,10 @@
                         :handler (fn [db event cofx]
                                    (auth.command {:action :status
                                                   :name :/status}
-                                                 db event cofx))}}}
+                                                 db event cofx))}
+          :auth/account {:event :auth/account
+                         :priority 11000
+                         :handler (fn [db event cofx]
+                                    (auth.command {:action :select
+                                                   :name :/account}
+                                                  db event cofx))}}}

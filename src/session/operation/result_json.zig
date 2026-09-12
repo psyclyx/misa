@@ -12,6 +12,11 @@ pub const Outcome = struct {
     data: ?std.json.Value = null,
     logged_in: bool = false,
     subscription_type: ?[]const u8 = null,
+    /// The account a successful authentication result refers to, if any.
+    account: ?[]const u8 = null,
+    /// Human-readable success message. The completion derives one from the
+    /// action when this is absent.
+    text: ?[]const u8 = null,
 };
 
 pub const Kind = union(enum) {
@@ -30,12 +35,14 @@ pub const Kind = union(enum) {
 pub fn outcome(a: std.mem.Allocator, completion: []const u8, id: []const u8, kind: Kind, result: Outcome) ![]u8 {
     switch (kind) {
         .auth => |spec| {
-            const message = if (!result.ok) result.message orelse "auth failed" else switch (spec.action) {
+            const message = if (!result.ok) result.message orelse "auth failed" else result.text orelse switch (spec.action) {
                 .login => "logged in",
                 .logout => "logged out",
                 .status => if (result.logged_in) "logged in" else "logged out",
+                .select => "account selected",
             };
-            return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .message = message, .provider = spec.declaration.provider, .logged_in = result.logged_in, .subscription_type = result.subscription_type }, .{});
+            const account: std.json.Value = if (result.account) |name| .{ .string = name } else .null;
+            return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .message = message, .provider = spec.declaration.provider, .logged_in = result.logged_in, .subscription_type = result.subscription_type, .account = account }, .{});
         },
         .http_stream, .process_stream => return terminal(a, completion, id, result.ok, result.status, result.body, result.message),
         .file => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .text = result.body, .message = result.message }, .{}),
@@ -77,4 +84,28 @@ test "data batches encode record JSON without re-encoding it" {
     try std.testing.expectEqualStrings("quoted-\"id", parsed.value.object.get("id").?.string);
     try std.testing.expectEqual(@as(i64, 0), parsed.value.object.get("records").?.array.items[0].object.get("index").?.integer);
     try std.testing.expect(parsed.value.object.get("terminal").?.bool);
+}
+
+test "auth completions carry their account and message" {
+    const declaration: auth.Declaration = .{ .provider = "openai", .strategy = .api_key };
+    const selected_json = try outcome(std.testing.allocator, "auth/complete", "auth-1", .{ .auth = .{ .action = .select, .declaration = declaration } }, .{ .ok = true, .message = null, .account = "work", .text = "using account work" });
+    defer std.testing.allocator.free(selected_json);
+    const selected = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, selected_json, .{});
+    defer selected.deinit();
+    const object = selected.value.object;
+    try std.testing.expectEqualStrings("using account work", object.get("message").?.string);
+    try std.testing.expectEqualStrings("work", object.get("account").?.string);
+
+    const listed_json = try outcome(std.testing.allocator, "auth/complete", "auth-2", .{ .auth = .{ .action = .status, .declaration = declaration } }, .{ .ok = true, .message = null, .logged_in = true, .account = "default", .text = "default: logged in\nwork: logged in (active)" });
+    defer std.testing.allocator.free(listed_json);
+    const listed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, listed_json, .{});
+    defer listed.deinit();
+    try std.testing.expectEqualStrings("default: logged in\nwork: logged in (active)", listed.value.object.get("message").?.string);
+
+    const plain_json = try outcome(std.testing.allocator, "auth/complete", "auth-3", .{ .auth = .{ .action = .login, .declaration = declaration } }, .{ .ok = true, .message = null, .logged_in = true });
+    defer std.testing.allocator.free(plain_json);
+    const plain = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, plain_json, .{});
+    defer plain.deinit();
+    try std.testing.expectEqualStrings("logged in", plain.value.object.get("message").?.string);
+    try std.testing.expect(plain.value.object.get("account").? == .null);
 }

@@ -376,8 +376,8 @@ The fixed native effects are:
 - `{type="timer/start", interval_ms=<10..60000>, completion=..., id=...}` / `{type="timer/stop", id=...}`
 - `{type="operation/cancel", id=...}` / `{type="operation/finish", id=...}`
 - `{type="auth/command", action=..., provider=..., strategy=..., profile=...,
-completion=..., interaction=..., id=...}` / `{type="auth/respond", id=...,
-correlation=..., action=..., value=...}`
+account=?, completion=..., interaction=..., id=...}` / `{type="auth/respond",
+id=..., correlation=..., action=..., value=...}`
 - `{type="state/load", namespace=..., completion=...}` / `{type="state/save", namespace=..., data=...}`
 - `{type="conversation/append", conversation=<id>, entries=<array of {kind=..., data=...}>, metadata=?, completion=..., id=...}`
 - `{type="conversation/load", conversation=<id>, after_seq=?, limit=?, completion=..., id=...}`
@@ -1416,12 +1416,24 @@ callback with state validation and falls back to a pasted-code dialog when
 callback setup or browser launch is unavailable. Use
 `misa status PROVIDER` to inspect login state without exposing credential data
 and `misa logout PROVIDER` to remove it. The `misa.providers.auth` extension provides the same
-flows inside the TUI as `/login PROVIDER`, `/status PROVIDER`, and
-`/logout PROVIDER`. For `claude`, all three commands are
-delegated to `claude auth`. Interactive API-key login uses the ordinary popup
-with masked native input. CLI login still hands the terminal to Claude and
-returns automatically; logout does not need a handoff. OAuth access credentials
-are refreshed from their
+flows inside the TUI as `/login PROVIDER`, `/status PROVIDER`, `/logout
+PROVIDER`, and `/account PROVIDER ACCOUNT`.
+
+A provider may hold several named accounts. `misa login PROVIDER [ACCOUNT]`
+and `/login PROVIDER [ACCOUNT]` store one account's credential, replacing any
+credential that account already holds; an accountless login replaces the
+credential the provider currently uses. `misa select PROVIDER ACCOUNT` and
+`/account PROVIDER ACCOUNT` switch which stored account the provider's requests
+use, without authenticating again. `misa logout PROVIDER [ACCOUNT]` removes one
+account, or every account when none is named, and `misa status PROVIDER
+[ACCOUNT]` lists the stored accounts with the selected one marked, or reports
+one named account. Account names use 1 to 64 letters, digits, `.`, `_`, or `-`.
+A credential stored before accounts existed is the `default` account, which is
+also what an accountless login writes. For `claude`, login, status, and logout
+delegate to `claude auth`, which owns its one account. Interactive API-key login
+uses the ordinary popup with masked native input. CLI login still hands the
+terminal to Claude and returns automatically; logout does not need a handoff.
+OAuth access credentials are refreshed from their
 stored refresh tokens. Credential mutex acquisition is cancellable and refresh
 network I/O never holds a mutex. A refreshed token is published with a
 process/interprocess-locked compare-and-swap over credential generation, refresh

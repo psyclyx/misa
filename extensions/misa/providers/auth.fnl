@@ -1,5 +1,20 @@
-(fn auth-effect [action provider id completion]
-  {: action
+;; Authentication commands, account selection, and startup status.
+;;
+;; A provider stores several named accounts. `default` is the account a plain
+;; `/login PROVIDER` writes, and the account a provider's requests use is the
+;; one login or `/account` most recently selected.
+(local max-account-length 64)
+
+(fn valid-account? [name]
+  "Mirror the native account-name contract for early feedback."
+  (and (= (type name) :string) (> (length name) 0)
+       (<= (length name) max-account-length)
+       (let [(cleaned) (name:gsub "[%w%._%-]" "")]
+         (= cleaned ""))))
+
+(fn auth-effect [action provider account id completion]
+  {: account
+   : action
    :completion (or completion :auth/complete)
    : id
    :interaction :auth/interaction
@@ -24,7 +39,7 @@
         pending {}]
     (each [_ provider (ipairs providers)]
       (tset pending provider.model_provider true)
-      (let [effect (auth-effect :status provider provider.model_provider
+      (let [effect (auth-effect :status provider nil provider.model_provider
                                 :auth/provider-status)]
         (tset effects (+ (length effects) 1) effect)))
     (when (= (length providers) 0)
@@ -65,37 +80,59 @@
       (startup-progress startup
                         {:pending_discovery {event.provider misa.delete}} []))))
 
+(fn command-request [item event]
+  "Resolve a command's provider and account, or describe a usage problem."
+  (let [arguments (or (and (= (type event.arguments) :string) event.arguments)
+                      "")
+        tokens (icollect [token (arguments:gmatch "%S+")] token)]
+    (if (or (= (length tokens) 0) (> (length tokens) 2))
+        {:id item.action
+         :message (.. "usage: " item.name
+                      (if (= item.action :select) " <provider> <account>"
+                          " <provider> [account]"))}
+        (let [provider (. tokens 1)
+              account (. tokens 2)
+              declaration (misa.auth.provider provider)]
+          (if (not declaration)
+              {:id (.. item.action ":" provider)
+               :message "unknown provider"
+               : provider}
+              (and account (not (valid-account? account)))
+              {:id (.. item.action ":" provider ":" account)
+               :message (.. "invalid account name: " account
+                            " (letters, digits, '.', '_' and '-' only)")
+               : provider}
+              (and (= item.action :select) (not account))
+              {:id (.. item.action ":" provider)
+               :message (.. "usage: " item.name " <provider> <account>")
+               : provider}
+              {: account : declaration : provider})))))
+
 (fn command [item _ event cofx]
   "Translate an authentication command into native effects."
-  (let [provider (or (and (= (type event.arguments) :string)
-                          (event.arguments:match "^%s*(%S+)%s*$"))
-                     nil)]
-    (if (not provider)
-        {:fx [{:event {:id item.action
-                       :message (.. "usage: " item.name " <provider>")
+  (let [request (command-request item event)]
+    (if (not request.declaration)
+        {:fx [{:event {:id request.id
+                       :message request.message
                        :ok false
+                       :provider request.provider
                        :type :auth/complete}
                :type :dispatch}]}
-        (let [effects {}]
+        (let [provider request.provider
+              account request.account
+              effects {}]
           (when cofx.terminal.interactive
             (tset effects (+ (length effects) 1)
                   {:event {:level :info
-                           :text (.. item.action " " provider "…")
+                           :text (.. item.action " " provider
+                                     (if account (.. " " account) "") "…")
                            :type :transcript/harness}
                    :type :dispatch}))
-          (let [declaration (misa.auth.provider provider)]
-            (if (not declaration)
-                (tset effects (+ (length effects) 1)
-                      {:event {:id (.. item.action ":" provider)
-                               :message "unknown provider"
-                               :ok false
-                               : provider
-                               :type :auth/complete}
-                       :type :dispatch})
-                (tset effects (+ (length effects) 1)
-                      (auth-effect item.action declaration
-                                   (.. item.action ":" provider))))
-            {:fx effects})))))
+          (tset effects (+ (length effects) 1)
+                (auth-effect item.action request.declaration account
+                             (.. item.action ":" provider
+                                 (if account (.. ":" account) ""))))
+          {:fx effects}))))
 
 (fn interaction [db event]
   "Present an authentication interaction."
@@ -130,7 +167,7 @@
 
 (fn complete [db event]
   "Finish an authentication interaction."
-  (var message event.message)
+  (var message (or event.message "authentication finished"))
   (when (and event.subscription_type
              (not= event.subscription_type misa.json-null))
     (set message (.. message " (" event.subscription_type ")")))
@@ -158,6 +195,7 @@
 
 {:startup start
  : provider-status
+ : valid-account?
  : discovery-complete
  : command
  : interaction

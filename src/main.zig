@@ -25,19 +25,31 @@ pub fn main(init: std.process.Init) !void {
     defer argv.deinit(allocator);
     while (args_iterator.next()) |arg| try argv.append(allocator, arg);
 
-    if (argv.items.len > 1 and (std.mem.eql(u8, argv.items[1], "login") or std.mem.eql(u8, argv.items[1], "logout") or std.mem.eql(u8, argv.items[1], "status"))) {
-        if (argv.items.len != 3) fatal("usage: misa <login|logout|status> <openai|deepseek|groq|together|fireworks|xai|mistral|cerebras|deepinfra|huggingface|nvidia|moonshot|novita|siliconflow|venice|brave|tavily|openai-codex|anthropic|openrouter|kimi-coding|claude>");
-        const action: auth.Action = if (std.mem.eql(u8, argv.items[1], "login")) .login else if (std.mem.eql(u8, argv.items[1], "logout")) .logout else .status;
-        const result = provider_auth.commandTerminal(allocator, init.io, init.environ_map, action, argv.items[2]) catch |err| {
+    if (argv.items.len > 1 and (std.mem.eql(u8, argv.items[1], "login") or std.mem.eql(u8, argv.items[1], "logout") or std.mem.eql(u8, argv.items[1], "status") or std.mem.eql(u8, argv.items[1], "select"))) {
+        if (argv.items.len < 3 or argv.items.len > 4) fatal("usage: misa <login|logout|status|select> <provider> [account]");
+        const action: auth.Action = if (std.mem.eql(u8, argv.items[1], "login")) .login else if (std.mem.eql(u8, argv.items[1], "logout")) .logout else if (std.mem.eql(u8, argv.items[1], "select")) .select else .status;
+        const account: ?[]const u8 = if (argv.items.len == 4) argv.items[3] else null;
+        if (action == .select and account == null) fatal("usage: misa select <provider> <account>");
+        const result = provider_auth.commandTerminal(allocator, init.io, init.environ_map, action, argv.items[2], account) catch |err| {
             if (err == error.UnknownProvider) fatal("unknown provider");
+            if (err == error.UnknownAccount) fatal("unknown account");
+            if (err == error.InvalidAccount) fatal("invalid account name");
             return err;
         };
         defer result.deinit(allocator);
         if (action == .status) {
+            // Native composes the wording: one plain line for a lone `default`
+            // account, one line per account otherwise, and no account at all for
+            // a CLI-owned provider such as `claude`.
+            const state = result.message orelse if (result.logged_in) "logged in" else "logged out";
             const message = if (result.subscription_type) |subscription|
-                try std.fmt.allocPrint(allocator, "{s} ({s})\n", .{ if (result.logged_in) "logged in" else "logged out", subscription })
+                try std.fmt.allocPrint(allocator, "{s} ({s})\n", .{ state, subscription })
             else
-                try std.fmt.allocPrint(allocator, "{s}\n", .{if (result.logged_in) "logged in" else "logged out"});
+                try std.fmt.allocPrint(allocator, "{s}\n", .{state});
+            defer allocator.free(message);
+            try std.Io.File.stdout().writeStreamingAll(init.io, message);
+        } else if (action == .select) {
+            const message = try std.fmt.allocPrint(allocator, "{s}\n", .{result.message orelse "account selected"});
             defer allocator.free(message);
             try std.Io.File.stdout().writeStreamingAll(init.io, message);
         }

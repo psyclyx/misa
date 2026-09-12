@@ -34,7 +34,7 @@ pub const ConversationList = struct {
     completion: []const u8,
     id: []const u8,
 };
-pub const AuthCommand = struct { action: auth.Action, declaration: auth.Declaration, completion: []const u8, interaction: []const u8, id: []const u8 };
+pub const AuthCommand = struct { action: auth.Action, declaration: auth.Declaration, account: ?[]const u8, completion: []const u8, interaction: []const u8, id: []const u8 };
 pub const AuthRespond = struct { id: []const u8, correlation: []const u8, action: []const u8, value: []const u8 };
 pub const CancelOperation = struct { id: []const u8 };
 pub const FinishOperation = struct { id: []const u8 };
@@ -123,10 +123,16 @@ pub const Effect = union(enum) {
         if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
         if (std.mem.eql(u8, kind, "auth/command")) {
             const action_name = nonEmptyStringField(object, "action") orelse return error.InvalidEffect;
-            const action: auth.Action = if (std.mem.eql(u8, action_name, "login")) .login else if (std.mem.eql(u8, action_name, "logout")) .logout else if (std.mem.eql(u8, action_name, "status")) .status else return error.InvalidEffect;
+            const action: auth.Action = if (std.mem.eql(u8, action_name, "login")) .login else if (std.mem.eql(u8, action_name, "logout")) .logout else if (std.mem.eql(u8, action_name, "status")) .status else if (std.mem.eql(u8, action_name, "select")) .select else return error.InvalidEffect;
+            // An account name is optional; when present it must be storable.
+            const account: ?[]const u8 = if (object.get("account")) |candidate| blk: {
+                if (candidate != .string or !auth.validAccountName(candidate.string)) return error.InvalidEffect;
+                break :blk candidate.string;
+            } else null;
             return .{ .auth_command = .{
                 .action = action,
                 .declaration = try auth.Declaration.parse(nonEmptyStringField(object, "provider") orelse return error.InvalidEffect, nonEmptyStringField(object, "strategy") orelse return error.InvalidEffect, object.get("profile") orelse .null),
+                .account = account,
                 .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
                 .interaction = nonEmptyStringField(object, "interaction") orelse return error.InvalidEffect,
                 .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
@@ -266,6 +272,14 @@ test "validation covers the whole native contract" {
     var auth_effect = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"auth/command\",\"action\":\"login\",\"provider\":\"kimi-coding\",\"strategy\":\"device_oauth\",\"profile\":{\"id\":\"global\",\"authorization_url\":\"https://auth.kimi.ai/api/oauth/device_authorization\",\"token_url\":\"https://auth.kimi.ai/api/oauth/token\",\"api_base\":\"https://api.kimi.ai/coding/v1\"},\"completion\":\"done\",\"interaction\":\"progress\",\"id\":\"auth-1\"}", .{});
     defer auth_effect.deinit();
     _ = try Effect.parse(auth_effect.value);
+    var named_auth = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"auth/command\",\"action\":\"select\",\"provider\":\"openai\",\"strategy\":\"api_key\",\"account\":\"work\",\"completion\":\"done\",\"interaction\":\"progress\",\"id\":\"auth-2\"}", .{});
+    defer named_auth.deinit();
+    const selected = try Effect.parse(named_auth.value);
+    try std.testing.expectEqual(auth.Action.select, selected.auth_command.action);
+    try std.testing.expectEqualStrings("work", selected.auth_command.account.?);
+    var bad_account = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"auth/command\",\"action\":\"login\",\"provider\":\"openai\",\"strategy\":\"api_key\",\"account\":\"two words\",\"completion\":\"done\",\"interaction\":\"progress\",\"id\":\"auth-3\"}", .{});
+    defer bad_account.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_account.value));
     var bad_auth = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"auth/command\",\"action\":\"login\",\"provider\":\"kimi-coding\",\"strategy\":\"device_oauth\",\"profile\":{\"id\":\"global\",\"authorization_url\":\"https://evil.example\",\"token_url\":\"https://auth.kimi.ai/api/oauth/token\",\"api_base\":\"https://api.kimi.ai/coding/v1\"},\"completion\":\"done\",\"interaction\":\"progress\",\"id\":\"auth-1\"}", .{});
     defer bad_auth.deinit();
     try std.testing.expectError(error.UntrustedAuthDeclaration, Effect.parse(bad_auth.value));
