@@ -740,7 +740,12 @@
                                       (same-fields? previous.context
                                                     (or context {})))
                                  previous.value
-                                 (let [value (definition.render state context)
+                                 ;; A render callback receives the previous accepted
+                                 ;; value, so an owner can retain per-item work across a
+                                 ;; recompute the way a computed subscription can.
+                                 (let [value (definition.render state context
+                                                                (and previous
+                                                                     previous.value))
                                        entry {:inputs (collect [key item (pairs inputs)]
                                                         key
                                                         item)

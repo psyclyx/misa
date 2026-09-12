@@ -50,6 +50,7 @@ under `editor`.
 | `commands.lookup` | function |
 | `commands.recent` | function |
 | `components.buttons` | function |
+| `components.entry` | function |
 | `components.lookup` | function |
 | `components.project` | function |
 | `components.render` | function |
@@ -127,7 +128,9 @@ under `editor`.
 | `tools.lookup` | function |
 | `tools.presentation` | function |
 | `transcript.blocks` | function |
+| `transcript.layout` | function |
 | `transcript.project` | function |
+| `transcript.rows` | function |
 | `transcript.state` | function |
 | `transcript.viewport` | function |
 | `transcript.window` | function |

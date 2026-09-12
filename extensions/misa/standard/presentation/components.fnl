@@ -6,6 +6,7 @@
             :components.resolve components.components-resolve
             :components.render components.components-render
             :components.project components.components-project
+            :components.entry components.components-entry
             :components.swap components.components-swap}
  :subscriptions {:components/projection {:id :components/projection
                                          :inputs [[:db/path :db]

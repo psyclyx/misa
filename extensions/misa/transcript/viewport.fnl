@@ -21,96 +21,119 @@
 (fn same-source? [a b]
   (and a b (= a.id b.id) (= a.part b.part) (= a.source b.source)))
 
-(fn anchor-at [lines index]
-  (let [anchor (line-anchor (. lines index))]
+;; Geometry access. `offsets` records the first row of each item, so a row maps
+;; back to its item by binary search and a window never walks the transcript.
+
+(fn item-at [layout row]
+  "Return the index, item, and first content row covering a row."
+  (let [items layout.items
+        offsets layout.offsets
+        count (length items)]
+    (var (low high found) (values 1 count nil))
+    (while (<= low high)
+      (let [middle (math.floor (/ (+ low high) 2))]
+        (if (<= (. offsets middle) row)
+            (set (found low) (values middle (+ middle 1)))
+            (set high (- middle 1)))))
+    (when found
+      (let [item (. items found)]
+        (values found item (+ (. offsets found) (if item.space_before 1 0)))))))
+
+(fn row-line [layout row]
+  "Return the line rendered at a row, or nil for a spacing or attachment row."
+  (let [(index item content) (item-at layout row)]
+    (when item
+      (let [offset (- row content)]
+        (when (and (>= offset 0) (< offset (length item.lines)))
+          (. item.lines (+ offset 1)))))))
+
+(fn line-anchor-at [layout row]
+  (line-anchor (row-line layout row)))
+
+(fn anchor-at [layout row]
+  "Anchor the row `row`, counting the rows of the same source before it."
+  (let [anchor (line-anchor-at layout row)]
     (when anchor
-      (do
-        (var finished? false)
-        (for [previous (- index 1) 1 -1 &until finished?]
-          (when (not (same-source? anchor (line-anchor (. lines previous))))
-            (set finished? true))
-          (when (not finished?) (set anchor.offset (+ anchor.offset 1))))))
+      (var finished? false)
+      (var previous (- row 1))
+      (while (and (not finished?) (>= previous 1))
+        (when (not (same-source? anchor (line-anchor-at layout previous)))
+          (set finished? true))
+        (when (not finished?)
+          (set anchor.offset (+ anchor.offset 1))
+          (set previous (- previous 1)))))
     anchor))
 
-(fn line-anchors [lines]
-  (var (previous offset) (values nil 0))
-  (icollect [_ line (ipairs lines)]
-    (let [anchor (line-anchor line)]
-      (set offset (if (same-source? previous anchor) (+ offset 1) 0))
-      (set anchor.offset offset)
-      (set previous anchor)
-      previous)))
-
-(fn anchored-row [anchors anchor fallback]
+(fn anchored-row [layout anchor fallback]
+  "Return the row whose source matches an anchor, preferring an exact offset."
   (var (found distance offset-distance) (values nil math.huge math.huge))
   (var (exact exact-offset) (values nil math.huge))
   (when anchor
-    (each [index candidate (ipairs anchors)]
-      (when (and (= candidate.id anchor.id)
-                 (or (not anchor.part) (= candidate.part anchor.part)))
-        (let [delta (if (and candidate.last (<= candidate.source anchor.source)
-                             (< anchor.source candidate.last))
-                        0
-                        (math.abs (- candidate.source anchor.source)))
-              offset-delta (math.abs (- candidate.offset anchor.offset))]
-          ;; After displacement, prefer the original source start if it still
-          ;; exists. A containing range is only a fallback for a rewrapped row.
-          (when (and (= candidate.source anchor.source)
-                     (< offset-delta exact-offset))
-            (set (exact exact-offset) (values index offset-delta)))
-          (when (or (< delta distance)
-                    (and (= delta distance) (< offset-delta offset-distance)))
-            (set (found distance offset-distance)
-                 (values index delta offset-delta)))))))
+    (each [index item (ipairs layout.items)]
+      (when (= item.id anchor.id)
+        (each [offset line (ipairs item.lines)]
+          (let [candidate (line-anchor line)]
+            (when (and candidate (= candidate.id anchor.id)
+                       (or (not anchor.part) (= candidate.part anchor.part)))
+              (let [row (+ (. layout.offsets index) (if item.space_before 1 0)
+                           (- offset 1))
+                    delta (if (and candidate.last
+                                   (<= candidate.source anchor.source)
+                                   (< anchor.source candidate.last))
+                              0
+                              (math.abs (- candidate.source anchor.source)))
+                    offset-delta (math.abs (- candidate.offset anchor.offset))]
+                (when (and (= candidate.source anchor.source)
+                           (< offset-delta exact-offset))
+                  (set (exact exact-offset) (values row offset-delta)))
+                (when (or (< delta distance)
+                          (and (= delta distance)
+                               (< offset-delta offset-distance)))
+                  (set (found distance offset-distance)
+                       (values row delta offset-delta))))))))))
   (or exact found fallback))
 
 (fn same-anchor? [a b]
   (and a b (= a.id b.id) (= a.part b.part) (= a.source b.source)
        (= a.offset b.offset)))
 
-(fn viewport-top [messages lines bottom]
+(fn viewport-top [messages layout bottom]
   (if (not messages.top) bottom
       ;; Scrolling owns a physical row. Only relocate its content when layout
       ;; changes have actually displaced that row; ordinary renders must not
       ;; reinterpret an explicit scroll as a request to find the block again.
       (or (not messages.anchor)
-          (same-anchor? (anchor-at lines messages.top) messages.anchor))
-      messages.top (anchored-row (line-anchors lines) messages.anchor
-                                messages.top)))
+          (same-anchor? (anchor-at layout messages.top) messages.anchor))
+      messages.top (anchored-row layout messages.anchor messages.top)))
 
 (fn viewport [db context available-lines]
   "Select visible transcript rows and their source anchor."
   (let [room (math.max 0 (math.floor (or available-lines 0)))]
     (if (= room 0) {:first 1 :room 0 :total 0 :lines []}
-        (let [lines (misa.transcript.project db context)
+        (let [layout (misa.transcript.layout db context)
               selected (and misa.selection misa.selection.state
                             (misa.selection.state db))
               key (selection-key selected)
-              bottom (math.max 1 (+ (- (length lines) room) 1))]
+              bottom (math.max 1 (+ (- layout.total room) 1))]
           (var first (math.max 1
-                               (math.min (viewport-top db.messages lines bottom)
+                               (math.min (viewport-top db.messages layout
+                                                       bottom)
                                          bottom)))
+          ;; Reveal the focused selection when the scroll position is stale.
           (when (and selected
-                     (not (same-selection? db.messages.scroll_selection key)))
-            (do
-              (var finished? false)
-              (each [index line (ipairs lines) &until finished?]
-                (when (and (or line.selected line.selection_anchor)
-                           (or (not line.selection_id)
-                               (= line.selection_id selected.id)))
-                  (set first (math.max 1 (math.min first index)))
-                  (when (>= index (+ first room))
-                    (set first (+ (- index room) 1)))
-                  (set finished? true)))))
+                     (not (same-selection? db.messages.scroll_selection key))
+                     layout.selected_row)
+            (let [index layout.selected_row]
+              (set first (math.max 1 (math.min first index)))
+              (when (>= index (+ first room))
+                (set first (+ (- index room) 1)))))
           {: first
            : room
-           :total (length lines)
+           :total layout.total
            :selection key
-           :layout lines
-           :anchor (anchor-at lines first)
-           :lines (icollect [index (ipairs lines)
-                             &until (>= index (+ first room))]
-                    (when (>= index first) (. lines index)))}))))
+           : layout
+           :anchor (anchor-at layout first)
+           :lines (misa.transcript.rows db layout first room)}))))
 
 (fn scroll [viewport delta]
   "Calculate the scroll transaction from the current viewport geometry."
@@ -145,4 +168,4 @@
                                terminal.lines))]
     (scroll viewport event.delta)))
 
-{: handle-scroll : viewport : scroll}
+{: anchor-at : anchored-row : handle-scroll : scroll : viewport}

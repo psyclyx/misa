@@ -151,7 +151,10 @@
                                                                     :global/toggle_verbose)}
                             :projections {:transcript.project (. stock
                                                                  :projections
-                                                                 :transcript.project)}
+                                                                 :transcript.project)
+                                          :transcript.layout (. stock
+                                                                :projections
+                                                                :transcript.layout)}
                             :routes {:messages/global-keys (. stock :routes
                                                               :messages/global-keys)}
                             :selection-sources {:transcript (. stock
@@ -161,6 +164,8 @@
                                                              :transcript.window)
                                        :transcript.viewport (. stock :services
                                                                :transcript.viewport)
+                                       :transcript.rows (. stock :services
+                                                           :transcript.rows)
                                        :transcript.state (. stock :services
                                                             :transcript.state)
                                        :transcript.blocks (. stock :services
@@ -359,6 +364,8 @@
                                           :components.project (. stock
                                                                  :services
                                                                  :components.project)
+                                          :components.entry (. stock :services
+                                                                :components.entry)
                                           :components.lookup (. stock :services
                                                                 :components.lookup)
                                           :components.swap (. stock :services

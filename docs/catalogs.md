@@ -34,14 +34,14 @@ composition, and commit the result.
 | `keybindings` | 93 |
 | `models` | 6 |
 | `openai-deltas` | 3 |
-| `projections` | 2 |
+| `projections` | 3 |
 | `requirements` | 18 |
 | `routes` | 11 |
 | `search-backends` | 5 |
 | `selection-actions` | 15 |
 | `selection-sources` | 1 |
 | `serializers` | 20 |
-| `services` | 104 |
+| `services` | 106 |
 | `state` | 31 |
 | `subscriptions` | 29 |
 | `themes` | 2 |
@@ -854,6 +854,7 @@ composition, and commit the result.
 | ID | Shape |
 | --- | --- |
 | `editor.project-input` | {inputs render} |
+| `transcript.layout` | {inputs render} |
 | `transcript.project` | {inputs render} |
 
 ### `requirements`
@@ -994,6 +995,7 @@ composition, and commit the result.
 | `commands.invocation` | function |
 | `commands.recent` | function |
 | `components.buttons` | function |
+| `components.entry` | function |
 | `components.lookup` | function |
 | `components.project` | function |
 | `components.render` | function |
@@ -1053,6 +1055,7 @@ composition, and commit the result.
 | `themes.swap` | function |
 | `tools.presentation` | function |
 | `transcript.blocks` | function |
+| `transcript.rows` | function |
 | `transcript.state` | function |
 | `transcript.viewport` | function |
 | `transcript.window` | function |

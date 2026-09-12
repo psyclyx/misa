@@ -83,7 +83,19 @@
        (icollect [index (ipairs [:a :b :c :d :e])]
          {:transcript_id :one :source_start (* index 10) :spans []}))
 
-(local geometry {:first 4 :total 5 :room 2 :layout rows :selection {:id :one}})
+(local geometry {:first 4
+                 :total 5
+                 :room 2
+                 :selection {:id :one}
+                 :layout {:items (icollect [_ line (ipairs rows)]
+                                   {:id :one
+                                    :role :transcript.user
+                                    :model {}
+                                    :lines [line]
+                                    :height 1})
+                          :offsets (icollect [index (ipairs rows)] index)
+                          :total (length rows)
+                          :context {}}})
 (local scrolled (apply {:messages {}} (viewport.scroll geometry 2)))
 (assert (= scrolled.messages.top 2))
 (assert (= scrolled.messages.anchor.source 20))

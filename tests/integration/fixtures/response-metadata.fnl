@@ -92,35 +92,31 @@
                                           (assert (= cost.type :money))
                                           (assert (= cost.amount 0.125))
                                           (assert (= cost.text nil))
-                                          (local project
-                                                 misa.components.project)
+                                          (local layout
+                                                 (misa.transcript.layout db
+                                                                         {:columns 80
+                                                                          :interactive true}))
                                           (var metadata-count 0)
-                                          (set misa.components.project
-                                               (fn [state id items context]
-                                                 (each [_ item (ipairs items)]
-                                                   (assert (= item.model.timestamp
-                                                              nil)
-                                                           "timestamp was formatted upstream")
-                                                   (assert (= (type item.model.started_wall_ms)
-                                                              :number))
-                                                   (when (= item.role
-                                                            :transcript.group_footer)
-                                                     (assert (= item.model.cost
-                                                                cost)
-                                                             "cost fact lost identity")
-                                                     (assert (= item.id
-                                                                "response:metadata:footer"))
-                                                     (assert (> item.model.tokens_per_second
-                                                                0))
-                                                     (set metadata-count
-                                                          (+ metadata-count 1))))
-                                                 (project state id items
-                                                          context)))
+                                          (each [_ item (ipairs layout.items)]
+                                            (assert (= item.model.timestamp nil)
+                                                    "timestamp was formatted upstream")
+                                            (assert (= (type item.model.started_wall_ms)
+                                                       :number))
+                                            (when (= item.role
+                                                     :transcript.group_footer)
+                                              (assert (= item.model.cost cost)
+                                                      "cost fact lost identity")
+                                              (assert (= item.id
+                                                         "response:metadata:footer"))
+                                              (assert (> item.model.tokens_per_second
+                                                         0))
+                                              (set metadata-count
+                                                   (+ metadata-count 1))))
+                                          (assert (= metadata-count 1))
                                           (local lines
                                                  (misa.transcript.project db
                                                                           {:columns 80
                                                                            :interactive true}))
-                                          (set misa.components.project project)
                                           (assert (= metadata-count 1))
                                           (var (rates costs) (values 0 0))
                                           (each [_ line (ipairs lines)]

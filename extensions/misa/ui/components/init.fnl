@@ -152,6 +152,49 @@
   (let [rendered (render-safe db role model render-context)]
     (resolve-safe db role rendered render-context)))
 
+(fn components-entry [db role model render-context previous theme]
+  "Resolve one collection item, reusing the previous entry when it still applies.
+
+The collection below is a map over this step. It is also the unit a consumer with
+its own indexing needs: only the entries whose inputs changed are rebuilt, so a
+windowed consumer can retain per-item geometry without restating these rules."
+  (let [old previous
+        (found selected) (pcall misa.components.lookup db role)
+        component (and found selected)
+        same (and old
+                  (or (and component (not component.compose))
+                      (= db.components old.components))
+                  (= component old.component) (same-fields? model old.model)
+                  (same-fields? render-context old.context))
+        (source cache) (if same
+                           (values old.source old.cache)
+                           (render-safe db role model render-context
+                                        (and old (= component old.component)
+                                             old.cache)))
+        (actions links) (if same (values old.actions old.links)
+                            (hover-targets source))
+        hover-action (and db.hover_action (. actions db.hover_action)
+                          db.hover_action)
+        hover-link (and db.hover_link (. links db.hover_link) db.hover_link)
+        choice-pending (and misa.choices misa.choices.pending
+                            (misa.choices.pending db))]
+    (if (and same (= theme old.theme) (= hover-action old.hover_action)
+             (= hover-link old.hover_link) (= choice-pending old.choice_pending))
+        old
+        {: component
+         :components db.components
+         : model
+         :context render-context
+         : source
+         : cache
+         : actions
+         : links
+         : theme
+         :hover_action hover-action
+         :hover_link hover-link
+         :choice_pending choice-pending
+         :view (resolve-safe db role source render-context)})))
+
 (fn components-projection-value [inputs _ previous]
   "Project a component collection while retaining compatible cache entries."
   (let [db (. inputs 1)
@@ -161,52 +204,13 @@
         entries {}
         views []]
     (each [_ item (ipairs items)]
-      (assert (and (= (type item.id) :string) (not= item.id "")
-                   (not (. entries item.id)))
+      (assert (and (= (type item.id) :string) (not= item.id ""))
               "component collection requires unique nonempty ids")
-      (let [old (and previous (. previous.entries item.id))
-            (found selected) (pcall misa.components.lookup db item.role)
-            component (and found selected)
-            same (and old
-                      (or (and component (not component.compose))
-                          (= db.components old.components))
-                      (= component old.component)
-                      (same-fields? item.model old.model)
-                      (same-fields? render-context old.context))
-            (source cache) (if same
-                               (values old.source old.cache)
-                               (render-safe db item.role item.model
-                                            render-context
-                                            (and old
-                                                 (= component old.component)
-                                                 old.cache)))
-            (actions links) (if same
-                                (values old.actions old.links)
-                                (hover-targets source))
-            hover-action (and db.hover_action (. actions db.hover_action)
-                              db.hover_action)
-            hover-link (and db.hover_link (. links db.hover_link) db.hover_link)
-            entry (if (and same (= theme old.theme)
-                           (= hover-action old.hover_action)
-                           (= hover-link old.hover_link)
-                           (= (and misa.choices misa.choices.pending
-                                   (misa.choices.pending db))
-                              old.choice_pending))
-                      old
-                      {: component
-                       :components db.components
-                       :model item.model
-                       :context render-context
-                       : source
-                       : cache
-                       : actions
-                       : links
-                       : theme
-                       :hover_action hover-action
-                       :hover_link hover-link
-                       :choice_pending (and misa.choices misa.choices.pending
-                                            (misa.choices.pending db))
-                       :view (resolve-safe db item.role source render-context)})]
+      (assert (not (. entries item.id))
+              "component collection requires unique nonempty ids")
+      (let [entry (components-entry db item.role item.model render-context
+                                    (and previous (. previous.entries item.id))
+                                    theme)]
         (tset entries item.id entry)
         (table.insert views entry.view)))
     {: entries : views}))
@@ -277,6 +281,7 @@
           "component requires an id and render function"))
 
 {: app-start
+ : components-entry
  : components-loaded
  : components-lookup
  : components-project

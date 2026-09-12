@@ -46,6 +46,8 @@
                      :tool_call model.tool-delta}
  :services {:transcript.state presentation.state
             :transcript.viewport viewport.viewport
+            :transcript.rows (fn [db layout first count]
+                               (presentation.rows db layout first count))
             :transcript.blocks model.blocks
             :transcript.window transcript.transcript-window}
  :projections {:transcript.project {:inputs transcript.projection-inputs
@@ -55,7 +57,20 @@
                                                                          (misa.configuration)))]
                                                 (presentation.project (markdown? config)
                                                                       (misa.catalog :transcript-presentations)
-                                                                      db context)))}}
+                                                                      db context)))}
+               ;; Measured geometry: which items exist, how tall each one is, and
+               ;; where its rows start. It is retained per item, so a frame pays for
+               ;; the changed block, and a window materializes rows from it without
+               ;; rendering or walking the rest of the transcript.
+               :transcript.layout {:inputs transcript.projection-inputs
+                                   :render (fn [db context]
+                                             (let [config (settings (or (and context
+                                                                             context.config)
+                                                                        (misa.configuration)))]
+                                               (presentation.measure db
+                                                                     (markdown? config)
+                                                                     (misa.catalog :transcript-presentations)
+                                                                     context)))}}
  :selection-sources {:transcript {:documents presentation.documents
                                   :layout presentation.document-layout}}
  :keybindings {:global/toggle_verbose {:action :toggle_verbose

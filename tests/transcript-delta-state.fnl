@@ -386,20 +386,28 @@
   (assert (= (. fx 1 :lines) committed-lines)))
 
 (set misa.components.render nil)
-(local project (. specs.projections :transcript.project :render))
+;; The transcript measures geometry once and materializes rows from it.
+(local presentation (require :misa.transcript.presentation))
+(var measured nil)
+(fn project [db context]
+  (local layout (presentation.measure db true
+                                        (misa.catalog :transcript-presentations) context))
+  (set measured layout)
+  (presentation.rows db layout 1 layout.total))
 
 (local cached {:lines [{:spans [{:text :cached}]}]})
 (var rendered-role nil)
 (var rendered-model nil)
-(set misa.components.project
-     (fn [_ _ items]
-       {:views (icollect [_ item (ipairs items)]
-                 (if item.chrome {:lines []}
-                     (do
-                       (set rendered-role item.role)
-                       (set rendered-model item.model)
-                       cached)))}))
+(set misa.components.entry
+     (fn [_db role model _context _previous _theme]
+       (if (role:find :transcript.group)
+           {:view {:lines []}}
+           (do
+             (set rendered-role role)
+             (set rendered-model model)
+             {:view cached}))))
 
+(set misa.themes {:lookup (fn [] {})})
 (set misa.selection.decorate
      (fn []
        [{:spans [{:text :decorated}]}]))
@@ -466,13 +474,10 @@
 (assert (= (. repeated-result.messages.blocks 1 :result) :ok))
 
 ;; A response owns the display metadata even when its only content is a tool.
-(var projected-items nil)
 (set misa.selection.state nil)
-(set misa.components.project
-     (fn [_ _ items]
-       (set projected-items items)
-       {:views (icollect [_ item (ipairs items)]
-                 {:lines [{:spans [{:text item.role}]}]})}))
+(set misa.components.entry
+     (fn [_db role _model _context _previous _theme]
+       {:view {:lines [{:spans [{:text role}]}]}}))
 
 (set misa.costs.response (fn [_ id]
                            {:type :money
@@ -483,10 +488,10 @@
        (transition tool-db
                    {:type :transcript/response-end :usage {:output_tokens 20}}))
 (render tool-completed)
-(assert (= (length projected-items) 3))
-(assert (= (. projected-items 1 :role) :transcript.group_header))
-(assert (= (. projected-items 2 :role) :transcript.tool_call))
-(assert (= (. projected-items 3 :role) :transcript.group_footer))
+(assert (= (length measured.items) 3))
+(assert (= (. measured.items 1 :role) :transcript.group_header))
+(assert (= (. measured.items 2 :role) :transcript.tool_call))
+(assert (= (. measured.items 3 :role) :transcript.group_footer))
 (local first-owner (. tool-completed.messages.responses 1))
 (local second-owner
        (misa.patch first-owner {:id :followup :block_start 2 :block_count 1}))
@@ -504,23 +509,23 @@
                                                        :text :done}])}}))
 
 (render turn-db)
-(assert (= (length projected-items) 4)
+(assert (= (length measured.items) 4)
         "tool continuation introduced another turn divider")
-(assert (= (. projected-items 4 :role) :transcript.group_footer))
-(assert (= (. projected-items 4 :model :cost :amount) 0.5)
+(assert (= (. measured.items 4 :role) :transcript.group_footer))
+(assert (= (. measured.items 4 :model :cost :amount) 0.5)
         "turn cost did not include both responses")
-(assert (= (. projected-items 4 :model :tokens_per_second) nil)
+(assert (= (. measured.items 4 :model :tokens_per_second) nil)
         "per-request rate leaked into multi-request turn")
 (render tool-completed)
-(assert (= (. projected-items 3 :model :cost :amount) 0.25))
-(assert (= (. projected-items 3 :model :elapsed_ms) 1000))
-(assert (= (. projected-items 3 :model :tokens_per_second) 20))
-(assert (= (. projected-items 2 :model :cost) nil))
-(assert (= (. projected-items 2 :model :tokens_per_second) nil))
+(assert (= (. measured.items 3 :model :cost :amount) 0.25))
+(assert (= (. measured.items 3 :model :elapsed_ms) 1000))
+(assert (= (. measured.items 3 :model :tokens_per_second) 20))
+(assert (= (. measured.items 2 :model :cost) nil))
+(assert (= (. measured.items 2 :model :tokens_per_second) nil))
 (project tool-completed {:columns 80 :document_id "5:replyblock"})
-(assert (= (length projected-items) 1)
+(assert (= (length measured.items) 1)
         "selection geometry included group chrome")
-(assert (= (. projected-items 1 :role) :transcript.tool_call))
+(assert (= (. measured.items 1 :role) :transcript.tool_call))
 
 ;; Execution timing is independent of generation and stable under result echoes.
 (local timed-tool (transition tool-db {:type :transcript/tool-start :id :call}))
@@ -582,10 +587,10 @@
 (local executing
        (transition tool-completed {:type :transcript/tool-start :id :call}))
 (render executing)
-(assert (= (. projected-items 1 :model :status) :running))
-(assert (= (. projected-items 3 :model :elapsed_ms) nil)
+(assert (= (. measured.items 1 :model :status) :running))
+(assert (= (. measured.items 3 :model :elapsed_ms) nil)
         "active tool showed a final group duration")
-(assert (= (. projected-items 3 :model :tokens_per_second) 20))
+(assert (= (. measured.items 3 :model :tokens_per_second) 20))
 (local completed-execution
        ((. handlers :transcript/tool-result) executing
                                              {:type :transcript/tool-result
@@ -597,9 +602,9 @@
 
 (local executed (misa.patch executing completed-execution.patch))
 (render executed)
-(assert (= (. projected-items 1 :model :status) :complete))
-(assert (= (. projected-items 3 :model :elapsed_ms) 3500))
-(assert (= (. projected-items 3 :model :tokens_per_second) 20))
+(assert (= (. measured.items 1 :model :status) :complete))
+(assert (= (. measured.items 3 :model :elapsed_ms) 3500))
+(assert (= (. measured.items 3 :model :tokens_per_second) 20))
 (local parallel
        (misa.patch executed
                    {:messages {:responses (misa.replace [(misa.patch (. executed.messages.responses
@@ -617,9 +622,9 @@
                                                        :elapsed_ms 3500}])}}))
 
 (render parallel)
-(assert (= (. projected-items 4 :model :elapsed_ms) 4500)
+(assert (= (. measured.items 4 :model :elapsed_ms) 4500)
         "parallel durations were added")
-(assert (= (. projected-items 4 :model :tokens_per_second) 20))
+(assert (= (. measured.items 4 :model :tokens_per_second) 20))
 
 ;; Standalone result selection uses frozen text even after a live result update.
 (local standalone-result
@@ -633,7 +638,7 @@
 (set misa.selection.state
      (fn [] {:id "5:replyblock" :text :frozen :first 0 :last 6}))
 (render standalone-result)
-(local selected-result (. projected-items 2 :model))
+(local selected-result (. measured.items 2 :model))
 (assert (= selected-result.selection_source :result))
 (assert (= selected-result.selection_text :frozen))
 (assert (= selected-result.collapsed false))
@@ -642,12 +647,14 @@
                        presenter))
 
 (tset presentations :assistant (. presentations :custom.assistant))
-(local project-presentation
-       (. (require :misa.transcript.presentation) :project))
+(fn project-presentation [markdown presenters db context]
+  (local layout (presentation.measure db markdown presenters context))
+  (set measured layout)
+  (presentation.rows db layout 1 layout.total))
 (project-presentation true presentations streamed {:columns 80})
-(assert (= (. projected-items 2 :role) :custom.assistant))
+(assert (= (. measured.items 2 :role) :custom.assistant))
 (project-presentation true presentations (initial :thinking) {:columns 80})
-(assert (= (. projected-items 2 :role) :transcript.thinking)
+(assert (= (. measured.items 2 :role) :transcript.thinking)
         "replacing one presenter discarded other default presentations")
 
 (output "transcript delta state properties passed\n")
