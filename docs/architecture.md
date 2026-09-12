@@ -225,8 +225,12 @@ Each slice is independently landable, states its verification, and notes its
 risk. Order is deliberate: the kernel primitives dictate the shape of everything
 above them.
 
-Progress: Slice 1's validation half has landed (`src/conversation/message.zig`,
-recorded in `docs/history/architecture-audit.md`) — the log now refuses a message
+Progress: Slice 0 has landed (`extensions/misa/standard/state.fnl`) as a declared
+manifest with an install validator and a test that pins the assignments this
+document commits to; it is a checklist, not enforcement, because a root nobody
+declares still passes unnoticed. Slice 1's validation half has landed
+(`src/conversation/message.zig`, recorded in `docs/history/architecture-audit.md`)
+— the log now refuses a message
 a provider would reject, and refuses a tool result that answers no open call. The
 fold itself still lives in `extensions/misa/conversation.fnl`. Slice 2's cursor
 deletion turns out to depend on Slice 4 (and really Slice 6): the cursor exists

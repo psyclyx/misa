@@ -223,6 +223,12 @@ test "the generated catalog and service reference are current" {
     try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{ "tools/generate-docs.fnl", "--check" } }, "generated documentation is current\n");
 }
 
+test "the state manifest declares an owner and lifetime for every root" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.expect(.{ .binary = options.source_root ++ "/tools/fennel", .cwd = options.source_root, .args = &.{"tests/state-manifest.fnl"} }, "state manifest contracts passed\n");
+}
+
 test "conversation journaling and reopening follow the stored cursor" {
     var h = try Harness.init();
     defer h.deinit();

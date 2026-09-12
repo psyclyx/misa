@@ -73,6 +73,7 @@
         :misa.providers.venice (require :misa.standard.providers.venice)
         :misa.providers.xai (require :misa.standard.providers.xai)
         :misa.selection (require :misa.standard.selection.core)
+        :misa.state (require :misa.standard.state)
         :misa.selection.document (require :misa.standard.selection.document)
         :misa.selection.render (require :misa.standard.selection.render)
         :misa.tools.files (require :misa.standard.tools.files)

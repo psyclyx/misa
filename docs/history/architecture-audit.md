@@ -4,6 +4,30 @@ Notes below were written as the work landed, in order, and later entries
 supersede earlier ones. They are retained for the reasoning and the
 verification they record, not as a description of the current code.
 
+### The state manifest names what each root is for (2026-09-11)
+
+Nothing declared what a top-level state root was _for_, so the tree answered by
+convention: `db.agent` was session state, `db.compaction` looked like its peer,
+`db.messages` was render state that happened to be rebuilt from the log, and a
+policy's bookkeeping sat wherever it was first written. The layering in
+`docs/architecture.md` section 4 says what each root should be; nothing checked it.
+
+`extensions/misa/standard/state.fnl` declares every root with an owner — `kernel`,
+`policy`, `observation`, `presentation`, `external` — and a lifetime — `log`,
+`fold`, `observation`, `ephemeral`, `external` — and installs a validator that
+refuses an unknown owner, an unknown lifetime, or an extra field.
+`tests/state-manifest.fnl` pins the assignments the plan commits to (the kernel
+owning history, the ledger and queueing; `compaction` a policy that owns no durable
+state; `messages`, `editor`, `selection` and `syntax` presentation; `models`,
+`providers` and `usage` observations; `preferences` external) and calls the
+validator directly for each refusal.
+
+What it is not yet is enforcement: a root nobody declares passes unnoticed, and
+nothing stops a presentation handler from patching a kernel root. Both need writer
+identity or a full-application harness that observes every root an installed
+profile writes. The manifest is a maintained checklist for the namespace moves, and
+the test says so rather than implying more.
+
 ### The log refuses history a provider would reject (2026-09-11)
 
 The `message` kind's shape was a Lua convention. `misa.agent` built canonical

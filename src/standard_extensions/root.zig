@@ -160,6 +160,7 @@ pub const entries = [_]Entry{
     .{ .id = "misa.standard.selection.document", .path = "misa/standard/selection/document.fnl" },
     .{ .id = "misa.standard.selection.render", .path = "misa/standard/selection/render.fnl" },
     .{ .id = "misa.standard.settings", .path = "misa/standard/settings.fnl" },
+    .{ .id = "misa.standard.state", .path = "misa/standard/state.fnl" },
     .{ .id = "misa.standard.tools", .path = "misa/standard/tools/init.fnl" },
     .{ .id = "misa.standard.tools.files", .path = "misa/standard/tools/files.fnl" },
     .{ .id = "misa.standard.tools.shell", .path = "misa/standard/tools/shell.fnl" },

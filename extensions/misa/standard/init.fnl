@@ -19,6 +19,7 @@
 (local protocols (require :misa.standard.protocols))
 (local providers (require :misa.standard.providers))
 (local selection (require :misa.standard.selection))
+(local state (require :misa.standard.state))
 (local tools (require :misa.standard.tools))
 (local usage (require :misa.standard.usage))
 
@@ -41,5 +42,6 @@
                                        protocols
                                        providers
                                        selection
+                                       state
                                        tools
                                        usage])}

@@ -42,13 +42,14 @@ composition, and commit the result.
 | `selection-sources` | 1 |
 | `serializers` | 20 |
 | `services` | 104 |
+| `state` | 31 |
 | `subscriptions` | 29 |
 | `themes` | 2 |
 | `tool-presentations` | 6 |
 | `tools` | 6 |
 | `transcript-deltas` | 3 |
 | `transcript-presentations` | 6 |
-| `validators` | 27 |
+| `validators` | 28 |
 | `value-renderers` | 14 |
 | `view-layers` | 5 |
 | `views` | 1 |
@@ -1064,6 +1065,42 @@ composition, and commit the result.
 | `values.render` | function |
 | `values.timestamp->seconds` | function |
 
+### `state`
+
+| ID | Shape |
+| --- | --- |
+| `agent` | {lifetime owner} |
+| `animations` | {lifetime owner} |
+| `auth_startup` | {lifetime owner} |
+| `choice_commands` | {lifetime owner} |
+| `clipboard` | {lifetime owner} |
+| `compaction` | {lifetime owner} |
+| `components` | {lifetime owner} |
+| `conversation` | {lifetime owner} |
+| `costs` | {lifetime owner} |
+| `dialog` | {lifetime owner} |
+| `editing` | {lifetime owner} |
+| `editor` | {lifetime owner} |
+| `history` | {lifetime owner} |
+| `hover_action` | {lifetime owner} |
+| `hover_link` | {lifetime owner} |
+| `images` | {lifetime owner} |
+| `link_sequence` | {lifetime owner} |
+| `messages` | {lifetime owner} |
+| `model_discovery` | {lifetime owner} |
+| `models` | {lifetime owner} |
+| `omnipicker_sequence` | {lifetime owner} |
+| `picker` | {lifetime owner} |
+| `preferences` | {lifetime owner} |
+| `provider_availability` | {lifetime owner} |
+| `providers` | {lifetime owner} |
+| `queue` | {lifetime owner} |
+| `request_options` | {lifetime owner} |
+| `selection` | {lifetime owner} |
+| `syntax` | {lifetime owner} |
+| `themes` | {lifetime owner} |
+| `usage` | {lifetime owner} |
+
 ### `subscriptions`
 
 | ID | Shape |
@@ -1172,6 +1209,7 @@ composition, and commit the result.
 | `search-backends` | function |
 | `selection-actions` | function |
 | `selection-sources` | function |
+| `state` | function |
 | `themes` | function |
 | `tool-presentations` | function |
 | `transcript-deltas` | function |

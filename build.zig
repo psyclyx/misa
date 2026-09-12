@@ -48,6 +48,9 @@ pub fn build(b: *std.Build) void {
     // that is not listed would silently never load. Capture the tree itself and
     // let the catalog's own test compare against it.
     const extension_manifest = b.addSystemCommand(&.{ "sh", "-c", "cd extensions && find . -name '*.fnl' | sed 's|^\\./||' | LC_ALL=C sort" });
+    // The tree is the input, so adding a bundled extension invalidates the
+    // captured manifest instead of leaving it a file behind.
+    extension_manifest.addDirectoryArg(b.path("extensions"));
     standard_extensions.addAnonymousImport("misa_extension_manifest", .{ .root_source_file = extension_manifest.captureStdOut(.{}) });
     // The terminal presenter and the Lua layout both measure text, so the tables
     // and clustering live in one module each of them imports.
