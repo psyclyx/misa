@@ -213,7 +213,9 @@ application: [docs/catalogs.md](docs/catalogs.md) lists every catalog, its
 entries, and each entry's shape, and [docs/services.md](docs/services.md) lists
 every installed service path. Both come from
 [`tools/generate-docs.fnl`](tools/generate-docs.fnl), which the suite runs in
-`--check` mode so a stale document fails the build.
+`--check` mode so a stale document fails the build. The layering, the Zig/Lua
+boundary, and the migration plan for the session kernel are stated in
+[docs/architecture.md](docs/architecture.md).
 
 Catalogs use the following entries (the outer map key is the entry's ID):
 
