@@ -4,6 +4,54 @@ Notes below were written as the work landed, in order, and later entries
 supersede earlier ones. They are retained for the reasoning and the
 verification they record, not as a description of the current code.
 
+### Recording is not where a bound belongs (2026-09-11)
+
+Two different refusals were coming out of the store under one name. The first was
+a real bug: the 64 KiB budget for the conversation _header_ document — the small
+index of labels and fork provenance the store composes — was also applied to
+recorded messages, by `validateDocument` on every key and string of an entry and
+by `encodeDocument` on its canonical payload. A tool result, a pasted attachment,
+or a compaction handoff larger than that was therefore refused with
+`DocumentTooLarge` after a turn had already been accepted, and the store's own
+`max_entry_bytes` (1 MiB) check could never run because encoding had already
+failed. Because the encoding counts escaped bytes and validation counts raw ones,
+a payload under the budget could even fail after validation.
+
+The second was a design fault. The journal sent a whole turn in one
+`conversation/append`, so a long turn ran into the effect's entry-count limit
+(256) or the batch byte limit (4 MiB) and failed whole — and then reported and
+skipped the range, because the cursor only advances on a completion. The previous
+attempt capped the journal's own batches to avoid that, which is a limit being
+designed around rather than removed.
+
+Now the store keeps two named budgets that answer different questions. A message
+is bounded by `max_message_bytes`, a backstop far above any part the application
+can acquire (an image attachment is at most an 8 MiB source, which becomes ~10.7
+MiB of base64 plus a ~0.8 MiB preview; a file read and each captured stream are
+at most 1 MiB). The header keeps `max_metadata_bytes`, and a refusal names the
+budget it hit (`EntryTooLarge`, `MetadataTooLarge`, `RequestTooLarge`). The batch
+byte limit is gone: a per-entry budget and the entry-count backstop already bound
+a transaction, and providers of a batch are the only thing that could reach them.
+
+The journal then stops batching altogether. The agent owner publishes
+`agent/history-changed` wherever canonical history changes — the submitted
+prompt, a finished response, a completed tool batch, a cancellation, a reset, a
+resume, and compaction's handoff — and the conversation owner appends exactly the
+one message after its cursor, continuing from each completion. A whole message is
+the finest unit available, because canonical history only grows in messages
+(recording a partial assistant response would assert something false), so the
+turn is now durable as it happens rather than at the end, an append carries one
+entry by construction, and a crash loses at most the message in flight. The
+turn-settled handler is kept as a catch-up for a change that arrives without a
+signal.
+
+Evidence: the native store test "a message budget is separate from the header
+metadata budget" records a 100 KiB message that the previous code refused and
+pins both budget failures and the removed batch limit; `tests/conversation-state.fnl`
+walks a 300-message history through 300 single-entry appends; and
+`tests/integration/storage.zig` runs one turn whose history needs 259 messages,
+asserting `recorded 259 in 259 appends` with no effect or recording error.
+
 ### The persisted model wins the first request (2026-09-11)
 
 `config.models.default` was reaching the first request of a session. The models

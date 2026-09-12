@@ -7,6 +7,8 @@
                                    :handler conversation.start}
           :conversation/agent/completed {:event :agent/completed
                                          :handler conversation.completed}
+          :conversation/agent/history-changed {:event :agent/history-changed
+                                               :handler conversation.journal}
           :conversation/conversation/open {:event :conversation/open
                                            :handler conversation.open}
           :conversation/conversations/listed {:event :conversations/listed

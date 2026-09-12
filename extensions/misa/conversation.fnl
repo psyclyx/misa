@@ -1,12 +1,30 @@
 ;; Durable conversation log. Canonical history stays owned by `misa.agent`; this
-;; owner journals it when a turn completes and can put it back on request.
+;; owner writes each message to the log as it becomes final and can put a stored
+;; conversation back on request.
+
+;; A conversation's label is merged into the header of every append, so the
+;; store's header budget would start refusing writes the moment a configured
+;; label exceeded it. The label is validated where it enters instead, against the
+;; same bound the native side applies to a request label.
+(local max-label-length 256)
+
+(fn label-of-config [value]
+  "Read the configured conversation label, or nil when it is absent."
+  (when (not= value.label nil)
+    (assert (= (type value.label) :string)
+            "conversation.label must be a string")
+    (assert (and (> (length value.label) 0)
+                 (<= (length value.label) max-label-length))
+            (.. "conversation.label must be 1 to " (tostring max-label-length)
+                " bytes"))
+    value.label))
 
 (fn settings [configuration]
   "Read conversation settings with their defaults."
   (let [value (or configuration.conversation {})]
     {:enabled (not= value.enabled false)
      :id (and (= (type value.id) :string) value.id)
-     :label (and (= (type value.label) :string) value.label)
+     :label (label-of-config value)
      :list_limit (or value.list_limit 25)}))
 
 (fn session-id [config cofx]
@@ -36,14 +54,14 @@
         (set found (: (block.text:gsub "%s+" " ") :sub 1 60)))))
   found)
 
-;; One turn's canonical history can be longer than a single append accepts: the
-;; session rejects an effect carrying more than 256 entries, and the store
-;; refuses a batch whose encoded message payloads total more than 4 MiB. The
-;; journal therefore sends one bounded append at a time and continues from each
-;; completion, so a long turn is recorded in order instead of failing whole.
-(local max-append-entries 256)
-(local max-append-bytes (* 4 1024 1024))
-
+;; The journal appends one settled message at a time and continues from each
+;; completion. Two things follow from that. A turn is durable as it happens
+;; instead of at the end, so a crash loses at most the message in flight. And
+;; nothing the journal sends can approach what one native append accepts: an
+;; append carries a single message, so both the entry count and the batch size
+;; stay at one however long a turn runs. A whole message is also the finest unit
+;; there is: canonical history only grows in messages — an assistant response is
+;; final when its response ends, a tool result when its tool reports.
 (fn message-entry [message]
   "One journal entry for a canonical message."
   {:kind :message :data message})
@@ -52,42 +70,8 @@
   "The marker that starts a replaced branch over in the log."
   {:kind :reset :data {:replaced true}})
 
-(fn json-encode []
-  "The installed JSON encoder, when this application has the JSON service."
-  (let [json (. misa :json)]
-    (if (= (type json) :table)
-        (let [encode (. json :encode)]
-          (if (= (type encode) :function) encode)))))
-
-(fn payload-bytes [message]
-  "Encoded size of one journaled message, as the store measures it."
-  (let [encode (json-encode)]
-    (if encode (length (encode message)) 0)))
-
-(fn bounded-batch [messages from]
-  "The next append of messages past FROM: `{:entries ... :last n}`, where LAST
-   is the message index the append brings the log up to. One message is always
-   taken even when it alone exceeds the byte budget, because the store, not the
-   journal, decides what one message may contain."
-  (let [total (length messages)
-        entries []]
-    (var index (+ from 1))
-    (var bytes 0)
-    (var full false)
-    (while (and (<= index total) (< (length entries) max-append-entries)
-                (not full))
-      (let [message (. messages index)
-            size (payload-bytes message)]
-        (if (or (= (length entries) 0) (<= (+ bytes size) max-append-bytes))
-            (do
-              (table.insert entries (message-entry message))
-              (set bytes (+ bytes size))
-              (set index (+ index 1)))
-            (set full true))))
-    {: entries :last (+ from (length entries))}))
-
 (fn append-effect [conversation entries label last]
-  "One bounded journal append, named by the history it covers."
+  "One journal append, named by the history it covers."
   {:type :conversation/append
    : conversation
    : entries
@@ -96,7 +80,8 @@
    :id (.. conversation "/" (tostring last))})
 
 (fn next-append [conversation messages synced]
-  "The next append of this journal, or nil when it has caught up. A shorter
+  "The next append of this journal, or nil when it has caught up: the marker
+   that starts a replaced branch, or the one message after the cursor. A shorter
    history means the branch was replaced, so its reset marker is sent first and
    the new branch is journaled from the beginning afterwards."
   (let [count (length messages)
@@ -105,15 +90,18 @@
     (if (< count synced)
         {:patch {:conversation {: label :pending {:kind :reset} :synced 0}}
          :fx [(append-effect id [(reset-entry)] label 0)]}
-        (let [{: entries : last} (bounded-batch messages synced)]
-          (when (> (length entries) 0)
+        (when (< synced count)
+          (let [last (+ synced 1)]
             {:patch {:conversation {: label :pending {:kind :messages : last}}}
-             :fx [(append-effect id entries label last)]})))))
+             :fx [(append-effect id [(message-entry (. messages last))] label
+                                 last)]})))))
 
-(fn journal [db]
-  "Append canonical history that the durable log has not seen yet. An append in
-   flight already covers what a later turn would add, so a turn that settles
-   meanwhile waits for that chain instead of writing it twice."
+(fn journal [db _]
+  "Record canonical history the log has not seen yet. The agent owner publishes
+   a change to canonical history and this runs on it, so a message is written as
+   soon as it is final rather than when the turn ends. An append in flight
+   already covers what a later change would add, so a change that lands
+   meanwhile waits for that chain instead of writing the same range twice."
   (let [conversation (or db.conversation {})
         id conversation.id
         messages (or (and db.agent db.agent.messages) [])]
@@ -146,7 +134,9 @@
                   {:patch settled})))))))
 
 (fn completed [db _]
-  "Journal canonical history once a turn has settled."
+  "Catch the log up once a turn has settled. Every canonical message is written
+   as it becomes final, so this closes a gap only if a change reached the agent
+   state without publishing one."
   (journal db))
 
 (fn text-of [content]
@@ -275,4 +265,4 @@
                  :id (.. :resume- event.value)}
                 {:type :terminal/read}]})))
 
-{: start : completed : open : listed : loaded : selected : appended}
+{: start : journal : completed : open : listed : loaded : selected : appended}

@@ -29,7 +29,7 @@ composition, and commit the result.
 | `editing-motions` | 11 |
 | `editor-edits` | 6 |
 | `effects` | 26 |
-| `events` | 272 |
+| `events` | 273 |
 | `indicators` | 8 |
 | `keybindings` | 93 |
 | `models` | 6 |
@@ -512,6 +512,7 @@ composition, and commit the result.
 | `components/components/loaded` | event `components/loaded` |
 | `components/components/swap` | event `components/swap` |
 | `conversation/agent/completed` | event `agent/completed` |
+| `conversation/agent/history-changed` | event `agent/history-changed` |
 | `conversation/app/start` | event `app/start` |
 | `conversation/conversation/appended` | event `conversation/appended` |
 | `conversation/conversation/loaded` | event `conversation/loaded` |

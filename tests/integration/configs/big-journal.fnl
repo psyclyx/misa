@@ -1,7 +1,8 @@
 ;; Stock application plus the test-only fake provider. One response asks for
-;; more tools than a single journal append accepts, so the turn's canonical
-;; history has to be recorded in more than one bounded append. Each append
-;; reports what the store wrote, which is what the case asserts.
+;; more tools than a single append would accept, so the turn's canonical history
+;; has to be written as each message settles rather than in one batch. The
+;; handler reports the running count and how many appends produced it, which is
+;; what the case asserts.
 (let [app (misa.snapshot (require :misa.standard))
       fake (require :misa.standard.providers.fake)]
   (each [kind entries (pairs fake)]
@@ -13,13 +14,19 @@
                           :id (.. :call- (tostring index))
                           :name :no-such-tool
                           :type :tool_call}))
+  (var recorded 0)
+  (var appends 0)
   (tset app.definitions.events :big-journal/appended
         {:event :conversation/appended
          :handler (fn [_ event]
                     (when event.ok
-                      {:fx [{:lines [{:spans [{:text (.. "appended "
-                                                         (tostring (. event.data
-                                                                      :count)))}]}]
+                      (set recorded (+ recorded (or (. event.data :count) 0)))
+                      (set appends (+ appends 1))
+                      {:fx [{:lines [{:spans [{:text (.. "recorded "
+                                                         (tostring recorded)
+                                                         " in "
+                                                         (tostring appends)
+                                                         " appends")}]}]
                              :type :view/commit}]}))
          :priority 12000})
   (tset app.config :runtime

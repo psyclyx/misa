@@ -206,6 +206,8 @@
                      :type :agent/usage
                      :usage agent.usage}
              :type :dispatch})
+      (tset effects (+ (length effects) 1)
+            {:event {:type :agent/history-changed} :type :dispatch})
       (each [_ block (ipairs blocks)]
         (when (= block.type :tool_call)
           (if (= block.execution :provider)
@@ -346,6 +348,8 @@
              :type :dispatch})
       (tset effects (+ (length effects) 1)
             {:event {:status :ready :type :agent/status} :type :dispatch})
+      (tset effects (+ (length effects) 1)
+            {:event {:type :agent/history-changed} :type :dispatch})
       (tset effects (+ (length effects) 1)
             {:event {:exit agent.exit_after_response
                      :id response-id
@@ -590,7 +594,8 @@
                                  :pending_tools (misa.replace {})
                                  :stream misa.delete
                                  :tool_batch misa.delete
-                                 :error misa.delete})}}))
+                                 :error misa.delete})}
+     :fx [{:type :dispatch :event {:type :agent/history-changed}}]}))
 
 (fn reset [db]
   "Clear conversation state and cancel outstanding operations."
@@ -601,6 +606,7 @@
     (each [_ id (ipairs (pending-ids agent))]
       (table.insert fx {:type :operation/cancel : id}))
     (table.insert fx {:type :dispatch :event {:type :transcript/reset}})
+    (table.insert fx {:type :dispatch :event {:type :agent/history-changed}})
     (table.insert fx {:type :dispatch
                       :event {:type :agent/status
                               :status :ready
@@ -670,7 +676,8 @@
                 (let [(ready fx) (blocked agent problem)]
                   {:patch {:agent (misa.replace ready)} : fx})
                 {:patch {:agent (misa.replace next)}
-                 :fx [{:type :dispatch
+                 :fx [{:type :dispatch :event {:type :agent/history-changed}}
+                      {:type :dispatch
                        :event {:type :agent/submitted :prompt event.prompt}}
                       {:type :dispatch
                        :event {:type :transcript/user
@@ -816,6 +823,8 @@
               (let [fx [update]]
                 (when (= agent.pending_tool_count 0)
                   (set agent (flush-tool-results agent))
+                  (tset fx (+ (length fx) 1)
+                        {:type :dispatch :event {:type :agent/history-changed}})
                   (let [(next provider problem) (request db agent cofx)]
                     (set agent next)
                     (if problem

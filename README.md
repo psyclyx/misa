@@ -426,9 +426,12 @@ process's write lock.
 
 The stock profile journals canonical history through `misa.conversation`. A
 session names its conversation from `config.conversation.id` or from its own
-start clock, and each settled turn appends the messages the log has not seen
-yet in as many bounded appends as the turn needs, labelling the conversation
-from its first user message. A shorter history
+start clock, and the log records each canonical message as soon as it is final —
+the prompt when the turn starts, the assistant message when its response ends,
+each tool result when its tool reports — labelling the conversation from its
+first user message. One message per append is also why the native entry limit on
+an append is never in play: a turn is recorded in order, message by message,
+instead of in a batch whose size grows with the turn. A shorter history
 means the branch was replaced, as compaction does, so the log records an
 explicit reset entry instead of silently diverging from canonical history.
 `/resume` lists the stored conversations through the ordinary picker and

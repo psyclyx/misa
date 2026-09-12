@@ -49,6 +49,18 @@
 (assert (not (pcall conversation.start {} {}
                     {:config {:conversation {:id :a/b}} :clock {:wall_ms 0}}))
         "a conversation id with a slash was accepted")
+;; A label joins the header of every append, so it is bounded where it enters:
+;; an over-long one would otherwise make every header update refuse the write.
+(assert (= (. (start-with {:conversation {:label "kept"}} {:wall_ms 42})
+              :conversation :label)
+           "kept"))
+(assert (not (pcall conversation.start {} {}
+                    {:config {:conversation {:label (string.rep "x" 257)}}
+                     :clock {:wall_ms 0}}))
+        "an over-long conversation label was accepted")
+(assert (not (pcall conversation.start {} {}
+                    {:config {:conversation {:label 7}} :clock {:wall_ms 0}}))
+        "a non-string conversation label was accepted")
 
 ;; A settled turn journals the messages the log has not seen, and labels the
 ;; conversation from the first user message.
@@ -111,36 +123,50 @@
                                     :agent {:messages []}}
                                    {}) nil))
 
-;; A turn longer than one append is written in bounded batches, in order.
+;; The journal writes one settled message per append and continues from each
+;; completion, so nothing it sends can approach what one native append accepts.
 (fn big-history [count]
   (fcollect [index 1 count] (message :assistant index)))
 
 (local big (big-history 300))
-(local long (conversation.completed {:conversation {:id :main :synced 0}
-                                     :agent {:messages big}}
-                                    {}))
-(assert (= (length (. long :fx)) 1) "a long journal was not batched")
-(assert (= (length (entries-of long)) 256) "the batch ignored the native limit")
-(assert (= (. long :fx 1 :id) "main/256"))
-(assert (= (. (apply-patch long) :conversation :pending :last) 256))
+(local long (conversation.journal {:conversation {:id :main :synced 0}
+                                   :agent {:messages big}}
+                                  {}))
+(assert (= (length (. long :fx)) 1) "a history change wrote more than one append")
+(assert (= (length (entries-of long)) 1)
+        "an append carried more than one message")
+(assert (= (. (entries-of long) 1 :data :role) :assistant))
+(assert (= (. (entries-of long) 1 :data :content 1 :text) 1)
+        "the journal did not write the first unwritten message")
+(assert (= (. long :fx 1 :id) "main/1"))
+(assert (= (. (apply-patch long) :conversation :pending :last) 1))
 
-(local tail (conversation.appended (journal-state long big)
-                                   {:ok true
-                                    :id "main/256"
-                                    :data {:count 256 :last_seq 256}}))
-(assert (= (length (. tail :fx)) 1) "the journal did not continue")
-(assert (= (length (entries-of tail)) 44))
-(assert (= (. tail :fx 1 :id) "main/300"))
-(assert (= (. (apply-patch tail) :conversation :synced) 256)
-        "the cursor jumped past the append in flight")
-(assert (= (. (apply-patch tail) :conversation :pending :last) 300))
-
-(local end-of-long (conversation.appended (journal-state tail big)
-                                          {:ok true
-                                           :id "main/300"
-                                           :data {:count 44 :last_seq 300}}))
-(assert (= (. (apply-patch end-of-long) :conversation :synced) 300))
-(assert (= (. end-of-long :fx) nil))
+;; Each completion advances the cursor by one message and starts the next, so a
+;; long turn is written in order without either limit ever being approached.
+(var walk (journal-state long big))
+(var settled 1)
+(var carried 0)
+(var more true)
+(while more
+  (local continued (conversation.appended walk {:ok true
+                                                :id (.. "main/" (tostring settled))
+                                                :data {:count 1 :last_seq settled}}))
+  (set walk (misa.patch walk (. continued :patch)))
+  (if (. continued :fx)
+      (do
+        (assert (= (length (entries-of continued)) 1)
+                "an append carried more than one message")
+        (set carried (+ carried 1))
+        (set settled (+ settled 1))
+        (assert (= (. continued :fx 1 :id) (.. "main/" (tostring settled)))
+                "the journal did not continue from the message it settled")
+        (assert (= (. (entries-of continued) 1 :data :content 1 :text) settled)
+                "the journal wrote a message out of order"))
+      (set more false)))
+(assert (= settled 300) "the journal did not walk every message")
+(assert (= carried 299) "the journal did not continue after each completion")
+(assert (= (. walk :conversation :synced) 300))
+(assert (= (. walk :conversation :pending) nil))
 
 ;; A replaced branch is marked first and journaled from the beginning after.
 (local replaced (conversation.completed {:conversation {:id :main

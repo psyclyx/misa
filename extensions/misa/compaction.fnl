@@ -388,6 +388,9 @@
                                     (.. "Compacted " request.count
                                         " messages into a " (length summary)
                                         "-character handoff summary.")))
+              (table.insert fx
+                            {:type :dispatch
+                             :event {:type :agent/history-changed}})
               {:patch {:agent {:messages (misa.replace handoff)}
                        :compaction (misa.replace (misa.patch current
                                                              {:active misa.delete}))}

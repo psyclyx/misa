@@ -47,6 +47,14 @@
 //! copied into a fork carries the `request_id` that produced it in that branch,
 //! so the cost of a branch's *context* is the sum over the requests that
 //! actually made up its transcript.
+//!
+//! Every write is bounded, and the bounds answer different questions. A recorded
+//! message has the largest budget, because it carries whatever the session
+//! accepted; a header metadata document, which this store composes from labels
+//! and fork provenance, has a much smaller one. Both are backstops rather than
+//! policy: the application's own bounds on what it acquires — a line, a captured
+//! stream, a file read, an image attachment — sit far below them, so recording
+//! never refuses a message the session already accepted.
 
 const std = @import("std");
 const c = @cImport(@cInclude("sqlite3.h"));
@@ -55,12 +63,26 @@ pub const max_conversation_id_bytes: usize = 128;
 pub const max_kind_bytes: usize = 64;
 pub const max_request_id_bytes: usize = 256;
 pub const max_label_bytes: usize = 256;
-pub const max_entry_bytes: usize = 1024 * 1024;
-pub const max_batch_bytes: usize = 4 * 1024 * 1024;
+/// The largest record this store accepts for one transcript message. This is a
+/// backstop, not a policy: it must stay above anything the application can hand
+/// to it, so a message the session accepted is never refused here. A message is
+/// built from parts that are bounded where they are acquired — an image
+/// attachment is at most an 8 MiB source, which becomes ~10.7 MiB of base64 plus
+/// a ~0.8 MiB preview, a file read at most 1 MiB, and a captured stream at most
+/// 1 MiB per stream — so this number is far above any message the application
+/// builds, and exists only so a row cannot be unbounded.
+pub const max_message_bytes: usize = 64 * 1024 * 1024;
+
+/// The most messages one append may carry. This is a backstop on the work of a
+/// single transaction, not a policy: the journal records one settled message per
+/// append, so nothing in the application approaches it.
 pub const max_entries_per_append: usize = 256;
 pub const max_load_limit: usize = 1024;
 pub const max_requests_per_load: usize = 1024;
-pub const max_document_bytes: usize = 64 * 1024;
+/// The largest header metadata document (and the largest key or string in one).
+/// Unlike a message, a header is a small index of labels and fork provenance
+/// that this store composes, so it has its own, much smaller, budget.
+pub const max_metadata_bytes: usize = 64 * 1024;
 pub const max_document_depth: usize = 32;
 pub const max_list_limit: usize = 256;
 pub const busy_timeout_ms: c_int = 5000;
@@ -350,11 +372,11 @@ pub const Store = struct {
             try validateKind(entry.kind);
             try validatePayloadVersion(entry.payload_version);
             if (entry.request_id) |id| try validateRequestId(id);
-            try validateDocument(entry.data);
+            try validateDocument(entry.data, max_message_bytes, error.EntryTooLarge);
         }
         if (request_append.metadata) |metadata| {
             if (metadata != .object) return error.InvalidMetadata;
-            try validateDocument(metadata);
+            try validateDocument(metadata, max_metadata_bytes, error.MetadataTooLarge);
         }
         if (request_append.request) |request| try validateRequest(request);
 
@@ -400,7 +422,7 @@ pub const Store = struct {
         if (request_fork.at_seq <= 0) return error.InvalidFork;
         if (request_fork.metadata) |metadata| {
             if (metadata != .object) return error.InvalidMetadata;
-            try validateDocument(metadata);
+            try validateDocument(metadata, max_metadata_bytes, error.MetadataTooLarge);
         }
 
         var attempt: usize = 0;
@@ -694,12 +716,9 @@ pub const Store = struct {
             seq = c.sqlite3_column_int64(stmt, 0);
         }
 
-        var batch_bytes: usize = 0;
         for (request_append.entries) |entry| {
             const message = try self.encodeMessage(entry, request_append.at_ms);
             defer message.deinit(self.allocator);
-            batch_bytes += message.payload.len;
-            if (batch_bytes > max_batch_bytes) return error.EntryTooLarge;
             seq += 1;
             try self.insertMessage(message);
             try self.insertEdge(request_append.conversation, seq, message.id, request_append.at_ms, entry.request_id);
@@ -732,7 +751,7 @@ pub const Store = struct {
         if (request_fork.at_seq > available) return error.InvalidFork;
 
         const metadata = if (request_fork.metadata) |document|
-            try self.encodeDocument(document)
+            try self.encodeDocument(document, max_metadata_bytes, error.MetadataTooLarge)
         else
             null;
         defer if (metadata) |text| self.allocator.free(text);
@@ -812,9 +831,8 @@ pub const Store = struct {
     /// Canonicalize an entry's payload, hash it with its kind and payload
     /// version, and return the addressable message.
     fn encodeMessage(self: *Store, entry: Entry, at_ms: i64) !Message {
-        const payload = try self.encodeDocument(entry.data);
+        const payload = try self.encodeDocument(entry.data, max_message_bytes, error.EntryTooLarge);
         errdefer self.allocator.free(payload);
-        if (payload.len > max_entry_bytes) return error.EntryTooLarge;
         const id = try messageId(self.allocator, entry.kind, entry.payload_version, payload);
         return .{ .id = id, .kind = entry.kind, .payload_version = entry.payload_version, .payload = payload, .at_ms = at_ms };
     }
@@ -963,7 +981,7 @@ pub const Store = struct {
         }
         const merged = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
         defer a.free(merged);
-        if (merged.len > max_document_bytes) return error.MetadataTooLarge;
+        if (merged.len > max_metadata_bytes) return error.MetadataTooLarge;
 
         const stmt = try self.prepare("UPDATE conversations SET metadata = ?2 WHERE id = ?1;");
         defer _ = c.sqlite3_finalize(stmt);
@@ -975,17 +993,17 @@ pub const Store = struct {
     /// Serialize one finite JSON value in canonical form: object keys sorted by
     /// byte order, no insignificant whitespace. Content addressing depends on
     /// this, because the producing process does not control key order.
-    fn encodeDocument(self: *Store, value: std.json.Value) ![]u8 {
+    fn encodeDocument(self: *Store, value: std.json.Value, limit: usize, too_large: anyerror) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(self.allocator);
         try writeCanonical(&out, self.allocator, value);
-        if (out.items.len > max_document_bytes) return error.DocumentTooLarge;
+        if (out.items.len > limit) return too_large;
         return out.toOwnedSlice(self.allocator);
     }
 
     fn encodeOptional(self: *Store, value: ?std.json.Value) !?[]u8 {
         const present = value orelse return null;
-        return try self.encodeDocument(present);
+        return try self.encodeDocument(present, max_message_bytes, error.RequestTooLarge);
     }
 
     fn rollbackQuietly(self: *Store) void {
@@ -1291,26 +1309,29 @@ pub fn validateRequest(request: Request) !void {
         return error.InvalidRequestCost;
     }
     for ([_]?std.json.Value{ request.settings, request.usage, request.cost, request.metadata }) |field| {
-        if (field) |value| try validateDocument(value);
+        if (field) |value| try validateDocument(value, max_message_bytes, error.RequestTooLarge);
     }
 }
 
-pub fn validateDocument(value: std.json.Value) !void {
-    try validateValue(value, 0);
+/// Validate one finite JSON document against a byte budget, naming the failure
+/// so a caller hears which budget it exceeded: a recorded message has its own,
+/// much larger, budget than the header metadata this store composes.
+pub fn validateDocument(value: std.json.Value, limit: usize, too_large: anyerror) !void {
+    try validateValue(value, 0, limit, too_large);
 }
 
-fn validateValue(value: std.json.Value, depth: usize) !void {
+fn validateValue(value: std.json.Value, depth: usize, limit: usize, too_large: anyerror) !void {
     if (depth > max_document_depth) return error.DocumentTooDeep;
     switch (value) {
-        .array => |array| for (array.items) |item| try validateValue(item, depth + 1),
+        .array => |array| for (array.items) |item| try validateValue(item, depth + 1, limit, too_large),
         .object => |object| {
             var iterator = object.iterator();
             while (iterator.next()) |entry| {
-                if (entry.key_ptr.*.len > max_document_bytes) return error.DocumentTooLarge;
-                try validateValue(entry.value_ptr.*, depth + 1);
+                if (entry.key_ptr.*.len > limit) return too_large;
+                try validateValue(entry.value_ptr.*, depth + 1, limit, too_large);
             }
         },
-        .string, .number_string => |string| if (string.len > max_document_bytes) return error.DocumentTooLarge,
+        .string, .number_string => |string| if (string.len > limit) return too_large,
         .float => |number| if (!std.math.isFinite(number)) return error.InvalidDocument,
         else => {},
     }
@@ -1656,6 +1677,46 @@ test "metadata merges into the conversation header" {
     try std.testing.expectEqualStrings("/work", parsed.value.object.get("cwd").?.string);
 }
 
+test "a message budget is separate from the header metadata budget" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var fixture = try testEnviron(std.testing.allocator, &temporary.sub_path);
+    defer {
+        fixture.map.deinit();
+        std.testing.allocator.free(fixture.path);
+    }
+    var store = try Store.open(std.testing.allocator, std.testing.io, &fixture.map);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A tool result or a pasted attachment of this size is an ordinary message:
+    // the session accepted it, so the log records it. Only a header document is
+    // held to the header budget.
+    const text = try a.alloc(u8, 100 * 1024);
+    @memset(text, 'a');
+    var data: std.json.ObjectMap = .empty;
+    try data.put(a, "text", .{ .string = text });
+    const entries = [_]Entry{.{ .kind = "message", .data = .{ .object = data } }};
+    try std.testing.expectEqual(@as(i64, 1), try store.append(.{ .conversation = "big", .entries = &entries, .at_ms = 1 }));
+
+    const snapshot = try store.load(std.testing.allocator, "big", 0, 16, 16);
+    defer freeSnapshot(std.testing.allocator, snapshot);
+    try std.testing.expect(snapshot.entries[0].payload.len > 100 * 1024);
+
+    // The failure names the budget it exceeded, so an unrecordable message and
+    // an oversized header are not reported as the same thing.
+    try std.testing.expectError(error.EntryTooLarge, validateDocument(.{ .string = "0123456789" }, 4, error.EntryTooLarge));
+    try std.testing.expectError(error.MetadataTooLarge, validateDocument(.{ .string = "0123456789" }, 4, error.MetadataTooLarge));
+
+    const label = try a.alloc(u8, max_metadata_bytes + 1);
+    @memset(label, 'b');
+    var header: std.json.ObjectMap = .empty;
+    try header.put(a, "label", .{ .string = label });
+    try std.testing.expectError(error.MetadataTooLarge, store.append(.{ .conversation = "big", .entries = &entries, .at_ms = 2, .metadata = .{ .object = header } }));
+}
+
 test "provider requests keep settled cost and record parentage" {
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
@@ -1861,7 +1922,7 @@ test "invalid identifiers, kinds, payloads, requests, and empty batches are reje
     }
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, buffer[0..index], .{ .allocate = .alloc_always });
     defer parsed.deinit();
-    try std.testing.expectError(error.DocumentTooDeep, validateDocument(parsed.value));
+    try std.testing.expectError(error.DocumentTooDeep, validateDocument(parsed.value, max_message_bytes, error.EntryTooLarge));
 }
 
 test "legacy databases upgrade to content-addressed transcripts" {
