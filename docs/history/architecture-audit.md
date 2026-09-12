@@ -4,6 +4,35 @@ Notes below were written as the work landed, in order, and later entries
 supersede earlier ones. They are retained for the reasoning and the
 verification they record, not as a description of the current code.
 
+### The log refuses history a provider would reject (2026-09-11)
+
+The `message` kind's shape was a Lua convention. `misa.agent` built canonical
+messages and `misa.conversation` appended them, and nothing checked the shape on
+the way in, so a bug — or a plugin — could write a transcript that failed only
+later, at the next request. The store's own header even called the payload
+opaque, which was true of the bytes and false of the contract.
+
+`src/conversation/message.zig` now owns that contract: the roles, the block kinds
+and the fields a provider needs from each (`text` and `thinking` carry text,
+`tool_call` carries a nonempty id and name plus an object of arguments, `image`
+carries a base64 source with a media type and data), and a `tool` message must
+carry the call it answers and a boolean verdict. `append` refuses anything else
+as `InvalidMessageShape` before it opens a transaction.
+
+Pairing is checked in one direction as well: a tool result must answer a call the
+conversation has left open, and a call is answered at most once, so a duplicated
+or misordered batch fails as `InvalidToolPairing`. The tail is read inside the
+write transaction, `reset` discards what a branch left open, and the scan is
+bounded — a tail longer than the window leaves pairing unchecked rather than
+rejecting a legal append. A transcript that _ends_ with open calls stays legal,
+because that is what a crash mid-batch looks like, and the fold closes it on load.
+
+Evidence: `src/conversation/message.zig` tests every accepted and refused shape;
+the store test "a tool result must answer a call the conversation left open"
+covers unknown ids, a repeated answer, the legal sequence, a reset, per
+conversation isolation, and the crash window; the store's own fixtures and the
+integration conversation fixture now append canonical messages.
+
 ### Recording is not where a bound belongs (2026-09-11)
 
 Two different refusals were coming out of the store under one name. The first was

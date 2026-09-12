@@ -6,11 +6,13 @@
                 {:catalog :events
                  :value {:event :app/start
                          :handler (fn []
-                                    {:fx [{:entries [{:data {:role :user
-                                                             :text :hello}
+                                    {:fx [{:entries [{:data {:content [{:text :hello
+                                                                        :type :text}]
+                                                             :role :user}
                                                       :kind :message}
-                                                     {:data {:role :assistant
-                                                             :text :hi}
+                                                     {:data {:content [{:text :hi
+                                                                        :type :text}]
+                                                             :role :assistant}
                                                       :kind :message}]
                                            :completion :conversation/appended
                                            :conversation :integration

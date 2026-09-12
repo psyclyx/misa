@@ -225,6 +225,14 @@ Each slice is independently landable, states its verification, and notes its
 risk. Order is deliberate: the kernel primitives dictate the shape of everything
 above them.
 
+Progress: Slice 1's validation half has landed (`src/conversation/message.zig`,
+recorded in `docs/history/architecture-audit.md`) — the log now refuses a message
+a provider would reject, and refuses a tool result that answers no open call. The
+fold itself still lives in `extensions/misa/conversation.fnl`. Slice 2's cursor
+deletion turns out to depend on Slice 4 (and really Slice 6): the cursor exists
+because canonical history and the log are two representations, so it can only go
+once history _is_ the fold that the kernel owns. The remaining order is unchanged.
+
 ### Slice 0 — manifest and invariants (test-only)
 
 Add install-time validation in `src/lua_runtime/framework.fnl` for the state

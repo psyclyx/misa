@@ -48,6 +48,12 @@
 //! so the cost of a branch's *context* is the sum over the requests that
 //! actually made up its transcript.
 //!
+//! A `message` entry must be a canonical message — the shape a provider accepts,
+//! with every tool result answering a call the conversation has left open — which
+//! `message.zig` validates on write. Other kinds are stored verbatim, so a new
+//! fact kind needs no schema migration. Nothing is ever rewritten: what an older
+//! version wrote stays as it is, and the fold repairs a tail that a crash left
+//! open.
 //! Every write is bounded, and the bounds answer different questions. A recorded
 //! message has the largest budget, because it carries whatever the session
 //! accepted; a header metadata document, which this store composes from labels
@@ -58,6 +64,7 @@
 
 const std = @import("std");
 const c = @cImport(@cInclude("sqlite3.h"));
+const message_shape = @import("message.zig");
 
 pub const max_conversation_id_bytes: usize = 128;
 pub const max_kind_bytes: usize = 64;
@@ -72,6 +79,11 @@ pub const max_label_bytes: usize = 256;
 /// 1 MiB per stream — so this number is far above any message the application
 /// builds, and exists only so a row cannot be unbounded.
 pub const max_message_bytes: usize = 64 * 1024 * 1024;
+
+/// How far back the tool-call pairing check reads. A tail longer than this leaves
+/// pairing unchecked rather than rejecting a legal append: the fold closes
+/// whatever a crash left open, so this is a boundary and not a guarantee.
+const open_call_window: usize = 1024;
 
 /// The most messages one append may carry. This is a backstop on the work of a
 /// single transaction, not a policy: the journal records one settled message per
@@ -92,17 +104,19 @@ pub const schema_version: c_int = 3;
 const retry_backoff_ms: usize = 25;
 
 /// Payload revision understood by this binary. A payload written with a newer
-/// version must be refused rather than reinterpreted, because `payload` is
-/// deliberately opaque to the store: no schema migration can rewrite bytes the
-/// store does not understand.
+/// version must be refused rather than reinterpreted, because `payload` bytes
+/// are never rewritten: no schema migration can reinterpret what the store does
+/// not understand. A `message` entry's shape is validated on write, which is a
+/// boundary rather than a migration.
 pub const max_payload_version: u32 = 1;
 
 pub const cost_kinds = [_][]const u8{ "pending", "reported", "estimated", "unknown" };
 
-/// One transcript entry. `data` is any finite JSON value; it is canonicalized
-/// and serialized to text at the storage boundary so the schema never depends
-/// on transcript shape. `request_id` links the entry to the provider request
-/// that produced it.
+/// One transcript entry. `data` is canonicalized and serialized to text at the
+/// storage boundary, so the schema never depends on transcript shape; a
+/// `message` entry is validated against the canonical message contract (see
+/// `message.zig`) and any other kind is stored verbatim. `request_id` links the
+/// entry to the provider request that produced it.
 pub const Entry = struct {
     kind: []const u8,
     payload_version: u32 = 1,
@@ -373,6 +387,7 @@ pub const Store = struct {
             try validatePayloadVersion(entry.payload_version);
             if (entry.request_id) |id| try validateRequestId(id);
             try validateDocument(entry.data, max_message_bytes, error.EntryTooLarge);
+            if (std.mem.eql(u8, entry.kind, "message")) _ = try message_shape.validate(entry.data);
         }
         if (request_append.metadata) |metadata| {
             if (metadata != .object) return error.InvalidMetadata;
@@ -699,6 +714,57 @@ pub const Store = struct {
         return records;
     }
 
+    /// The tool calls this conversation's tail has left unanswered. The scan
+    /// walks backwards from the newest entry, collecting results until it
+    /// reaches the assistant message that requested them, and reports whether it
+    /// reached a conclusion inside the window.
+    ///
+    /// A payload that is not a canonical message ends the scan too: a record
+    /// written by an older version, or under another kind, is not something this
+    /// check should reject a later append over.
+    fn collectOpenCalls(
+        self: *Store,
+        arena: std.mem.Allocator,
+        conversation: []const u8,
+        pending: *std.ArrayList([]const u8),
+    ) !bool {
+        const stmt = try self.prepare(
+            "SELECT s.kind, s.payload FROM branch_messages m JOIN messages s ON s.id = m.message_id " ++
+                "WHERE m.conversation_id = ?1 ORDER BY m.seq DESC LIMIT ?2;",
+        );
+        defer _ = c.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, conversation);
+        try bindInt(stmt, 2, @intCast(open_call_window));
+
+        var answered: std.ArrayList([]const u8) = .empty;
+        var rows: usize = 0;
+        while (true) {
+            const code = c.sqlite3_step(stmt);
+            if (code == c.SQLITE_DONE) break;
+            if (code != c.SQLITE_ROW) return errorFromCode(c.sqlite3_errcode(self.db));
+            rows += 1;
+            const kind = try columnRequiredText(arena, stmt, 0);
+            const payload = try columnRequiredText(arena, stmt, 1);
+            if (!std.mem.eql(u8, kind, "message")) return true;
+            var parsed = std.json.parseFromSlice(std.json.Value, arena, payload, .{ .allocate = .alloc_always }) catch return true;
+            defer parsed.deinit();
+            const role = message_shape.validate(parsed.value) catch return true;
+            switch (role) {
+                .tool => try answered.append(arena, message_shape.toolResultId(parsed.value)),
+                .assistant => {
+                    var ids: std.ArrayList([]const u8) = .empty;
+                    try message_shape.toolCallIds(arena, parsed.value, &ids);
+                    for (ids.items) |id| {
+                        if (indexOfSlice(answered.items, id) == null) try pending.append(arena, id);
+                    }
+                    return true;
+                },
+                .user => return true,
+            }
+        }
+        return rows < open_call_window;
+    }
+
     fn appendOnce(self: *Store, request_append: Append) !i64 {
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.rollbackQuietly();
@@ -714,6 +780,31 @@ pub const Store = struct {
             try bindText(stmt, 1, request_append.conversation);
             if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return errorFromCode(c.sqlite3_errcode(self.db));
             seq = c.sqlite3_column_int64(stmt, 0);
+        }
+
+        // A tool result must answer a call this conversation has left open, and
+        // a call is answered at most once. The tail is read inside the write
+        // transaction, so a concurrent writer cannot invalidate the check.
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var pending: std.ArrayList([]const u8) = .empty;
+        const conclusive = try self.collectOpenCalls(arena.allocator(), request_append.conversation, &pending);
+        for (request_append.entries) |entry| {
+            if (std.mem.eql(u8, entry.kind, "reset")) {
+                // A branch that starts over discards what the last one left open.
+                pending.clearRetainingCapacity();
+                continue;
+            }
+            if (!std.mem.eql(u8, entry.kind, "message")) continue;
+            switch (try message_shape.validate(entry.data)) {
+                .user => {},
+                .assistant => try message_shape.toolCallIds(arena.allocator(), entry.data, &pending),
+                .tool => if (conclusive) {
+                    const id = message_shape.toolResultId(entry.data);
+                    const index = indexOfSlice(pending.items, id) orelse return error.InvalidToolPairing;
+                    _ = pending.swapRemove(index);
+                },
+            }
         }
 
         for (request_append.entries) |entry| {
@@ -1511,6 +1602,13 @@ fn cloneJson(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Valu
     return parsed.value;
 }
 
+fn indexOfSlice(items: [][]const u8, value: []const u8) ?usize {
+    for (items, 0..) |item, index| {
+        if (std.mem.eql(u8, item, value)) return index;
+    }
+    return null;
+}
+
 fn errorFromCode(code: c_int) anyerror {
     return switch (code) {
         c.SQLITE_BUSY, c.SQLITE_LOCKED => error.DatabaseBusy,
@@ -1536,6 +1634,10 @@ fn testEnviron(allocator: std.mem.Allocator, sub_path: []const u8) !struct {
 /// the result, so nothing leaks between tests.
 fn jsonValue(allocator: std.mem.Allocator, text: []const u8) !std.json.Value {
     return std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{ .allocate = .alloc_always });
+}
+
+test {
+    _ = @import("message.zig");
 }
 
 test "database paths follow override and XDG precedence" {
@@ -1592,8 +1694,10 @@ test "append assigns contiguous sequences and load reads them back" {
 
     var store = try Store.open(std.testing.allocator, std.testing.io, &fixture.map);
     defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     const entries = [_]Entry{
-        .{ .kind = "message", .data = .{ .object = .{} } },
+        .{ .kind = "message", .data = try jsonValue(arena.allocator(), "{\"role\":\"user\",\"content\":[]}") },
         .{ .kind = "tool_call", .data = .{ .string = "ls" } },
     };
     try std.testing.expectEqual(@as(i64, 2), try store.append(.{ .conversation = "session-a", .entries = &entries, .at_ms = 1000 }));
@@ -1609,6 +1713,7 @@ test "append assigns contiguous sequences and load reads them back" {
     try std.testing.expectEqualStrings("tool_call", snapshot.entries[1].kind);
     try std.testing.expectEqualStrings("\"ls\"", snapshot.entries[1].payload);
     try std.testing.expectEqual(@as(i64, 3), snapshot.entries[2].seq);
+    try std.testing.expectEqualStrings("{\"content\":[],\"role\":\"user\"}", snapshot.entries[0].payload);
     try std.testing.expectEqualStrings("{}", snapshot.metadata);
     try std.testing.expect(snapshot.forked_from_id == null);
     try std.testing.expect(!snapshot.more_entries);
@@ -1619,6 +1724,59 @@ test "append assigns contiguous sequences and load reads them back" {
     try std.testing.expectEqual(@as(i64, 3), tail.entries[0].seq);
 
     try std.testing.expectError(error.ConversationNotFound, store.load(std.testing.allocator, "missing", 0, 16, 16));
+}
+
+test "a tool result must answer a call the conversation left open" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var fixture = try testEnviron(std.testing.allocator, &temporary.sub_path);
+    defer {
+        fixture.map.deinit();
+        std.testing.allocator.free(fixture.path);
+    }
+    var store = try Store.open(std.testing.allocator, std.testing.io, &fixture.map);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const called = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_call\",\"id\":\"call-1\",\"name\":\"read_file\",\"arguments\":{}},{\"type\":\"tool_call\",\"id\":\"call-2\",\"name\":\"read_file\",\"arguments\":{}}]}") }};
+    try std.testing.expectEqual(@as(i64, 1), try store.append(.{ .conversation = "pairing", .entries = &called, .at_ms = 1 }));
+
+    // A result for a call nobody requested is what a corrupted or misordered
+    // batch looks like, and it is refused before it can be stored.
+    const unknown = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"tool\",\"content\":[],\"is_error\":false,\"tool_call_id\":\"call-9\"}") }};
+    try std.testing.expectError(error.InvalidToolPairing, store.append(.{ .conversation = "pairing", .entries = &unknown, .at_ms = 2 }));
+
+    // A batch that ends with an open call is legal: that is a crash mid-batch,
+    // and the fold closes what it left open.
+    const first = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"tool\",\"content\":[],\"is_error\":false,\"tool_call_id\":\"call-1\"}") }};
+    try std.testing.expectEqual(@as(i64, 2), try store.append(.{ .conversation = "pairing", .entries = &first, .at_ms = 3 }));
+    // Answering it twice is not.
+    try std.testing.expectError(error.InvalidToolPairing, store.append(.{ .conversation = "pairing", .entries = &first, .at_ms = 4 }));
+
+    const second = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"tool\",\"content\":[],\"is_error\":false,\"tool_call_id\":\"call-2\"}") }};
+    try std.testing.expectEqual(@as(i64, 3), try store.append(.{ .conversation = "pairing", .entries = &second, .at_ms = 5 }));
+
+    // With the batch answered, the next turn continues normally.
+    const prompt = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"user\",\"content\":[]}") }};
+    try std.testing.expectEqual(@as(i64, 4), try store.append(.{ .conversation = "pairing", .entries = &prompt, .at_ms = 6 }));
+
+    // A branch that starts over discards what the last one left open, so a result
+    // that answers the abandoned call is refused.
+    const abandoned = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_call\",\"id\":\"call-3\",\"name\":\"read_file\",\"arguments\":{}}]}") }};
+    try std.testing.expectEqual(@as(i64, 5), try store.append(.{ .conversation = "pairing", .entries = &abandoned, .at_ms = 7 }));
+    const reset = [_]Entry{.{ .kind = "reset", .data = try jsonValue(a, "{\"replaced\":true}") }};
+    try std.testing.expectEqual(@as(i64, 6), try store.append(.{ .conversation = "pairing", .entries = &reset, .at_ms = 8 }));
+    const late = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"tool\",\"content\":[],\"is_error\":false,\"tool_call_id\":\"call-3\"}") }};
+    try std.testing.expectError(error.InvalidToolPairing, store.append(.{ .conversation = "pairing", .entries = &late, .at_ms = 9 }));
+
+    // Each conversation is checked against its own tail.
+    // Each conversation is checked against its own tail: the same result is
+    // accepted where its call is open.
+    const open_elsewhere = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_call\",\"id\":\"call-3\",\"name\":\"read_file\",\"arguments\":{}}]}") }};
+    try std.testing.expectEqual(@as(i64, 1), try store.append(.{ .conversation = "other", .entries = &open_elsewhere, .at_ms = 10 }));
+    try std.testing.expectEqual(@as(i64, 2), try store.append(.{ .conversation = "other", .entries = &late, .at_ms = 11 }));
 }
 
 test "load reports a truncated page for entries and requests" {
@@ -1632,7 +1790,9 @@ test "load reports a truncated page for entries and requests" {
     var store = try Store.open(std.testing.allocator, std.testing.io, &fixture.map);
     defer store.deinit();
 
-    const entries = [_]Entry{.{ .kind = "message", .data = .{ .integer = 1 } }};
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const entries = [_]Entry{.{ .kind = "message", .data = try jsonValue(arena.allocator(), "{\"role\":\"user\",\"content\":[]}") }};
     for (0..3) |index| try std.testing.expectEqual(@as(i64, @intCast(index + 1)), try store.append(.{ .conversation = "paged", .entries = &entries, .at_ms = 1 }));
     for (0..3) |index| {
         var id_buffer: [16]u8 = undefined;
@@ -1664,7 +1824,7 @@ test "metadata merges into the conversation header" {
     defer store.deinit();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const entries = [_]Entry{.{ .kind = "message", .data = .{ .object = .{} } }};
+    const entries = [_]Entry{.{ .kind = "message", .data = try jsonValue(arena.allocator(), "{\"role\":\"user\",\"content\":[]}") }};
 
     _ = try store.append(.{ .conversation = "meta", .entries = &entries, .at_ms = 1, .metadata = try jsonValue(arena.allocator(), "{\"title\":\"first\",\"cwd\":\"/work\"}") });
     _ = try store.append(.{ .conversation = "meta", .entries = &entries, .at_ms = 2, .metadata = try jsonValue(arena.allocator(), "{\"title\":\"second\"}") });
@@ -1696,9 +1856,8 @@ test "a message budget is separate from the header metadata budget" {
     // held to the header budget.
     const text = try a.alloc(u8, 100 * 1024);
     @memset(text, 'a');
-    var data: std.json.ObjectMap = .empty;
-    try data.put(a, "text", .{ .string = text });
-    const entries = [_]Entry{.{ .kind = "message", .data = .{ .object = data } }};
+    const message_text = try std.fmt.allocPrint(a, "{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}", .{text});
+    const entries = [_]Entry{.{ .kind = "message", .data = try jsonValue(a, message_text) }};
     try std.testing.expectEqual(@as(i64, 1), try store.append(.{ .conversation = "big", .entries = &entries, .at_ms = 1 }));
 
     const snapshot = try store.load(std.testing.allocator, "big", 0, 16, 16);
@@ -1941,7 +2100,7 @@ test "legacy databases upgrade to content-addressed transcripts" {
         "PRIMARY KEY (conversation_id, seq)) WITHOUT ROWID;" ++
         "INSERT INTO conversations(id, created_at, updated_at) VALUES('old', 1, 1);" ++
         "INSERT INTO conversation_entries(conversation_id, seq, at_ms, kind, payload) VALUES('old', 1, 1, 'message', '{\"kept\":true}');" ++
-        "INSERT INTO conversation_entries(conversation_id, seq, at_ms, kind, payload) VALUES('old', 2, 2, 'message', '{\"a\":1,\"b\":2}');" ++
+        "INSERT INTO conversation_entries(conversation_id, seq, at_ms, kind, payload) VALUES('old', 2, 2, 'message', '{\"content\":[{\"text\":\"x\",\"type\":\"text\"}],\"role\":\"user\"}');" ++
         "PRAGMA user_version=1;";
     try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_exec(db, legacy, null, null, null));
     _ = c.sqlite3_close_v2(db);
@@ -1957,7 +2116,7 @@ test "legacy databases upgrade to content-addressed transcripts" {
     try std.testing.expectEqual(@as(usize, 2), snapshot.entries.len);
     try std.testing.expectEqualStrings("{\"kept\":true}", snapshot.entries[0].payload);
     // The conversion canonicalises so a legacy payload hashes like a fresh one.
-    try std.testing.expectEqualStrings("{\"a\":1,\"b\":2}", snapshot.entries[1].payload);
+    try std.testing.expectEqualStrings("{\"content\":[{\"text\":\"x\",\"type\":\"text\"}],\"role\":\"user\"}", snapshot.entries[1].payload);
     try std.testing.expectEqualStrings("{}", snapshot.metadata);
     try std.testing.expect(snapshot.entries[0].request_id == null);
     try std.testing.expect(!try store.tableExists("conversation_entries"));
@@ -1967,7 +2126,7 @@ test "legacy databases upgrade to content-addressed transcripts" {
     try store.recordRequest(.{ .id = "after-upgrade", .conversation = "old", .provider = "p", .model = "m", .status = "ok" }, 5);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const entries = [_]Entry{.{ .kind = "message", .data = try jsonValue(arena.allocator(), "{\"a\":1,\"b\":2}") }};
+    const entries = [_]Entry{.{ .kind = "message", .data = try jsonValue(arena.allocator(), "{\"content\":[{\"text\":\"x\",\"type\":\"text\"}],\"role\":\"user\"}") }};
     _ = try store.append(.{ .conversation = "old", .entries = &entries, .at_ms = 6, .metadata = try jsonValue(arena.allocator(), "{\"upgraded\":true}") });
     const reopened = try store.load(std.testing.allocator, "old", 0, 16, 16);
     defer freeSnapshot(std.testing.allocator, reopened);
