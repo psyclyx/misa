@@ -1,283 +1,64 @@
-;; Pure terminal-cell layout primitives built on the native measurement, so Lua
-;; projections and the native presenter agree by construction.
+;; Pure terminal-cell layout primitives. Measurement and grapheme segmentation
+;; come from the native module in `src/width/root.zig`, which the runtime installs
+;; as `misa.native`, so Lua projections and the native presenter cannot disagree
+;; about cell geometry.
+;;
+;; The standalone Fennel harness has no native module: `tools/fennel` registers
+;; the offline stand-in in `tests/native-layout.fnl` under the same name, and the
+;; layout-parity integration case compares that stand-in with the native module.
+;; Without either, this module fails to load instead of measuring text differently.
 
-(local zero [[768 879]
-             [1155 1161]
-             [1425 1469]
-             [1471 1471]
-             [1473 1474]
-             [1476 1477]
-             [1552 1562]
-             [1611 1631]
-             [1648 1648]
-             [1750 1773]
-             [1809 1809]
-             [1840 1866]
-             [1958 1968]
-             [2027 2035]
-             [2070 2093]
-             [2137 2139]
-             [2259 2306]
-             [2362 2364]
-             [2369 2376]
-             [2381 2381]
-             [2385 2391]
-             [2402 2403]
-             [6832 6911]
-             [7616 7679]
-             [8203 8207]
-             [8234 8238]
-             [8288 8303]
-             [8400 8447]
-             [65024 65039]
-             [65056 65071]
-             [65279 65279]
-             [127995 127999]
-             [917536 917631]
-             [917760 917999]])
+(local native (require :misa.native))
 
-(local wide [[4352 4447]
-             [8986 8987]
-             [9001 9002]
-             [9193 9196]
-             [9200 9200]
-             [9203 9203]
-             [9725 9726]
-             [9748 9749]
-             [9800 9811]
-             [9855 9855]
-             [9875 9875]
-             [9889 9889]
-             [9898 9899]
-             [9917 9918]
-             [9924 9925]
-             [9934 9934]
-             [9940 9940]
-             [9962 9962]
-             [9970 9971]
-             [9973 9973]
-             [9978 9978]
-             [9981 9981]
-             [9989 9989]
-             [9994 9995]
-             [10024 10024]
-             [10060 10060]
-             [10062 10062]
-             [10067 10069]
-             [10071 10071]
-             [10133 10135]
-             [10160 10160]
-             [10175 10175]
-             [11035 11036]
-             [11088 11088]
-             [11093 11093]
-             [11904 12350]
-             [12352 42191]
-             [44032 55203]
-             [63744 64255]
-             [65040 65049]
-             [65072 65135]
-             [65280 65376]
-             [65504 65510]
-             [126980 126980]
-             [127183 127183]
-             [127374 127374]
-             [127377 127386]
-             [127488 127569]
-             [127744 128591]
-             [128640 128767]
-             [129280 129535]
-             [129648 129791]
-             [131072 262141]])
+(fn byte-clusters [text]
+  "Cluster boundaries for input the native measurement rejects."
+  (let [result {}]
+    (for [at 1 (length text)]
+      (tset result (+ (length result) 1) at)
+      (tset result (+ (length result) 1) 1))
+    result))
 
-(fn contains? [intervals cp]
-  (var low 1)
-  (var high (length intervals))
-  (var found false)
-  (while (and (<= low high) (not found))
-    (let [middle (math.floor (/ (+ low high) 2))
-          range (. intervals middle)]
-      (if (< cp (. range 1)) (set high (- middle 1))
-          (> cp (. range 2)) (set low (+ middle 1))
-          (set found true))))
-  found)
+;; The native measurement rejects malformed UTF-8. The previous Lua
+;; implementation measured such input one byte at a time, so the fallback keeps
+;; that behavior: every byte is its own boundary and occupies one cell.
 
-(fn decode [text at]
-  (let [a (text:byte at)]
-    (if (not a)
-        (values nil 0)
-        (let [(size initial) (if (<= 194 a 223) (values 2 (- a 192))
-                                 (<= 224 a 239) (values 3 (- a 224))
-                                 (<= 240 a 244) (values 4 (- a 240))
-                                 (values 1 a))]
-          (var cp initial)
-          (var valid true)
-          (for [index (+ at 1) (- (+ at size) 1) &until (not valid)]
-            (let [byte (text:byte index)]
-              (if (or (not byte) (< byte 128) (>= byte 192))
-                  (set valid false)
-                  (set cp (- (+ (* cp 64) byte) 128)))))
-          (if valid (values cp size) (values a 1))))))
+(fn clusters [text]
+  "Cluster boundaries as last byte, cells, last byte, cells, ..."
+  (or (and (= (type text) :string) (native.clusters text)) (byte-clusters text)))
 
-;; UAX #29 GB9c linkers, kept in lockstep with width/root.zig. This is
-;; deliberately conservative: only a linker followed by an Indic letter joins.
+(fn cells-in [clusters]
+  (var (index cells) (values 1 0))
+  (while (<= index (length clusters))
+    (set (cells index) (values (+ cells (. clusters (+ index 1))) (+ index 2))))
+  cells)
 
-(local virama {})
-
-(each [_ cp (ipairs [2381
-                     2509
-                     2637
-                     2765
-                     2893
-                     3021
-                     3149
-                     3277
-                     3387
-                     3388
-                     3405
-                     3530
-                     3642
-                     3972
-                     4153
-                     4154
-                     5908
-                     5909
-                     5940
-                     6098
-                     6752
-                     6980
-                     7082
-                     7083
-                     7154
-                     7155
-                     43014
-                     43204
-                     43347
-                     43456
-                     43766
-                     44013
-                     68159
-                     69702
-                     69744
-                     69939
-                     69940
-                     70080
-                     70197
-                     70378
-                     70477
-                     70722
-                     70850
-                     71103
-                     71104
-                     71231
-                     71350
-                     71467
-                     71737
-                     71997
-                     71998
-                     72003
-                     72160
-                     72244
-                     72263
-                     72345
-                     72767
-                     73028
-                     73029
-                     73111])]
-  (tset virama cp true))
-
-(fn indic-letter? [cp]
-  (or (and (>= cp 2304) (<= cp 3583)) (and (>= cp 4096) (<= cp 4255))
-      (and (>= cp 6016) (<= cp 6143)) (and (>= cp 43008) (<= cp 44031))
-      (and (>= cp 69632) (<= cp 73215))))
+(fn width [text]
+  "Measure text in terminal cells."
+  (let [measured (and (= (type text) :string) (native.width text))]
+    (if measured measured (cells-in (clusters text)))))
 
 (fn cell-width [cp]
   "Return the terminal cell width of a Unicode codepoint."
-  (if (or (contains? zero cp) (. virama cp)) 0
-      (contains? wide cp) 2
-      1))
-
-(fn regional? [cp] (and (>= cp 127462) (<= cp 127487)))
-
-(fn cluster [text at]
-  (let [(cp size) (decode text at)]
-    (if (not cp)
-        (values at 0)
-        (do
-          (var next-at (+ at size))
-          (var cells (cell-width cp))
-          (var emoji false)
-          (var after-virama false)
-          (var done false)
-          (let [flag (regional? cp)]
-            (while (and (not done) (<= next-at (length text)))
-              (let [(following following-size) (decode text next-at)]
-                (if (and after-virama (indic-letter? following)
-                         (not (contains? zero following)))
-                    (set (cells after-virama next-at)
-                         (values (math.max cells (cell-width following)) false
-                                 (+ next-at following-size)))
-                    (= following 8205)
-                    (let [(joined joined-size) (decode text
-                                                       (+ next-at
-                                                          following-size))]
-                      (if joined
-                          (set (emoji next-at cells)
-                               (values true
-                                       (+ next-at following-size joined-size)
-                                       (math.max cells (cell-width joined))))
-                          (do
-                            (set next-at (+ next-at following-size))
-                            (set done true))))
-                    (or (. virama following) (contains? zero following))
-                    (do
-                      (when (or (= following 65039) (= following 8419)
-                                (<= 127995 following 127999))
-                        (set emoji true))
-                      (when (. virama following) (set after-virama true))
-                      (set next-at (+ next-at following-size)))
-                    (and flag (regional? following))
-                    (do
-                      (set (emoji next-at)
-                           (values true (+ next-at following-size)))
-                      (set done true))
-                    (set done true))))
-            ;; A conditional in the final values position compiles to a thunk in
-            ;; Fennel. Bind the scalar first: segmentation must not allocate one
-            ;; closure per grapheme merely to return its cell count.
-            (let [cluster-cells (if emoji (math.max cells 2) cells)]
-              (values next-at cluster-cells)))))))
+  (native.cell-width cp))
 
 (fn boundary-at-or-before [text cursor]
   "Clamp a byte cursor to the preceding grapheme boundary."
   (let [target (math.max 0
                          (math.min (length text)
-                                   (math.floor (or (tonumber cursor) 0))))]
-    (var at 1)
-    (var previous 0)
-    (var done false)
-    (while (and (not done) (<= at (length text)))
-      (let [next-at (cluster text at)
-            boundary (- next-at 1)]
-        (if (> boundary target)
-            (set done true)
-            (do
-              (set (previous at) (values boundary next-at))
-              (set done (= boundary target))))))
-    previous))
+                                   (math.floor (or (tonumber cursor) 0))))
+        clusters (clusters text)]
+    (var boundary 0)
+    (for [index 1 (length clusters) 2 &until (> (. clusters index) target)]
+      (set boundary (. clusters index)))
+    boundary))
 
 (fn previous-boundary [text cursor]
   "Return the grapheme boundary before a byte cursor."
-  (let [target (boundary-at-or-before text cursor)]
-    (var at 1)
+  (let [target (boundary-at-or-before text cursor)
+        clusters (clusters text)]
     (var previous 0)
-    (var done (= target 0))
-    (while (and (not done) (<= at (length text)))
-      (let [next-at (cluster text at)
-            boundary (- next-at 1)]
-        (if (>= boundary target)
-            (set done true)
-            (set (previous at) (values boundary next-at)))))
+    (for [index 1 (length clusters) 2 &until (>= (. clusters index) target)]
+      (set previous (. clusters index)))
     previous))
 
 (fn next-boundary [text cursor]
@@ -285,31 +66,34 @@
   (let [boundary (boundary-at-or-before text cursor)]
     (if (>= boundary (length text))
         (length text)
-        (- (cluster text (+ boundary 1)) 1))))
-
-(fn width [text]
-  "Measure text in terminal cells."
-  (var (at cells) (values 1 0))
-  (while (<= at (length text))
-    (let [(next-at cluster-cells) (cluster text at)]
-      (set (cells at) (values (+ cells cluster-cells) next-at))))
-  cells)
+        (let [target (+ boundary 1)
+              clusters (clusters text)]
+          (var (index next) (values 1 nil))
+          (while (and (not next) (<= index (length clusters)))
+            (let [last (. clusters index)]
+              (if (>= last target)
+                  (set next last)
+                  (set index (+ index 2)))))
+          ;; The final cluster ends at the end of the text, so this is bounded.
+          (or next (length text))))))
 
 (fn take [text columns]
   "Take the longest grapheme-aligned prefix that fits a cell width."
-  (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))]
-    (var at 1)
-    (var cells 0)
+  (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))
+        clusters (clusters text)]
+    (var (index at cells) (values 1 1 0))
     (var done false)
-    (while (and (not done) (<= at (length text)))
-      (let [(next-at cluster-cells) (cluster text at)
+    (while (and (not done) (<= index (length clusters)))
+      (let [last (. clusters index)
+            cluster-cells (. clusters (+ index 1))
             cells-next (+ cells cluster-cells)]
         (if (> cells-next limit)
             (do
               ;; Wrapping must consume an oversized first grapheme to advance.
-              (when (= cells 0) (set (at cells) (values next-at cells-next)))
+              (when (= cells 0)
+                (set (at cells) (values (+ last 1) cells-next)))
               (set done true))
-            (set (at cells) (values next-at cells-next)))))
+            (set (at cells index) (values (+ last 1) cells-next (+ index 2))))))
     (values (text:sub 1 (- at 1)) (text:sub at) cells)))
 
 ;; Strict clipping differs from wrapping's take(): a too-wide first grapheme is
@@ -318,15 +102,17 @@
 
 (fn clip [text columns]
   "Clip text to a terminal cell width with an ellipsis when needed."
-  (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))]
-    (var at 1)
-    (var cells 0)
+  (let [limit (math.max 0 (math.floor (or (tonumber columns) 0)))
+        clusters (clusters text)]
+    (var (index at cells) (values 1 1 0))
     (var done false)
-    (while (and (not done) (<= at (length text)))
-      (let [(next-at cluster-cells) (cluster text at)]
+    (while (and (not done) (<= index (length clusters)))
+      (let [last (. clusters index)
+            cluster-cells (. clusters (+ index 1))]
         (if (> (+ cells cluster-cells) limit)
             (set done true)
-            (set (cells at) (values (+ cells cluster-cells) next-at)))))
+            (set (at cells index)
+                 (values (+ last 1) (+ cells cluster-cells) (+ index 2))))))
     (values (text:sub 1 (- at 1)) (- at 1) cells)))
 
 (fn fit [text columns]
@@ -362,42 +148,52 @@
 
 (fn wrap-ranges [text first-columns rest-columns trim words]
   "Split text into byte ranges that fit successive row widths."
-  (let [result {}]
-    (var (start at used) (values 1 1 0))
+  (let [result {}
+        clusters (clusters text)]
+    (var (start at used index) (values 1 1 0 1))
     (var room (math.max 1 first-columns))
     (let [rest-columns (math.max 1 (or rest-columns room))]
-      (var (break-last break-next whitespace-start) nil)
+      ;; `index` always names the cluster that starts at `at`, so a break records
+      ;; the cluster it resumes at alongside the byte it resumes from.
+      (var (break-last break-next break-index whitespace-start) nil)
 
-      (fn emit [last next-at]
+      (fn emit [last next-at next-index]
         (tset result (+ (length result) 1) {:first start : last})
-        (set (start at used room) (values next-at next-at 0 rest-columns))
-        (set (break-last break-next whitespace-start) (values nil nil nil)))
+        (set (start at used index room)
+             (values next-at next-at 0 next-index rest-columns))
+        (set (break-last break-next break-index whitespace-start)
+             (values nil nil nil nil)))
 
-      (while (<= at (length text))
-        (let [(next-at cells) (cluster text at)
+      (while (<= index (length clusters))
+        (let [last (. clusters index)
+              cells (. clusters (+ index 1))
+              next-at (+ last 1)
               byte (text:byte at)
               whitespace (or (= byte 32) (= byte 9))]
           (if (and (not= words false) whitespace)
               (do
                 (set whitespace-start (or whitespace-start at))
                 (if (and trim (> whitespace-start start))
-                    (set (break-last break-next)
-                         (values (- whitespace-start 1) next-at))
+                    (set (break-last break-next break-index)
+                         (values (- whitespace-start 1) next-at (+ index 2)))
                     (<= (+ used cells) room)
-                    (set (break-last break-next) (values (- next-at 1) next-at))))
+                    (set (break-last break-next break-index)
+                         (values (- next-at 1) next-at (+ index 2)))))
               (not whitespace)
               (set whitespace-start nil))
           (if (and (> used 0) (> (+ used cells) room))
               (if (and break-next (> break-next start))
                   (do
                     (var next-start break-next)
+                    (var next-index break-index)
                     (when trim
                       (while (or (= (text:byte next-start) 32)
                                  (= (text:byte next-start) 9))
-                        (set next-start (+ next-start 1))))
-                    (emit break-last next-start))
-                  (emit (- at 1) at))
-              (set (used at) (values (+ used cells) next-at)))))
+                        (set next-start (+ next-start 1))
+                        (set next-index (+ next-index 2))))
+                    (emit break-last next-start next-index))
+                  (emit (- at 1) at index))
+              (set (used at index) (values (+ used cells) next-at (+ index 2))))))
       (when (or (<= start (length text)) (= (length result) 0))
         (tset result (+ (length result) 1) {:first start :last (length text)}))
       result)))
@@ -482,6 +278,22 @@
 ;; cursor onto the resulting row. Prompt bytes are part of each semantic row,
 ;; so the native presenter can continue to own byte-to-cell conversion.
 
+(fn utf8-size [text at]
+  "Byte length of the character at `at`; a malformed sequence advances one byte."
+  (let [first (text:byte at)]
+    (if (not first)
+        0
+        (let [size (if (<= 194 first 223) 2
+                       (<= 224 first 239) 3
+                       (<= 240 first 244) 4
+                       1)]
+          (var valid true)
+          (for [index (+ at 1) (- (+ at size) 1) &until (not valid)]
+            (let [byte (text:byte index)]
+              (when (or (not byte) (< byte 128) (>= byte 192))
+                (set valid false))))
+          (if valid size 1)))))
+
 (fn normalize-newlines [text cursor]
   (let [text (tostring (or text ""))
         cursor (math.max 0
@@ -498,7 +310,7 @@
             (set at (+ at size))
             (when (and (= mapped nil) (>= (- at 1) cursor))
               (set mapped bytes)))
-          (let [(_ size) (decode text at)]
+          (let [size (math.max 1 (utf8-size text at))]
             (tset pieces (+ (length pieces) 1) (text:sub at (- (+ at size) 1)))
             (set bytes (+ bytes size))
             (set at (+ at size)))))

@@ -154,6 +154,9 @@ pub const Runtime = struct {
     /// Expose the terminal's own text measurement. `misa.ui.layout` measures
     /// text in Lua for wrapping and cursor mapping while the presenter measures
     /// it natively for frame validation, so both must answer identically.
+    ///
+    /// The table is a global for configuration code and a module, so a Lua
+    /// projection can require it without depending on the global namespace.
     fn installNativeLayout(self: *Runtime) void {
         const state = self.state;
         c.lua_getfield(state, c.LUA_GLOBALSINDEX, "misa");
@@ -164,8 +167,13 @@ pub const Runtime = struct {
         c.lua_setfield(state, -2, "clusters");
         c.lua_pushcfunction(state, nativeCellWidth);
         c.lua_setfield(state, -2, "cell-width");
-        c.lua_setfield(state, -2, "native");
-        self.pop(1);
+        c.lua_pushvalue(state, -1);
+        c.lua_setfield(state, -3, "native");
+        c.lua_getfield(state, c.LUA_GLOBALSINDEX, "package");
+        c.lua_getfield(state, -1, "loaded");
+        c.lua_pushvalue(state, -3);
+        c.lua_setfield(state, -2, "misa.native");
+        self.pop(4);
     }
 
     pub fn deinit(self: *Runtime) void {

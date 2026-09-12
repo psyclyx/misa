@@ -93,7 +93,10 @@ state. That constraint is what keeps this a boundary rather than a rewrite.
 Explicitly Lua, and not candidates for moving: the turn loop, provider request
 and stream shaping, tool declarations and translators, every presentation
 concern, patch application, subscription evaluation, input routing, Markdown
-parsing, and layout.
+parsing, and layout. Cell measurement is the exception already in place: widths
+and grapheme clusters live in `src/width/root.zig` and reach Lua as
+`misa.native`, while wrapping, clipping, and word breaking stay in
+`misa.ui.layout`.
 
 Explicitly Zig and already right: the event loop and effect validation
 (`src/session`), process and file capabilities, HTTP transport, credentials and

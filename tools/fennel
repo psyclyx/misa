@@ -3,6 +3,7 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export MISA_FENNEL_COMPILER="$root/src/lua_runtime/vendor/fennel.lua"
+export MISA_OFFLINE_MEASUREMENT="$root/tests/native-layout.fnl"
 exec luajit -e '
 local exit, stderr = os.exit, io.stderr
 local environment = {}
@@ -15,6 +16,9 @@ debug.traceback = compiler.traceback
 compiler.install()
 package.loaded["misa.runtime.state"] = compiler.dofile((os.getenv("MISA_FENNEL_COMPILER"):gsub("vendor/fennel.lua$", "state.fnl")))
 package.loaded["misa.runtime.subscriptions"] = compiler.dofile((os.getenv("MISA_FENNEL_COMPILER"):gsub("vendor/fennel.lua$", "subscriptions.fnl")))
+-- The native runtime installs its own measurement; this harness has none, so it
+-- registers the offline stand-in the layout-parity case compares with it.
+package.loaded["misa.native"] = compiler.dofile(os.getenv("MISA_OFFLINE_MEASUREMENT"))
 local ok, err = xpcall(function() compiler.dofile((assert(arg[0], "expected a Fennel source path"))) end, compiler.traceback)
 if not ok then stderr:write(tostring(err), "\n") end
 exit(ok and 0 or 1)

@@ -764,10 +764,12 @@ Languages still select the `misa.transcript.syntax` extension's asynchronous cap
 Code renders plainly while highlighting is pending; stale streaming results are
 discarded and the latest source is requested. Rendering consumes capture data
 without loading grammars or calling a native parser. The pure `misa.ui.layout`
-service uses the same wcwidth-style combining, modifier, East Asian wide, and
-emoji ranges as the native presenter. It also owns editor grapheme boundaries,
-so combining sequences, emoji ZWJ sequences, and virama-attached marks are never
-split by Left, Right, Backspace, or width wrapping. The editor input component
+service measures text through the same native module the presenter validates
+frames with — installed as `misa.native` and reachable with `require` — so
+wrapping, clipping, and frame validation cannot disagree about cell width or
+grapheme boundaries. It also owns editor grapheme boundaries, so combining
+sequences, emoji ZWJ sequences, and virama-attached marks are never split by
+Left, Right, Backspace, or width wrapping. The editor input component
 maps its logical UTF-8 cursor to a prompt-prefixed physical wrapped row/byte;
 root composition windows those rows around the cursor, including on narrow
 terminals and across explicit newlines. Message spans and picker options likewise
