@@ -548,6 +548,40 @@
     (tset result name ((. cofx-fns name) result event state)))
   result)
 
+;; A provider call is a call to something that bills, so it has to be recorded
+;; as an attempt. Only this boundary knows both the effect's own id and the
+;; provider its kind names, so a call declares what it is for — `:attempt
+;; {:conversation <id> :kind :turn}` — and the rest is filled in here. A tool
+;; effect that happens to use the same transport (a search backend posts to
+;; `http/request` too) is not a provider call, and a provider adapter that
+;; answers without calling anything (the fake provider dispatches) has nothing
+;; to record, so neither is asked for one.
+(fn record-call [kind effect translated]
+  (local provider? (and (= (type kind) :string) (= (kind:sub 1 9) :provider.)))
+  (local call? (or (= translated.type :provider/process)
+                   (= translated.type :http/request)))
+  (if (not (and provider? call?))
+      translated
+      (let [declared effect.attempt]
+        (assert (= (type declared) :table)
+                (.. kind " must declare the attempt it is recorded as"))
+        (assert (and (= (type effect.id) :string) (not= effect.id ""))
+                (.. kind " must have an id"))
+        (assert (and (= (type effect.model) :string) (not= effect.model ""))
+                (.. kind " is a provider call without a model"))
+        (local attempt {:id effect.id
+                        :kind (or declared.kind :turn)
+                        :model effect.model
+                        :provider (kind:sub 10)})
+        (when declared.conversation
+          (tset attempt :conversation declared.conversation))
+        (when declared.parent_request_id
+          (tset attempt :parent_request_id declared.parent_request_id))
+        (when declared.provider_id
+          (tset attempt :provider_id declared.provider_id))
+        (tset translated :attempt attempt)
+        translated)))
+
 (fn translate-effect [effect cofx state]
   (local kind (. (runtime-effect effect) :type))
   (local translator (. fx-fns kind))
@@ -571,7 +605,7 @@
                                                                state))]
                                 (assert (= (type translated) :table)
                                         "fx translator must return a table")
-                                translated)))
+                                (record-call kind effect translated))))
 
 (fn misa._mcp_tool_effect [name arguments id terminal clock]
   "Translate an MCP tool call through the registered effect and coeffect policy."

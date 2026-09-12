@@ -46,6 +46,26 @@ pub const AuthRespond = struct { id: []const u8, correlation: []const u8, action
 pub const CancelOperation = struct { id: []const u8 };
 pub const FinishOperation = struct { id: []const u8 };
 
+/// What a provider call is recorded as. The effect that asks for the call
+/// declares it, because only that layer knows whether the call is a step of the
+/// conversation, a policy's side call, or an adapter probing a provider.
+pub const Attempt = struct {
+    conversation: ?[]const u8 = null,
+    parent_request_id: ?[]const u8 = null,
+    provider_id: ?[]const u8 = null,
+    kind: []const u8 = "turn",
+    provider: []const u8,
+    model: []const u8,
+};
+
+/// A model call over a provider process, with the attempt it is recorded as.
+pub const ProviderCall = struct { spec: process.Spec, attempt: Attempt };
+
+/// An HTTP request that may be a model call. A provider's protocol uses this
+/// transport too, while a search backend uses it without an attempt, so the
+/// attempt is optional here and required by the boundary that names providers.
+pub const HttpCall = struct { spec: http.Spec, attempt: ?Attempt = null };
+
 pub const Effect = union(enum) {
     dispatch: std.json.Value,
     terminal_read,
@@ -54,8 +74,8 @@ pub const Effect = union(enum) {
     view_commit: std.json.Value,
     app_quit,
     process_run: process.Spec,
-    provider_process: process.Spec,
-    http_request: http.Spec,
+    provider_process: ProviderCall,
+    http_request: HttpCall,
     file: file.Spec,
     image: image.Spec,
     syntax_highlight: syntax.Spec,
@@ -123,9 +143,20 @@ pub const Effect = union(enum) {
         if (std.mem.eql(u8, kind, "timer/stop")) return .{ .timer_stop = .{
             .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
         } };
-        if (std.mem.eql(u8, kind, "process/run")) return .{ .process_run = try .parse(object) };
-        if (std.mem.eql(u8, kind, "provider/process")) return .{ .provider_process = try .parse(object) };
-        if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = try .parse(object) };
+        if (std.mem.eql(u8, kind, "process/run")) {
+            // A tool process is not a model call: an attempt here would be
+            // ignored, and silently ignoring it is worse than refusing it.
+            if (object.get("attempt") != null) return error.InvalidEffect;
+            return .{ .process_run = try .parse(object) };
+        }
+        if (std.mem.eql(u8, kind, "provider/process")) {
+            // A provider call must say what it is recorded as. This is the
+            // boundary that can tell a provider process from a tool process, so
+            // it is the boundary that requires the attempt.
+            const declared = (try attemptField(object)) orelse return error.InvalidEffect;
+            return .{ .provider_process = .{ .spec = try .parse(object), .attempt = declared } };
+        }
+        if (std.mem.eql(u8, kind, "http/request")) return .{ .http_request = .{ .spec = try .parse(object), .attempt = try attemptField(object) } };
         if (std.mem.eql(u8, kind, "syntax/highlight")) return .{ .syntax_highlight = try .parse(object) };
         if (std.mem.startsWith(u8, kind, "image/")) return .{ .image = try .parse(kind, object) };
         if (std.mem.startsWith(u8, kind, "file/")) return .{ .file = try .parse(kind, object) };
@@ -258,6 +289,38 @@ pub const Effect = union(enum) {
     }
 };
 
+/// Read the attempt a call is recorded as, or null when the effect declares
+/// none. Every field the store needs is checked here, so a malformed attempt
+/// fails at the boundary rather than inside the worker that writes it.
+fn attemptField(object: std.json.ObjectMap) !?Attempt {
+    const value = object.get("attempt") orelse return null;
+    if (value != .object) return error.InvalidEffect;
+    const attempt = value.object;
+    var declared: Attempt = .{
+        .provider = nonEmptyStringField(attempt, "provider") orelse return error.InvalidEffect,
+        .model = nonEmptyStringField(attempt, "model") orelse return error.InvalidEffect,
+    };
+    conversation.validateLabel(declared.provider) catch return error.InvalidEffect;
+    conversation.validateLabel(declared.model) catch return error.InvalidEffect;
+    if (stringField(attempt, "conversation")) |id| {
+        conversation.validateConversationId(id) catch return error.InvalidEffect;
+        declared.conversation = id;
+    }
+    if (stringField(attempt, "kind")) |name| {
+        conversation.validateAttemptKind(name) catch return error.InvalidEffect;
+        declared.kind = name;
+    }
+    if (stringField(attempt, "parent_request_id")) |id| {
+        conversation.validateRequestId(id) catch return error.InvalidEffect;
+        declared.parent_request_id = id;
+    }
+    if (stringField(attempt, "provider_id")) |id| {
+        conversation.validateLabel(id) catch return error.InvalidEffect;
+        declared.provider_id = id;
+    }
+    return declared;
+}
+
 /// Read an optional count: an absent or null field is nothing, and anything
 /// that is not a nonnegative integer is an invalid effect.
 fn optionalCountField(object: std.json.ObjectMap, name: []const u8) !?i64 {
@@ -302,6 +365,30 @@ test "validation covers the whole native contract" {
     defer stream.deinit();
     const stream_effect = try Effect.parse(stream.value);
     try std.testing.expectEqual(process.StdoutFormat.json_lines_stream, stream_effect.process_run.stdout_format);
+
+    // A provider call states the attempt it is recorded as; the attempt is what
+    // makes the call accountable, so a provider process without one is refused,
+    // and a tool process carrying one is refused rather than ignored.
+    var call = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"provider/process\",\"argv\":[\"claude\"],\"completion\":\"provider/claude-complete\",\"id\":\"agent-1\",\"stdout_format\":\"json_lines_stream\",\"attempt\":{\"conversation\":\"chat\",\"kind\":\"turn\",\"provider\":\"claude\",\"model\":\"claude-opus-5\"}}", .{});
+    defer call.deinit();
+    const provider_call = (try Effect.parse(call.value)).provider_process;
+    try std.testing.expectEqualStrings("chat", provider_call.attempt.conversation.?);
+    try std.testing.expectEqualStrings("turn", provider_call.attempt.kind);
+    try std.testing.expectEqualStrings("claude-opus-5", provider_call.attempt.model);
+    var unrecorded = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"provider/process\",\"argv\":[\"claude\"],\"completion\":\"provider/claude-complete\",\"id\":\"agent-1\"}", .{});
+    defer unrecorded.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(unrecorded.value));
+    var mislabelled = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"provider/process\",\"argv\":[\"claude\"],\"completion\":\"provider/claude-complete\",\"id\":\"agent-1\",\"attempt\":{\"kind\":\"compaction\",\"provider\":\"claude\",\"model\":\"claude-opus-5\"}}", .{});
+    defer mislabelled.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(mislabelled.value));
+    var tool_attempt = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\"],\"completion\":\"done\",\"id\":\"1\",\"attempt\":{\"provider\":\"claude\",\"model\":\"m\"}}", .{});
+    defer tool_attempt.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(tool_attempt.value));
+    // An HTTP request may be a model call or a search; only the effect's name
+    // says which, so the attempt is optional at this boundary.
+    var search = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"http/request\",\"url\":\"https://example.test/search\",\"method\":\"GET\",\"completion\":\"search/done\",\"id\":\"search-1\"}", .{});
+    defer search.deinit();
+    try std.testing.expect((try Effect.parse(search.value)).http_request.attempt == null);
     var invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"process/run\",\"argv\":[\"tool\"],\"completion\":\"\",\"id\":\"\"}", .{});
     defer invalid.deinit();
     try std.testing.expectError(error.InvalidEffect, Effect.parse(invalid.value));

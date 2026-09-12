@@ -55,6 +55,17 @@ test "an attempt is recorded when it starts and enriched when it settles" {
     try h.expect(.{}, "1 turn ok 4200 10 1234\n");
 }
 
+test "a turn records its model call as the attempt it declares" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.executable("provider", @embedFile("fixtures/integration-provider"));
+    try h.config(@embedFile("configs/attempt-turn.fnl"));
+    // The row is written before the provider process starts and settled when it
+    // exits, so a model call is a fact even though the loop that made it owns no
+    // durable state. The attempt names the branch it belongs to.
+    try h.expect(.{ .args = &.{ "$(touch SHOULD_NOT_EXIST);", "it's", "literal" } }, "result $(touch SHOULD_NOT_EXIST); it's literal:\xef\xbf\xbd\nturn command default ok unknown\n");
+}
+
 test "a stored conversation lists and reopens with its label" {
     var h = try Harness.init();
     defer h.deinit();

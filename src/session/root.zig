@@ -230,10 +230,10 @@ pub const Session = struct {
             .view_commit => |lines| try self.terminal.commit(lines),
             .app_quit => self.quit = true,
             .process_run => |spec| try self.startProcess(spec),
-            .provider_process => |spec| try self.startProviderProcess(spec),
+            .provider_process => |call| try self.startProviderProcess(call),
             .image => |spec| try self.operations.startImage(spec, self.environ),
             .syntax_highlight => |spec| try self.operations.startSyntax(spec),
-            .http_request => |spec| try self.startHttp(spec),
+            .http_request => |call| try self.startHttp(call),
             .file => |spec| try self.operations.startFile(spec),
             .json_decode => |spec| try self.decodeJson(spec),
             .auth_command => |spec| try self.startAuth(spec),
@@ -431,18 +431,20 @@ pub const Session = struct {
         if (self.interactive) self.read_requested = true;
     }
 
-    fn startProviderProcess(self: *Session, source: process.Spec) !void {
+    fn startProviderProcess(self: *Session, call: native_effect.ProviderCall) !void {
+        const source = call.spec;
         if (source.stdout_format == .json_lines_stream) try self.enqueueStreamStart(source.completion, source.id);
-        self.operations.startProviderProcess(source, self.environ) catch |err| {
+        self.operations.startProviderProcess(call, self.environ) catch |err| {
             if (source.stdout_format == .json_lines_stream) if (self.queue.pop()) |json| self.allocator.free(json);
             return err;
         };
         if (self.interactive) self.read_requested = true;
     }
 
-    fn startHttp(self: *Session, source: http.Spec) !void {
+    fn startHttp(self: *Session, call: native_effect.HttpCall) !void {
+        const source = call.spec;
         if (source.response_format == .sse_json_stream) try self.enqueueStreamStart(source.completion, source.id);
-        self.operations.startHttp(source, self.environ) catch |err| {
+        self.operations.startHttp(call, self.environ) catch |err| {
             if (source.response_format == .sse_json_stream) if (self.queue.pop()) |json| self.allocator.free(json);
             return err;
         };

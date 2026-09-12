@@ -474,6 +474,9 @@
                                           :usage_request id}}}
              :fx [{:type :provider/process
                    : id
+                   ;; A quota probe is a provider request, not a model call, so
+                   ;; it is recorded as one and names no model.
+                   :attempt {:kind :probe :model :unknown :provider :claude}
                    :completion :provider/claude-usage
                    :argv [executable
                           :--print

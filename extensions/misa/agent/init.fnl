@@ -26,7 +26,10 @@
 
 (fn request [db agent cofx]
   (let [selected (assert (selected-model db)
-                         "selected model became unavailable")]
+                         "selected model became unavailable")
+        ;; The attempt is named by the branch it belongs to, because a request
+        ;; id is only unique within the conversation that issued it.
+        conversation (and db.conversation db.conversation.id)]
     (var (options problem) (values {} nil))
     (when (and misa.request-options misa.request-options.prepare)
       (set (options problem) (misa.request-options.prepare db selected)))
@@ -45,6 +48,7 @@
                                                                   cofx.clock
                                                                   cofx.clock.monotonic_ms)})
                   {: id
+                   :attempt {: conversation :kind :turn}
                    :messages agent.messages
                    :model selected.model
                    :request_options options

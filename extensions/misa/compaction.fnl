@@ -238,9 +238,11 @@
     (if detail (.. base "\n\nAdditional instructions from the user:\n" detail)
         base)))
 
-(fn model-request [config instructions model options id history]
+(fn model-request [config instructions model options id history conversation]
+  "A model call that is not a turn: a side request, recorded as its own attempt."
   {:type (.. :provider. model.provider)
    : id
+   :attempt {: conversation :kind :side}
    :messages [{:content [{:text (.. "Conversation so far:\n\n" history)
                           :type :text}]
                :role :user}]
@@ -289,7 +291,8 @@
                                      :title "Compacting conversation"})))
           (table.insert fx
                         (model-request config (or event.instructions "") model
-                                       options id history))
+                                       options id history
+                                       (and db.conversation db.conversation.id)))
           (updated current
                    {:active (misa.replace request)
                     : sequence

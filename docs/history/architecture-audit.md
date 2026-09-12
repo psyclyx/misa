@@ -55,6 +55,48 @@ shape and its refusals (an unknown kind, a negative count); and
 `tests/integration/storage.zig` drives start, enrichment, and load through the
 effect layer in a fresh application.
 
+### A model call is recorded by the call itself (2026-09-11)
+
+The ledger was reachable but nobody wrote to it. `conversation/request` existed
+as an effect, and the turn loop, compaction, and the provider adapters went on
+calling models without declaring an attempt — so the one thing the ledger is for,
+"a model call the log can account for", still depended on a caller remembering.
+
+Recording now belongs to the call. The effect that asks for a provider call
+declares the attempt it is recorded as (`:attempt {:conversation <id> :kind
+:turn}`), the boundary fills in the id, provider, and model from the effect
+itself, and the transport writes the row _before_ it starts the call and settles
+it when the call ends. That order is the guarantee: a provider process cannot
+exist without a row, and a crash between the write and the settle leaves an
+attempt marked `started` — which is exactly the fact an unfinished response has
+to be able to report.
+
+The requirement is enforced where it can be: `provider/process` is refused
+without an attempt at the native boundary, because that boundary can already tell
+a provider process from a tool process. `http/request` cannot be, because a
+search backend posts with the same transport, so the distinction is made where
+the provider's name is: a `provider.*` effect whose translation is a call must
+declare an attempt. A provider adapter that answers by dispatching (the fake
+provider) is not a call and is not asked for one.
+
+Two things the settle deliberately does not do. It does not report a cost: the
+row settles as `unknown`, and policy adds a figure when it has one, so a row
+never claims a number nobody reported. And it does not record what the call was
+computed against: the attempt carries identity and outcome, not yet the branch
+sequence `replace history` will want for its validity check. The completion event
+carries the assigned attempt id, which is what the message link and the cost
+projection will use; until those land, a recorded response is still not linked to
+the row that produced it.
+
+Evidence: the native effect contract covers the accepted shape and the refusals
+(a provider process without an attempt, an unknown kind, a tool process carrying
+one); the integration case runs a real turn through the `command` provider and
+asserts the recorded attempt (kind, provider, model, status) that the load
+returns; the Claude CLI quota probe declares itself a `probe`, and the HTTP
+probes (`kimi`, `openai-codex`) are still unrecorded — the transport cannot tell
+them from a search request, so they need the same explicit declaration before
+they count. Full suite 235/235 steps, 321/325 tests, 4 grammar-dependent skips.
+
 ### The state manifest names what each root is for (2026-09-11)
 
 Nothing declared what a top-level state root was _for_, so the tree answered by

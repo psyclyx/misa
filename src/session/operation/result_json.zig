@@ -10,6 +10,8 @@ pub const Outcome = struct {
     body: []const u8 = "",
     message: ?[]const u8 = "OperationFailed",
     data: ?std.json.Value = null,
+    /// The attempt this call was recorded as, when the transport recorded one.
+    attempt_id: ?[]const u8 = null,
     logged_in: bool = false,
     subscription_type: ?[]const u8 = null,
     /// The account a successful authentication result refers to, if any.
@@ -45,15 +47,15 @@ pub fn outcome(a: std.mem.Allocator, completion: []const u8, id: []const u8, kin
             const account: std.json.Value = if (result.account) |name| .{ .string = name } else .null;
             return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .message = message, .provider = spec.declaration.provider, .logged_in = result.logged_in, .subscription_type = result.subscription_type, .account = account }, .{});
         },
-        .http_stream, .process_stream => return terminal(a, completion, id, result.ok, result.status, result.body, result.message),
+        .http_stream, .process_stream => return terminal(a, completion, id, result.ok, result.status, result.body, result.message, result.attempt_id),
         .file => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .text = result.body, .message = result.message }, .{}),
         .state_load => |namespace| return std.json.Stringify.valueAlloc(a, .{ .type = completion, .namespace = namespace, .found = result.data != null, .data = result.data orelse .null, .ok = result.ok, .message = result.message }, .{}),
         .state_save => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .ok = result.ok, .message = result.message }, .{}),
         .conversation_append, .conversation_load, .conversation_list, .conversation_request => return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .data = result.data orelse .null, .message = result.message }, .{}),
         .ordinary => {},
     }
-    if (result.data) |value| return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .status = result.status, .data = value, .stderr = result.body }, .{});
-    return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .status = result.status, .body = result.body, .stdout = result.body, .stderr = result.message orelse "", .message = result.message }, .{});
+    if (result.data) |value| return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .status = result.status, .data = value, .stderr = result.body, .attempt_id = result.attempt_id }, .{});
+    return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .ok = result.ok, .status = result.status, .body = result.body, .stdout = result.body, .stderr = result.message orelse "", .message = result.message, .attempt_id = result.attempt_id }, .{});
 }
 
 pub fn data(a: std.mem.Allocator, completion: []const u8, id: []const u8, records: []const []u8, terminal_marker: bool) ![]u8 {
@@ -72,8 +74,8 @@ pub fn data(a: std.mem.Allocator, completion: []const u8, id: []const u8, record
     return out.toOwnedSlice(a);
 }
 
-pub fn terminal(a: std.mem.Allocator, completion: []const u8, id: []const u8, ok: bool, status: i64, body: []const u8, message: ?[]const u8) ![]u8 {
-    return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .phase = "end", .ok = ok, .status = status, .body = body, .message = message }, .{});
+pub fn terminal(a: std.mem.Allocator, completion: []const u8, id: []const u8, ok: bool, status: i64, body: []const u8, message: ?[]const u8, attempt_id: ?[]const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(a, .{ .type = completion, .id = id, .phase = "end", .ok = ok, .status = status, .body = body, .message = message, .attempt_id = attempt_id }, .{});
 }
 
 test "data batches encode record JSON without re-encoding it" {

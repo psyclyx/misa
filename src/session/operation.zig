@@ -61,17 +61,17 @@ pub const Owner = struct {
         self.startPrepared(task);
     }
 
-    pub fn startProviderProcess(self: *Owner, source: process.Spec, environ: *const std.process.Environ.Map) !void {
-        try self.ensureUnique(source.id);
+    pub fn startProviderProcess(self: *Owner, call: native_effect.ProviderCall, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(call.spec.id);
         try self.active.ensureUnusedCapacity(self.allocator, 1);
-        const task = try Task.createProviderProcess(self.allocator, self.io, self.wakeup, source, environ);
+        const task = try Task.createProviderProcess(self.allocator, self.io, self.wakeup, call, environ);
         self.startPrepared(task);
     }
 
-    pub fn startHttp(self: *Owner, source: http.Spec, environ: *const std.process.Environ.Map) !void {
-        try self.ensureUnique(source.id);
+    pub fn startHttp(self: *Owner, call: native_effect.HttpCall, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(call.spec.id);
         try self.active.ensureUnusedCapacity(self.allocator, 1);
-        const task = try Task.createHttp(self.allocator, self.io, self.wakeup, source, environ);
+        const task = try Task.createHttp(self.allocator, self.io, self.wakeup, call, environ);
         self.startPrepared(task);
     }
 

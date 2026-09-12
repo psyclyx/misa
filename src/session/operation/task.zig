@@ -21,12 +21,15 @@ const ConversationSpec = struct { spec: conversation.Spec, environ: *const std.p
 const ConversationLoadSpec = struct { spec: native_effect.ConversationLoad, environ: *const std.process.Environ.Map };
 const ConversationListSpec = struct { spec: native_effect.ConversationList, environ: *const std.process.Environ.Map };
 const ConversationRequestSpec = struct { request: conversation.Request, completion: []const u8, environ: *const std.process.Environ.Map };
-const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
+const HttpSpec = struct { spec: http.Spec, attempt: ?native_effect.Attempt, environ: *const std.process.Environ.Map };
 const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
 const SyntaxSpec = struct { spec: syntax.Spec, service: *syntax.Service };
 const ProcessRequest = struct {
     spec: process.Spec,
     execution: union(enum) { tool, provider: *const std.process.Environ.Map },
+    /// Present exactly when the execution is a provider call: a tool process is
+    /// not a model call and declares no attempt.
+    attempt: ?native_effect.Attempt = null,
 };
 const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, conversation: ConversationSpec, conversation_load: ConversationLoadSpec, conversation_list: ConversationListSpec, conversation_request: ConversationRequestSpec, auth: AuthSpec };
 
@@ -44,6 +47,9 @@ pub const Task = struct {
     done: std.atomic.Value(bool) = .init(false),
     group: std.Io.Group = .init,
     records: channel_module.Channel,
+    /// The attempt this task recorded, once it has one, so its completion can
+    /// name the row the call is accountable to.
+    attempt_id: ?[]const u8 = null,
     response_mutex: std.Io.Mutex = .init,
     response_ready: std.Io.Condition = .init,
     response_correlation: ?[]u8 = null,
@@ -86,13 +92,15 @@ pub const Task = struct {
         return task;
     }
 
-    pub fn createProviderProcess(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: process.Spec, environ: *const std.process.Environ.Map) !*Task {
-        const task = try createProcess(owner_allocator, io, wakeup, source);
+    pub fn createProviderProcess(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, call: native_effect.ProviderCall, environ: *const std.process.Environ.Map) !*Task {
+        const task = try createProcess(owner_allocator, io, wakeup, call.spec);
         task.kind.process.execution = .{ .provider = environ };
+        task.kind.process.attempt = try cloneAttempt(task.arena.allocator(), call.attempt);
         return task;
     }
 
-    pub fn createHttp(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: http.Spec, environ: *const std.process.Environ.Map) !*Task {
+    pub fn createHttp(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, call: native_effect.HttpCall, environ: *const std.process.Environ.Map) !*Task {
+        const source = call.spec;
         const task = try create(owner_allocator, io, wakeup);
         errdefer task.destroy();
         const a = task.arena.allocator();
@@ -116,7 +124,7 @@ pub const Task = struct {
             .response_format = source.response_format,
             .timeouts = source.timeouts,
         };
-        task.kind = .{ .http = .{ .spec = spec, .environ = environ } };
+        task.kind = .{ .http = .{ .spec = spec, .attempt = if (call.attempt) |declared| try cloneAttempt(a, declared) else null, .environ = environ } };
         try task.prepare(spec.completion, spec.id, spec.timeouts);
         return task;
     }
@@ -349,15 +357,26 @@ pub const Task = struct {
         self.records.discard();
     }
 
+    /// Settle this task's attempt, if it made one, and remember its id for the
+    /// completion event.
+    fn settleAttempt(self: *Task, live: *?Attempt, status: []const u8) void {
+        if (live.*) |*attempt| {
+            attempt.settle(status);
+            self.attempt_id = attempt.id;
+        }
+    }
+
     pub fn completionItem(self: *Task) !result_json.Item {
-        const json = try result_json.outcome(self.owner_allocator, self.completion, self.id, self.resultKind(), self.result);
+        var result = self.result;
+        result.attempt_id = self.attempt_id;
+        const json = try result_json.outcome(self.owner_allocator, self.completion, self.id, self.resultKind(), result);
         self.owner_allocator.free(self.fallback.?);
         self.fallback = null;
         return .{ .json = json, .terminal = true, .terminal_lease = self.terminalLease() };
     }
 
     pub fn forcedItem(self: *Task, ok: bool, message: ?[]const u8) !result_json.Item {
-        const json = try result_json.terminal(self.owner_allocator, self.completion, self.id, ok, 0, "", message);
+        const json = try result_json.terminal(self.owner_allocator, self.completion, self.id, ok, 0, "", message, self.attempt_id);
         self.owner_allocator.free(self.fallback.?);
         self.fallback = null;
         return .{ .json = json, .terminal = true, .terminal_lease = self.terminalLease() };
@@ -375,7 +394,7 @@ pub const Task = struct {
         self.timeouts = timeouts;
         self.started_ns = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
         self.records.resetActivity(self.started_ns);
-        self.fallback = try result_json.terminal(self.owner_allocator, completion, id, false, 0, "", "OperationFailed");
+        self.fallback = try result_json.terminal(self.owner_allocator, completion, id, false, 0, "", "OperationFailed", null);
     }
 
     fn terminalLease(self: *const Task) ?u64 {
@@ -562,53 +581,98 @@ pub const Task = struct {
                 };
                 self.result = .{ .ok = true, .data = value, .message = null };
             },
-            .http => |request| if (request.spec.response_format == .sse_json_stream) {
-                const run_result = http.requestSse(self.arena.allocator(), self.io, request.environ, request.spec, .{ .context = self, .emit = emitHttpRecord, .activity = noteActivityOpaque }) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
+            .http => |request| {
+                var attempt: ?Attempt = null;
+                defer if (attempt) |*live| live.deinit();
+                if (request.attempt) |declared| attempt = Attempt.begin(self, declared, request.spec.id, request.environ) catch |err| {
+                    // A call that cannot be recorded is not made: the row is
+                    // what makes the call accountable.
                     self.result = .{ .message = @errorName(err) };
                     return;
                 };
-                self.result = .{ .ok = run_result.status >= 200 and run_result.status < 300 and run_result.failure == null, .status = run_result.status, .body = run_result.error_body, .message = if (run_result.failure) |failure| @errorName(failure) else null };
-            } else {
-                const run_result = http.request(self.arena.allocator(), self.io, request.environ, request.spec, .{ .context = self, .note = noteActivityOpaque }) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    self.result = .{ .message = @errorName(err) };
-                    return;
-                };
-                self.records.noteActivity();
-                const ok = run_result.status >= 200 and run_result.status < 300;
-                if (ok and request.spec.response_format != .text) {
-                    const parsed = (switch (request.spec.response_format) {
-                        .json => std.json.parseFromSlice(std.json.Value, self.arena.allocator(), run_result.body, .{ .allocate = .alloc_always }),
-                        .sse_json => buffered_records.parseSseJson(self.arena.allocator(), run_result.body),
-                        else => unreachable,
-                    }) catch {
-                        self.result = .{ .status = run_result.status, .message = "InvalidJsonResponse" };
+                var status: []const u8 = "error";
+                defer self.settleAttempt(&attempt, status);
+                if (request.spec.response_format == .sse_json_stream) {
+                    const run_result = http.requestSse(self.arena.allocator(), self.io, request.environ, request.spec, .{ .context = self, .emit = emitHttpRecord, .activity = noteActivityOpaque }) catch |err| {
+                        if (err == error.Canceled) {
+                            status = "cancelled";
+                            return error.Canceled;
+                        }
+                        self.result = .{ .message = @errorName(err) };
                         return;
                     };
-                    self.result = .{ .ok = true, .status = run_result.status, .message = null, .data = parsed.value };
-                } else self.result = .{ .ok = ok, .status = run_result.status, .body = process.sanitizeOutput(self.arena.allocator(), run_result.body, 8 * 1024 * 1024) catch "", .message = null };
+                    self.result = .{ .ok = run_result.status >= 200 and run_result.status < 300 and run_result.failure == null, .status = run_result.status, .body = run_result.error_body, .message = if (run_result.failure) |failure| @errorName(failure) else null };
+                    if (self.result.ok) status = "ok";
+                } else {
+                    const run_result = http.request(self.arena.allocator(), self.io, request.environ, request.spec, .{ .context = self, .note = noteActivityOpaque }) catch |err| {
+                        if (err == error.Canceled) {
+                            status = "cancelled";
+                            return error.Canceled;
+                        }
+                        self.result = .{ .message = @errorName(err) };
+                        return;
+                    };
+                    self.records.noteActivity();
+                    const ok = run_result.status >= 200 and run_result.status < 300;
+                    if (ok and request.spec.response_format != .text) {
+                        const parsed = (switch (request.spec.response_format) {
+                            .json => std.json.parseFromSlice(std.json.Value, self.arena.allocator(), run_result.body, .{ .allocate = .alloc_always }),
+                            .sse_json => buffered_records.parseSseJson(self.arena.allocator(), run_result.body),
+                            else => unreachable,
+                        }) catch {
+                            self.result = .{ .status = run_result.status, .message = "InvalidJsonResponse" };
+                            return;
+                        };
+                        self.result = .{ .ok = true, .status = run_result.status, .message = null, .data = parsed.value };
+                    } else self.result = .{ .ok = ok, .status = run_result.status, .body = process.sanitizeOutput(self.arena.allocator(), run_result.body, 8 * 1024 * 1024) catch "", .message = null };
+                    if (self.result.ok) status = "ok";
+                }
             },
             .process => |request| {
                 const spec = request.spec;
+                // A provider call is recorded as the attempt it declared, and
+                // the row is written before the transport starts.
+                var attempt: ?Attempt = null;
+                defer if (attempt) |*live| live.deinit();
+                const provider_environ: ?*const std.process.Environ.Map = switch (request.execution) {
+                    .tool => null,
+                    .provider => |map| map,
+                };
+                if (request.attempt) |declared| if (provider_environ) |map| {
+                    attempt = Attempt.begin(self, declared, spec.id, map) catch |err| {
+                        // A call that cannot be recorded is not made: the row is
+                        // what makes the call accountable.
+                        self.result = .{ .message = @errorName(err) };
+                        return;
+                    };
+                };
+                var status: []const u8 = "error";
+                defer self.settleAttempt(&attempt, status);
                 if (spec.stdout_format == .json_lines_stream) {
                     const sink: process.StreamSink = .{ .context = self, .emit = emitProcessRecord, .activity = noteActivityOpaque };
                     const run_result = (switch (request.execution) {
                         .tool => process.runJsonLines(self.arena.allocator(), self.io, spec, sink),
                         .provider => |environ| provider_process.runJsonLines(self.arena.allocator(), self.io, environ, spec, sink),
                     }) catch |err| {
-                        if (err == error.Canceled) return error.Canceled;
+                        if (err == error.Canceled) {
+                            status = "cancelled";
+                            return error.Canceled;
+                        }
                         self.result = .{ .status = -1, .message = @errorName(err) };
                         return;
                     };
                     self.result = .{ .ok = run_result.status == 0, .status = run_result.status, .body = run_result.stderr, .message = null };
+                    if (self.result.ok) status = "ok";
                 } else {
                     const activity: process.ActivitySink = .{ .context = self, .note = noteActivityOpaque };
                     const run_result = (switch (request.execution) {
                         .tool => process.runWithActivity(self.arena.allocator(), self.io, spec, activity),
                         .provider => |environ| provider_process.runWithActivity(self.arena.allocator(), self.io, environ, spec, activity),
                     }) catch |err| {
-                        if (err == error.Canceled) return error.Canceled;
+                        if (err == error.Canceled) {
+                            status = "cancelled";
+                            return error.Canceled;
+                        }
                         self.result = .{ .status = -1, .message = @errorName(err) };
                         return;
                     };
@@ -620,6 +684,7 @@ pub const Task = struct {
                         };
                         self.result = .{ .ok = true, .status = run_result.status, .body = run_result.stderr, .message = null, .data = parsed.value };
                     } else self.result = .{ .ok = run_result.status == 0, .status = run_result.status, .body = run_result.stdout, .message = run_result.stderr };
+                    if (self.result.ok) status = "ok";
                 }
             },
             .file => |spec| {
@@ -743,6 +808,70 @@ fn cloneJson(a: std.mem.Allocator, value: std.json.Value) !std.json.Value {
     const parsed = try std.json.parseFromSlice(std.json.Value, a, encoded, .{ .allocate = .alloc_always });
     return parsed.value;
 }
+
+/// Copy an attempt declaration into a task's arena: the effect's text belongs
+/// to the caller's parsed frame, which is gone by the time the worker runs.
+fn cloneAttempt(a: std.mem.Allocator, source: native_effect.Attempt) !native_effect.Attempt {
+    return .{
+        .conversation = if (source.conversation) |value| try a.dupe(u8, value) else null,
+        .parent_request_id = if (source.parent_request_id) |value| try a.dupe(u8, value) else null,
+        .provider_id = if (source.provider_id) |value| try a.dupe(u8, value) else null,
+        .kind = try a.dupe(u8, source.kind),
+        .provider = try a.dupe(u8, source.provider),
+        .model = try a.dupe(u8, source.model),
+    };
+}
+
+/// One recorded attempt, held open for as long as the call runs, so the
+/// outcome lands in the row its start wrote.
+const Attempt = struct {
+    store: conversation.Store,
+    declaration: native_effect.Attempt,
+    id: []u8,
+
+    /// Write the row before the transport starts. The order is the point: a
+    /// call the log cannot account for is exactly what an unfinished attempt
+    /// has to be able to report.
+    fn begin(task: *Task, declaration: native_effect.Attempt, request_id: []const u8, environ: *const std.process.Environ.Map) !Attempt {
+        var store = try conversation.Store.open(task.arena.allocator(), task.io, environ);
+        errdefer store.deinit();
+        const now_ms = std.Io.Timestamp.now(task.io, .real).toMilliseconds();
+        const id = try store.startRequest(.{
+            .id = request_id,
+            .kind = declaration.kind,
+            .conversation = declaration.conversation,
+            .parent_request_id = declaration.parent_request_id,
+            .provider_id = declaration.provider_id,
+            .provider = declaration.provider,
+            .model = declaration.model,
+            .status = "started",
+        }, now_ms);
+        return .{ .store = store, .declaration = declaration, .id = id };
+    }
+
+    /// Settle the attempt with what the transport knows. Cost is left `unknown`
+    /// rather than guessed: policy reports a figure when it has one, and a row
+    /// claiming a number nobody reported would be worse than one that says it
+    /// does not know. A settle that does not land — a cancelled call can have
+    /// its transport taken away mid-flight — leaves the row `started`, which is
+    /// what a crash leaves too.
+    fn settle(self: *Attempt, status: []const u8) void {
+        const now_ms = std.Io.Timestamp.now(self.store.io, .real).toMilliseconds();
+        self.store.recordRequest(.{
+            .id = self.id,
+            .kind = self.declaration.kind,
+            .provider = self.declaration.provider,
+            .model = self.declaration.model,
+            .status = status,
+            .cost_kind = "unknown",
+            .finished_at_ms = now_ms,
+        }, now_ms) catch {};
+    }
+
+    fn deinit(self: *Attempt) void {
+        self.store.deinit();
+    }
+};
 
 /// Copy an attempt into a task's arena: the effect's text and documents belong
 /// to the caller's parsed frame, which is gone by the time the worker runs.

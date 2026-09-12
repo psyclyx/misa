@@ -430,10 +430,21 @@ that branch issued; `conversation/list` returns recent headers with their entry
 counts. Both run on a worker like the append, because opening the database can
 wait on another process's write lock.
 
+Provider calls record themselves. The effect that asks for one declares the
+attempt it is recorded as — `:attempt {:conversation=<id>, kind=<turn|side>}`, the
+rest filled in from the effect's own id, provider, and model — and the transport
+writes the row before the call starts and settles it when the call ends. A
+provider process that declares no attempt is refused, and a `provider.*` effect
+whose translation is a call must declare one; an adapter that answers by
+dispatching is not a call and is not asked. The completion event carries
+`attempt_id`, and the row settles `unknown` for cost unless policy reports a
+figure.
+
 `conversation/request` records one provider attempt, which is what makes cost
 and usage facts rather than session memory. A row is written when the attempt
 starts and enriched when it finishes; an omitted field keeps the value already
-recorded, so a write that only adds usage cannot relabel or cheapen an attempt.
+recorded, so a write that only adds usage cannot relabel or cheapen an attempt,
+and `kind` is fixed when the row is created.
 The attempt is named by its branch — `<conversation>/<request id>`, or the
 caller's id alone when there is no conversation — because a request id is only
 unique within the branch that used it. A name a finished attempt already used
