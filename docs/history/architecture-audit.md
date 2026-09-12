@@ -4,6 +4,57 @@ Notes below were written as the work landed, in order, and later entries
 supersede earlier ones. They are retained for the reasoning and the
 verification they record, not as a description of the current code.
 
+### An attempt is a fact, and it is named by its branch (2026-09-11)
+
+`provider_requests` was built to hold one row per provider request — written when
+the attempt starts, enriched when it finishes, linkable to the message it
+produced — and nothing ever wrote to it. `Store.recordRequest` was reachable only
+from tests, so cost lived in `db.costs`, a session-memory map keyed by response
+id, and a request that never came back left nothing behind to say it had been
+made.
+
+`conversation/request` is the effect that makes the ledger reachable. Policy
+states an attempt's identity (id, conversation, kind), who served it (provider,
+model), and whatever is already known about the outcome (status, cost kind and
+micros, token counts, time to first token, finish time, and the opaque
+`settings`, `usage`, `cost`, and `metadata` documents). An omitted field keeps the
+value already recorded, so a start and an outcome compose without either write
+repeating the other's data. `kind` is the exception: it is never rewritten,
+because what a call was for is settled when it is first recorded. `status` says
+where the attempt stands — `started` while it is in flight, then `ok`, `error`,
+or `cancelled`.
+
+An attempt needed an identity that survives what the application actually does.
+The id a policy uses is a per-session counter (`agent-3`, `compaction-1`); a
+session that resumes a conversation numbers from the start again, and a second
+process on another branch numbers in parallel. `Store.startRequest` therefore
+names an attempt by its branch — `<conversation>/<request id>` — under the write
+lock, and a name a finished attempt already used is recorded beside it as
+`<id>#2` rather than merged into it, which is what would silently lose the newer
+attempt's cost. A name an unfinished attempt still holds is refused as
+`AttemptInProgress`, because two live attempts under one name is a mistake
+rather than a resume. The `request_id` on a recorded message is that same
+composed name, so a row links to the content it produced.
+
+`conversation/load` now returns a branch's attempts beside its entries, so cost,
+usage, and unfinished work are derivable from one read instead of from session
+memory. The schema adds a `kind` column (version 4) defaulting to `turn`, and the
+header probe checks it, so a database written by another binary fails loudly
+instead of reading a column that is not there.
+
+What this is not yet: nothing writes the start automatically. The turn loop and
+compaction still call providers without an attempt row, which is the next step —
+recording belongs inside the call, so a provider call cannot exist without one —
+and the attempt does not yet carry the context it was computed against (the
+branch sequence `replace history` will validate).
+
+Evidence: `src/conversation/root.zig` covers naming per branch, a refused
+in-flight duplicate, a settled name recorded beside the first, kind fixity, and
+the version 1 upgrade default; the native effect contract covers the accepted
+shape and its refusals (an unknown kind, a negative count); and
+`tests/integration/storage.zig` drives start, enrichment, and load through the
+effect layer in a fresh application.
+
 ### The state manifest names what each root is for (2026-09-11)
 
 Nothing declared what a top-level state root was _for_, so the tree answered by

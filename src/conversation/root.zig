@@ -25,7 +25,10 @@
 //! * `provider_requests` is append-only cost accounting: exactly one row per
 //!   provider request, whether or not it is ever linked to a message. A request
 //!   is written when it starts and enriched when it finishes, and recording it
-//!   never depends on a transcript existing.
+//!   never depends on a transcript existing. An attempt is named by the branch
+//!   that issued it — `<conversation>/<request id>` — so one branch's numbering
+//!   cannot collide with another's, and `kind` records whether it was a turn, a
+//!   policy's side call, or an adapter probing a provider about itself.
 //!
 //! Cost is stored as typed integer columns, not only JSON, so it can be
 //! aggregated:
@@ -100,7 +103,7 @@ pub const max_list_limit: usize = 256;
 pub const busy_timeout_ms: c_int = 5000;
 pub const max_write_attempts: usize = 8;
 
-pub const schema_version: c_int = 3;
+pub const schema_version: c_int = 4;
 const retry_backoff_ms: usize = 25;
 
 /// Payload revision understood by this binary. A payload written with a newer
@@ -111,6 +114,11 @@ const retry_backoff_ms: usize = 25;
 pub const max_payload_version: u32 = 1;
 
 pub const cost_kinds = [_][]const u8{ "pending", "reported", "estimated", "unknown" };
+
+/// What an attempt was for: a `turn` is a step of the conversation, a `side`
+/// call is one policy made outside the turn (a summary, a classification), and
+/// a `probe` is an adapter asking a provider about itself.
+pub const attempt_kinds = [_][]const u8{ "turn", "side", "probe" };
 
 /// One transcript entry. `data` is canonicalized and serialized to text at the
 /// storage boundary, so the schema never depends on transcript shape; a
@@ -127,8 +135,20 @@ pub const Entry = struct {
 /// One provider request, recorded for cost accounting. `conversation` is the
 /// branch that issued it, not a requirement: a request is captured even when it
 /// has no conversation and no linked message.
+///
+/// `status` says where the attempt stands — `started` while it is in flight,
+/// then `ok`, `error`, or `cancelled` — and `kind` says what it was for: `turn`
+/// is a step of the conversation, `side` is a call policy made outside the turn
+/// (a summary, a classification), `probe` is an adapter asking a provider about
+/// itself and expecting no model response. Both vocabularies are enforced at
+/// the effect boundary rather than here, because that is where plugin data
+/// enters.
 pub const Request = struct {
     id: []const u8,
+    /// What the attempt was for: `turn`, `side`, or `probe`. Absent means
+    /// "leave the recorded kind alone", so an enrichment that only adds usage
+    /// cannot silently relabel an attempt; a row created without it is a turn.
+    kind: ?[]const u8 = null,
     conversation: ?[]const u8 = null,
     message_id: ?[]const u8 = null,
     provider_id: ?[]const u8 = null,
@@ -199,6 +219,7 @@ pub const RequestRecord = struct {
     provider: []const u8,
     model: []const u8,
     status: []const u8,
+    kind: []const u8,
     cost_kind: []const u8,
     cost_micros: ?i64,
     cost_currency: []const u8,
@@ -285,6 +306,7 @@ const tables = "CREATE TABLE IF NOT EXISTS conversations (" ++
     "provider TEXT NOT NULL, " ++
     "model TEXT NOT NULL, " ++
     "status TEXT NOT NULL, " ++
+    "kind TEXT NOT NULL DEFAULT 'turn', " ++
     "cost_kind TEXT NOT NULL DEFAULT 'pending', " ++
     "cost_micros INTEGER, " ++
     "cost_currency TEXT NOT NULL DEFAULT 'USD', " ++
@@ -333,6 +355,7 @@ const request_columns = [_]struct { name: []const u8, definition: []const u8 }{
     .{ .name = "cache_read_tokens", .definition = "INTEGER" },
     .{ .name = "cache_write_tokens", .definition = "INTEGER" },
     .{ .name = "ttft_ms", .definition = "INTEGER" },
+    .{ .name = "kind", .definition = "TEXT NOT NULL DEFAULT 'turn'" },
 };
 
 pub const Store = struct {
@@ -412,6 +435,10 @@ pub const Store = struct {
     /// Record or enrich one provider request without touching the transcript.
     /// Every provider request is captured here even when it has no conversation
     /// and no linked message; `conversation` only groups it for accounting.
+    ///
+    /// The id is used exactly as given, because an enrichment names a row that
+    /// already exists: it is the id `startRequest` returned, which is already
+    /// scoped to its branch.
     pub fn recordRequest(self: *Store, request: Request, now_ms: i64) !void {
         try validateRequest(request);
 
@@ -419,6 +446,33 @@ pub const Store = struct {
         while (attempt < max_write_attempts) : (attempt += 1) {
             if (self.recordRequestOnce(request, now_ms)) |_| {
                 return;
+            } else |err| {
+                if (err != error.DatabaseBusy) return err;
+                std.Io.sleep(self.io, .fromMilliseconds(retry_backoff_ms), .awake) catch {};
+            }
+        }
+        return error.DatabaseBusy;
+    }
+
+    /// Record the start of one attempt and return the id it was recorded
+    /// under. The caller owns the returned text.
+    ///
+    /// An attempt is named by the branch that issued it, so two conversations
+    /// whose sessions both begin at `agent-1` stay two rows. A name a finished
+    /// attempt already used is not reused either: the new attempt is recorded
+    /// beside it as `<id>#2`, `<id>#3`, because a resumed session numbers its
+    /// requests from the start again, and merging the two rows would lose the
+    /// newer attempt's cost. A name an unfinished attempt still holds is
+    /// refused instead, because two live attempts under one name is a mistake.
+    pub fn startRequest(self: *Store, request: Request, now_ms: i64) ![]u8 {
+        try validateRequest(request);
+        const base = try scopedRequestId(self.allocator, request.conversation, request.id);
+        defer self.allocator.free(base);
+
+        var attempt: usize = 0;
+        while (attempt < max_write_attempts) : (attempt += 1) {
+            if (self.startRequestOnce(base, request, now_ms)) |id| {
+                return id;
             } else |err| {
                 if (err != error.DatabaseBusy) return err;
                 std.Io.sleep(self.io, .fromMilliseconds(retry_backoff_ms), .awake) catch {};
@@ -659,7 +713,7 @@ pub const Store = struct {
         const stmt = try self.prepare(
             "SELECT id, conversation_id, message_id, provider_id, parent_request_id, provider, model, status, " ++
                 "cost_kind, cost_micros, cost_currency, input_tokens, output_tokens, cache_read_tokens, " ++
-                "cache_write_tokens, ttft_ms, finished_at_ms, settings, usage, cost, metadata, created_at_ms, updated_at_ms " ++
+                "cache_write_tokens, ttft_ms, finished_at_ms, settings, usage, cost, metadata, created_at_ms, updated_at_ms, kind " ++
                 "FROM provider_requests WHERE conversation_id = ?1 ORDER BY created_at_ms, id LIMIT ?2;",
         );
         defer _ = c.sqlite3_finalize(stmt);
@@ -694,6 +748,7 @@ pub const Store = struct {
                 .provider = provider,
                 .model = model,
                 .status = status,
+                .kind = try columnRequiredText(allocator, stmt, 23),
                 .cost_kind = cost_kind,
                 .cost_micros = columnOptionalInt(stmt, 9),
                 .cost_currency = cost_currency,
@@ -965,6 +1020,56 @@ pub const Store = struct {
         if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return errorFromCode(c.sqlite3_errcode(self.db));
     }
 
+    fn startRequestOnce(self: *Store, base: []const u8, request: Request, now_ms: i64) ![]u8 {
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollbackQuietly();
+        if (request.conversation) |conversation| try self.upsertConversation(conversation, now_ms);
+
+        // The id is chosen inside the transaction: two writers racing to start
+        // an attempt must not both decide that the name is free.
+        const id = try self.freeRequestId(base);
+        errdefer self.allocator.free(id);
+        var started = request;
+        started.id = id;
+        started.finished_at_ms = null;
+        try self.writeRequest(null, started, now_ms, now_ms);
+        try self.exec("COMMIT;");
+        return id;
+    }
+
+    const RequestState = enum { free, in_flight, settled };
+
+    /// The first name at or after `base` that no attempt holds. A name a
+    /// finished attempt used takes a suffix, and a name an unfinished attempt
+    /// holds is refused.
+    fn freeRequestId(self: *Store, base: []const u8) ![]u8 {
+        var ordinal: usize = 1;
+        while (true) : (ordinal += 1) {
+            if (ordinal > max_write_attempts) return error.TooManyAttemptsWithTheSameName;
+            const candidate = if (ordinal == 1)
+                try self.allocator.dupe(u8, base)
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}#{d}", .{ base, ordinal });
+            errdefer self.allocator.free(candidate);
+            try validateRequestId(candidate);
+            switch (try self.requestState(candidate)) {
+                .free => return candidate,
+                .in_flight => return error.AttemptInProgress,
+                .settled => self.allocator.free(candidate),
+            }
+        }
+    }
+
+    fn requestState(self: *Store, id: []const u8) !RequestState {
+        const stmt = try self.prepare("SELECT finished_at_ms FROM provider_requests WHERE id = ?1;");
+        defer _ = c.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, id);
+        const code = c.sqlite3_step(stmt);
+        if (code == c.SQLITE_DONE) return .free;
+        if (code != c.SQLITE_ROW) return errorFromCode(c.sqlite3_errcode(self.db));
+        return if (c.sqlite3_column_type(stmt, 0) == c.SQLITE_NULL) .in_flight else .settled;
+    }
+
     fn recordRequestOnce(self: *Store, request: Request, now_ms: i64) !void {
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.rollbackQuietly();
@@ -989,8 +1094,8 @@ pub const Store = struct {
         const stmt = try self.prepare(
             "INSERT INTO provider_requests(id, conversation_id, message_id, provider_id, parent_request_id, created_at_ms, " ++
                 "updated_at_ms, finished_at_ms, provider, model, status, cost_kind, cost_micros, cost_currency, " ++
-                "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ttft_ms, settings, usage, cost, metadata) " ++
-                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23) " ++
+                "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ttft_ms, settings, usage, cost, metadata, kind) " ++
+                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, COALESCE(?24, 'turn')) " ++
                 "ON CONFLICT(id) DO UPDATE SET " ++
                 "conversation_id=COALESCE(provider_requests.conversation_id, excluded.conversation_id), " ++
                 "message_id=COALESCE(provider_requests.message_id, excluded.message_id), " ++
@@ -1001,6 +1106,8 @@ pub const Store = struct {
                 "provider=excluded.provider, " ++
                 "model=excluded.model, " ++
                 "status=excluded.status, " ++
+                // `kind` is not touched: what an attempt was for is settled when
+                // it is first recorded, and a later write cannot relabel it.
                 // A pending write must not erase a settled cost kind, and a
                 // later estimate must not erase a provider-reported figure.
                 "cost_kind=CASE WHEN provider_requests.cost_micros IS NOT NULL AND provider_requests.cost_kind <> 'pending' " ++
@@ -1041,6 +1148,7 @@ pub const Store = struct {
         try bindNullableText(stmt, 21, usage);
         try bindNullableText(stmt, 22, cost);
         try bindNullableText(stmt, 23, metadata);
+        try bindNullableText(stmt, 24, request.kind);
         if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return errorFromCode(c.sqlite3_errcode(self.db));
     }
 
@@ -1231,7 +1339,7 @@ pub const Store = struct {
         try self.probe("SELECT metadata, forked_from_id, forked_from_seq FROM conversations LIMIT 1;");
         try self.probe("SELECT id, kind, payload_version, payload FROM messages LIMIT 1;");
         try self.probe("SELECT conversation_id, seq, message_id, at_ms, request_id FROM branch_messages LIMIT 1;");
-        try self.probe("SELECT cost_kind, cost_micros, cost_currency, parent_request_id, message_id FROM provider_requests LIMIT 1;");
+        try self.probe("SELECT cost_kind, cost_micros, cost_currency, parent_request_id, message_id, kind FROM provider_requests LIMIT 1;");
         try self.probe("SELECT hash, mime, byte_count, bytes FROM blobs LIMIT 1;");
     }
 
@@ -1320,6 +1428,7 @@ pub fn freeRequestRecords(allocator: std.mem.Allocator, records: []RequestRecord
         allocator.free(record.provider);
         allocator.free(record.model);
         allocator.free(record.status);
+        allocator.free(record.kind);
         allocator.free(record.cost_kind);
         allocator.free(record.cost_currency);
         for ([_]?[]const u8{ record.conversation, record.message_id, record.provider_id, record.parent_request_id, record.settings, record.usage, record.cost, record.metadata }) |field| {
@@ -1375,6 +1484,11 @@ pub fn validateLabel(label: []const u8) !void {
     for (label) |byte| if (byte < 0x21 or byte > 0x7e) return error.InvalidRequestLabel;
 }
 
+pub fn validateAttemptKind(kind: []const u8) !void {
+    for (attempt_kinds) |candidate| if (std.mem.eql(u8, candidate, kind)) return;
+    return error.InvalidAttemptKind;
+}
+
 pub fn validateCostKind(kind: []const u8) !void {
     for (cost_kinds) |candidate| if (std.mem.eql(u8, candidate, kind)) return;
     return error.InvalidCostKind;
@@ -1390,6 +1504,7 @@ pub fn validateRequest(request: Request) !void {
     try validateLabel(request.provider);
     try validateLabel(request.model);
     try validateLabel(request.status);
+    if (request.kind) |kind| try validateAttemptKind(kind);
     try validateLabel(request.cost_currency);
     try validateCostKind(request.cost_kind);
     for ([_]?i64{ request.input_tokens, request.output_tokens, request.cache_read_tokens, request.cache_write_tokens, request.ttft_ms }) |count| {
@@ -1402,6 +1517,20 @@ pub fn validateRequest(request: Request) !void {
     for ([_]?std.json.Value{ request.settings, request.usage, request.cost, request.metadata }) |field| {
         if (field) |value| try validateDocument(value, max_message_bytes, error.RequestTooLarge);
     }
+}
+
+/// The name an attempt is recorded under: its conversation, then the id the
+/// caller used. A request id is only unique within the branch that produced it,
+/// so the branch is part of the identity. A request with no conversation keeps
+/// the caller's id, and the caller then owns making it unique.
+pub fn scopedRequestId(allocator: std.mem.Allocator, conversation: ?[]const u8, id: []const u8) ![]u8 {
+    try validateRequestId(id);
+    const branch = conversation orelse return allocator.dupe(u8, id);
+    try validateConversationId(branch);
+    const scoped = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ branch, id });
+    errdefer allocator.free(scoped);
+    try validateRequestId(scoped);
+    return scoped;
 }
 
 /// Validate one finite JSON document against a byte budget, naming the failure
@@ -1917,6 +2046,62 @@ test "provider requests keep settled cost and record parentage" {
     try std.testing.expectEqual(@as(?i64, 2500), child.cost_micros);
 }
 
+test "an attempt is named by its branch and never reuses a settled name" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var fixture = try testEnviron(std.testing.allocator, &temporary.sub_path);
+    defer {
+        fixture.map.deinit();
+        std.testing.allocator.free(fixture.path);
+    }
+    var store = try Store.open(std.testing.allocator, std.testing.io, &fixture.map);
+    defer store.deinit();
+    const a = std.testing.allocator;
+
+    // Two branches whose sessions both begin at `agent-1` stay two attempts.
+    const first = try store.startRequest(.{ .id = "agent-1", .kind = "turn", .conversation = "chat", .provider = "anthropic", .model = "opus", .status = "started" }, 10);
+    defer a.free(first);
+    try std.testing.expectEqualStrings("chat/agent-1", first);
+    const elsewhere = try store.startRequest(.{ .id = "agent-1", .kind = "side", .conversation = "other", .provider = "anthropic", .model = "opus", .status = "started" }, 11);
+    defer a.free(elsewhere);
+    try std.testing.expectEqualStrings("other/agent-1", elsewhere);
+
+    // While an attempt is in flight, its name is spoken for.
+    try std.testing.expectError(error.AttemptInProgress, store.startRequest(.{ .id = "agent-1", .kind = "turn", .conversation = "chat", .provider = "anthropic", .model = "opus", .status = "started" }, 12));
+
+    // Settling it, then naming the next attempt `agent-1` again, is exactly
+    // what a resumed session does: the second attempt is recorded beside the
+    // first rather than merged into it, so neither attempt's cost is lost.
+    try store.recordRequest(.{ .id = first, .kind = "turn", .provider = "anthropic", .model = "opus", .status = "ok", .finished_at_ms = 20, .input_tokens = 10, .cost_kind = "reported", .cost_micros = 1000 }, 20);
+    const resumed = try store.startRequest(.{ .id = "agent-1", .kind = "turn", .conversation = "chat", .provider = "anthropic", .model = "opus", .status = "started" }, 21);
+    defer a.free(resumed);
+    try std.testing.expectEqualStrings("chat/agent-1#2", resumed);
+    // An enrichment adds what it knows and cannot relabel the attempt.
+    try store.recordRequest(.{ .id = resumed, .kind = "side", .provider = "anthropic", .model = "opus", .status = "ok", .finished_at_ms = 30, .output_tokens = 5 }, 30);
+
+    const snapshot = try store.load(a, "chat", 0, 16, 16);
+    defer freeSnapshot(a, snapshot);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.requests.len);
+    const started = snapshot.requests[0];
+    try std.testing.expectEqualStrings("chat/agent-1", started.id);
+    try std.testing.expectEqualStrings("turn", started.kind);
+    try std.testing.expectEqual(@as(?i64, 10), started.input_tokens);
+    try std.testing.expectEqual(@as(?i64, 1000), started.cost_micros);
+    try std.testing.expectEqual(@as(?i64, 20), started.finished_at_ms);
+    const again = snapshot.requests[1];
+    try std.testing.expectEqualStrings("chat/agent-1#2", again.id);
+    try std.testing.expectEqualStrings("turn", again.kind);
+    try std.testing.expectEqual(@as(?i64, 5), again.output_tokens);
+    try std.testing.expect(again.finished_at_ms != null);
+
+    // The other branch's attempt is untouched, and it kept its own kind.
+    const other = try store.load(a, "other", 0, 16, 16);
+    defer freeSnapshot(a, other);
+    try std.testing.expectEqual(@as(usize, 1), other.requests.len);
+    try std.testing.expectEqualStrings("other/agent-1", other.requests[0].id);
+    try std.testing.expectEqualStrings("side", other.requests[0].kind);
+}
+
 test "identical entries share one message row" {
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
@@ -2133,6 +2318,9 @@ test "legacy databases upgrade to content-addressed transcripts" {
     try std.testing.expectEqual(@as(usize, 3), reopened.entries.len);
     try std.testing.expectEqualStrings("{\"upgraded\":true}", reopened.metadata);
     try std.testing.expectEqualStrings("after-upgrade", reopened.requests[0].id);
+    // A row written before attempts had kinds is a turn; the migration column
+    // gives every older row that default rather than an unreadable null.
+    try std.testing.expectEqualStrings("turn", reopened.requests[0].kind);
     try std.testing.expectEqual(@as(i64, 2), try scalar(&store, "SELECT COUNT(*) FROM messages;"));
 }
 

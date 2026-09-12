@@ -243,6 +243,7 @@ pub const Session = struct {
             .conversation_append => |spec| try self.operations.startConversation(spec, self.environ),
             .conversation_load => |spec| try self.operations.startConversationLoad(spec, self.environ),
             .conversation_list => |spec| try self.operations.startConversationList(spec, self.environ),
+            .conversation_request => |spec| try self.operations.startConversationRequest(spec, self.environ),
             .operation_cancel => |spec| try self.cancelOperation(spec.id),
             .operation_finish => |spec| try self.finishOperation(spec.id),
             .timer_start => |spec| try self.timers.start(spec, std.Io.Timestamp.now(self.io, .awake).nanoseconds),

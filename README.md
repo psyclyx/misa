@@ -384,6 +384,10 @@ id=..., correlation=..., action=..., value=...}`
 - `{type="conversation/append", conversation=<id>, entries=<array of {kind=..., data=...}>, metadata=?, completion=..., id=...}`
 - `{type="conversation/load", conversation=<id>, after_seq=?, limit=?, completion=..., id=...}`
 - `{type="conversation/list", limit=?, completion=..., id=...}`
+- `{type="conversation/request", id=<request id>, conversation=?, kind=<turn|side|probe>, provider=...,
+model=..., status=..., provider_id=?, parent_request_id=?, cost_kind=?, cost_micros=?, cost_currency=?,
+input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_write_tokens=?, ttft_ms=?,
+finished_at_ms=?, settings=?, usage=?, cost=?, metadata=?, completion=...}`
 - `{type="view/commit", lines=<semantic lines>}`
 - `{type="app/quit"}`
 
@@ -421,10 +425,29 @@ The database path is `$MISA_CONVERSATION_DB`, otherwise
 `$HOME/.local/state/misa/conversations.sqlite3`.
 
 `conversation/load` reopens one conversation as a bounded page of entries in
-ascending order, with its header metadata and fork provenance, and
-`conversation/list` returns recent headers with their entry counts. Both run on
-a worker like the append, because opening the database can wait on another
-process's write lock.
+ascending order, with its header metadata, fork provenance, and the attempts
+that branch issued; `conversation/list` returns recent headers with their entry
+counts. Both run on a worker like the append, because opening the database can
+wait on another process's write lock.
+
+`conversation/request` records one provider attempt, which is what makes cost
+and usage facts rather than session memory. A row is written when the attempt
+starts and enriched when it finishes; an omitted field keeps the value already
+recorded, so a write that only adds usage cannot relabel or cheapen an attempt.
+The attempt is named by its branch — `<conversation>/<request id>`, or the
+caller's id alone when there is no conversation — because a request id is only
+unique within the branch that used it. A name a finished attempt already used
+is recorded beside it, as `<id>#2`: a resumed session numbers its requests from
+the start again, and merging the two rows would lose the newer attempt's cost.
+A name an unfinished attempt still holds is refused as `AttemptInProgress`,
+because two live attempts under one name is a mistake rather than a resume.
+`kind` says what the call was for — `turn` is a step of the conversation,
+`side` is a call policy made outside the turn, `probe` is an adapter asking a
+provider about itself — and `status` says where it stands: `started` while it
+is in flight, then `ok`, `error`, or `cancelled`. An attempt that never
+finished is therefore visible as a fact, which is what lets a loaded branch
+report a request that was made and never came back instead of mistaking it for
+a turn about to start.
 
 The stock profile journals canonical history through `misa.conversation`. A
 session names its conversation from `config.conversation.id` or from its own

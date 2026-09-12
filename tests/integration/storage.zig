@@ -45,6 +45,16 @@ test "a turn longer than one append is recorded as each message settles" {
     try std.testing.expect(database.size > 0);
 }
 
+test "an attempt is recorded when it starts and enriched when it settles" {
+    var h = try Harness.init();
+    defer h.deinit();
+    try h.config(@embedFile("configs/attempt.fnl"));
+    // A model call that is not a turn still leaves the same kind of fact: one
+    // row per attempt, written when it starts and settled with what policy knew
+    // when it finished.
+    try h.expect(.{}, "1 turn ok 4200 10 1234\n");
+}
+
 test "a stored conversation lists and reopens with its label" {
     var h = try Harness.init();
     defer h.deinit();

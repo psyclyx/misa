@@ -225,7 +225,13 @@ Each slice is independently landable, states its verification, and notes its
 risk. Order is deliberate: the kernel primitives dictate the shape of everything
 above them.
 
-Progress: Slice 0 has landed (`extensions/misa/standard/state.fnl`) as a declared
+Progress: Slice 3's storage half has landed — `conversation/request` records and
+enriches one attempt in `provider_requests`, named by the branch that issued it,
+and `conversation/load` returns a branch's attempts beside its entries — but the
+half that matters for the plan is still missing: nothing writes a start
+automatically, so a model call can still happen without a row. That half belongs
+inside the call itself, which is the next step. Slice 0 has landed
+(`extensions/misa/standard/state.fnl`) as a declared
 manifest with an install validator and a test that pins the assignments this
 document commits to; it is a checklist, not enforcement, because a root nobody
 declares still passes unnoticed. Slice 1's validation half has landed

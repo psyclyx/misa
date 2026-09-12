@@ -34,6 +34,13 @@ pub const ConversationList = struct {
     completion: []const u8,
     id: []const u8,
 };
+/// One attempt as policy states it. `request.id` names both the attempt and
+/// the running operation, so the completion event returns the id the policy
+/// used and no second identity is invented.
+pub const ConversationRequest = struct {
+    request: conversation.Request,
+    completion: []const u8,
+};
 pub const AuthCommand = struct { action: auth.Action, declaration: auth.Declaration, account: ?[]const u8, completion: []const u8, interaction: []const u8, id: []const u8 };
 pub const AuthRespond = struct { id: []const u8, correlation: []const u8, action: []const u8, value: []const u8 };
 pub const CancelOperation = struct { id: []const u8 };
@@ -60,6 +67,7 @@ pub const Effect = union(enum) {
     conversation_append: ConversationAppend,
     conversation_load: ConversationLoad,
     conversation_list: ConversationList,
+    conversation_request: ConversationRequest,
     operation_cancel: CancelOperation,
     operation_finish: FinishOperation,
     timer_start: timer.Start,
@@ -210,9 +218,54 @@ pub const Effect = union(enum) {
                 .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
             } };
         }
+        if (std.mem.eql(u8, kind, "conversation/request")) {
+            var request: conversation.Request = .{
+                .id = nonEmptyStringField(object, "id") orelse return error.InvalidEffect,
+                .provider = nonEmptyStringField(object, "provider") orelse return error.InvalidEffect,
+                .model = nonEmptyStringField(object, "model") orelse return error.InvalidEffect,
+                .status = nonEmptyStringField(object, "status") orelse return error.InvalidEffect,
+            };
+            if (stringField(object, "conversation")) |conversation_id| {
+                conversation.validateConversationId(conversation_id) catch return error.InvalidEffect;
+                request.conversation = conversation_id;
+            }
+            if (stringField(object, "kind")) |attempt_kind| {
+                conversation.validateAttemptKind(attempt_kind) catch return error.InvalidEffect;
+                request.kind = attempt_kind;
+            }
+            if (stringField(object, "provider_id")) |field| request.provider_id = field;
+            if (stringField(object, "parent_request_id")) |field| request.parent_request_id = field;
+            if (stringField(object, "cost_kind")) |field| request.cost_kind = field;
+            if (stringField(object, "cost_currency")) |field| request.cost_currency = field;
+            request.cost_micros = try optionalCountField(object, "cost_micros");
+            request.input_tokens = try optionalCountField(object, "input_tokens");
+            request.output_tokens = try optionalCountField(object, "output_tokens");
+            request.cache_read_tokens = try optionalCountField(object, "cache_read_tokens");
+            request.cache_write_tokens = try optionalCountField(object, "cache_write_tokens");
+            request.ttft_ms = try optionalCountField(object, "ttft_ms");
+            request.finished_at_ms = try optionalCountField(object, "finished_at_ms");
+            if (object.get("settings")) |document| request.settings = document;
+            if (object.get("usage")) |document| request.usage = document;
+            if (object.get("cost")) |document| request.cost = document;
+            if (object.get("metadata")) |document| request.metadata = document;
+            conversation.validateRequest(request) catch return error.InvalidEffect;
+            return .{ .conversation_request = .{
+                .request = request,
+                .completion = nonEmptyStringField(object, "completion") orelse return error.InvalidEffect,
+            } };
+        }
         return error.UnknownNativeEffect;
     }
 };
+
+/// Read an optional count: an absent or null field is nothing, and anything
+/// that is not a nonnegative integer is an invalid effect.
+fn optionalCountField(object: std.json.ObjectMap, name: []const u8) !?i64 {
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .integer or value.integer < 0) return error.InvalidEffect;
+    return value.integer;
+}
 
 /// Read an optional bounded integer field; null reports an invalid value.
 fn boundedIntegerField(object: std.json.ObjectMap, name: []const u8, minimum: i64, maximum: i64, default: i64) ?i64 {
@@ -326,4 +379,20 @@ test "validation covers the whole native contract" {
     var bad_list = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/list\",\"limit\":4096,\"completion\":\"conversations/listed\",\"id\":\"list-1\"}", .{});
     defer bad_list.deinit();
     try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_list.value));
+
+    // An attempt states who called, what for, and how it stands; a kind the
+    // store does not know, a negative count, or a missing model is refused
+    // before anything is written.
+    var attempt = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/request\",\"id\":\"agent-2\",\"conversation\":\"chat\",\"kind\":\"side\",\"provider\":\"claude\",\"model\":\"claude-opus-5\",\"status\":\"ok\",\"input_tokens\":10,\"completion\":\"conversation/requested\"}", .{});
+    defer attempt.deinit();
+    const parsed_attempt = try Effect.parse(attempt.value);
+    try std.testing.expectEqualStrings("agent-2", parsed_attempt.conversation_request.request.id);
+    try std.testing.expectEqualStrings("side", parsed_attempt.conversation_request.request.kind.?);
+    try std.testing.expectEqual(@as(?i64, 10), parsed_attempt.conversation_request.request.input_tokens);
+    var bad_attempt = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/request\",\"id\":\"agent-2\",\"kind\":\"compaction\",\"provider\":\"claude\",\"model\":\"claude-opus-5\",\"status\":\"ok\",\"completion\":\"conversation/requested\"}", .{});
+    defer bad_attempt.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(bad_attempt.value));
+    var negative = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"type\":\"conversation/request\",\"id\":\"agent-2\",\"provider\":\"claude\",\"model\":\"claude-opus-5\",\"status\":\"ok\",\"output_tokens\":-1,\"completion\":\"conversation/requested\"}", .{});
+    defer negative.deinit();
+    try std.testing.expectError(error.InvalidEffect, Effect.parse(negative.value));
 }

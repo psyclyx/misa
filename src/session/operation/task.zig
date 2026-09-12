@@ -20,6 +20,7 @@ const StateSpec = struct { namespace: []const u8, completion: []const u8, id: []
 const ConversationSpec = struct { spec: conversation.Spec, environ: *const std.process.Environ.Map };
 const ConversationLoadSpec = struct { spec: native_effect.ConversationLoad, environ: *const std.process.Environ.Map };
 const ConversationListSpec = struct { spec: native_effect.ConversationList, environ: *const std.process.Environ.Map };
+const ConversationRequestSpec = struct { request: conversation.Request, completion: []const u8, environ: *const std.process.Environ.Map };
 const HttpSpec = struct { spec: http.Spec, environ: *const std.process.Environ.Map };
 const ImageSpec = struct { spec: image.Spec, environ: *const std.process.Environ.Map };
 const SyntaxSpec = struct { spec: syntax.Spec, service: *syntax.Service };
@@ -27,7 +28,7 @@ const ProcessRequest = struct {
     spec: process.Spec,
     execution: union(enum) { tool, provider: *const std.process.Environ.Map },
 };
-const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, conversation: ConversationSpec, conversation_load: ConversationLoadSpec, conversation_list: ConversationListSpec, auth: AuthSpec };
+const Kind = union(enum) { syntax: SyntaxSpec, image: ImageSpec, http: HttpSpec, process: ProcessRequest, file: file.Spec, state_load: StateSpec, state_save: StateSpec, conversation: ConversationSpec, conversation_load: ConversationLoadSpec, conversation_list: ConversationListSpec, conversation_request: ConversationRequestSpec, auth: AuthSpec };
 
 pub const Task = struct {
     pub const max_records_per_event = 32;
@@ -233,6 +234,19 @@ pub const Task = struct {
         return task;
     }
 
+    pub fn createConversationRequest(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, source: native_effect.ConversationRequest, environ: *const std.process.Environ.Map) !*Task {
+        const task = try create(owner_allocator, io, wakeup);
+        errdefer task.destroy();
+        const a = task.arena.allocator();
+        const spec: ConversationRequestSpec = .{ .request = try cloneRequest(a, source.request), .completion = try a.dupe(u8, source.completion), .environ = environ };
+        task.kind = .{ .conversation_request = spec };
+        try task.prepare(spec.completion, spec.request.id, .{});
+        // SQLite may block on another process's write lock; that wait is not a
+        // transport deadline, so completion is bounded by the store, not here.
+        task.timeout_kind = .none;
+        return task;
+    }
+
     pub fn createAuth(owner_allocator: std.mem.Allocator, io: std.Io, wakeup: channel_module.Wakeup, action: auth.Action, declaration: auth.Declaration, account: ?[]const u8, completion: []const u8, interaction: []const u8, id: []const u8, environ: *const std.process.Environ.Map, terminal_lease: ?u64, managed_input: bool) !*Task {
         const task = try create(owner_allocator, io, wakeup);
         errdefer task.destroy();
@@ -383,6 +397,7 @@ pub const Task = struct {
             .conversation => .conversation_append,
             .conversation_load => .conversation_load,
             .conversation_list => .conversation_list,
+            .conversation_request => .conversation_request,
         };
     }
 
@@ -450,7 +465,49 @@ pub const Task = struct {
         try object.put(a, "forked_from_seq", if (snapshot.forked_from_seq) |value| .{ .integer = value } else .null);
         try object.put(a, "entries", .{ .array = entries });
         try object.put(a, "more_entries", .{ .bool = snapshot.more_entries });
+
+        // The attempts this branch issued travel with its transcript, so a
+        // policy can project cost, usage, and unfinished work from one read.
+        var requests = std.json.Array.init(a);
+        try requests.ensureTotalCapacity(snapshot.requests.len);
+        for (snapshot.requests) |record| {
+            var attempt: std.json.ObjectMap = .empty;
+            try attempt.put(a, "id", .{ .string = record.id });
+            try attempt.put(a, "conversation", if (record.conversation) |value| .{ .string = value } else .null);
+            try attempt.put(a, "message_id", if (record.message_id) |value| .{ .string = value } else .null);
+            try attempt.put(a, "provider_id", if (record.provider_id) |value| .{ .string = value } else .null);
+            try attempt.put(a, "parent_request_id", if (record.parent_request_id) |value| .{ .string = value } else .null);
+            try attempt.put(a, "provider", .{ .string = record.provider });
+            try attempt.put(a, "model", .{ .string = record.model });
+            try attempt.put(a, "status", .{ .string = record.status });
+            try attempt.put(a, "kind", .{ .string = record.kind });
+            try attempt.put(a, "cost_kind", .{ .string = record.cost_kind });
+            try attempt.put(a, "cost_micros", if (record.cost_micros) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "cost_currency", .{ .string = record.cost_currency });
+            try attempt.put(a, "input_tokens", if (record.input_tokens) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "output_tokens", if (record.output_tokens) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "cache_read_tokens", if (record.cache_read_tokens) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "cache_write_tokens", if (record.cache_write_tokens) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "ttft_ms", if (record.ttft_ms) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "finished_at_ms", if (record.finished_at_ms) |value| .{ .integer = value } else .null);
+            try attempt.put(a, "created_at_ms", .{ .integer = record.created_at_ms });
+            try attempt.put(a, "updated_at_ms", .{ .integer = record.updated_at_ms });
+            try attempt.put(a, "settings", try self.storedDocument(record.settings));
+            try attempt.put(a, "usage", try self.storedDocument(record.usage));
+            try attempt.put(a, "cost", try self.storedDocument(record.cost));
+            try attempt.put(a, "metadata", try self.storedDocument(record.metadata));
+            requests.appendAssumeCapacity(.{ .object = attempt });
+        }
+        try object.put(a, "requests", .{ .array = requests });
+        try object.put(a, "more_requests", .{ .bool = snapshot.more_requests });
         return .{ .object = object };
+    }
+
+    /// Decode one stored JSON document for a completion event. A document this
+    /// binary cannot parse reads as absent rather than failing the whole read.
+    fn storedDocument(self: *Task, text: ?[]const u8) !std.json.Value {
+        const present = text orelse return .null;
+        return std.json.parseFromSliceLeaky(std.json.Value, self.arena.allocator(), present, .{ .allocate = .alloc_always }) catch .null;
     }
 
     /// Encode conversation headers for a `conversation/list` completion.
@@ -652,6 +709,19 @@ pub const Task = struct {
                 };
                 self.result = .{ .ok = true, .message = null, .data = data };
             },
+            .conversation_request => |spec| {
+                var store = conversation.Store.open(self.arena.allocator(), self.io, spec.environ) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                defer store.deinit();
+                const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+                store.recordRequest(spec.request, now_ms) catch |err| {
+                    self.result = .{ .message = @errorName(err) };
+                    return;
+                };
+                self.result = .{ .ok = true, .message = null };
+            },
             .auth => |spec| {
                 const command_result = provider_auth.command(self.arena.allocator(), self.io, spec.environ, spec.action, spec.declaration, .{ .context = self, .emitFn = emitInteraction, .inputFn = awaitInteraction, .protected_input = spec.managed_input }, spec.account) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
@@ -672,6 +742,35 @@ fn cloneJson(a: std.mem.Allocator, value: std.json.Value) !std.json.Value {
     const encoded = try std.json.Stringify.valueAlloc(a, value, .{});
     const parsed = try std.json.parseFromSlice(std.json.Value, a, encoded, .{ .allocate = .alloc_always });
     return parsed.value;
+}
+
+/// Copy an attempt into a task's arena: the effect's text and documents belong
+/// to the caller's parsed frame, which is gone by the time the worker runs.
+fn cloneRequest(a: std.mem.Allocator, source: conversation.Request) !conversation.Request {
+    return .{
+        .id = try a.dupe(u8, source.id),
+        .kind = if (source.kind) |value| try a.dupe(u8, value) else null,
+        .conversation = if (source.conversation) |value| try a.dupe(u8, value) else null,
+        .message_id = if (source.message_id) |value| try a.dupe(u8, value) else null,
+        .provider_id = if (source.provider_id) |value| try a.dupe(u8, value) else null,
+        .parent_request_id = if (source.parent_request_id) |value| try a.dupe(u8, value) else null,
+        .provider = try a.dupe(u8, source.provider),
+        .model = try a.dupe(u8, source.model),
+        .status = try a.dupe(u8, source.status),
+        .cost_kind = try a.dupe(u8, source.cost_kind),
+        .cost_micros = source.cost_micros,
+        .cost_currency = try a.dupe(u8, source.cost_currency),
+        .input_tokens = source.input_tokens,
+        .output_tokens = source.output_tokens,
+        .cache_read_tokens = source.cache_read_tokens,
+        .cache_write_tokens = source.cache_write_tokens,
+        .ttft_ms = source.ttft_ms,
+        .finished_at_ms = source.finished_at_ms,
+        .settings = if (source.settings) |value| try cloneJson(a, value) else null,
+        .usage = if (source.usage) |value| try cloneJson(a, value) else null,
+        .cost = if (source.cost) |value| try cloneJson(a, value) else null,
+        .metadata = if (source.metadata) |value| try cloneJson(a, value) else null,
+    };
 }
 
 fn cloneFile(a: std.mem.Allocator, source: file.Spec) !file.Spec {

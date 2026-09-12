@@ -135,6 +135,13 @@ pub const Owner = struct {
         self.startPrepared(task);
     }
 
+    pub fn startConversationRequest(self: *Owner, spec: native_effect.ConversationRequest, environ: *const std.process.Environ.Map) !void {
+        try self.ensureUnique(spec.request.id);
+        try self.active.ensureUnusedCapacity(self.allocator, 1);
+        const task = try Task.createConversationRequest(self.allocator, self.io, self.wakeup, spec, environ);
+        self.startPrepared(task);
+    }
+
     fn startState(self: *Owner, namespace: []const u8, completion: []const u8, data: ?std.json.Value, environ: *const std.process.Environ.Map) !void {
         try self.active.ensureUnusedCapacity(self.allocator, 1);
         const serial = self.serial +% 1;
