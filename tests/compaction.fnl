@@ -126,7 +126,8 @@
              (. messages 1)
              (. messages 2)
              (. messages 3)])
-(local almost {:models catalog.models
+(local almost {:conversation {:id :test}
+               :models catalog.models
                :agent {:messages many :status :ready}
                :usage {:last_request {:input_tokens 150000 :output_tokens 1000}}})
 (local without-model
@@ -189,6 +190,10 @@
 (assert (= (length start-fx) 2))
 (local request (provider-request start-fx))
 (assert (= request.model :model))
+;; Summarizing is a model call that is not a turn, so the request declares the
+;; attempt it is recorded as, named by the branch it belongs to.
+(assert (= request.attempt.kind :side))
+(assert (= request.attempt.conversation :test))
 (assert (= (length request.tools) 0))
 (assert (= (length request.messages) 1))
 (assert (= (. request.messages 1 :role) :user))

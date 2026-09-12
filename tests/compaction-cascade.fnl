@@ -136,6 +136,8 @@
 (assert (= request.model :model) "compaction did not use the selected model")
 (assert (= (length request.tools) 0) "the compaction request carried tools")
 (assert (= (length request.messages) 1) "the compaction request carried extra turns")
+(assert (= request.attempt.kind :side)
+        "the summarization call did not declare itself a side request")
 (assert (contains? request.system_prompt "handoff note")
         "the compaction request lost the handoff prompt")
 
