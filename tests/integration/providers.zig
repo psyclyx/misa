@@ -95,11 +95,21 @@ test "dynamic models" {
     try h.expect(.{ .args = &.{"test"}, .input = "" }, "dynamic model\n");
 }
 
+test "the persisted model, not the configured default, starts the session" {
+    var h = try Harness.init();
+    defer h.deinit();
+    // The saved selection is a model the configured default does not name, and
+    // the catalogue offers it: the first request must use it.
+    try h.write("application-state.json", "{\"version\":1,\"namespaces\":{\"model-selection\":{\"selected\":\"persisted/chosen\"}}}");
+    try h.config(@embedFile("configs/persisted-model.fnl"));
+    try h.expect(.{ .args = &.{"hello"}, .input = "" }, "used chosen\n");
+}
+
 test "unavailable models" {
     var h = try Harness.init();
     defer h.deinit();
     try h.config(@embedFile("configs/unavailable-models.fnl"));
-    try h.expect(.{ .args = &.{}, .input = "hello\n" }, "configured model is unavailable: private/model\n");
+    try h.expect(.{ .args = &.{}, .input = "hello\n" }, "model is unavailable: private/model\n");
 }
 
 test "tool loop" {

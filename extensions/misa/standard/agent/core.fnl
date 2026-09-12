@@ -20,6 +20,12 @@
           :agent/auth-ready {:event :auth/startup-ready
                              :priority 63000
                              :handler agent.continue-startup}
+          ;; The model owner publishes this fact after applying a restored
+          ;; selection, so the queued prompt continues after that patch instead
+          ;; of racing it.
+          :agent/models-settled {:event :models/selection-settled
+                                 :priority 63000
+                                 :handler agent.continue-startup}
           :agent/cancel {:event :agent/cancel-active
                          :priority 63000
                          :handler agent.cancel}

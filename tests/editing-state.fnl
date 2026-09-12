@@ -178,6 +178,13 @@
 (assert (= exited.editing.anchor nil))
 (assert (= (length exit-effects) 1))
 (assert (= (. exit-effects 1 :type) :app/quit))
+;; Input ending while a startup prompt is queued (it waits for the restored
+;; model selection) keeps that turn instead of dropping it.
+(local (deferred deferred-effects)
+       (transition (misa.patch visual {:agent {:startup_prompt "hello"}})
+                   {:type :terminal/input :kind :eof}))
+(assert (= (length deferred-effects) 1))
+(assert (= (. deferred-effects 1 :type) :terminal/read))
 (local pending (action initial :delete))
 (local (word-deleted word-fx) (action pending :word_next))
 (assert (= word-deleted.editor.text "two\nthree"))

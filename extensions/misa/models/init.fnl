@@ -33,12 +33,16 @@
                      (- (or db.models.catalogue_now 0)
                         (* (or config.max_age_days 365) 86400))))))))
 
-(fn rebuild [state preferred]
+;; `preferred` is the model the user last chose, which a restart restores even
+;; when the owning provider registers its catalogue later. `selected` is the
+;; offered model that requests currently use.
+(fn rebuild [state default]
   (let [entries {}]
     (each [_ model (ipairs state.catalogue)]
       (when (not= (. state.available model.provider) false)
         (tset entries (+ (length entries) 1) model)))
-    (let [selected (if (find entries state.selected) state.selected
+    (let [preferred (or state.preferred default)
+          selected (if (find entries state.selected) state.selected
                        (find entries preferred) preferred
                        (and (= preferred nil) (> (length entries) 0)) (. entries
                                                                          1 :id)
@@ -122,14 +126,15 @@
                       nil)]
     (assert (and requested (find state.entries requested))
             "unknown or unavailable model")
-    {:patch {:models {:selected requested}}
+    {:patch {:models {:preferred requested :selected requested}}
      :fx [(save-selection requested) {:type :terminal/read}]}))
 
 (fn on-model-select [db event]
   "Select an available model and persist the active selection."
   (assert (and (= (type event.id) :string) (find db.models.entries event.id))
           "unknown or unavailable model")
-  {:patch {:models {:selected event.id}} :fx [(save-selection event.id)]})
+  {:patch {:models {:preferred event.id :selected event.id}}
+   :fx [(save-selection event.id)]})
 
 (fn options [config]
   "Validate the configured default model and catalogue filters."
@@ -166,6 +171,7 @@
                                                             0)
                                                         1000)
                                       :entries {}
+                                      :selection_pending true
                                       :selected default}
                                      default))]
         (set result.fx
@@ -174,13 +180,25 @@
                :completion :model/selection-loaded}])
         result))))
 
+;; The persisted selection is the model the user chose, so it replaces the
+;; configured default. A model whose provider has not offered it yet stays
+;; preferred and becomes selected when that catalogue arrives. Consumers that
+;; wait for it (a queued prompt) continue from the settled event below, so this
+;; patch is applied before they run.
 (fn on-model-selection-loaded [db event]
-  "Restore the last selected model after a restart."
-  (when (and (not= event.found false) (= (type event.data) :table)
-             (= (type event.data.selected) :string)
-             (find (or (and db.models db.models.entries) [])
-                   event.data.selected))
-    {:patch {:models {:selected event.data.selected}}}))
+  "Apply the persisted selection once the startup load has settled."
+  (when db.models
+    (let [saved (and (not= event.found false) (= (type event.data) :table)
+                     (= (type event.data.selected) :string)
+                     (not= event.data.selected ""))
+          id (when saved event.data.selected)]
+      {:patch {:models {:preferred (when saved id)
+                        :selected (when saved
+                                    (if (find (or db.models.entries []) id)
+                                        id
+                                        misa.delete))
+                        :selection_pending false}}
+       :fx [{:type :dispatch :event {:type :models/selection-settled}}]})))
 
 (fn on-models-provider-availability [config db event]
   "Update provider availability and reconcile model selection."

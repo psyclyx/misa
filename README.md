@@ -1207,9 +1207,13 @@ Search and the All view retain the full available catalogue. No popularity score
 is inferred from a model name or price.
 
 Misa uses one selected model for every request. Choose it with `/model
-provider/model` or the picker (Alt-M); `config.models.default` supplies the
-initial value when nothing has been selected yet. The choice persists across
-restarts. Extensions read the resolved model from `db.models.selected` (the
+provider/model` or the picker (Alt-M). The choice persists across restarts and is
+restored before the session's first request; `config.models.default` supplies the
+initial value only when nothing has been selected yet. A saved model whose
+provider registers its catalogue later stays preferred and becomes selected when
+that catalogue arrives, so startup neither substitutes the configured default for
+a saved choice nor sends a request before the selection is known; a queued prompt
+waits for it. Extensions read the resolved model from `db.models.selected` (the
 `models/selected` subscription), and automatic compaction runs on the same
 selected model.
 

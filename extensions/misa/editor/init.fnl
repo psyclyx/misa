@@ -314,7 +314,12 @@
 
 (fn raw-input [editor event db cofx]
   (if (or (= event.kind :eof) (and (= event.kind :ctrl_d) (= editor.text "")))
-      (updated editor [{:type :app/quit}])
+      ;; Input ending while work is already queued (a startup prompt waiting
+      ;; for a restored model selection) is not a request to drop that work.
+      ;; The queued turn runs and the session exits when it completes.
+      (if (and db.agent db.agent.startup_prompt)
+          (updated editor)
+          (updated editor [{:type :app/quit}]))
       (and (= event.kind :enter)
            (or (not= editor.text "") (> (length (or editor.attachments {})) 0)))
       (let [(command args) (command-input editor.text)]

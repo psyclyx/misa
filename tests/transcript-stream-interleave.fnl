@@ -105,6 +105,7 @@
 
 (step {:type :probe/seed
        :value {:models {:selected :test/model
+                        :selection_pending false
                         :entries [{:id :test/model
                                    :context_window 200000
                                    :provider :test
@@ -112,8 +113,7 @@
                                   {:id :test/small
                                    :context_window 200000
                                    :provider :test
-                                   :model :small}]
-                        }
+                                   :model :small}]}
                :agent {:messages conversation :request_seq 1 :status :ready}
                :usage {:last_request {:input_tokens 190000 :output_tokens 1000}}
                :queue {:pending "queued prompt" :attachments {} :sending false}}})

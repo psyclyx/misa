@@ -489,10 +489,11 @@
       stream)))
 
 (fn continue-startup [db]
-  "Start the queued initial prompt once authentication is ready."
+  "Start the queued initial prompt once authentication and model state are ready."
   (let [agent db.agent]
     (when (and agent agent.startup_prompt
-               (or (not db.auth_startup) db.auth_startup.ready))
+               (or (not db.auth_startup) db.auth_startup.ready)
+               (not (and db.models db.models.selection_pending)))
       {:patch {:agent {:startup_prompt misa.delete
                        :startup_attachments misa.delete}}
        :fx [{:type :dispatch
@@ -629,18 +630,20 @@
           "agent prompt must be nonempty")
   (let [agent (assert db.agent "agent state is not initialized")]
     (if (not= agent.status :ready) nil
-        (and db.auth_startup (not db.auth_startup.ready))
+        (or (and db.auth_startup (not db.auth_startup.ready))
+            (and db.models db.models.selection_pending))
         {:patch {:agent {:startup_prompt event.prompt
                          :startup_attachments (misa.replace event.attachments)}}}
         (not (selected-model db))
-        (let [configured (and db.models db.models.configured_default)
-              message (if configured
-                          (.. "configured model is unavailable: " configured)
+        (let [chosen (or (and db.models db.models.preferred)
+                         (and db.models db.models.configured_default))
+              message (if chosen
+                          (.. "model is unavailable: " chosen)
                           "no available models; log in to a provider")
               problem {:code :missing_model
                        :kind :request_readiness
                        : message
-                       :model configured}]
+                       :model chosen}]
           {:fx [{:type :dispatch
                  :event {:type :transcript/harness
                          :level :error

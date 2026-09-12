@@ -168,9 +168,10 @@
 (assert (= (. filtered 1 :browse_visible) false))
 (assert (= (. filtered 2 :browse_visible) true))
 (assert (= (. filtered 3 :browse_visible) true))
-;; A picker selection is persisted and restored after a restart.
+;; A picker selection is persisted, remembered, and restored after a restart.
 (local picked ((. handlers :model/select) catalogue {:id :popular}))
 (assert (= (. picked.patch :models :selected) :popular))
+(assert (= (. picked.patch :models :preferred) :popular))
 (assert (= (. picked.fx 1 :type) :state/save))
 (assert (= (. picked.fx 1 :namespace) :model-selection))
 (assert (= (. picked.fx 1 :data :selected) :popular))
@@ -180,15 +181,30 @@
         {:found true :data (. picked.fx 1 :data)}))
 (assert (= (. relaunched.patch :models :selected) :popular)
         "saved selection was not restored")
+(assert (= (. relaunched.patch :models :preferred) :popular))
+(assert (= (. relaunched.patch :models :selection_pending) false))
+;; The settled fact is what releases work that waited for the selection.
+(assert (= (. relaunched.fx 1 :type) :dispatch))
+(assert (= (. relaunched.fx 1 :event :type) :models/selection-settled))
 
 ;; The /model command path persists the same record.
 (local opened ((. handlers :model/open) catalogue {:arguments "popular"}))
 (assert (= (. opened.patch :models :selected) :popular))
+(assert (= (. opened.patch :models :preferred) :popular))
 (assert (= (. opened.fx 1 :namespace) :model-selection))
 (assert (= (. opened.fx 1 :data :selected) :popular))
 
-;; A saved model that is no longer offered is ignored rather than selected.
-(local gone ((. handlers :model/selection-loaded) catalogue
-             {:found true :data {:selected :removed}}))
-(assert (= gone nil))
-(assert (= ((. handlers :model/selection-loaded) catalogue {:found false}) nil))
+;; A saved model whose catalogue has not arrived stays preferred instead of
+;; letting the configured default stand in for it.
+(local pending ((. handlers :model/selection-loaded) catalogue
+               {:found true :data {:selected :removed}}))
+(assert (= (. pending.patch :models :preferred) :removed))
+(assert (= (. pending.patch :models :selected) misa.delete))
+(assert (= (. pending.patch :models :selection_pending) false))
+(assert (= (. pending.fx 1 :event :type) :models/selection-settled))
+
+;; Nothing saved leaves the configured default selected.
+(local absent ((. handlers :model/selection-loaded) catalogue {:found false}))
+(assert (= (. absent.patch :models :selection_pending) false))
+(assert (= (. absent.patch :models :selected) nil))
+(assert (= (. absent.patch :models :preferred) nil))

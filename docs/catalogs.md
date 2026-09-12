@@ -29,7 +29,7 @@ composition, and commit the result.
 | `editing-motions` | 11 |
 | `editor-edits` | 6 |
 | `effects` | 26 |
-| `events` | 270 |
+| `events` | 271 |
 | `indicators` | 8 |
 | `keybindings` | 93 |
 | `models` | 6 |
@@ -451,6 +451,7 @@ composition, and commit the result.
 | `agent/cancel` | event `agent/cancel-active`, priority 63000 |
 | `agent/error` | event `agent/error`, priority 63000 |
 | `agent/legacy-result` | event `agent/result`, priority 63000 |
+| `agent/models-settled` | event `models/selection-settled`, priority 63000 |
 | `agent/reset` | event `agent/reset`, priority 63000 |
 | `agent/start` | event `app/start`, priority 63000 |
 | `agent/startup` | event `agent/startup`, priority 63000 |

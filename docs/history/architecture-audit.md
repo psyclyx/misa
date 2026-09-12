@@ -4,6 +4,37 @@ Notes below were written as the work landed, in order, and later entries
 supersede earlier ones. They are retained for the reasoning and the
 verification they record, not as a description of the current code.
 
+### The persisted model wins the first request (2026-09-11)
+
+`config.models.default` was reaching the first request of a session. The models
+extension patched `selected` from the configured default at `app/start` and only
+replaced it when the `model-selection` load reported a model that the current
+catalogue already offered. Discovery registers a provider's models later, and the
+load is a native operation whose completion competes with the queued startup
+prompt, so a session could start on, or fall back to, the default after the
+configured default itself became unavailable.
+
+`db.models` now distinguishes `preferred` — the model the user last chose, which
+outlives a catalogue that does not offer it yet — from `selected`, the offered
+model requests use. `rebuild` resolves `selected`, then `preferred`, and only
+then the configured default, so a provider that registers its catalogue later
+still restores the saved choice. `model/select` and `model/open` record
+`preferred` with the selection. The load's completion clears
+`db.models.selection_pending`, which holds a queued prompt (and an early
+`agent/submit`) back until the selection is known, and publishes
+`models/selection-settled` so the agent continues after the model owner's patch
+rather than racing it: handlers for one event run in ascending priority, so a
+continuation cannot be ordered by priority alone. EOF no longer discards that
+queued turn, and the readiness message names `preferred` instead of the
+configured default.
+
+Evidence: `tests/model-startup.fnl` covers the configured default, a persisted
+selection that replaces it, and a saved model whose provider arrives later;
+`tests/model-affordances.fnl` pins the load handler's patch and settled effect;
+`tests/agent-stream-state.fnl` and `tests/editing-state.fnl` cover the queued
+prompt gate and EOF; `tests/integration/providers.zig` starts a fixture session
+from a seeded state file and asserts the request uses the saved model.
+
 ### Single selected model replaces role assignments (2026-09-10)
 
 Model roles are removed. `misa.models` owns exactly one active selection
