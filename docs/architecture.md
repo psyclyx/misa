@@ -133,6 +133,7 @@ Invariants, each with where it is enforced:
 | Every state path declares ownership and lifetime                  | install-time manifest validation                          |
 | Observations carry a check or are unknowable                      | a check catalog consulted at use sites                    |
 | Canonical history always satisfies the provider contract          | the native fold and message-shape validation              |
+| Loading a conversation performs no effect                         | the load path emits dispatches only                       |
 
 ## 5. Composition: the system map
 
@@ -205,8 +206,8 @@ seam, and splitting the transcript render model out of the kernel into
 presentation.
 
 **A bespoke personal tool.** A declaration, an effect translator, a completion
-translator, a presentation binding, a declared effect class (pure read,
-checkable, uncheckable), and an argument schema. It expresses itself over
+translator, a presentation binding, and an argument schema. It expresses itself
+over
 existing effect kinds — `process/run`, `http/request`, `file/*`, `json/decode`,
 `clipboard`, `image/*` — so most tools need no native change; a genuinely new OS
 capability is a new effect kind and adapter. Its result appends as a message; it
@@ -252,7 +253,10 @@ keep loading through the existing migration path.
 Verify: new native tests for every fold rule, including each crash window (tail
 is a user message, tail is an assistant message with unanswered calls, tail is
 part of a tool batch, tail after a reset); the existing legacy-upgrade test;
-`tests/conversation-state.fnl` re-pointed at the native fold.
+`tests/conversation-state.fnl` re-pointed at the native fold. The closure it
+derives uses the single wording Section 10 settles, and reports what it closed
+rather than only the count, so Slice 3 can surface an unfinished attempt the same
+way.
 
 Risk: medium. It is versioned durability semantics; it needs a migration-safe
 reading path and it invalidates the Lua reassembly the journal depends on, so
@@ -283,6 +287,11 @@ link to messages. Cost and usage stop living in session memory: `db.costs` and
 `db.usage` become subscriptions over ledger rows plus configuration, keeping the
 indicator and dashboard output identical.
 
+An unfinished response becomes a fact here: an attempt with no outcome is what
+lets the fold report "a request was made and nothing came back" instead of
+mistaking the state for a turn about to start. It is surfaced, never re-issued
+(Section 10).
+
 Verify: native tests for attempt insert, enrichment, retry grouping under
 `parent_request_id`, message linking, and concurrent writers; Fennel tests for the
 cost and usage projections; integration case for `/usage` and the cost
@@ -294,7 +303,7 @@ slice.
 
 ### Slice 4 — kernel session state, side request, history replacement
 
-Three kernel primitives:
+Kernel primitives:
 
 - per-conversation session state (history, open step, in-flight calls) keyed by
   conversation id, replacing the singleton `db.agent` durable fields. Only the
@@ -403,24 +412,38 @@ most likely to reveal a kernel assumption that leaked into presentation.
   projections and ephemeral state. A Lua-side history cache would recreate the
   reconciliation problem this plan removes.
 
-## 10. Open decisions
+## 10. Decisions and open questions
 
-1. An unfinished response on resume: re-issue the request (paying again, possibly
-   with a different model) or record it as unknown and surface it for retry?
-   Likely different for restarting the same session versus resuming an old
-   conversation.
-2. Close-out semantics: is an unanswered tool call an error for the model
-   (`is_error` true, better for provider protocols) while the transcript renders
-   it as an abandonment note? And per class of tool — "not carried out" for pure
-   reads, "unknown whether it landed" for world-mutating ones.
-3. Non-idempotent tools: uniform close-out, or an opt-in `retry-safe`
-   declaration per tool?
-4. The prompt input bound: a limit on attachments and prompt bytes, so the
+### Decided
+
+Nothing unfinished is ever resumed automatically, and nothing is classified. The
+three questions this section previously carried are answered by one rule: when a
+step has no recorded outcome, the log says so and the session stops there.
+
+- **An unfinished response is not re-issued.** Loading a conversation performs
+  no effect. The unfinished attempt is a fact (once Slice 3 records attempts),
+  the fold reports it, and the session surfaces it so a person decides. No
+  automatic spend, no automatic retry, on restart or on `/resume`.
+- **One close-out sentence serves every tool.** An unanswered call is closed with
+  the same text and `is_error = true`: the call started, its result was never
+  recorded, so whether it took effect is unknown, and what that means depends on
+  the tool. Classifying tools to phrase it better is a losing game — `ls` through
+  the shell is semantically `list_directory` — so the model is told what happened
+  and re-checks what it depends on.
+- **No tool declares itself retry-safe.** Nothing re-runs on load; `read_file` is
+  not special-cased and no effect-class field is added to a declaration.
+
+The property this buys is worth stating plainly: resuming folds, closes out, and
+reports. It spends nothing, touches nothing, and cannot change the world.
+
+### Open
+
+1. The prompt input bound: a limit on attachments and prompt bytes, so the
    record budget is provably unreachable. This is an input policy and it should
    be a decision, not an accident.
-5. Whether a resumed interrupted conversation silently branches (new id with
+2. Whether a resumed interrupted conversation silently branches (new id with
    fork provenance) or asks.
-6. Timing of Slice 9: profiles and bundles are cheap but they rename things
+3. Timing of Slice 9: profiles and bundles are cheap but they rename things
    users see in configuration, so they can wait until the boundary work is done.
 
 ## 11. Verification

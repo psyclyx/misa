@@ -246,7 +246,7 @@
 (assert (= (. adopted 3 :tool_call_id) "call-1"))
 (assert (= (. adopted 3 :is_error) true))
 (assert (= (. adopted 3 :content 1 :text)
-           "Misa ended before this tool reported a result."))
+           "This call was interrupted before its result was recorded, so its effect is unknown; re-check anything you depend on before continuing."))
 ;; The derived result is presented like any other tool result, and the resume
 ;; explains why history ends that way.
 (assert (= (. resumed-fx 3 :event :type) :transcript/assistant))

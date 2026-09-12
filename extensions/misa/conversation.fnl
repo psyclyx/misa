@@ -197,8 +197,12 @@
         pending)))
 
 (fn interrupted-result [call-id]
-  "The result a tool call never reported, in the shape a cancelled call takes."
-  {:content [{:text "Misa ended before this tool reported a result."
+  "The result a tool call never reported. One wording serves every tool: the
+   call started and its result was never recorded, so whether it took effect is
+   unknown, and what that means depends on the tool. Classifying tools here
+   would be a guess — `ls` through the shell is semantically `list_directory` —
+   so the model is told what happened and re-checks what it depends on."
+  {:content [{:text "This call was interrupted before its result was recorded, so its effect is unknown; re-check anything you depend on before continuing."
               :type :text}]
    :is_error true
    :role :tool
