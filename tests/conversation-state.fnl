@@ -221,6 +221,76 @@
 (assert (= (. adopted :conversation :loading) nil)
         "installing left a page buffer behind")
 
+;; A log can end between a tool call and its result: the assistant message is
+;; recorded when its response ends, and each result only when its tool reports.
+;; Loading such a conversation closes the calls it never answered, and says so.
+(local with-call {:conversation :main
+                  :metadata {}
+                  :more_entries false
+                  :entries [{:seq 1 :kind :message :data (message :user :hi)}
+                            {:seq 2
+                             :kind :message
+                             :data {:content [{:arguments {}
+                                               :id "call-1"
+                                               :name :read_file
+                                               :type :tool_call}]
+                                    :role :assistant}}]})
+
+(local resumed (conversation.loaded {:conversation {:id :main :synced 0}}
+                                    {:ok true :data with-call}))
+(local resumed-fx (. resumed :fx))
+(local adopted (. resumed-fx (length resumed-fx) :event :messages))
+(assert (= (. resumed-fx 1 :event :type) :transcript/reset))
+(assert (= (length adopted) 3) "the unanswered tool call was left open")
+(assert (= (. adopted 3 :role) :tool))
+(assert (= (. adopted 3 :tool_call_id) "call-1"))
+(assert (= (. adopted 3 :is_error) true))
+(assert (= (. adopted 3 :content 1 :text)
+           "Misa ended before this tool reported a result."))
+;; The derived result is presented like any other tool result, and the resume
+;; explains why history ends that way.
+(assert (= (. resumed-fx 3 :event :type) :transcript/assistant))
+(assert (= (. resumed-fx 4 :event :type) :transcript/tool-result))
+(assert (= (. resumed-fx 4 :event :is_error) true))
+(assert (= (. resumed-fx 5 :event :type) :transcript/harness))
+(assert (= (. resumed-fx 5 :event :level) :warning))
+(assert (and (. resumed-fx 5 :event :text) (not= (. resumed-fx 5 :event :text) "")))
+;; The closing result is derived on load, not written back: the log records that
+;; no result happened, and the cursor already covers what was adopted.
+(assert (= (. (apply-patch resumed) :conversation :synced) 3))
+(assert (= (conversation.journal (misa.patch (apply-patch resumed)
+                                             {:agent {:messages adopted}})
+                                {})
+           nil)
+        "the derived result was written to the log")
+
+;; A conversation whose calls are all answered is adopted unchanged.
+(local answered {:conversation :main
+                 :metadata {}
+                 :more_entries false
+                 :entries [{:seq 1
+                            :kind :message
+                            :data {:content [{:arguments {}
+                                              :id "call-1"
+                                              :name :read_file
+                                              :type :tool_call}]
+                                   :role :assistant}}
+                           {:seq 2
+                            :kind :message
+                            :data {:content [{:text "contents" :type :text}]
+                                   :is_error false
+                                   :role :tool
+                                   :tool_call_id "call-1"}}]})
+(local intact (conversation.loaded {:conversation {:id :main :synced 0}}
+                                   {:ok true :data answered}))
+(local intact-fx (. intact :fx))
+(assert (= (length (. intact-fx (length intact-fx) :event :messages)) 2)
+        "an answered tool call was closed again")
+(assert (= (. intact-fx (length intact-fx) :event :type)
+           :agent/conversation-loaded))
+(each [_ effect (ipairs intact-fx)]
+  (assert (not= (. effect :event :type) :transcript/harness)
+          "an answered tool call was reported as interrupted"))
 ;; A longer conversation loads page by page before it is installed.
 (local first-page
        {:ok true

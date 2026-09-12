@@ -162,19 +162,81 @@
                 :type :transcript/tool-result}}]
       []))
 
+(fn tool-call-ids [message]
+  "The tool call ids of one message, in block order."
+  (icollect [_ block (ipairs (or message.content []))]
+    (when (= block.type :tool_call) block.id)))
+
+(fn answered-calls [messages from]
+  "The tool call ids a result message after FROM answers."
+  (let [answered {}]
+    (for [index (+ from 1) (length messages)]
+      (let [message (. messages index)]
+        (when (and (= message.role :tool)
+                   (= (type message.tool_call_id) :string))
+          (tset answered message.tool_call_id true))))
+    answered))
+
+(fn interrupted-results [messages]
+  "The tool calls a stored conversation never answered. The log records an
+   assistant message as soon as its response ends, so a session can end between
+   a tool call and its result. The log keeps saying only what happened — no
+   result was recorded — and what that leaves open is closed here."
+  (var found nil)
+  (var index (length messages))
+  (while (and (> index 0) (not found))
+    (when (= (. messages index :role) :assistant) (set found index))
+    (set index (- index 1)))
+  (if (not found)
+      []
+      (let [answered (answered-calls messages found)
+            pending []]
+        (each [_ call-id (ipairs (tool-call-ids (. messages found)))]
+          (when (and (= (type call-id) :string) (not (. answered call-id)))
+            (table.insert pending call-id)))
+        pending)))
+
+(fn interrupted-result [call-id]
+  "The result a tool call never reported, in the shape a cancelled call takes."
+  {:content [{:text "Misa ended before this tool reported a result."
+              :type :text}]
+   :is_error true
+   :role :tool
+   :tool_call_id call-id})
+
+(fn closed-history [messages]
+  "MESSAGES with every unanswered tool call closed: `(values history closed)`."
+  (let [interrupted (interrupted-results messages)
+        history (icollect [_ message (ipairs messages)] message)]
+    (each [_ call-id (ipairs interrupted)]
+      (table.insert history (interrupted-result call-id)))
+    (values history (length interrupted))))
+
 (fn install [db data messages]
   "Adopt a loaded conversation as this session's history."
   (assert (> (length messages) 0) "the stored conversation has no messages")
-  (let [fx [{:type :dispatch :event {:type :transcript/reset}}]]
-    (each [_ message (ipairs messages)]
+  (let [(history interrupted) (closed-history messages)
+        fx [{:type :dispatch :event {:type :transcript/reset}}]]
+    (each [_ message (ipairs history)]
       (each [_ effect (ipairs (message-effects message))]
         (table.insert fx effect)))
-    (table.insert fx
-                  {:type :dispatch
-                   :event {:type :agent/conversation-loaded : messages}})
+    (when (> interrupted 0)
+      (table.insert fx
+                    {:type :dispatch
+                     :event {:level :warning
+                             :text (.. "The stored conversation ended before "
+                                       (tostring interrupted)
+                                       (if (= interrupted 1)
+                                           " tool result was"
+                                           " tool results were")
+                                       " recorded; those calls are marked interrupted.")
+                             :type :transcript/harness}}))
+    (table.insert fx {:type :dispatch
+                      :event {:type :agent/conversation-loaded
+                              :messages history}})
     {:patch {:conversation {:id data.conversation
                             :label (. (or data.metadata {}) :label)
-                            :synced (length messages)
+                            :synced (length history)
                             :pending misa.delete
                             :loading misa.delete}}
      : fx}))
