@@ -23,18 +23,18 @@ python3 tests/policy-fault.py zig-out/bin/misa-fixture
 
 ## Status
 
-| Slice | Scope                                                        | State    | Evidence                                                    |
-| ----- | ------------------------------------------------------------ | -------- | ----------------------------------------------------------- |
-| 1     | Contract documentation matches the code                      | done     | review                                                      |
-| 2     | Registration and view-layer diagnostics                      | done     | suite                                                       |
-| 3     | Indexed and appended state patches                           | done     | `tests/indexed-patches.fnl`, `patch-controls` case          |
-| 4     | Recoverable policy faults with an interactive fault boundary | done     | `tests/policy-fault.py`                                     |
-| 5     | Documentation generation and repository hygiene              | done     | `tools/generate-docs.fnl`, catalog/mirror checks            |
-| 6     | Retry for transient provider transport failures              | done     | `tests/http-cancellation.py` retry modes                    |
-| 7     | Extension discovery outside `MISA_EXTENSION_DIR`             | done     | runtime case in `tests/integration/runtime.zig`             |
-| 8     | Wire the unwired capability: conversation log and `/resume`  | done     | `tests/conversation-state.fnl`, `conversation-read` case    |
-| 9     | Presentation cost: window-scoped projection                  | measured | `benchmarks/projection-phases.fnl`; no change made, and why |
-| 10    | Single native implementation of terminal cell layout         | done     | `tests/native-layout.fnl`, extended parity case, frame A/B  |
+| Slice | Scope                                                        | State | Evidence                                                       |
+| ----- | ------------------------------------------------------------ | ----- | -------------------------------------------------------------- |
+| 1     | Contract documentation matches the code                      | done  | review                                                         |
+| 2     | Registration and view-layer diagnostics                      | done  | suite                                                          |
+| 3     | Indexed and appended state patches                           | done  | `tests/indexed-patches.fnl`, `patch-controls` case             |
+| 4     | Recoverable policy faults with an interactive fault boundary | done  | `tests/policy-fault.py`                                        |
+| 5     | Documentation generation and repository hygiene              | done  | `tools/generate-docs.fnl`, catalog/mirror checks               |
+| 6     | Retry for transient provider transport failures              | done  | `tests/http-cancellation.py` retry modes                       |
+| 7     | Extension discovery outside `MISA_EXTENSION_DIR`             | done  | runtime case in `tests/integration/runtime.zig`                |
+| 8     | Wire the unwired capability: conversation log and `/resume`  | done  | `tests/conversation-state.fnl`, `conversation-read` case       |
+| 9     | Presentation cost: window-scoped projection                  | done  | `benchmarks/projection-phases.fnl`, `transcript.layout`/`rows` |
+| 10    | Single native implementation of terminal cell layout         | done  | `tests/native-layout.fnl`, extended parity case, frame A/B     |
 
 The suite grew from 292 cases at the review to 325. Slice 4's interactive behavior
 and every PTY regression are separate Python checks, because the fixture harness
@@ -163,7 +163,7 @@ the handover. `tests/conversation-state.fnl` covers the cursor, the reset entry,
 page accumulation, picker tokens, and failure reporting; the `conversation-read`
 case proves the stored round trip including the new header `metadata`.
 
-## Slice 9 — presentation cost (measured, no production change)
+## Slice 9 — presentation cost (measured window landed)
 
 The review predicted that a frame costs the whole transcript. The first
 measurement of this slice used redraw frames only
@@ -171,8 +171,8 @@ measurement of this slice used redraw frames only
 1 block 3.240 ms, 16 blocks 4.892 ms, 300 blocks 4.887 ms redraw, 7.2–7.7 ms per
 stream delta) and concluded that a frame is dominated by fixed work. That
 conclusion holds for redraw frames and is wrong for delta frames: a redraw frame
-does not replace the block array, so `misa.transcript.project` reuses the
-accepted projection and never walks the transcript, while a delta replaces it and
+does not replace the block array, so the transcript projection reuses the
+accepted value and never walks the transcript, while a delta replaces it and
 re-renders every block through the per-item cache.
 
 `benchmarks/projection-phases.fnl` separates model dispatch from presentation and
@@ -188,46 +188,52 @@ scope):
 |   1000 |                0.3730 |               2.2990 |
 |   3000 |                0.5080 |               7.9680 |
 
-Redraw presentation is flat, so the per-item cache does its job. Delta
-presentation is linear in transcript size at about 2.7 µs per block: 1.05 ms at
-300 blocks and 8.0 ms at 3000. Model dispatch is 0.38 ms at 3000 blocks.
+Redraw presentation was flat, so the per-item cache did its job. Delta
+presentation was linear in transcript size at about 2.7 µs per block: 1.05 ms at
+300 blocks and 8.0 ms at 3000. Two candidate caches were implemented and rejected
+earlier on evidence or soundness: memoizing `misa.syntax.for-model` changed
+nothing measurable, and caching the selection lookup per block is unsound because
+the selection service is a replaceable catalog entry that may read any state.
 
-Two candidate caches were implemented and rejected earlier on evidence or
-soundness, and the new numbers do not revive either:
+The slice landed as a change to the presentation contract rather than to a cache:
 
-- Memoizing `misa.syntax.for-model` changed nothing measurable.
-- Caching the selection lookup per block is unsound: the selection service is a
-  replaceable catalog entry that may read any state, so no key short of the
-  database itself is safe, and that key removes the benefit.
+- `install-projection` in `src/lua_runtime/framework.fnl` now passes the previous
+  accepted value to a projection's `render`, which is what a computed
+  subscription already receives in its `compute`. Without it a projection had no
+  way to retain per-item work across a recompute.
+- `misa.transcript.layout` measures the transcript as ordered items: each item's
+  rendered rows, its row height, and the row its first row occupies. An item's
+  rendered view is retained keyed by the immutable block it came from, and the
+  retained entry is handed back to `misa.components.entry` — the per-item step of
+  the component collection, extracted so a consumer with its own indexing reuses
+  the collection's invalidation rules instead of restating them.
+- `misa.transcript.rows` materializes a row range from that geometry, so a frame
+  builds the visible rows rather than the whole transcript. The viewport resolves
+  the window from it, scrolling re-windows without remeasuring, and
+  `misa.transcript.project` keeps its whole-array contract for the consumers that
+  need it (`document-layout`, tests) as measurement plus a full-range
+  materialization.
 
-No production change was made in this slice. The delta path is the one that
-scales with the transcript, and the fix is not a local cache:
+Evidence: `benchmarks/projection-phases.fnl` with instrumented counts, a redraw
+frame calls `measure` zero times and materializes one window; a delta frame
+measures once and materializes one window, re-rendering one item of 300
+(`tests/projection-regions.fnl` asserts that typing neither remeasures nor
+re-renders, and that scrolling re-windows the measured geometry).
+`tests/transcript-viewport.fnl` keeps every scroll, anchor, resize, and streaming
+contract by driving measured geometry directly. The suite passes (235/235 steps,
+325/325 tests; 192 integration cases; all 77 standalone cases).
 
-- `install-projection` in `src/lua_runtime/framework.fnl` compares a projection's
-  declared inputs field by field and reuses the accepted value, but it does not
-  pass the previous value to `render`, while a computed subscription receives
-  `previous` in its `compute`. A projection therefore cannot retain per-item work
-  across a recompute, which is exactly what a delta needs: all of its inputs
-  except the block array are unchanged, so the items for unchanged blocks could
-  be reused verbatim. Extending the projection contract to pass the previous
-  value would be consistent with subscriptions and is the smallest enabling
-  change.
-- Two hazards have to be answered first. Reusing an item is only sound for the
-  state the projection already declares as an invalidation input, so any item
-  input that is _not_ declared (attachments, for instance) would be reused
-  stale — the projection's input list has to become the authoritative statement
-  of what an item depends on. And the item list interleaves group headers and
-  footers, so reuse has to key on structure (owner transitions and item roles),
-  not on position, or a changed block silently shifts every later row.
-- Window-scoped assembly is the other half: the delta still materializes one line
-  array for the whole transcript, and the viewport slices 32 rows out of it. That
-  change needs a per-block line index plus a row-range materializer, and it
-  touches `presentation.project`, `transcript.viewport`, and document geometry.
+Presentation is unchanged. `benchmarks/native-transcript.py` run against the
+revision before this change and against it reports the same SHA-256 of all
+post-startup frame bytes for every workload (1/16/300 blocks, redraw and
+streaming), so the windowed path renders the same frames from different work.
 
-Both are refactors of the presentation contract rather than caches, and neither
-is justified until a transcript of a few thousand blocks is a real workload. The
-measurement above is the input to that decision; nothing in the suite regressed
-while it was taken.
+What is still linear is the per-block model rebuild inside `measure` — copying
+each block, consulting the selection and syntax services, and calling
+`components.entry` for every item, about 1.7 µs per block. That is the next step:
+reuse a block's model when the block is unchanged and the declared inputs still
+match, which needs the same hazard answered (an item's inputs must be exactly the
+declared ones) and is why the measurement above, not a cache, was the gate.
 
 ## Slice 10 — single native cell layout (done)
 
