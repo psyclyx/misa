@@ -138,7 +138,9 @@ impl App {
                     edit
                 });
         }
-        if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input") {
+        if self.save.is_some() {
+            // A live update cannot steal focus from a local destination dialog.
+        } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && misa_proto::view::find(&self.view, node).is_none()) {
             if !matches!(&self.focus, Some(Control::Field { node: focused, .. }) if focused == node) {
                 self.focus = Some(Control::Field { node: node.clone(), field: field.id.clone() });
             }
@@ -169,7 +171,21 @@ impl App {
             return vec![];
         };
         if let Control::Text(row) = hit.control {
-            let column = ((x - hit.x).max(0.0) / Layout::default().advance).floor() as usize;
+            let cells = ((x - hit.x).max(0.0) / Layout::default().advance).floor() as usize;
+            let mut width = 0;
+            let column = self
+                .rows
+                .get(row)
+                .map(|row| {
+                    row.text
+                        .chars()
+                        .take_while(|ch| {
+                            width += misa_render::width(&ch.to_string());
+                            width <= cells
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
             if dragging {
                 if let Some((_, head)) = &mut self.selection {
                     *head = (row, column);
@@ -636,9 +652,17 @@ impl App {
                     plain.chars().count()
                 };
                 scene.ops.push(Op::Rect {
-                    x: x + from as f32 * 8.4,
+                    x: x + misa_render::width(&plain.chars().take(from).collect::<String>()) as f32
+                        * 8.4,
                     y,
-                    width: to.saturating_sub(from) as f32 * 8.4,
+                    width: misa_render::width(
+                        &plain
+                            .chars()
+                            .skip(from)
+                            .take(to.saturating_sub(from))
+                            .collect::<String>(),
+                    ) as f32
+                        * 8.4,
                     height: 21.0,
                     style: color(55, 86, 120),
                 });
@@ -1064,5 +1088,32 @@ mod tests {
         assert!(app.rows.len() > 6, "long table cell must wrap");
         let raster = crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap();
         assert!(raster.pixels().any(|pixel| pixel.0 == [255, 0, 0, 255]));
+    }
+    #[test]
+    fn live_updates_do_not_steal_the_local_save_dialog() {
+        let view = form("panel.input", FieldKind::Inline);
+        let mut app = App::new(view.clone());
+        app.activate(Control::Action {
+            node: "image".into(),
+            action: "attachment.save".into(),
+        });
+        app.key(Key::Text("/tmp/".into()));
+        app.set_view(view);
+        app.key(Key::Text("photo.png".into()));
+        assert_eq!(
+            app.key(Key::Enter { newline: false }),
+            vec![Command::Save {
+                node: "image".into(),
+                destination: "/tmp/photo.png".into()
+            }]
+        );
+    }
+    #[test]
+    fn pointer_selection_counts_wide_characters_as_display_cells() {
+        let mut app = App::new(Node::text("text", [Span::plain("界hi")]));
+        app.frame(400, 200);
+        app.pointer(20.0 + 2.1 * 8.4, 25.0, false);
+        app.pointer(20.0 + 3.1 * 8.4, 25.0, true);
+        assert_eq!(app.selected_text(), "h");
     }
 }
