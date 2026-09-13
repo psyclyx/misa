@@ -92,7 +92,10 @@ private fun NodeView(node: Node, expanded: Set<String>, onToggle: (String) -> Un
 @Composable
 private fun ShapeView(node: Node, expanded: Set<String>, onToggle: (String) -> Unit, onAction: (String, Action, List<FieldValue>) -> Unit) {
     when (val shape = node.shape) {
-        is Shape.Section -> node.children.forEach { NodeView(it, expanded, onToggle, onAction) }
+        is Shape.Section -> {
+            node.children.forEach { NodeView(it, expanded, onToggle, onAction) }
+            if (node.id == "transcript") StreamText()
+        }
         is Shape.Text -> Text(inline(shape.spans), style = bodyFor(node.role))
         // A heading's level picks a type size; a quote gets a marker of the medium's own and
         // its blocks behind it; a rule is a row of the same character. The session said only
@@ -387,4 +390,14 @@ private fun Picture(shape: Shape.Picture) {
     }
     bitmap?.let { Image(it.asImageBitmap(), contentDescription = shape.alt, modifier = Modifier.fillMaxWidth()) }
         ?: Text(if (files.errors.containsKey(shape.hash) || path != null) "[image unavailable: ${shape.alt}]" else "[loading image: ${shape.alt}]", style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun StreamText() {
+    val display = LocalStreams.current
+    display.streams.values.values.forEach { stream ->
+        if (stream.text.isNotEmpty() && !display.contains(stream.id.substringBeforeLast('.', stream.id))) {
+            androidx.compose.runtime.key(stream.id) { Text(stream.text, style = bodyFor(stream.role)) }
+        }
+    }
 }

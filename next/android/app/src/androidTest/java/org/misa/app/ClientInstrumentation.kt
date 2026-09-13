@@ -21,9 +21,10 @@ class ClientInstrumentation : Instrumentation() {
         val result = Bundle()
         try {
             val ticket = requireNotNull(options.getString("ticket")) { "provide -e ticket <daemon ticket>" }
+            incrementalWork()
             exercise(ticket)
-            result.putString("stream", "\nPASS: persistent reconnect, blob upload/fetch, directed save destination\n")
-            result.putInt("tests", 3)
+            result.putString("stream", "\nPASS: 2 incremental work checks; persistent reconnect, blob upload/fetch, directed save destination\n")
+            result.putInt("tests", 5)
             finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
             result.putString("stream", "\nFAIL: ${error.stackTraceToString()}\n")
@@ -33,7 +34,15 @@ class ClientInstrumentation : Instrumentation() {
 
     private inner class Connection(ticket: String, directory: File) : AutoCloseable {
         val events = LinkedBlockingQueue<JSONObject>()
-        val handle = Native.connect(ticket, directory.absolutePath, Listener { events.offer(JSONObject(it)) })
+        private val tree = ViewTree()
+        val handle = Native.connect(ticket, directory.absolutePath, Listener {
+            val event = JSONObject(it)
+            when (event.optString("kind")) {
+                "view" -> { tree.reset(Wire.parseNode(event.getJSONObject("view"))); events.offer(event) }
+                "changes" -> events.offer(JSONObject().put("kind", "view").put("view", testJson(tree.apply(event.getJSONArray("changes")))))
+                else -> events.offer(event)
+            }
+        })
         init { check(handle != 0L) }
         fun send(json: String) { check(Native.send(handle, json)) { "connection refused local input" } }
         fun waitFor(kind: String, accept: (JSONObject) -> Boolean = { true }): JSONObject {
@@ -62,6 +71,35 @@ class ClientInstrumentation : Instrumentation() {
             val view = event.getJSONObject("view")
             view.toString().contains(text) && settled(view).any { it !in previous } && !view.toString().contains("turn.cancel")
         }.getJSONObject("view")
+    }
+
+    // The test harness materializes JSON for assertions; production rendering keeps Node references.
+    private fun testJson(node: Node): JSONObject = JSONObject().put("id", node.id).put("role", node.role)
+        .put("state", node.state).put("children", JSONArray(node.children.map(::testJson)))
+        .put("text", (node.shape as? Shape.Text)?.spans?.joinToString("") { it.text } ?: "")
+        .put("actions", JSONArray(node.actions.map { JSONObject().put("id", it.id) }))
+
+    private fun incrementalWork() {
+        fun tree(size: Int): ViewTree = ViewTree().apply {
+            reset(Node("root", "root", null, null, Shape.Section, emptyList(), (0 until size).map {
+                Node("msg.$it", "message.user", null, "done", Shape.Text(listOf(Span("old", "plain"))), emptyList(), emptyList())
+            }))
+        }
+        fun replace(tree: ViewTree) {
+            tree.apply(JSONArray("""[{"ops":[{"op":"replace","id":"msg.0","node":{"id":"msg.0","role":"message.user","kind":{"shape":"text","spans":[{"text":"new"}]}}}]}]"""))
+        }
+        val small = tree(1); val large = tree(1000)
+        val untouched = large.root!!.children.last()
+        replace(small); replace(large)
+        check(small.touched == 2 && large.touched == 2)
+        check(large.root!!.children.last() === untouched)
+        val canonical = large.root
+        val streams = LiveStreams()
+        streams.apply(JSONObject("""{"update":"current","stream":{"id":"live.text","role":"message.assistant","text":"é"}}"""))
+        streams.apply(JSONObject("""{"update":"append","id":"live.text","offset":2,"text":"!"}"""))
+        check(streams.values.getValue("live.text").text == "é!")
+        check(runCatching { streams.apply(JSONObject("""{"update":"append","id":"live.text","offset":1,"text":"bad"}""")) }.isFailure)
+        check(large.root === canonical && large.touched == 2)
     }
 
     private fun exercise(ticket: String) {

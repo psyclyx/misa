@@ -42,7 +42,8 @@ To build only a native library:
 nix-build next -A packages.misa-android.native.x86_64
 ```
 
-To run all three integration scenarios in a temporary x86_64 emulator (requires KVM):
+To run three integration scenarios and two deterministic client checks in a
+temporary x86_64 emulator (requires KVM):
 
 ```sh
 nix-build next -A packages.misa-android.installCheck -o result-android-check
@@ -82,7 +83,9 @@ direct ticket with that address.
 - a persistent endpoint identity, draft, ticket, expanded nodes, and canonical
   view with its version cursor. Reopening shows the saved conversation before
   connecting and requests changes since that cursor. In-flight text remains a
-  separate overlay and is never saved as settled history.
+  separate overlay and is never saved as settled history. JNI forwards canonical
+  operations and stream updates directly; Kotlin updates indexed nodes along
+  their ancestor path and observes stream text separately from the transcript.
 
 The build also produces `misa-debug-androidTest.apk`. The installation check
 starts its packaged scripted daemon with temporary credentials and tests
@@ -94,3 +97,8 @@ test writes and reads a document through Android’s content resolver, then
 removes it. To use an existing open scripted daemon instead, set `MISA_TICKET`
 to its ticket with host address `10.0.2.2`. Native storage and snapshot tests run
 with `cargo test --manifest-path next/android/native/Cargo.toml`.
+
+The native incremental test sends the same 101 stream messages against histories
+of 1 and 1,000 nodes: both produce 8,676 serialized UTF-8 JSON bytes and zero
+snapshot writes. Android checks unchanged-node identity, ancestor updates, and
+UTF-8 stream offsets. These are deterministic counts, not timing measurements.

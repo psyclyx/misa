@@ -25,6 +25,7 @@
 //! parses it with the platform's own `org.json` — no code generation, no
 //! reflection, and no second definition of anything.
 
+mod delivery;
 mod files;
 mod snapshot;
 
@@ -276,7 +277,7 @@ async fn session(
             Default::default()
         }
     };
-    if let Some(tree) = view.rendered() {
+    if let Some(tree) = view.canonical() {
         emit(
             &vm,
             &listener,
@@ -390,20 +391,20 @@ async fn session(
         tokio::select! {
             message = client.next() => match message {
                 Ok(Some(message @ (SessionMsg::View { .. } | SessionMsg::Changes { .. } | SessionMsg::Streams { .. } | SessionMsg::Event { event: SessionEvent::Stream { .. }, .. }))) => {
-                    let canonical = matches!(&message, SessionMsg::View { .. } | SessionMsg::Changes { .. });
-                    let mode = if matches!(&message, SessionMsg::Changes { .. }) { "changes" } else { "snapshot" };
-                    match view.receive(&message) {
-                        Ok(changed) => {
-                            if canonical {
-                                if let Err(error) = snapshot::save(&files, &snapshot_name, &view) {
-                                    emit(&vm, &listener, serde_json::json!({"kind":"notice", "level":"error", "text":error}));
-                                }
+                    let result = delivery::receive(&mut view, &message, |view| {
+                        if let Err(error) = snapshot::save(&files, &snapshot_name, view) {
+                            emit(&vm, &listener, serde_json::json!({"kind":"notice", "level":"error", "text":error}));
+                        }
+                    });
+                    match result {
+                        Ok(Some(event)) => {
+                            if matches!(&message, SessionMsg::View { .. } | SessionMsg::Changes { .. }) {
+                                let mode = if matches!(&message, SessionMsg::Changes { .. }) { "changes" } else { "snapshot" };
                                 emit(&vm, &listener, serde_json::json!({"kind":"sync", "mode":mode}));
                             }
-                            if changed && let Some(tree) = view.rendered() {
-                                emit(&vm, &listener, serde_json::json!({"kind":"view", "view":tree}));
-                            }
+                            emit(&vm, &listener, event);
                         }
+                        Ok(None) => {},
                         Err(error) => {
                             emit(&vm, &listener, serde_json::json!({"kind":"notice", "level":"warn", "text":error}));
                             if let Err(error) = client.subscribe(SubId(1), view_query()).await {

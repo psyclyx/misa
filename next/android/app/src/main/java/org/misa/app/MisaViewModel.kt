@@ -41,6 +41,9 @@ class MisaViewModel(application: Application) : AndroidViewModel(application) {
     private val memory = application.getSharedPreferences("client", 0)
     private val _state = MutableStateFlow(UiState(draft = memory.getString("draft", "") ?: "", ticket = memory.getString("ticket", "") ?: ""))
     val state: StateFlow<UiState> = _state.asStateFlow()
+    private val tree = ViewTree()
+    val streams = LiveStreams()
+    fun containsNode(id: String): Boolean = tree.contains(id)
     private val handle = AtomicLong(0)
     private var generation = 0L
     private val requestedImages = mutableSetOf<String>()
@@ -61,6 +64,7 @@ class MisaViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun pause() {
         saving = false
+        streams.reset()
         generation++
         val current = handle.getAndSet(0)
         if (current != 0L) Native.disconnect(current)
@@ -184,7 +188,13 @@ class MisaViewModel(application: Application) : AndroidViewModel(application) {
             "ticket" -> { val ticket = event.getString("ticket"); memory.edit().putString("ticket", ticket).apply(); _state.update { it.copy(ticket = ticket) } }
             "paired" -> announce("info", event.optString("message", "paired"))
             "session" -> event.optJSONObject("session")?.let { session -> _state.update { it.copy(session = Wire.parseSession(session)) } }
-            "view" -> event.optJSONObject("view")?.let { view -> _state.update { it.copy(view = Wire.parseNode(view)) } }
+            "view" -> event.optJSONObject("view")?.let { view ->
+                tree.reset(Wire.parseNode(view)); streams.reset()
+                _state.update { it.copy(view = tree.root) }
+            }
+            "changes" -> { val changed = tree.apply(event.getJSONArray("changes")); _state.update { it.copy(view = changed) } }
+            "streams" -> streams.reset(event.getJSONArray("streams"))
+            "stream" -> streams.apply(event.getJSONObject("update"))
             "blob" -> _state.update { it.copy(images = it.images + (event.getString("hash") to event.getString("path"))) }
             "blob_failed" -> { saving = false; _state.update { it.copy(imageErrors = it.imageErrors + (event.getString("hash") to event.optString("text"))) }; announce("error", event.optString("text")) }
             "uploaded" -> _state.update { it.copy(uploading = false, attachments = it.attachments + PendingAttachment(event.getString("name"), event.getJSONObject("blob"))) }
