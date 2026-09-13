@@ -290,4 +290,78 @@ mod tests {
         }
         fixture.stop().await;
     }
+
+    /// Attach to the fixture's session and subscribe to its view, which is the state every
+    /// client in these tests is in before anything happens.
+    async fn attached(endpoint: &::iroh::Endpoint, fixture: &Fixture) -> Client {
+        let mut client = within(
+            "attaching",
+            Client::connect(endpoint, fixture.address.clone(), client_info(), "demo"),
+        )
+        .await
+        .expect("a connection");
+        within(
+            "subscribing",
+            client.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)),
+        )
+        .await
+        .expect("a subscription");
+        client
+    }
+
+    /// Read views until the transcript says the thing, and hand back what it says.
+    async fn settled(client: &mut Client, looking_for: &str) -> String {
+        for _ in 0..80 {
+            let Some(message) = within("a message", client.next()).await.expect("a message") else {
+                break;
+            };
+            if let SessionMsg::View { view, .. } = message {
+                let text = misa_render::to_plain(&misa_render::render(
+                    &view,
+                    &misa_render::Theme::plain(),
+                    100,
+                ));
+                if text.contains(looking_for) {
+                    return text;
+                }
+            }
+        }
+        panic!("the transcript never said `{looking_for}`");
+    }
+
+    /// Two clients on one session, which is a claim the architecture has been making and
+    /// nothing has tested.
+    ///
+    /// What it pins is *convergence* rather than delivery. A subscription's value is the whole
+    /// current state, so a client that attaches late, or that was looking away when something
+    /// changed, ends up with the same transcript as the one that was there. There is no replay
+    /// protocol to get wrong — and the second client here is the proof: it hears about a
+    /// prompt it did not send, and reads the same words.
+    #[tokio::test]
+    async fn two_clients_on_one_session_converge_on_the_same_transcript() {
+        let fixture = Fixture::start(Admission::open(), scripted()).await;
+        // Two dialing endpoints, because iroh does not connect an endpoint to itself and
+        // because two clients are two peers.
+        let other = iroh::bind(None, false).await.expect("a second client endpoint");
+        let mut first = attached(&fixture.client, &fixture).await;
+        let mut second = attached(&other, &fixture).await;
+
+        // One of them speaks. The other one did not, and is not told that it happened —
+        // only that the state changed.
+        within(
+            "sending",
+            first.intent(1, Intent::Prompt { text: "who is there".into(), attachments: Vec::new() }),
+        )
+        .await
+        .expect("an intent");
+
+        let first_text = within("the first client", settled(&mut first, "all done")).await;
+        let second_text = within("the second client", settled(&mut second, "all done")).await;
+        assert!(first_text.contains("who is there"), "{first_text}");
+        assert!(second_text.contains("who is there"), "{second_text}");
+        // A client's own window and scroll are its own, so what is compared is the words the
+        // transcript holds, which is what a subscription promises to keep in step.
+        assert_eq!(first_text, second_text, "\n{first_text}\n---\n{second_text}");
+        fixture.stop().await;
+    }
 }

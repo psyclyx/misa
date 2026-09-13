@@ -232,9 +232,9 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (46), `misa-kernel` (88), `misa-session` (69), `misa-net` (27),
+`misa-render` (46), `misa-kernel` (88), `misa-session` (69), `misa-net` (28),
 `misa-client` (55), `misa-tui` (21), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 414 tests and no skips:
+and one more behind `misa-skia --features paint`. That is 415 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
@@ -271,8 +271,10 @@ items with no code at all, plus the two that are structural.
    which is why a restart forgets where somebody was.
 3. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards.
-4. **Reconnect**, and a test with two clients on one session. Both are small and the
-   protocol was designed for both.
+4. **Reconnect.** A subscription converges, so a client that reconnects and re-subscribes is
+   correct by construction; what is missing is the retry. (Two clients on one session used to
+   be listed here, and is tested now —
+   `misa-net::server::tests::two_clients_on_one_session_converge_on_the_same_transcript`.)
 5. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
 
@@ -302,9 +304,12 @@ already made.
    `Node` subtree. A delta would help a very large transcript; it would also mean the
    client holds a tree it must patch, which is the beginning of the client
    understanding structure. Probably the answer is windowing, not patching.
-3. **Whether a session should be reachable by more than one client at once.**
-   Everything is built for it (broadcast events, per-connection subscription state,
-   a revision per session) and nothing tests it.
+3. **How far a session should go for a second client.** Reachable by more than one at once is
+   settled — it is built, and
+   `misa-net::server::tests::two_clients_on_one_session_converge_on_the_same_transcript` holds
+   it. What is not decided is what a _client_ should do when it sees that somebody else is
+   driving: today two clients share a transcript and either may prompt, and a "somebody else is
+   here" indicator is not written.
 4. **How a session is addressed when it outlives its daemon.** A ticket is
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
