@@ -1715,6 +1715,83 @@ mod stream_contract_tests {
             .with("kind", Value::str("message")).with("data", data)).is_empty());
     }
     #[tokio::test]
+    async fn repeated_interrupts_do_not_cancel_the_new_priority_turn() {
+        let runtime = runtime();
+        runtime.intent(Intent::Prompt {text:"original".into(), attachments:vec![]});
+        runtime.intent(Intent::Prompt {text:"waiting".into(), attachments:vec![]});
+        for text in ["urgent1", "urgent2"] {
+            runtime.intent(Intent::Interrupt {text:text.into(), attachments:vec![]});
+        }
+        for (seq,text) in [(1,"original"),(2,"urgent2")] {
+            ack(&runtime,seq,Value::map([("seq",Value::Int(seq)),("role",Value::str("user")),("text",Value::str(text))]));
+        }
+        let state = runtime.state.lock().unwrap();
+        let session = state.state.db().get("session").unwrap();
+        assert_eq!(session.get("status").unwrap().as_str(),Some("thinking"));
+        assert!(session.get("pending").is_some());
+        let queue = session.get("queue").unwrap().as_list().unwrap();
+        assert_eq!(queue.len(),2);
+        assert_eq!(queue[0].get("text").unwrap().as_str(),Some("urgent1"));
+        assert_eq!(queue[1].get("text").unwrap().as_str(),Some("waiting"));
+        assert!(queue.iter().all(|item| item.get("interrupt").is_none()));
+    }
+    #[tokio::test]
+    async fn empty_interrupt_preserves_active_turn_and_queue() {
+        let runtime = runtime();
+        runtime.intent(Intent::Prompt {text:"original".into(), attachments:vec![]});
+        runtime.intent(Intent::Prompt {text:"waiting".into(), attachments:vec![]});
+        let before = runtime.state.lock().unwrap().state.db().clone();
+        assert!(!runtime.intent(Intent::Interrupt {text:"  ".into(), attachments:vec![]}).is_empty());
+        assert_eq!(&before, runtime.state.lock().unwrap().state.db());
+    }
+    #[tokio::test]
+    async fn interrupt_settles_tool_results_before_priority_prompt_without_another_generation() {
+        for recording in [false, true] {
+            let runtime = runtime();
+            runtime.intent(Intent::Prompt {text:"original".into(), attachments:vec![]});
+            ack(&runtime,1,Value::map([("seq",Value::Int(1)),("role",Value::str("user")),("text",Value::str("original"))]));
+            let calls = Value::list([Value::map([
+                ("id",Value::str("tool-1")),("name",Value::str("echo")),("args",Value::map([])),("status",Value::str("pending")),
+            ])]);
+            assert!(runtime.dispatch(Event::new("kernel/provider.finished").with("id",Value::str("r1")).with("ok",Value::Bool(true)).with("tool_calls",calls.clone())).is_empty());
+            let assistant = Value::map([("seq",Value::Int(2)),("role",Value::str("assistant")),("calls",calls)]);
+            if !recording { ack(&runtime,2,assistant.clone()); }
+            runtime.intent(Intent::Prompt {text:"waiting".into(), attachments:vec![]});
+            runtime.intent(Intent::Interrupt {text:"urgent".into(), attachments:vec![]});
+            if recording {
+                let mut state = runtime.state.lock().unwrap();
+                let outcome = state.state.dispatch(Event::new("kernel/log.appended")
+                    .with("conversation",Value::str("stream-test")).with("seq",Value::Int(2))
+                    .with("kind",Value::str("message")).with("data",assistant));
+                assert!(outcome.committed());
+                let State { state: loop_, view, .. } = &mut *state;
+                view.advance(loop_.db(), &outcome.changes, &runtime.sections, loop_.rev());
+                assert!(!outcome.effects.iter().any(|effect| effect.kind == "kernel.tool.run"));
+                let records: Vec<_> = outcome.effects.iter().filter(|effect| effect.kind == "kernel.log.append").collect();
+                assert_eq!(records.len(),1);
+                assert_eq!(records[0].get("data").unwrap().get("text").unwrap().as_str(),Some("cancelled before starting"));
+                let repeated = state.state.dispatch(Event::new("agent/tools"));
+                assert!(repeated.effects.is_empty(), "cancellation must be journalled once");
+            }
+            {
+                let state = runtime.state.lock().unwrap();
+                let session = state.state.db().get("session").unwrap();
+                assert_eq!(session.get("status").unwrap().as_str(),Some("tools"));
+                assert_eq!(session.get("queue").unwrap().as_list().unwrap().len(),2);
+            }
+            runtime.dispatch(Event::new("kernel/log.appended").with("conversation",Value::str("stream-test")).with("seq",Value::Int(3)).with("kind",Value::str("tool_result")).with("data",Value::map([
+                ("call",Value::str("tool-1")),("ok",Value::Bool(true)),("text",Value::str("result")),
+            ])));
+            let state = runtime.state.lock().unwrap();
+            let session = state.state.db().get("session").unwrap();
+            assert_eq!(session.get("status").unwrap().as_str(),Some("recording"));
+            assert_eq!(session.get("requests").unwrap().as_i64(),Some(1));
+            let queue = session.get("queue").unwrap().as_list().unwrap();
+            assert_eq!(queue.len(),1);
+            assert_eq!(queue[0].get("text").unwrap().as_str(),Some("waiting"));
+        }
+    }
+    #[tokio::test]
     async fn interrupt_prioritizes_the_draft_during_recording_and_generation() {
         for generating in [false, true] {
             let runtime = runtime();
