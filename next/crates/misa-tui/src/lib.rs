@@ -23,6 +23,7 @@
 pub mod print;
 pub mod output;
 mod event_loop;
+pub mod clipboard;
 pub mod storage;
 pub mod save;
 
@@ -1076,6 +1077,9 @@ pub trait Session: Send {
     /// The next view, if one changed.
     async fn next(&mut self) -> Result<Option<Node>, String>;
     async fn send(&mut self, intent: Intent) -> Result<(), String>;
+    async fn upload(&mut self, _bytes: Vec<u8>, _media: &str) -> Result<misa_proto::view::BlobRef, String> {
+        Err("This client has no blob connection".into())
+    }
     async fn save_attachment(&mut self, _node: &str, _destination: &str) -> Result<(), String> {
         Err("This client has no blob connection".into())
     }
@@ -1203,6 +1207,9 @@ fn source_subscription(source: &str) -> misa_proto::SubId {
 
 #[async_trait::async_trait]
 impl Session for Remote {
+    async fn upload(&mut self, bytes: Vec<u8>, media: &str) -> Result<misa_proto::view::BlobRef, String> {
+        self.blobs.share(bytes, Some(media)).await
+    }
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
             let message = match self.inbox.pop_front() { Some(message) => Some(message), None => self.client.next().await? };
