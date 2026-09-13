@@ -2407,18 +2407,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "misa-cli"
-version = "0.1.0"
-dependencies = [
- "misa-client",
- "misa-net",
- "misa-proto",
- "misa-render",
- "misa-session",
- "tokio",
-]
-
-[[package]]
 name = "misa-client"
 version = "0.1.0"
 dependencies = [

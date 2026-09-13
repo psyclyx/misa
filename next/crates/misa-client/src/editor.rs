@@ -181,9 +181,19 @@ impl Editor {
             // wants the other convention adds a motion rather than changing this.
             Motion::WordNext => Some(word_next(&self.text, self.cursor)),
             Motion::WordPrevious => Some(word_previous(&self.text, self.cursor)),
-            // A single-line input has no vertical movement to speak of; a frontend
-            // with several lines answers Up and Down from its own geometry.
-            Motion::Up | Motion::Down => None,
+            Motion::Up | Motion::Down => {
+                let start = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
+                let column = self.text[start..self.cursor].chars().count();
+                let next_start = if motion == Motion::Up {
+                    start.checked_sub(1).map(|end| self.text[..end].rfind('\n').map_or(0, |at| at + 1))
+                } else {
+                    self.text[self.cursor..].find('\n').map(|at| self.cursor + at + 1)
+                };
+                next_start.map(|start| {
+                    let end = self.text[start..].find('\n').map_or(self.text.len(), |at| start + at);
+                    start + self.text[start..end].char_indices().nth(column).map_or(end - start, |(at, _)| at)
+                })
+            },
         };
         match target {
             Some(target) if target != self.cursor => {
@@ -259,6 +269,47 @@ impl Editor {
             self.cursor = self.text.len();
         }
         Effect::Changed
+    }
+
+    /// Apply an operator to a motion, or to the current line when no motion is given.
+    /// Returns the affected text so a frontend can copy it to its clipboard.
+    pub fn operate(&mut self, operator: char, motion: Option<Motion>) -> String {
+        let original = self.cursor;
+        let linewise = motion.is_none() || matches!(motion, Some(Motion::Up | Motion::Down));
+        let (mut start, mut end) = if let Some(motion) = motion {
+            self.move_cursor(motion);
+            let target = self.cursor;
+            self.cursor = original;
+            (original.min(target), original.max(target))
+        } else {
+            let start = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
+            let end = self.text[self.cursor..].find('\n').map_or(self.text.len(), |at| self.cursor + at + 1);
+            (start, end)
+        };
+        if linewise {
+            start = self.text[..start].rfind('\n').map_or(0, |at| at + 1);
+            if motion.is_some() {
+                end = self.text[end..].find('\n').map_or(self.text.len(), |at| end + at + 1);
+            }
+            if operator == 'c' && end > start && self.text[..end].ends_with('\n') { end -= 1; }
+        }
+        let copied = self.text[start..end].to_string();
+        if operator != 'y' {
+            self.remember_for_undo();
+            // Deleting the last line also removes its preceding separator.
+            if linewise && end == self.text.len() && start > 0 && operator == 'd' { start -= 1; }
+            self.text.replace_range(start..end, "");
+            self.cursor = start;
+            if operator == 'c' { self.mode = Mode::Insert; }
+        }
+        copied
+    }
+
+    pub fn open_line(&mut self, above: bool) {
+        self.move_cursor(if above { Motion::LineStart } else { Motion::LineEnd });
+        self.insert("\n");
+        if above { self.cursor -= 1; }
+        self.mode = Mode::Insert;
     }
 
     pub fn undo(&mut self) -> Effect {
@@ -495,4 +546,29 @@ mod tests {
         assert_eq!(editor.interrupt(), Effect::Interrupted);
         assert_eq!(editor.text(), "important", "an interrupt threw away the draft");
     }
+    #[test]
+    fn vertical_motions_keep_character_columns_and_clip_short_lines() {
+        let mut editor = typed("ééé\nx\n水水水");
+        editor.move_cursor(Motion::First);
+        editor.move_cursor(Motion::Right);
+        editor.move_cursor(Motion::Right);
+        editor.move_cursor(Motion::Down);
+        assert_eq!(editor.split_at_cursor(), ("ééé\nx", "\n水水水"));
+        editor.move_cursor(Motion::Down);
+        assert_eq!(editor.split_at_cursor(), ("ééé\nx\n水", "水水"));
+        editor.move_cursor(Motion::Up);
+        assert_eq!(editor.split_at_cursor(), ("ééé\nx", "\n水水水"));
+    }
+
+    #[test]
+    fn deleting_a_middle_line_preserves_its_neighbors_and_undo_restores_it() {
+        let mut editor = typed("one\ntwo\nthree");
+        editor.move_cursor(Motion::First);
+        editor.move_cursor(Motion::Down);
+        assert_eq!(editor.operate('d', None), "two\n");
+        assert_eq!(editor.text(), "one\nthree");
+        editor.undo();
+        assert_eq!(editor.text(), "one\ntwo\nthree");
+    }
+
 }

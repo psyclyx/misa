@@ -20,6 +20,8 @@
 //! holds; the matching happens here. A session is asked only when a source has no
 //! items to hold — see [`misa_client::picker`].
 
+pub mod print;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -129,7 +131,15 @@ pub enum KeyOut {
 }
 
 /// The client's whole state.
+struct HistorySearch {
+    draft: String,
+    query: String,
+    before: usize,
+}
+
 pub struct Screen {
+    operator: Option<char>,
+    history_search: Option<HistorySearch>,
     pub theme: Theme,
     pub editor: ed::Editor,
     /// The picker in front of the editor, when one is open.
@@ -162,6 +172,8 @@ pub struct Screen {
 impl Screen {
     pub fn new(width: u16, height: u16) -> Screen {
         Screen {
+            operator: None,
+            history_search: None,
             theme: Theme::dark(),
             editor: ed::Editor::new(),
             picker: None,
@@ -318,7 +330,7 @@ impl Screen {
                 self.begin_selection(view);
                 Some(KeyOut::Local)
             }
-            Key::Char('y') => Some(self.copy_body(view)),
+            Key::Char('y') if self.editor.is_empty() && self.operator.is_none() => Some(self.copy_body(view)),
             _ => None,
         }
     }
@@ -480,14 +492,57 @@ impl Screen {
         KeyOut::Local
     }
 
+    fn search_history(&mut self, restart: bool) {
+        let search = self.history_search.as_mut().expect("search is active");
+        if restart { search.before = self.editor.history().len(); }
+        if let Some(at) = (0..search.before).rev().find(|&at| self.editor.history()[at].contains(&search.query)) {
+            let found = self.editor.history()[at].clone();
+            search.before = at;
+            self.editor.set_text(found);
+            self.notice = Some(format!("reverse search: {}", search.query));
+        } else {
+            self.notice = Some(format!("reverse search: {} — no match", search.query));
+        }
+    }
+
     pub fn key(&mut self, key: Key) -> KeyOut {
+        if self.history_search.is_some() {
+            match key {
+                Key::HistorySearch => self.search_history(false),
+                Key::Char(character) => {
+                    self.history_search.as_mut().unwrap().query.push(character);
+                    self.search_history(true);
+                }
+                Key::Backspace => {
+                    self.history_search.as_mut().unwrap().query.pop();
+                    self.search_history(true);
+                }
+                Key::Escape => {
+                    let search = self.history_search.take().unwrap();
+                    self.editor.set_text(search.draft);
+                    self.notice = None;
+                }
+                Key::Submit => { self.history_search = None; self.notice = None; }
+                Key::Quit => return KeyOut::Quit,
+                _ => { self.history_search = None; self.notice = None; return self.key(key); }
+            }
+            return KeyOut::Local;
+        }
+
         // A picker in front of the editor takes everything except the way out.
         if self.picker.is_some() {
             return self.picker_key(key);
         }
         match key {
+            Key::HistorySearch => {
+                self.history_search = Some(HistorySearch { draft: self.editor.text().into(), query: String::new(), before: self.editor.history().len() });
+                self.search_history(false);
+                KeyOut::Local
+            }
+            Key::Newline => { self.editor.insert("\n"); KeyOut::Local }
             Key::Quit => KeyOut::Quit,
             Key::Escape => {
+                self.operator = None;
                 self.editor.set_mode(ed::Mode::Normal);
                 KeyOut::Local
             }
@@ -509,6 +564,7 @@ impl Screen {
                 self.editor.set_text(text);
                 self.submit()
             }
+            Key::Char(character) if self.editor.mode() == ed::Mode::Normal => self.normal_char(character),
             Key::Char(character) => {
                 self.editor.type_char(character);
                 KeyOut::Local
@@ -523,7 +579,14 @@ impl Screen {
             }
             Key::Tab => self.complete_argument(),
             Key::Motion(motion) => {
-                self.editor.move_cursor(motion);
+                if let Some(operator) = self.operator.take() {
+                    let text = self.editor.operate(operator, Some(motion));
+                    if operator == 'y' { return KeyOut::Copy(text); }
+                } else if motion == ed::Motion::Up && self.editor.on_first_line() {
+                    self.editor.history_step(true);
+                } else if motion == ed::Motion::Down && self.editor.on_last_line() {
+                    self.editor.history_step(false);
+                } else { self.editor.move_cursor(motion); }
                 KeyOut::Local
             }
             Key::ScrollPage(delta) => {
@@ -532,6 +595,35 @@ impl Screen {
             }
             Key::Action(action) => self.action(action),
         }
+    }
+
+    fn normal_char(&mut self, character: char) -> KeyOut {
+        let motion = match character {
+            'h' => Some(ed::Motion::Left), 'l' => Some(ed::Motion::Right),
+            'w' => Some(ed::Motion::WordNext), 'b' => Some(ed::Motion::WordPrevious),
+            '0' => Some(ed::Motion::LineStart), '$' => Some(ed::Motion::LineEnd),
+            'j' => Some(ed::Motion::Down), 'k' => Some(ed::Motion::Up),
+            _ => None,
+        };
+        if let Some(operator) = self.operator.take() {
+            if character == operator || motion.is_some() {
+                let text = self.editor.operate(operator, motion);
+                if operator == 'y' { return KeyOut::Copy(text); }
+            }
+        } else if let Some(motion) = motion {
+            return self.key(Key::Motion(motion));
+        } else {
+            match character {
+                'd' | 'c' | 'y' => self.operator = Some(character),
+                'i' => { self.editor.set_mode(ed::Mode::Insert); }
+                'a' => { self.editor.move_cursor(ed::Motion::Right); self.editor.set_mode(ed::Mode::Insert); }
+                'o' | 'O' => self.editor.open_line(character == 'O'),
+                'x' => { self.editor.delete(); }
+                'u' => { self.editor.undo(); }
+                _ => {}
+            }
+        }
+        KeyOut::Local
     }
 
     /// Enter: submit what is there, or open the picker a declaration asks for.
@@ -806,6 +898,8 @@ fn panel_field(panel: &Node) -> Option<&Field> {
 /// A key, in the vocabulary the client cares about.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Key {
+    HistorySearch,
+    Newline,
     Char(char),
     Backspace,
     Delete,
@@ -1046,6 +1140,7 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
     use crossterm::event::KeyCode;
     let control = modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
     Some(match code {
+        KeyCode::Char('r') if control => Key::HistorySearch,
         KeyCode::Char('q') if control => Key::Quit,
         KeyCode::Char('c') if control => Key::Interrupt,
         KeyCode::Char('t') if control => Key::Action(Action::ToggleDetail),
@@ -1054,6 +1149,7 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
         KeyCode::Char(character) => Key::Char(character),
         KeyCode::Backspace => Key::Backspace,
         KeyCode::Delete => Key::Delete,
+        KeyCode::Enter if modifiers.contains(crossterm::event::KeyModifiers::ALT) => Key::Newline,
         KeyCode::Enter => Key::Submit,
         KeyCode::Tab => Key::Tab,
         KeyCode::Esc => Key::Escape,
@@ -1174,7 +1270,8 @@ impl Remote {
             };
             client.subscribe(source_subscription(source), query).await?;
         }
-        Ok(Remote { client, view: None, info: None })
+        let info = client.session().cloned();
+        Ok(Remote { client, view: None, info })
     }
 }
 
@@ -1813,4 +1910,78 @@ mod tests {
         assert_eq!(painted.as_deref(), Some("hello"), "the wrong bytes were highlighted");
         assert!(text_of(&screen, &view).contains("hello"), "the highlight ate the text");
     }
+    #[test]
+    fn modal_operators_edit_unicode_and_yank_without_changing_text() {
+        let mut screen = screen();
+        screen.editor.set_text("héllo world");
+        screen.key(Key::Escape);
+        screen.key(Key::Char('0'));
+        screen.key(Key::Char('y'));
+        assert_eq!(screen.key(Key::Char('w')), KeyOut::Copy("héllo ".into()));
+        assert_eq!(screen.editor.text(), "héllo world");
+        screen.key(Key::Char('d'));
+        screen.key(Key::Char('w'));
+        assert_eq!(screen.editor.text(), "world");
+        screen.key(Key::Char('u'));
+        assert_eq!(screen.editor.text(), "héllo world");
+        screen.key(Key::Char('c'));
+        screen.key(Key::Char('$'));
+        assert_eq!(screen.editor.text(), "");
+        assert_eq!(screen.editor.mode(), ed::Mode::Insert);
+    }
+
+    #[test]
+    fn line_operators_open_lines_and_escape_cancels_pending_edit() {
+        let mut screen = screen();
+        screen.editor.set_text("first\nlast");
+        screen.key(Key::Escape);
+        screen.key(Key::Char('d'));
+        screen.key(Key::Char('d'));
+        assert_eq!(screen.editor.text(), "first");
+        screen.key(Key::Char('O'));
+        assert_eq!(screen.editor.text(), "\nfirst");
+        screen.key(Key::Char('a'));
+        screen.key(Key::Escape);
+        screen.key(Key::Char('o'));
+        assert_eq!(screen.editor.text(), "a\n\nfirst");
+        screen.key(Key::Escape);
+        screen.key(Key::Char('d'));
+        screen.key(Key::Escape);
+        screen.key(Key::Char('w'));
+        assert_eq!(screen.editor.text(), "a\n\nfirst");
+    }
+
+    #[test]
+    fn reverse_search_refines_cycles_accepts_and_restores_draft() {
+        let mut screen = screen();
+        for text in ["old cat", "dog", "new cat"] {
+            screen.editor.set_text(text);
+            screen.editor.submit();
+        }
+        screen.editor.set_text("draft");
+        screen.key(Key::HistorySearch);
+        screen.key(Key::Char('c'));
+        assert_eq!(screen.editor.text(), "new cat");
+        screen.key(Key::HistorySearch);
+        assert_eq!(screen.editor.text(), "old cat");
+        screen.key(Key::Escape);
+        assert_eq!(screen.editor.text(), "draft");
+        screen.key(Key::HistorySearch);
+        screen.key(Key::Char('d'));
+        assert_eq!(screen.key(Key::Submit), KeyOut::Local);
+        assert_eq!(screen.editor.text(), "dog");
+        assert!(matches!(screen.key(Key::Submit), KeyOut::Intent(_)));
+    }
+
+    #[test]
+    fn alt_enter_inserts_a_newline_without_submitting() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut screen = screen();
+        screen.editor.set_text("first");
+        let key = translate(KeyCode::Enter, KeyModifiers::ALT).unwrap();
+        assert_eq!(screen.key(key), KeyOut::Local);
+        assert_eq!(screen.editor.text(), "first\n");
+        assert_eq!(translate(KeyCode::Char('r'), KeyModifiers::CONTROL), Some(Key::HistorySearch));
+    }
+
 }
