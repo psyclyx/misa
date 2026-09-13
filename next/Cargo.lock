@@ -2734,6 +2734,7 @@ name = "misa-net"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "iroh",
  "misa-kernel",
  "misa-proto",

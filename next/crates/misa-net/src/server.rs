@@ -23,6 +23,7 @@ use ::iroh::protocol::Router;
 use ::iroh::Endpoint;
 #[cfg(test)]
 use ::iroh::EndpointAddr;
+#[cfg(test)]
 use misa_kernel::Blobs;
 use misa_proto::{ALPN_BLOB, ALPN_SESSION};
 use crate::admission::Admission;
@@ -34,7 +35,7 @@ use crate::blob;
 pub fn serve(
     endpoint: Endpoint,
     sessions: Arc<Sessions>,
-    blobs: Arc<Blobs>,
+    blobs: Arc<dyn blob::BlobStore>,
     admission: Arc<Admission>,
 ) -> Router {
     Router::builder(endpoint)
@@ -78,7 +79,7 @@ impl Fixture {
         let blobs = Arc::new(Blobs::in_memory());
         let address = iroh::address_of(&iroh::node_of(&server)).expect("an address");
         let admission = Arc::new(admission);
-        let router = serve(server.clone(), sessions.clone(), blobs.clone(), admission.clone());
+        let router = serve(server.clone(), sessions.clone(), Arc::new(KernelBlobs(blobs.clone())), admission.clone());
         Fixture { server, client, address, sessions, blobs, router, admission }
     }
 
@@ -89,7 +90,7 @@ impl Fixture {
     /// cannot be used for this: it closes the endpoint too, and then there is nothing to come
     /// back to.
     pub(crate) fn stop_serving(&mut self) {
-        let back = serve(self.server.clone(), self.sessions.clone(), self.blobs.clone(), self.admission.clone());
+        let back = serve(self.server.clone(), self.sessions.clone(), Arc::new(KernelBlobs(self.blobs.clone())), self.admission.clone());
         let dead = std::mem::replace(&mut self.router, back);
         drop(dead);
     }
@@ -347,6 +348,10 @@ mod tests {
     /// Read views until the transcript says the thing, and hand back what it says.
     async fn settled(client: &mut Client, looking_for: &str) -> String {
         let mut state = misa_proto::sync::ClientView::default();
+        settled_with(client, &mut state, looking_for).await
+    }
+
+    async fn settled_with(client: &mut Client, state: &mut misa_proto::sync::ClientView, looking_for: &str) -> String {
         for _ in 0..80 {
             let Some(message) = within("a message", client.next()).await.expect("a message") else {
                 break;
@@ -419,7 +424,8 @@ mod tests {
         )
         .await
         .expect("an intent");
-        let before = within("the first transcript", settled(&mut client, "all done")).await;
+        let mut state = misa_proto::sync::ClientView::default();
+        let before = within("the first transcript", settled_with(&mut client, &mut state, "all done")).await;
         assert!(before.contains("before the drop"), "{before}");
         assert_eq!(client.reconnects(), 0, "the client reconnected before anything dropped");
 
@@ -431,7 +437,7 @@ mod tests {
         // since a drop does not un-send a message — and it repairs that by itself.
         let after = within("a transcript after the drop", async {
             loop {
-                let text = settled(&mut client, "all done").await;
+                let text = settled_with(&mut client, &mut state, "all done").await;
                 if client.reconnects() >= 1 {
                     return text;
                 }
@@ -446,4 +452,14 @@ mod tests {
         assert_eq!(client.reconnects(), 1, "the client re-established more than once");
         fixture.stop().await;
     }
+}
+
+#[cfg(test)]
+struct KernelBlobs(Arc<Blobs>);
+#[cfg(test)]
+impl blob::BlobStore for KernelBlobs {
+    fn get(&self, hash: &str) -> Option<Vec<u8>> { self.0.get(hash) }
+    fn media(&self, hash: &str) -> Option<String> { self.0.media(hash) }
+    fn has(&self, hash: &str) -> bool { self.0.has(hash) }
+    fn store(&self, bytes: Vec<u8>, media: Option<&str>) -> Result<misa_proto::view::BlobRef, String> { self.0.store(bytes, media) }
 }
