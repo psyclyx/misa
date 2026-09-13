@@ -249,17 +249,39 @@ component, holds what it declares against the composition that would run it, and
 declarations into the loop's own `Handler`s and `Subscription`s. Its tests run the whole path
 over a real component, so the answer to "does this seam hold?" is a test rather than a diagram.
 
-What is left is the session's half — see item 1 of §6.
+A plugin presents by returning a tree, and the **session places it in the document** — under a role
+it builds from the plugin's id (`plugin.<id>`), with the ids of that subtree prefixed so nothing a
+plugin writes can collide with a node the session wrote. That is not the same thing as a
+subscription, and the difference is the whole reason it works this way: a subscription is a _pure
+function of the database_, which is what makes the loop's memo sound, and a plugin's view is a
+function of the database _and_ of what one client can draw. A tree built in a query slot would be
+one memo shared between clients that should get different answers; a tree built per client in each
+frontend would be presentation policy written five times. So it is built once per client class per
+revision, by the layer that owns the document, and every frontend draws it with no frontend code at
+all.
+
+Two consequences worth naming, because both are what make it safe rather than merely possible:
+
+- **A guest call is bounded.** The engine runs with fuel, and every call into a plugin is given a
+  budget. A plugin that loops for ever is a fault in tens of milliseconds — a sentence in place of
+  its tree — rather than a session that stops answering, and it costs no threads and no timers.
+- **An action is an event.** A plugin that offers an affordance declares it, and receives the
+  loop's own `intent/action` event when a client uses it — because that is what an action _is_
+  here. There is no router, no id mangling, and nothing the session has to know about who handles
+  what: the registry routes by event kind, in priority order, like everything else in this system.
+  A plugin may not declare an action the session itself has (`panel.close`), and a tree that offers
+  an action its plugin did not declare is refused when it is presented rather than failing in
+  somebody's click afterwards.
 
 ---
 
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (46), `misa-kernel` (91), `misa-session` (76), `misa-net` (29),
-`misa-plugin` (13, and nine more behind `--features guest-fixture`), `misa-client` (61),
+`misa-render` (46), `misa-kernel` (91), `misa-session` (84), `misa-net` (29),
+`misa-plugin` (16, and thirteen more behind `--features guest-fixture`), `misa-client` (61),
 `misa-tui` (27), `misa-web` (19), `misa-daemon` (4), `misa-skia` (5), and one more behind
-`misa-skia --features paint`. That is 457 tests and no skips: `cargo test --workspace` is the
+`misa-skia --features paint`. That is 466 tests and no skips: `cargo test --workspace` is the
 gate, and these numbers are read back from it rather than remembered.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
@@ -288,26 +310,13 @@ it.
 Not built, in the order they matter. `docs/parity.md` is the full matrix; these are the
 items with no code at all, plus the two that are structural.
 
-1. **Where a plugin's view goes.** Everything else of the plugin host is built: `misa-plugin`
-   loads a component and holds it to the composition; `misa-daemon --plugin <path>` loads,
-   validates, and registers what it declared; a plugin's state roots are declared by the
-   composition (`Ownership::Plugin`, because a patch may only create the _last_ key of its
-   path, so somebody has to make the root first); and
-   `misa-plugin`'s own tests run a plugin inside a real session — a prompt, a patch in the
-   root, an effect the session's interpreter ran. What is left is presentation:
-   `view(role, capabilities, db, window)` returns a tree and nothing decides where it goes.
-   The smallest honest step is a query per plugin that answers with its tree — a client
-   subscribes to `plugin.<id>.view` and draws it where that client wants — because the
-   alternative (the session merging a plugin's tree into its document) puts a guest call on
-   the path of every view build, under the session's own lock, and needs a timeout nobody has
-   designed yet.
-2. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
+1. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards. A device flow a client started cannot be
    cancelled either, and both are the same shape of work: an intent a session asks the kernel
    for, and an answer that is a file or a stop.
-3. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
+2. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
-4. **The same memory for the browser and the phone.** `misa-client::prefs` is the terminal's
+3. **The same memory for the browser and the phone.** `misa-client::prefs` is the terminal's
    today: a surface that renders server-side has to decide whose state a page's draft is,
    which is a question about browsers rather than about this architecture.
 

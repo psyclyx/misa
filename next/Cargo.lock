@@ -2487,6 +2487,7 @@ dependencies = [
  "misa-kernel",
  "misa-proto",
  "misa-reframe",
+ "misa-render",
  "misa-session",
  "misa-value",
  "serde_json",

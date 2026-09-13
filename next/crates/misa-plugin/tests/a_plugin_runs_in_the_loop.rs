@@ -19,7 +19,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
-use misa_plugin::{Descriptor, Engine, PLUGIN_PRIORITY, Plugin, PluginFault};
+use misa_plugin::{Descriptor, PLUGIN_PRIORITY, Plugin, PluginFault};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Query, Registry};
 use misa_proto::wire::{Capabilities, Intent};
 use misa_session::{Reading, Runtime};
@@ -92,8 +92,7 @@ fn component_once() -> &'static [u8] {
 }
 
 fn loaded() -> Arc<Plugin> {
-    let engine = Engine::default();
-    Arc::new(Plugin::load(&engine, component_once()).expect("the fixture loads"))
+    Arc::new(Plugin::load(component_once()).expect("the fixture loads"))
 }
 
 #[test]
@@ -105,9 +104,10 @@ fn a_plugin_tells_the_host_what_it_is_before_it_runs() {
         &Descriptor {
             id: "policy.guest".into(),
             version: "0.1.0".into(),
-            events: vec!["intent/prompt".into(), "intent/cancel".into()],
+            events: vec!["intent/prompt".into(), "intent/action".into(), "intent/cancel".into()],
             queries: vec!["policy.guest.turns".into(), "policy.guest.state".into()],
             effects: vec!["kernel.log.append".into()],
+            actions: vec!["refresh".into()],
             roots: vec!["guest".into()],
         }
     );
@@ -235,12 +235,12 @@ fn a_query_is_a_subscription_the_loop_can_read() {
 fn a_view_is_built_the_way_any_other_tree_is() {
     let plugin = loaded();
     let db = Value::Null;
-    let tree = plugin.view("session", "plain", &db, 40).expect("a tree");
+    let tree = plugin.view(&Capabilities::plain(), &db, 40).expect("a tree");
     assert_eq!(tree.id, "guest");
     assert_eq!(tree.role, "guest.panel");
     assert_eq!(tree.children.len(), 1);
-    assert_eq!(tree.children[0].id, "guest.note");
-    assert_eq!(tree.children[0].role, "guest.note");
+    assert_eq!(tree.children[0].id, "guest.summary");
+    assert_eq!(tree.children[0].role, "guest.summary");
     // It is the protocol's own tree, so the protocol's own validator accepts it — which is the
     // only promise a plugin's view makes.
     misa_proto::view::validate(&tree).expect("a tree a client may be sent");
@@ -248,10 +248,96 @@ fn a_view_is_built_the_way_any_other_tree_is() {
 
 #[test]
 fn a_component_that_is_not_a_policy_plugin_is_refused_rather_than_run() {
-    let engine = Engine::default();
-    let fault: PluginFault = Plugin::load(&engine, b"not a component at all").expect_err("refused");
+    let fault: PluginFault = Plugin::load(b"not a component at all").expect_err("refused");
     assert_eq!(fault.code, "plugin.host");
     assert!(fault.message.contains("component"), "{}", fault.message);
+}
+
+#[tokio::test]
+async fn a_plugin_presents_a_section_a_session_places() {
+    // The whole of a plugin's presentation: it returns a tree, the session places it in the
+    // document under a role built from the plugin's id, and every frontend draws it — with no
+    // frontend code, which is the point of putting it in the document rather than in a query each
+    // client would have to know about.
+    let plugin = loaded();
+    let (runtime, _kernel) = session(contribution(&plugin));
+    let node = view(&runtime);
+    misa_proto::view::validate(&node).expect("a tree a client may be sent");
+
+    let section = misa_proto::view::find(&node, "plugin.policy.guest").expect("the plugin's section");
+    assert_eq!(section.role, "plugin.policy.guest");
+    assert_eq!(section.label.as_deref(), Some("policy.guest"));
+
+    // The plugin's own ids are inside the session's namespace, and its affordance is on the node it
+    // put it on — with the plugin's own action id, not a mangled one.
+    let root = misa_proto::view::find(&node, "plugin.policy.guest.guest").expect("the plugin's root, namespaced");
+    assert_eq!(root.actions.len(), 1);
+    assert_eq!(root.actions[0].id, "refresh");
+    assert_eq!(root.actions[0].label.as_deref(), Some("Refresh"));
+
+    // And what the plugin said about the client it was drawing for is in the document, because the
+    // session handed it the client's capabilities and the window it was asked for.
+    let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
+    assert!(text.contains("drawn for"), "{text}");
+    assert!(text.contains("'class':'plain'"), "the capabilities the client declared: {text}");
+}
+
+#[tokio::test]
+async fn an_action_from_a_plugins_tree_reaches_the_plugin() {
+    // No router anywhere: the client's action is the loop's own intent/action event, the session
+    // does not fault for it because the plugin declared it, and the plugin — which declared that
+    // event kind — does the work.
+    let plugin = loaded();
+    let (runtime, _kernel) = session(contribution(&plugin));
+    let _ = view(&runtime);
+
+    let faults = runtime.intent(Intent::Action {
+        node: "plugin.policy.guest.guest".into(),
+        action: "refresh".into(),
+        args: Value::Null,
+        fields: Vec::new(),
+    });
+    assert!(faults.is_empty(), "{faults:?}");
+
+    let state = match runtime.read(&Query::new("policy.guest.state"), &Capabilities::plain()).expect("an answer") {
+        Reading::Data(value) => value,
+        Reading::View(_) => panic!("a plugin's query answered with a view"),
+    };
+    assert_eq!(
+        state.get("guest").and_then(|guest| guest.get("acted")).and_then(Value::as_bool),
+        Some(true),
+        "the plugin was not told: {state:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_plugin_that_runs_away_is_stopped_by_its_budget_and_the_session_still_answers() {
+    // A guest that never returns is the failure mode a host has to design away rather than hope
+    // about. The budget is fuel, so it costs no threads and no timers, and what a person sees is a
+    // sentence where the widget was.
+    let plugin = loaded();
+    let contribution = contribution(&plugin).with_root("spin", Value::Bool(true)).expect("a root");
+    let (runtime, _kernel) = session(contribution);
+    let node = view(&runtime);
+    misa_proto::view::validate(&node).expect("a tree a client may be sent");
+
+    let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
+    assert!(text.contains("budget"), "{text}");
+    assert!(text.contains("policy.guest"), "{text}");
+    // And the rest of the session is untouched: a runaway plugin is not a session that stops
+    // answering.
+    assert!(misa_proto::view::find(&node, "composer").is_some());
+}
+
+#[tokio::test]
+async fn a_plugin_that_refuses_to_present_is_a_sentence_too() {
+    let plugin = loaded();
+    let contribution = contribution(&plugin).with_root("refuse", Value::Bool(true)).expect("a root");
+    let (runtime, _kernel) = session(contribution);
+    let node = view(&runtime);
+    let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
+    // The guest's own words, in place of its tree.
+    assert!(text.contains("cannot draw that"), "{text}");
 }
 
 /// Wait for the kernel to have entries in a conversation, the way a client waits: by looking.
@@ -273,16 +359,9 @@ async fn wait_for_entries(kernel: &misa_kernel::LocalKernel, conversation: &str)
     panic!("no entry arrived for `{conversation}`");
 }
 
-/// A session spawns the tasks that carry kernel reports back, so this one is async like the
-/// rest of the loop\'s tests.
-#[tokio::test]
-async fn a_session_runs_what_a_plugin_declared() {
-    // The whole point, end to end: a daemon loads a component, a session registers what it
-    // declared, and a prompt in that session reaches wasm — whose patch lands in the state the
-    // composition made for it and whose effect is run by the session's own interpreter.
-    let plugin = loaded();
-    plugin.validate(&misa_session::AcceptedEffects).expect("this session can run it");
-
+/// Wire a plugin the way a daemon does: handlers, queries, affordances, presentation, and the
+/// state roots it declared.
+fn contribution(plugin: &Arc<Plugin>) -> misa_session::Contribution {
     let mut contribution = misa_session::Contribution::new();
     for (kind, handler) in plugin.handlers() {
         contribution = contribution.with_handler(kind, PLUGIN_PRIORITY, handler);
@@ -290,10 +369,24 @@ async fn a_session_runs_what_a_plugin_declared() {
     for (name, subscription) in plugin.subscriptions() {
         contribution = contribution.with_subscription(name, subscription);
     }
-    for root in &plugin.descriptor().roots {
+    for action in &plugin.descriptor().actions {
+        contribution = contribution.with_action(action).expect("an affordance the session does not have");
+    }
+    let presenting = plugin.clone();
+    contribution = contribution.with_section(misa_session::views::Section {
+        plugin: plugin.descriptor().id.clone(),
+        build: Arc::new(move |capabilities, db, window| {
+            presenting.view(capabilities, db, window).map_err(|fault| fault.message)
+        }),
+    });
+    for root in plugin.roots() {
         contribution = contribution.with_root(root, Value::map([])).expect("a root of its own");
     }
+    contribution
+}
 
+/// A session running one plugin, with a kernel a test can look at.
+fn session(contribution: misa_session::Contribution) -> (Arc<Runtime>, Arc<LocalKernel>) {
     let provider: Arc<dyn Provider> = ScriptedProvider::always("an answer");
     let kernel = Arc::new(LocalKernel::new(provider));
     let runtime = Runtime::start_with(
@@ -306,6 +399,28 @@ async fn a_session_runs_what_a_plugin_declared() {
         Value::Null,
         contribution,
     );
+    (runtime, kernel)
+}
+
+/// The view a client would draw.
+fn view(runtime: &Runtime) -> misa_proto::view::Node {
+    match runtime.read(&Query::new(misa_session::views::VIEW_QUERY), &Capabilities::plain()).expect("a view") {
+        Reading::View(node) => node,
+        Reading::Data(_) => panic!("the view query answered with data"),
+    }
+}
+
+/// A session spawns the tasks that carry kernel reports back, so this one is async like the
+/// rest of the loop's tests.
+#[tokio::test]
+async fn a_session_runs_what_a_plugin_declared() {
+    // The whole point, end to end: a daemon loads a component, a session registers what it
+    // declared, and a prompt in that session reaches wasm — whose patch lands in the state the
+    // composition made for it and whose effect is run by the session's own interpreter.
+    let plugin = loaded();
+    plugin.validate(&misa_session::AcceptedEffects).expect("this session can run it");
+
+    let (runtime, kernel) = session(contribution(&plugin));
 
     let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
     assert!(faults.is_empty(), "{faults:?}");

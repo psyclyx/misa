@@ -24,8 +24,38 @@ use exports::misa::policy::policy_api::{
     Op as GuestOp, OptionValue, Patch as GuestPatch, QueryRequest, ViewTree,
 };
 
-/// The wasmtime engine, re-exported so a caller composes one without depending on wasmtime.
-pub use wasmtime::Engine;
+/// The engine every plugin in this process shares.
+///
+/// One per process rather than one per plugin: compiling a component is the expensive part, and
+/// two plugins have no reason to have two code generators between them. It is built here rather
+/// than handed in because its configuration is the *host's* requirement and not a caller's
+/// choice — fuel has to be on for a call to be bounded, and a composition that had to remember
+/// that would be a composition that can hang a session.
+fn engine() -> &'static wasmtime::Engine {
+    static ENGINE: std::sync::OnceLock<wasmtime::Engine> = std::sync::OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        wasmtime::Engine::new(&config).expect("the host's own engine configuration is valid")
+    })
+}
+
+/// Set the budget for one call into a guest.
+///
+/// One function because every call has to go through it — a store with fuel switched on and none
+/// set traps on the *first* instruction, which is how a host that forgot once would look like a
+/// plugin that cannot answer `describe`.
+fn fuelled(store: &mut Store<()>) -> Result<(), PluginFault> {
+    store.set_fuel(CALL_FUEL).map_err(|error| PluginFault::host(error.to_string()))
+}
+
+/// Fuel for one call into a plugin.
+///
+/// Generous for what a plugin does — read a few json fields, build a tree, walk a database — and
+/// small enough that a runaway loop is a fault in tens of milliseconds rather than a session
+/// that never answers again. Per *call*, not per plugin: a plugin that spent its budget once may
+/// spend another on the next event.
+const CALL_FUEL: u64 = 100_000_000;
 
 /// What a plugin said it is, at load.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +68,8 @@ pub struct Descriptor {
     pub queries: Vec<String>,
     /// Effect kinds it may ask for.
     pub effects: Vec<String>,
+    /// Affordances its views offer, by the action id a client sends back.
+    pub actions: Vec<String>,
     /// State roots it writes into, as plain names.
     ///
     /// The composition makes these before the first event arrives, because a patch may only
@@ -86,6 +118,16 @@ impl PluginFault {
     }
 
     fn trap(id: &str, error: wasmtime::Error) -> PluginFault {
+        // A budget that ran out is the one trap worth a sentence of its own: "trapped" would
+        // send a plugin author looking for a bug in the wrong place.
+        if error.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::OutOfFuel) {
+            return PluginFault {
+                code: "plugin.out-of-fuel".into(),
+                message: format!(
+                    "`{id}` used its whole budget for one call ({CALL_FUEL} units) and was stopped"
+                ),
+            };
+        }
         PluginFault::host(format!("the component `{id}` trapped: {error}"))
     }
 }
@@ -119,12 +161,14 @@ impl Plugin {
     /// Nothing runs until [`Plugin::validate`] has compared its declarations against the
     /// composition, so a plugin that asks for something this session cannot do is refused
     /// before an event reaches it.
-    pub fn load(engine: &Engine, bytes: &[u8]) -> Result<Plugin, PluginFault> {
+    pub fn load(bytes: &[u8]) -> Result<Plugin, PluginFault> {
+        let engine = engine();
         let component = Component::new(engine, bytes).map_err(|error| {
             PluginFault::host(format!("this is not a component this engine can run: {error}"))
         })?;
         let linker: Linker<()> = Linker::new(engine);
         let mut store = Store::new(engine, ());
+        fuelled(&mut store)?;
         let bindings = Policy::instantiate(&mut store, &component, &linker).map_err(|error| {
             PluginFault::host(format!(
                 "the component asked for something this host does not provide: {error}"
@@ -140,16 +184,25 @@ impl Plugin {
             events: declared.events,
             queries: declared.queries,
             effects: declared.effects,
+            actions: declared.actions,
             roots: declared.roots,
         };
-        if descriptor.id.is_empty() {
-            return Err(PluginFault::refused("a plugin with no id cannot be named in a diagnostic"));
+        if !plain_id(&descriptor.id) {
+            return Err(PluginFault::refused(format!(
+                "`{}` is not an id a session can present under: an id is a dotted lowercase name,                  like a role, because that is what a theme is written against",
+                descriptor.id
+            )));
         }
         Ok(Plugin { inner: Mutex::new(Guest { store, bindings }), descriptor })
     }
 
     pub fn descriptor(&self) -> &Descriptor {
         &self.descriptor
+    }
+
+    /// The state roots this plugin declared it writes into.
+    pub fn roots(&self) -> &[String] {
+        &self.descriptor.roots
     }
 
     /// Hand the plugin the composition's options. Called once, after load.
@@ -163,6 +216,7 @@ impl Plugin {
             .collect::<Vec<_>>();
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
+        fuelled(store)?;
         bindings
             .interface0
             .call_configure(store, &options)
@@ -199,15 +253,18 @@ impl Plugin {
     }
 
     /// One handler per event kind the plugin declared, ready for a [`misa_reframe::Registry`].
+    ///
+    /// There is nothing else to register, and nothing special about a plugin's: a plugin that
+    /// wants to be acted on declares `intent/action` like any other event kind, and the loop's
+    /// registry routes it — by kind, in priority order, through the same path every handler in
+    /// this system goes through.
     pub fn handlers(self: &Arc<Self>) -> Vec<(String, Arc<dyn misa_reframe::Handler>)> {
         self.descriptor
             .events
             .iter()
             .map(|kind| {
-                let handler: Arc<dyn misa_reframe::Handler> = Arc::new(crate::PluginHandler::new(
-                    self.clone(),
-                    kind.clone(),
-                ));
+                let handler: Arc<dyn misa_reframe::Handler> =
+                    Arc::new(crate::PluginHandler::new(self.clone(), kind.clone()));
                 (kind.clone(), handler)
             })
             .collect()
@@ -254,6 +311,7 @@ impl Plugin {
         let db = to_json(db, "this session's state")?;
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
+        fuelled(store)?;
         let answered = bindings
             .interface0
             .call_handle(store, &asked, &db)
@@ -290,6 +348,7 @@ impl Plugin {
         };
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
+        fuelled(store)?;
         let answered = bindings
             .interface0
             .call_query(store, &request, &inputs, &db, previous.as_deref())
@@ -303,16 +362,25 @@ impl Plugin {
     /// The validation is [`misa_proto::view::validate`] — the same function a session's own
     /// view is held to — so a plugin's tree is not merely *its* tree: it is a tree every
     /// client may assume things about, or it is a fault.
-    pub fn view(&self, role: &str, capabilities: &str, db: &Value, window: u32) -> Result<Node, PluginFault> {
+    pub fn view(&self, capabilities: &misa_proto::wire::Capabilities, db: &Value, window: usize) -> Result<Node, PluginFault> {
+        // The client's capabilities go over as the json a client declared: the render class,
+        // whether it has a native disclosure widget, its size. That is the *whole* of what a
+        // plugin learns about a client, which is what keeps presentation policy in one place —
+        // the tree it returns is placed by the session for every frontend at once.
+        let capabilities = serde_json::to_string(capabilities)
+            .map_err(|error| PluginFault::host(format!("the client's capabilities: {error}")))?;
         let db = to_json(db, "this session's state")?;
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
+        fuelled(store)?;
         let tree = bindings
             .interface0
-            .call_view(store, role, capabilities, &db, window)
+            .call_view(store, &capabilities, &db, window as u32)
             .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
             .map_err(|fault| PluginFault::guest(&fault))?;
         let node = tree_of(&tree)?;
+        named(&node)?;
+        offered(&self.descriptor.id, &node, &self.descriptor.actions)?;
         misa_proto::view::validate(&node).map_err(|fault| {
             PluginFault::host(format!("the plugin's view is not one a client may be sent: {fault}"))
         })?;
@@ -327,6 +395,60 @@ impl Plugin {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Guest>, PluginFault> {
         self.inner.lock().map_err(|_| PluginFault::host("the plugin is poisoned by a panic"))
     }
+}
+
+/// Whether a plugin's id is a *name*: dotted lowercase, like a role.
+///
+/// Nothing here parses an id — no part of this host splits one — and this is why: the session
+/// presents a plugin's tree under a role it builds from this id (`plugin.<id>`), and a role is
+/// what a theme is written against. An id that is not a name is a tree no stylesheet can reach
+/// and no diagnostic can point at.
+fn plain_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        })
+}
+
+/// Every node in a plugin's tree needs an id.
+///
+/// A client remembers which nodes it opened by id, so a tree whose nodes have none is a tree
+/// that cannot be remembered — and one the session would have to name positionally, which moves
+/// when the tree grows. Refused here, where the message can tell a plugin author what to do.
+fn named(node: &Node) -> Result<(), PluginFault> {
+    if node.id.is_empty() {
+        return Err(PluginFault::host(
+            "a node in the plugin's view has no id, and a client remembers the nodes it opened by id",
+        ));
+    }
+    for child in &node.children {
+        named(child)?;
+    }
+    Ok(())
+}
+
+/// Every action in a tree has to be one the plugin declared.
+///
+/// The session routes an action as the loop's own `intent/action` event, so nothing here has to
+/// translate an id — but a client clicking an affordance nobody handles is a silence, and this is
+/// where that becomes impossible: a tree that offers an action outside the declaration is refused
+/// when the plugin presents it, with the plugin's id and the action on it.
+fn offered(id: &str, node: &Node, declared: &[String]) -> Result<(), PluginFault> {
+    for action in &node.actions {
+        if !declared.contains(&action.id) {
+            return Err(PluginFault::refused(format!(
+                "`{id}` presented an action `{}` that it does not declare; declared: {:?}",
+                action.id, declared
+            )));
+        }
+    }
+    for child in &node.children {
+        offered(id, child, declared)?;
+    }
+    Ok(())
 }
 
 /// What a plugin declared as a state root has to be: one plain name, once.
@@ -751,6 +873,54 @@ mod tests {
         }
         let fault = tree_of(&ViewTree { nodes, root: 0 }).unwrap_err();
         assert!(fault.message.contains("deep"), "{}", fault.message);
+    }
+
+    #[test]
+    fn a_plugin_id_is_a_name_because_a_role_is_built_from_it() {
+        for good in ["guest", "policy.guest", "guest-2", "a.b.c-1"] {
+            assert!(plain_id(good), "{good}");
+        }
+        for bad in ["", ".", "a..b", "Guest", "guest ", "guest:2", "guest/x"] {
+            assert!(!plain_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_tree_may_only_offer_actions_the_plugin_declared() {
+        let declared = vec!["refresh".to_string()];
+        let mut tree = Node::section("guest").id("guest");
+        assert!(offered("guest", &tree, &declared).is_ok());
+
+        tree.actions.push(misa_proto::view::Action {
+            id: "refresh".into(),
+            on: misa_proto::view::ActionOn::Click,
+            label: None,
+            args: Value::Null,
+        });
+        assert!(offered("guest", &tree, &declared).is_ok());
+
+        tree.actions.push(misa_proto::view::Action {
+            id: "panel.close".into(),
+            on: misa_proto::view::ActionOn::Click,
+            label: None,
+            args: Value::Null,
+        });
+        // A plugin cannot offer the session's own affordances by naming one: it either declares
+        // it or the tree is refused, and declaring `panel.close` would make the session's
+        // handler do something the plugin asked for.
+        let fault = offered("guest", &tree, &declared).unwrap_err();
+        assert_eq!(fault.code, "plugin.refused");
+        assert!(fault.message.contains("panel.close"), "{}", fault.message);
+    }
+
+    #[test]
+    fn every_node_a_plugin_presents_has_an_id() {
+        let named_tree = Node::section("guest").id("guest");
+        assert!(named(&named_tree).is_ok());
+        let mut anonymous = Node::section("guest").id("guest");
+        anonymous.children.push(Node::section("guest.anonymous"));
+        let fault = named(&anonymous).unwrap_err();
+        assert!(fault.message.contains("no id"), "{}", fault.message);
     }
 
     #[test]

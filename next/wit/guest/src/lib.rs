@@ -14,7 +14,7 @@ wit_bindgen::generate!({
 });
 
 use exports::misa::policy::policy_api::{
-    Descriptor, Effect, Event, Fault, Guest, Node, Op, OptionValue, Patch, QueryRequest, ViewTree,
+    Action, Descriptor, Effect, Event, Fault, Guest, Node, Op, OptionValue, Patch, QueryRequest, ViewTree,
 };
 
 struct Shell;
@@ -26,10 +26,17 @@ impl Guest for Shell {
         Descriptor {
             id: "policy.guest".to_string(),
             version: "0.1.0".to_string(),
-            // Two kinds: the one it handles, and one it declares so that it is *called* for
-            // it and can refuse. A plugin is only ever asked about what it declared, which is
-            // what makes the second kind the only way to reach the fault path.
-            events: vec!["intent/prompt".to_string(), "intent/cancel".to_string()],
+            // Three kinds, and every one of them is the loop's own vocabulary. `intent/action`
+            // is how this plugin is acted on: an affordance in a tree it presented comes back as
+            // that event, and nothing on this side has to know where the session filed it.
+            events: vec![
+                "intent/prompt".to_string(),
+                "intent/action".to_string(),
+                "intent/cancel".to_string(),
+            ],
+            // What its views offer. A tree that offers anything else is refused when it is
+            // presented.
+            actions: vec!["refresh".to_string()],
             queries: vec!["policy.guest.turns".to_string(), "policy.guest.state".to_string()],
             // An effect the session's interpreter accepts, and whose data is json: wire.event
             // is the one kind a plugin may not ask for, and the host refuses it at install.
@@ -47,6 +54,17 @@ impl Guest for Shell {
     /// One event in, patches and effects out — validated by the host *before* anything
     /// commits, which is why an unknown event is a fault and not a `panic!`.
     fn handle(event: Event, db: String) -> Result<(Vec<Patch>, Vec<Effect>), Fault> {
+        // An affordance from a tree this plugin presented comes back as the loop's own action
+        // event, with the action id, the node, and whatever fields the client sent.
+        if event.kind == "intent/action" {
+            return Ok((
+                vec![Patch {
+                    path: "guest.acted".to_string(),
+                    op: Op::Set("true".to_string()),
+                }],
+                vec![],
+            ));
+        }
         if event.kind != "intent/prompt" {
             return Err(Fault {
                 code: "policy.guest.unexpected".to_string(),
@@ -88,7 +106,27 @@ impl Guest for Shell {
     }
 
     /// A tree, as a flat list: a plugin cannot present, so it says what the nodes *are*.
-    fn view(_role: String, _capabilities: String, _db: String, _window: u32) -> Result<ViewTree, Fault> {
+    ///
+    /// The ids are the plugin's own — a client remembers which nodes it opened by id — and the
+    /// action is the plugin's own too: the session routes it back here because the node it sits
+    /// on is one this plugin offered. The database is checked for `spin`, which is a switch a
+    /// test flips to prove that a runaway guest is stopped by its budget rather than by anybody
+    /// noticing.
+    fn view(capabilities: String, db: String, window: u32) -> Result<ViewTree, Fault> {
+        if db.contains("\"spin\"") {
+            let mut turns: u64 = 0;
+            loop {
+                turns = turns.wrapping_add(1);
+                std::hint::black_box(turns);
+            }
+        }
+        if db.contains("\"refuse\"") {
+            return Err(Fault {
+                code: "policy.guest.no-view".to_string(),
+                message: "this plugin cannot draw that".to_string(),
+                event: None,
+            });
+        }
         Ok(ViewTree {
             nodes: vec![
                 Node {
@@ -97,14 +135,28 @@ impl Guest for Shell {
                     kind: "section".to_string(),
                     data: None,
                     parent: None,
-                    actions: Vec::new(),
+                    actions: vec![Action {
+                        id: "refresh".to_string(),
+                        label: Some("Refresh".to_string()),
+                        on_submit: false,
+                        args: None,
+                    }],
                     state: None,
                 },
                 Node {
-                    id: "guest.note".to_string(),
-                    role: "guest.note".to_string(),
-                    kind: "text".to_string(),
-                    data: Some("{\"spans\":[]}".to_string()),
+                    id: "guest.summary".to_string(),
+                    role: "guest.summary".to_string(),
+                    kind: "status".to_string(),
+                    // What a plugin can honestly say about the call it was given: how many
+                    // messages the session is showing, how much state it handed over, and what the
+                    // client said it can draw. A plugin learns a client's *capabilities* and
+                    // nothing else about it.
+                    data: Some(format!(
+                        "{{\"text\":\"{} messages, {} bytes of state, drawn for {}\"}}",
+                        window,
+                        db.len(),
+                        capabilities.replace('"', "'"),
+                    )),
                     parent: Some(0),
                     actions: Vec::new(),
                     state: None,

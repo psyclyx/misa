@@ -22,6 +22,10 @@ wit-component.workspace = true
 # not the crate's.
 misa-kernel.workspace = true
 misa-session.workspace = true
+# A client-side crate, and only for tests: the block for a tree is what a person sees in every
+# frontend, and a test that asserts on it is asserting on the thing itself rather than on a
+# second rendering of it that could disagree.
+misa-render.workspace = true
 # A session is a runtime: starting one spawns the tasks that carry kernel reports back.
 tokio.workspace = true
 

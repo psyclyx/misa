@@ -43,6 +43,15 @@ pub struct Contribution {
     /// Empty maps rather than nothing, because a patch descending through an absent key is a
     /// fault: what is declared here is what the contribution may write into.
     pub roots: Vec<(String, Value)>,
+    /// Parts of the document this contribution presents, placed by the session.
+    pub sections: Vec<crate::views::Section>,
+    /// Affordances its views offer, by the action id a client sends back.
+    ///
+    /// Not a routing table: the loop routes an action as the `intent/action` event like every
+    /// other event, and the handler that acts on it is whichever one declared that event kind.
+    /// What this is for is the *answer* — the session can say "no action named that" when there
+    /// genuinely is not one, because these are the ones there are.
+    pub actions: Vec<String>,
 }
 
 impl std::fmt::Debug for Contribution {
@@ -77,6 +86,37 @@ impl Contribution {
     pub fn with_subscription(mut self, name: impl Into<String>, subscription: Subscription) -> Contribution {
         self.subscriptions.push((name.into(), subscription));
         self
+    }
+
+    /// Contribute a part of the document.
+    ///
+    /// Built once per client class per revision, and built *by* the session, so a plugin's
+    /// presentation reaches every frontend without one line of frontend code.
+    pub fn with_section(mut self, section: crate::views::Section) -> Contribution {
+        self.sections.push(section);
+        self
+    }
+
+    /// Declare an affordance this contribution's views offer.
+    ///
+    /// Refused for one of the session's own: an action is what the session's vocabulary is made
+    /// of, and a contribution that claimed `panel.close` would have the session's handler doing
+    /// its work under a name it did not choose.
+    pub fn with_action(mut self, action: &str) -> Result<Contribution, misa_proto::Fault> {
+        if crate::agent::ACTIONS.contains(&action) {
+            return Err(misa_proto::Fault::new(
+                "composition.action",
+                format!("`{action}` is an action this session already has"),
+            ));
+        }
+        if self.actions.iter().any(|declared| declared == action) {
+            return Err(misa_proto::Fault::new(
+                "composition.action",
+                format!("`{action}` is declared twice"),
+            ));
+        }
+        self.actions.push(action.to_string());
+        Ok(self)
     }
 
     /// Declare a root this contribution writes into.
@@ -131,6 +171,21 @@ impl Contribution {
             fields.insert(name.clone(), value.clone());
         }
         state = Value::Map(Arc::new(fields));
+        // The affordances a composition declared are state, because that is the only thing a
+        // handler can read: `agent::on_action` consults this list to tell an action it does not
+        // know from one somebody else is handling.
+        if !self.actions.is_empty() {
+            let mut session = state.get("session").and_then(Value::as_map).cloned().unwrap_or_default();
+            session.insert(
+                "actions".to_string(),
+                Value::list(self.actions.iter().map(Value::str).collect::<Vec<_>>()),
+            );
+            state = {
+                let mut fields = state.as_map().cloned().unwrap_or_default();
+                fields.insert("session".to_string(), Value::Map(Arc::new(session)));
+                Value::Map(Arc::new(fields))
+            };
+        }
         state
     }
 }

@@ -689,6 +689,33 @@ fn panel(
     Ok(())
 }
 
+/// The affordances this session's own vocabulary is made of.
+///
+/// A composition that loaded something may not claim one of these: a plugin that declared
+/// `panel.close` would have the session's own handler do its work, which is the shadowing this
+/// list exists to make impossible. Named here so that "which actions are the session's" has one
+/// answer, and pinned by a test that every one of them is handled below.
+pub const ACTIONS: &[&str] = &[
+    "composer.submit",
+    "panel.close",
+    "panel.submit",
+    "queue.take",
+    "queue.clear",
+    "turn.cancel",
+];
+
+/// Whether a composition declared this action, and is therefore the one handling it.
+///
+/// The list is *state* rather than a field on this handler, because a handler reads the database
+/// and nothing else — and because what a composition added is in the state it added. An action
+/// nobody declared is still the fault it always was, which is how a client finds out that the
+/// affordance it kept from an old view does not exist any more.
+fn declared_action(tx: &Tx<'_>, action: &str) -> bool {
+    tx.get("session.actions")
+        .and_then(Value::as_list)
+        .is_some_and(|actions| actions.iter().any(|declared| declared.as_str() == Some(action)))
+}
+
 /// Actions are the only thing a view offers, and this is the only place one is given a
 /// meaning.
 fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
@@ -756,7 +783,16 @@ fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             tx.dispatch(Event::new("intent/cancel"));
             Ok(())
         }
-        other => Err(Fault::handler(format!("no action named `{other}`"))),
+        other => {
+            // An action a composition declared belongs to whatever handler that composition
+            // registered for `intent/action` — the same event this handler is answering. Nothing
+            // here needs to know which one it was, or what it will do about it: that is what
+            // routing by event kind means.
+            if declared_action(tx, other) {
+                return Ok(());
+            }
+            Err(Fault::handler(format!("no action named `{other}`")))
+        }
     }
 }
 

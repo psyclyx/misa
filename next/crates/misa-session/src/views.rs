@@ -22,6 +22,8 @@
 //! its position in the window. Nothing about "the third node" may appear in an id,
 //! because the window moves and a client's scroll anchor must not.
 
+use std::sync::Arc;
+
 use misa_proto::view::{Action, ActionOn, BlobRef, Field, FieldKind, Kind, Node, Span, State};
 use misa_proto::wire::{Capabilities, Level};
 use misa_reframe::{Inputs, Query, Registry, Subscription, read_query};
@@ -112,14 +114,43 @@ pub fn subscriptions(registry: Registry) -> Registry {
         )
 }
 
+/// A part of the document a composition contributes: a plugin's tree, built where it goes.
+///
+/// This is not a subscription, and the difference is the whole reason it exists. A subscription is
+/// a pure function of the database — that is what makes the loop's memo sound — and a plugin's view
+/// is a function of the database *and* of what one client can draw. So it is built here, once per
+/// client class per revision, by the layer that owns the document, for every frontend at once: the
+/// alternative is a plugin's presentation re-implemented in each of them.
+#[derive(Clone)]
+pub struct Section {
+    /// The plugin's id, which is also the role its tree is placed under (plugin.<id>).
+    pub plugin: String,
+    /// Build it. A failure is a sentence in the document and not a broken tree: a plugin that
+    /// cannot present itself must not be able to stop a session from answering.
+    pub build: Arc<dyn Fn(&Capabilities, &Value, usize) -> Result<Node, String> + Send + Sync>,
+}
+
+impl std::fmt::Debug for Section {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Section").field("plugin", &self.plugin).finish()
+    }
+}
+
 /// Build the session's view.
-pub fn document(db: &Value, capabilities: &Capabilities, window: usize) -> Node {
+///
+/// The sections are what compositions contributed, placed after the transcript: a plugin's
+/// furniture sits under the conversation it is about, and above the panel, the notices, and the
+/// composer, which are about *now*. The composer is last because it is always last.
+pub fn document(db: &Value, capabilities: &Capabilities, window: usize, sections: &[Section]) -> Node {
     let session = db.get("session");
     let mut root = Node::section("session").id("session");
     root.label = Some(title(session));
 
     root.children.push(header(db, session));
     root.children.push(transcript(db, capabilities, window));
+    for section in sections {
+        root.children.push(section_node(section, db, capabilities, window));
+    }
     if let Some(panel) = panel(db) {
         root.children.push(panel);
     }
@@ -390,6 +421,40 @@ fn is_unified_diff(text: &str) -> bool {
         previous_was_removal_header = line.starts_with("--- ");
     }
     false
+}
+
+/// One composition's section: what it presents, or a sentence about why it could not.
+///
+/// The wrapper is the session's, so a theme can style a plugin's whole contribution by its role
+/// (plugin.<id>) and so a client can find it without knowing anything about the plugin.
+fn section_node(section: &Section, db: &Value, capabilities: &Capabilities, window: usize) -> Node {
+    let role = format!("plugin.{}", section.plugin);
+    let mut wrapper = Node::section(&role).id(&role);
+    wrapper.label = Some(section.plugin.clone());
+    wrapper.children.push(match (section.build)(capabilities, db, window) {
+        Ok(tree) => namespaced(&role, tree),
+        // A fault is data, and here it is a sentence in place of a tree. A session that answered
+        // with nothing would be a session whose view a plugin can break.
+        Err(reason) => Node::new(
+            "plugin.failed",
+            Kind::Status { text: format!("this plugin could not present itself: {reason}") },
+        )
+        .id(format!("{role}.failed")),
+    });
+    wrapper
+}
+
+/// A plugin's tree, with the session's identity on every node.
+///
+/// Node ids belong to whoever owns the document, so the session puts its own namespace on a subtree
+/// it embeds: two plugins, or a plugin and the session, cannot collide — and a collision would
+/// refuse the *whole* tree, so one plugin's mistake would freeze every client's view. This is not
+/// routing and nothing is ever parsed back out of it: the plugin's own id stays inside the name, so
+/// a client that remembers which nodes it opened keeps remembering the right ones.
+fn namespaced(prefix: &str, mut node: Node) -> Node {
+    node.id = format!("{prefix}.{}", node.id);
+    node.children = node.children.into_iter().map(|child| namespaced(prefix, child)).collect();
+    node
 }
 
 /// The panel the session is showing, if it is showing one.
@@ -745,14 +810,14 @@ mod tests {
 
     #[test]
     fn a_tree_is_built_and_valid() {
-        let node = document(&state(), &Capabilities::plain(), 40);
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
         misa_proto::view::validate(&node).expect("the shipped view is valid");
         assert_eq!(node.role, "session");
     }
 
     #[test]
     fn the_transcript_holds_the_messages_in_order_with_stable_ids() {
-        let node = document(&state(), &Capabilities::plain(), 40);
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
         let transcript = find(&node, "transcript").expect("a transcript");
         let ids: Vec<Option<&str>> = transcript.children.iter().map(|child| Some(child.id.as_str())).collect();
         assert_eq!(ids, vec![Some("msg.1"), Some("msg.2")]);
@@ -760,13 +825,13 @@ mod tests {
 
     #[test]
     fn a_streamed_delta_has_a_node_to_append_to() {
-        let node = document(&state(), &Capabilities::plain(), 40);
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
         assert!(find(&node, "msg.2.text").is_some(), "the first text node must carry the delta id");
     }
 
     #[test]
     fn a_fenced_block_becomes_a_code_node_rather_than_prose() {
-        let node = document(&state(), &Capabilities::plain(), 40);
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
         let message = find(&node, "msg.2").expect("the assistant message");
         let code = message
             .children
@@ -784,7 +849,7 @@ mod tests {
 
     #[test]
     fn a_tool_call_carries_its_arguments_and_its_result() {
-        let node = document(&state(), &Capabilities::plain(), 40);
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
         let call = find(&node, "call.call.1").expect("the tool call");
         assert_eq!(call.state, Some(State::Done));
         assert_eq!(call.label.as_deref(), Some("echo"));
@@ -818,7 +883,7 @@ mod tests {
                 ])]),
             ),
         ]);
-        let node = document(&state, &Capabilities::plain(), 40);
+        let node = document(&state, &Capabilities::plain(), 40, &[]);
         let result = find(&node, "call.call.1.result").expect("the result");
         assert_eq!(result.role, "tool.result.diff");
         match &result.kind {
@@ -840,8 +905,8 @@ mod tests {
 
     #[test]
     fn a_client_with_no_disclosure_widget_is_handed_an_open_node() {
-        let plain = document(&state(), &Capabilities::plain(), 40);
-        let rich = document(&state(), &Capabilities::browser(), 40);
+        let plain = document(&state(), &Capabilities::plain(), 40, &[]);
+        let rich = document(&state(), &Capabilities::browser(), 40, &[]);
         let open = |node: &Node| match &find(node, "call.call.1").expect("call").kind {
             Kind::Collapsible { open, .. } => *open,
             _ => unreachable!(),
@@ -852,7 +917,7 @@ mod tests {
 
     #[test]
     fn the_window_is_what_the_caller_asked_for() {
-        let node = document(&state(), &Capabilities::plain(), 1);
+        let node = document(&state(), &Capabilities::plain(), 1, &[]);
         let transcript = find(&node, "transcript").expect("a transcript");
         assert!(transcript.children.iter().any(|child| child.role == "transcript.earlier"));
         assert_eq!(transcript.children.iter().filter(|child| child.id.starts_with("msg.")).count(), 1);
@@ -860,20 +925,20 @@ mod tests {
 
     #[test]
     fn an_empty_transcript_says_so_instead_of_being_empty() {
-        let node = document(&initial_state("demo", "p", "m", 0), &Capabilities::plain(), 40);
+        let node = document(&initial_state("demo", "p", "m", 0), &Capabilities::plain(), 40, &[]);
         assert!(find(&node, "transcript").expect("a transcript").children[0].role == "transcript.empty");
         misa_proto::view::validate(&node).unwrap();
     }
 
     #[test]
     fn there_is_no_cancel_action_when_nothing_is_running() {
-        let idle = document(&initial_state("demo", "p", "m", 0), &Capabilities::plain(), 40);
+        let idle = document(&initial_state("demo", "p", "m", 0), &Capabilities::plain(), 40, &[]);
         assert!(find(&idle, "turn").is_none());
     }
 
     #[test]
     fn the_composer_offers_exactly_one_action_and_the_session_owns_its_meaning() {
-        let node = document(&state(), &Capabilities::plain(), 40);
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
         let composer = find(&node, "composer").expect("a composer");
         assert_eq!(composer.actions.len(), 1);
         assert_eq!(composer.actions[0].id, "composer.submit");
@@ -910,4 +975,28 @@ mod tests {
         assert_eq!(skia.role, "image");
         assert!(matches!(skia.kind, Kind::Image { .. }));
     }
+
+    /// Every node the session writes, by id.
+    fn ids_of(node: &Node, out: &mut Vec<String>) {
+        out.push(node.id.clone());
+        for child in &node.children {
+            ids_of(child, out);
+        }
+    }
+
+    #[test]
+    fn the_session_leaves_a_namespace_for_what_it_embeds() {
+        // A composition's tree is placed under ids the *session* mints (plugin.<id> + the node id),
+        // which is collision-free only while no node the session writes is in that namespace. The
+        // collision is not a theoretical one: a duplicate id refuses the whole tree a client is
+        // sent, so one plugin's mistake would freeze every client's view.
+        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let mut ids = Vec::new();
+        ids_of(&node, &mut ids);
+        assert!(ids.contains(&"composer".to_string()), "the walk found the session's own nodes");
+        for id in ids {
+            assert!(!id.starts_with("plugin."), "the session wrote `{id}`, which is a plugin's namespace");
+        }
+    }
+
 }

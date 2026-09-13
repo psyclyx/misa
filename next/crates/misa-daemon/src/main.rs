@@ -452,13 +452,10 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
     if paths.is_empty() {
         return Ok(contribution);
     }
-    // One engine for every plugin: compiling a component is the expensive part, and two plugins
-    // in one process have no reason to have two code generators between them.
-    let engine = misa_plugin::Engine::default();
     for path in paths {
         let bytes = std::fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
         let plugin = Arc::new(
-            misa_plugin::Plugin::load(&engine, &bytes)
+            misa_plugin::Plugin::load(&bytes)
                 .map_err(|fault| format!("{}: {} ({})", path.display(), fault.message, fault.code))?,
         );
         plugin.configure(&[]).map_err(|fault| {
@@ -479,6 +476,20 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         for (name, subscription) in plugin.subscriptions() {
             contribution = contribution.with_subscription(name, subscription);
         }
+        for action in &descriptor.actions {
+            contribution = contribution.with_action(action).map_err(|fault| {
+                format!("`{}` declares an affordance it may not have: {}", descriptor.id, fault.message)
+            })?;
+        }
+        // What it presents. The session builds it per client class and places it in the document,
+        // which is why no frontend has to know anything about a plugin.
+        let presenting = plugin.clone();
+        contribution = contribution.with_section(misa_session::views::Section {
+            plugin: descriptor.id.clone(),
+            build: Arc::new(move |capabilities, db, window| {
+                presenting.view(capabilities, db, window).map_err(|fault| fault.message)
+            }),
+        });
         for root in &descriptor.roots {
             // Empty, because what a plugin keeps in its own root is its own business and its
             // first patch is what fills it. A name the session already owns is refused in here.

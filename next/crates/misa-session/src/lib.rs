@@ -79,6 +79,8 @@ pub struct Emission {
 /// A running agent session.
 pub struct Runtime {
     state: Mutex<State>,
+    /// What compositions contributed to every view this session builds.
+    sections: Vec<views::Section>,
     to_kernel: mpsc::UnboundedSender<Request>,
     rev: watch::Sender<u64>,
     events: broadcast::Sender<Emission>,
@@ -179,6 +181,7 @@ impl Runtime {
 
         let runtime = Arc::new(Runtime {
             state: Mutex::new(State { state, view: None }),
+            sections: contribution.sections,
             to_kernel: to_kernel.clone(),
             rev,
             events,
@@ -497,7 +500,7 @@ impl Runtime {
                 .and_then(Value::as_i64)
                 .unwrap_or(views::DEFAULT_WINDOW as i64)
                 .max(1) as usize;
-            let node = views::document(state.state.db(), capabilities, limit);
+            let node = views::document(state.state.db(), capabilities, limit, &self.sections);
             // A tree a client cannot rely on is not sent: the session reports and
             // keeps the last valid view, which is what the previous system learned
             // at its frame boundary.
@@ -553,7 +556,7 @@ pub fn now_ms() -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use misa_kernel::{Provider, ScriptedProvider, Turn};
     use std::time::Duration;
@@ -574,14 +577,14 @@ mod tests {
         )
     }
 
-    fn view(runtime: &Runtime) -> Node {
+    pub(crate) fn view(runtime: &Runtime) -> Node {
         match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::plain()).unwrap() {
             Reading::View(node) => node,
             Reading::Data(_) => panic!("expected a view"),
         }
     }
 
-    fn transcript(runtime: &Runtime) -> String {
+    pub(crate) fn transcript(runtime: &Runtime) -> String {
         misa_render::to_plain(&misa_render::render(&view(runtime), &misa_render::Theme::plain(), 100))
     }
 
@@ -1130,8 +1133,11 @@ fn encode_blobs(attachments: &[misa_proto::view::BlobRef]) -> Value {
 #[cfg(test)]
 mod contribution_tests {
     use super::*;
+    use crate::tests::{transcript, view};
 
     use std::sync::Arc;
+
+    use misa_proto::view::{Kind, Node};
 
     use misa_kernel::{Provider, ScriptedProvider};
     use misa_reframe::{Event, FnHandler, Inputs, Subscription, Tx};
@@ -1198,6 +1204,146 @@ mod contribution_tests {
                 .is_err()
         );
         assert!(Contribution::new().with_root("guest", Value::Null).is_ok());
+    }
+
+    /// A section a composition contributed, as a test builds one.
+    fn presenting(plugin: &'static str) -> views::Section {
+        views::Section {
+            plugin: plugin.to_string(),
+            build: std::sync::Arc::new(|_capabilities, db, _window| {
+                let mut tree = Node::section("test.widget").id("widget");
+                tree.label = Some(format!("{} bytes of state", misa_render::to_plain(&[]).len()));
+                tree.children.push(
+                    Node::new("test.note", Kind::Status { text: format!("seen {}", db.get("session").is_some()) })
+                        .id("note"),
+                );
+                Ok(tree)
+            }),
+        }
+    }
+
+    #[test]
+    fn a_contribution_may_not_claim_an_affordance_the_session_has() {
+        // An action is what the session's own vocabulary is made of. A contribution that declared
+        // `panel.close` would have the session's handler do its work under a name it did not
+        // choose, which is the shadowing this check exists to make impossible.
+        let fault = Contribution::new().with_action("panel.close").unwrap_err();
+        assert_eq!(fault.code, "composition.action");
+        assert!(fault.message.contains("panel.close"), "{}", fault.message);
+        assert!(
+            Contribution::new().with_action("refresh").unwrap().with_action("refresh").is_err(),
+            "the same action twice is a mistake"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_action_the_session_handles_is_one_it_knows_by_name() {
+        // The list a composition is kept out of is the list this handler answers. If the two drift,
+        // a contribution could claim something the session handles and nobody would notice.
+        let runtime = session(Contribution::new());
+        for action in crate::agent::ACTIONS {
+            let faults = runtime.intent(Intent::Action {
+                node: "session".into(),
+                action: action.to_string(),
+                args: Value::Null,
+                fields: Vec::new(),
+            });
+            assert!(
+                faults.iter().all(|fault| !fault.message.contains("no action named")),
+                "`{action}` is in the list and not handled: {faults:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_contribution_can_present_a_tree_the_session_places() {
+        let runtime = session(contribution().with_section(presenting("test.plugin")));
+        let node = view(&runtime);
+        let section = misa_proto::view::find(&node, "plugin.test.plugin").expect("the section is in the document");
+        assert_eq!(section.role, "plugin.test.plugin");
+        // The plain transcript render is what every frontend gets for words; the structure is what
+        // each of them draws in its own idiom.
+        let text = transcript(&runtime);
+        assert!(text.contains("seen true"), "{text}");
+        // The plugin's own ids are inside the session's namespace, so nothing can collide with a
+        // node the session wrote — and a client's memory of which nodes it opened still follows the
+        // plugin's own identity.
+        let widget = misa_proto::view::find(&node, "plugin.test.plugin.widget").expect("the namespaced root");
+        // The section's namespace and the plugin's own id, in that order: the plugin promises its
+        // ids are unique inside its own tree, and the session promises the namespace is.
+        assert_eq!(widget.children[0].id, "plugin.test.plugin.note");
+    }
+
+    #[tokio::test]
+    async fn a_contribution_that_cannot_present_is_a_sentence_and_not_a_broken_view() {
+        // A fault is data: a plugin that cannot draw is a line in the document, which is the
+        // difference between a widget that is missing and a session whose view nobody can draw.
+        let broken = views::Section {
+            plugin: "test.broken".to_string(),
+            build: std::sync::Arc::new(|_capabilities, _db, _window| Err("nothing to draw".to_string())),
+        };
+        let runtime = session(Contribution::new().with_section(broken));
+        let node = view(&runtime);
+        misa_proto::view::validate(&node).expect("a tree a client may be sent");
+        let text = transcript(&runtime);
+        assert!(text.contains("test.broken"), "{text}");
+        assert!(text.contains("nothing to draw"), "{text}");
+        // And the rest of the document is still there, which is the point.
+        assert!(misa_proto::view::find(&node, "composer").is_some());
+    }
+
+    #[tokio::test]
+    async fn an_action_a_composition_declared_reaches_its_handler_and_is_not_a_fault() {
+        // The whole of how a plugin is acted on, with no router anywhere: the action arrives as the
+        // loop's own `intent/action` event, the session's handler does not know it (and does not
+        // fault, because a composition declared it), and the handler that declared the event kind
+        // does the work.
+        let acted = Arc::new(misa_reframe::FnHandler::new("test.acted", |tx: &mut Tx<'_>, event: &Event| {
+            tx.set("guest.acted", Value::str(event.field("action")))?;
+            Ok(())
+        }));
+        let contribution = Contribution::new()
+            .with_root("guest", Value::map([]))
+            .expect("a root")
+            .with_action("refresh")
+            .expect("an affordance the session does not have")
+            .with_handler("intent/action", 10, acted)
+            .with_subscription("guest.acted", reading_acted());
+        let runtime = session(contribution);
+
+        let faults = runtime.intent(Intent::Action {
+            node: "plugin.test.plugin.widget".into(),
+            action: "refresh".into(),
+            args: Value::Null,
+            fields: Vec::new(),
+        });
+        assert!(faults.is_empty(), "{faults:?}");
+        match runtime.read(&Query::new("guest.acted"), &Capabilities::plain()).expect("a value") {
+            Reading::Data(value) => assert_eq!(value.as_str(), Some("refresh")),
+            Reading::View(_) => panic!("expected data"),
+        }
+
+        // And one nobody declared is still the fault it was: a client finds out that an affordance
+        // it kept from an older view does not exist any more.
+        let faults = runtime.intent(Intent::Action {
+            node: "plugin.test.plugin.widget".into(),
+            action: "stale".into(),
+            args: Value::Null,
+            fields: Vec::new(),
+        });
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].message.contains("stale"), "{faults:?}");
+    }
+
+    /// A subscription over the root the acted handler writes, so a test can read it as a client
+    /// would.
+    fn reading_acted() -> Subscription {
+        Subscription {
+            inputs: Inputs::Database,
+            compute: Arc::new(|db, _inputs, _query, _previous| {
+                db.get("guest").and_then(|guest| guest.get("acted")).cloned().unwrap_or(Value::Null)
+            }),
+        }
     }
 
     #[tokio::test]

@@ -42,4 +42,4 @@ mod handler;
 mod host;
 
 pub use handler::{PLUGIN_PRIORITY, PluginHandler};
-pub use host::{Descriptor, Engine, Patch, Plugin, PluginFault};
+pub use host::{Descriptor, Patch, Plugin, PluginFault};

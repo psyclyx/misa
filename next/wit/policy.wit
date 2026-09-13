@@ -139,6 +139,18 @@ interface policy-api {
         queries: list<string>,
         /// Effect kinds this plugin may ask for.
         effects: list<string>,
+        /// The affordances this plugin's views offer, by the action id a client sends back.
+        ///
+        /// Declared for two reasons, and neither is routing: the loop routes an action as the
+        /// `intent/action` event, through the registry, like every other event. A declaration is
+        /// what lets the session answer "there is no action named that" when there genuinely is
+        /// not one — and what lets it *refuse a tree that offers an action nobody declared*, when
+        /// the plugin presents it, rather than failing in somebody's click later.
+        ///
+        /// An action is the loop's own vocabulary: a plugin that wants to be acted on declares
+        /// `intent/action` among the events it handles, and receives the action id, the node, and
+        /// any fields the client sent.
+        actions: list<string>,
         /// The state roots this plugin writes into, as plain names.
         ///
         /// Declared for the same reason the event kinds are: a patch may only create the
@@ -175,11 +187,17 @@ interface policy-api {
 
     /// Build a view for a client with the given capabilities.
     ///
-    /// The capabilities are what a client says it can draw — images, links, a native
-    /// disclosure widget — and they are the *only* thing about a client a plugin
-    /// learns. It never learns a size, a font, or a colour, because it has none of
-    /// those to ask about.
-    view: func(role: string, capabilities: string, db: string, window: u32) -> result<view-tree, fault>;
+    /// The capabilities are what a client says it can draw — its render class, whether it has a
+    /// native disclosure widget, its size — and they are the *only* thing about a client a plugin
+    /// learns. It never learns a font, a colour, or a coordinate, because there is no type in
+    /// this world that can express one.
+    ///
+    /// There is no role argument, and the plugin decides nothing about *where* its tree goes: the
+    /// session places what it returns under a role of its own (`plugin.<id>`), mints the identity
+    /// of every node in it, and routes an action from it back to this plugin. A plugin decides the
+    /// structure beneath its root, and every node in that structure needs an id — a client
+    /// remembers which nodes it opened by id.
+    view: func(capabilities: string, db: string, window: u32) -> result<view-tree, fault>;
 }
 
 world policy {
