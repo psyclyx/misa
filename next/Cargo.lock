@@ -2863,6 +2863,7 @@ name = "misa-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures",
  "misa-kernel",
  "misa-net",
  "misa-proto",

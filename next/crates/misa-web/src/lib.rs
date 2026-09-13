@@ -961,11 +961,8 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?;
 
-    let (updates, _) = broadcast::channel(64);
-    let latest = Arc::new(std::sync::Mutex::new(Arc::new(String::new())));
-
     let session = client.session().cloned();
-    let region = Region { latest: latest.clone(), updates: updates.clone() };
+    let region = Region::new();
 
     // One task owns the connection, because a client is a stream and an intent is a write
     // to the same stream. A browser's form submission arrives on a channel, which is what
@@ -974,7 +971,6 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     let stream = region.clone();
     let (downloads, mut download_requests) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
     tokio::spawn(async move {
-        let mut view = misa_proto::sync::ClientView::default();
         let mut pending_downloads = std::collections::HashMap::<u64, tokio::sync::oneshot::Sender<Result<misa_proto::wire::Download, String>>>::new();
         loop {
             tokio::select! {
@@ -985,8 +981,8 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
                     Ok(Some(misa_proto::SessionMsg::Fault { id: Some(id), fault })) => {
                         if let Some(reply) = pending_downloads.remove(&id) { let _ = reply.send(Err(fault.message)); }
                     }
-                    Ok(Some(message)) => match view.receive(&message) {
-                        Ok(true) => if let Some(view) = view.rendered() { stream.set(render_main(&view)); },
+                    Ok(Some(message)) => match stream.receive(&message) {
+                        Ok(true) => {},
                         Err(_) => { let _ = client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await; },
                         Ok(false) => {},
                     },
@@ -1024,35 +1020,8 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     axum::serve(listener, remote_router(state)).await.map_err(|err| err.to_string())
 }
 
-/// The rendered region, shared between whatever produces views and the browser.
-#[derive(Clone)]
-pub struct Region {
-    pub latest: Arc<std::sync::Mutex<Arc<String>>>,
-    pub updates: broadcast::Sender<Arc<String>>,
-}
-
-impl Default for Region {
-    fn default() -> Region {
-        Region::new()
-    }
-}
-
-impl Region {
-    pub fn new() -> Region {
-        let (updates, _) = broadcast::channel(64);
-        Region { latest: Arc::new(std::sync::Mutex::new(Arc::new(String::new()))), updates }
-    }
-
-    pub fn set(&self, html: String) {
-        let html = Arc::new(html);
-        *self.latest.lock().expect("the last region is never poisoned") = html.clone();
-        let _ = self.updates.send(html);
-    }
-
-    pub fn get(&self) -> Arc<String> {
-        self.latest.lock().expect("the last region is never poisoned").clone()
-    }
-}
+mod updates;
+pub use updates::Region;
 
 /// A session reached over iroh, with no kernel in this process.
 pub struct Remote {
@@ -1141,7 +1110,7 @@ async fn remote_events(
     State(state): State<Arc<Remote>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
-    region_stream(state.region.get(), lead, state.region.updates.subscribe())
+    state.region.events(lead)
 }
 
 /// The stream a browser reads: the region it should be showing, then every change
