@@ -57,11 +57,18 @@ impl Line {
 
 /// Render a tree to lines at a given width.
 pub fn render(node: &Node, theme: &Theme, columns: usize) -> Vec<Line> {
-    let mut out = Vec::new();
-    Renderer { theme, columns }.node(node, 0, &mut out);
+    let mut out = render_block(node, theme, columns, 0);
     while out.last().is_some_and(Line::is_blank) {
         out.pop();
     }
+    out
+}
+
+/// Render one retained layout owner, preserving boundary blank lines and depth.
+/// The caller trims only the end of the complete document.
+pub fn render_block(node: &Node, theme: &Theme, columns: usize, depth: usize) -> Vec<Line> {
+    let mut out = Vec::new();
+    Renderer { theme, columns }.node(node, depth, &mut out);
     out
 }
 

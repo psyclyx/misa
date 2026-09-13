@@ -23,6 +23,10 @@
 pub mod print;
 pub mod output;
 mod event_loop;
+mod retained;
+mod remote_requests;
+mod chrome;
+pub mod clipboard;
 pub mod storage;
 pub mod save;
 
@@ -321,8 +325,16 @@ impl Screen {
     /// body, and only a caller holding the tree can compute that — which is the price
     /// of byte offsets meaning something.
     pub fn selection_key(&mut self, view: &Node, key: &Key) -> Option<KeyOut> {
+        if !self.reading_key(key) { return None; }
+        self.selection_in(&self.body(view), key)
+    }
+    fn reading_key(&self, key: &Key) -> bool {
+        self.selection.is_some() || self.editor.mode() == ed::Mode::Normal &&
+            (matches!(key, Key::Char('v')) || matches!(key, Key::Char('y')) && self.editor.is_empty() && self.operator.is_none())
+    }
+    fn selection_in(&mut self, body: &select::Body, key: &Key) -> Option<KeyOut> {
         if self.selection.is_some() {
-            return Some(self.selecting(view, key));
+            return Some(self.selecting(body, key));
         }
         // `v` and `y` belong to a reader, but only where a vim reader expects them: in
         // normal mode, so typing into the composer is never stolen.
@@ -331,10 +343,10 @@ impl Screen {
         }
         match key {
             Key::Char('v') => {
-                self.begin_selection(view);
+                self.begin_selection(body);
                 Some(KeyOut::Local)
             }
-            Key::Char('y') if self.editor.is_empty() && self.operator.is_none() => Some(self.copy_body(view)),
+            Key::Char('y') if self.editor.is_empty() && self.operator.is_none() => Some(self.copy_body(body)),
             _ => None,
         }
     }
@@ -440,16 +452,14 @@ impl Screen {
 
     /// Start a selection at the bottom, which is where somebody following the tail is
     /// already looking.
-    fn begin_selection(&mut self, view: &Node) {
-        let body = self.body(view);
+    fn begin_selection(&mut self, body: &select::Body) {
         let row = body.len().saturating_sub(1);
         self.selection = Some(select::Selection::caret(select::Spot::new(row, 0)));
         self.notice = Some("copying — y takes it, esc stops".to_string());
     }
 
     /// Copy the whole body, for a reader who did not bother to select anything.
-    fn copy_body(&mut self, view: &Node) -> KeyOut {
-        let body = self.body(view);
+    fn copy_body(&mut self, body: &select::Body) -> KeyOut {
         let mut everything = select::Selection::caret(select::Spot::new(0, 0));
         everything.document_end(&body);
         let text = everything.text(&body);
@@ -457,8 +467,7 @@ impl Screen {
         KeyOut::Copy(text)
     }
 
-    fn selecting(&mut self, view: &Node, key: &Key) -> KeyOut {
-        let body = self.body(view);
+    fn selecting(&mut self, body: &select::Body, key: &Key) -> KeyOut {
         let Some(mut selection) = self.selection.take() else {
             return KeyOut::Local;
         };
@@ -535,7 +544,7 @@ impl Screen {
 
         // A picker in front of the editor takes everything except the way out.
         if self.picker.is_some() {
-            return self.picker_key(key);
+            return self.picker_key(if key == Key::InterruptSubmit { Key::Submit } else { key });
         }
         match key {
             Key::HistorySearch => {
@@ -544,6 +553,10 @@ impl Screen {
                 KeyOut::Local
             }
             Key::Newline => { self.editor.insert("\n"); KeyOut::Local }
+            Key::InterruptSubmit => match self.submit() {
+                KeyOut::Intent(Intent::Prompt { text, attachments }) => KeyOut::Intent(Intent::Interrupt { text, attachments }),
+                other => other,
+            },
             Key::Quit => KeyOut::Quit,
             Key::Escape => {
                 self.operator = None;
@@ -910,6 +923,7 @@ fn panel_field(panel: &Node) -> Option<&Field> {
 pub enum Key {
     HistorySearch,
     Newline,
+    InterruptSubmit,
     Char(char),
     Backspace,
     Delete,
@@ -955,6 +969,11 @@ pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
         }
     }
 
+    self::chrome(screen, attachment_count, &mut lines);
+    lines
+}
+
+fn chrome(screen: &Screen, attachment_count: usize, lines: &mut Vec<Line>) {
     if let Some(picker) = &screen.picker {
         lines.extend(picker_lines(screen, picker));
     }
@@ -970,7 +989,6 @@ pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
     }
     lines.push(Line { indent: 0, spans: Vec::new(), node: None });
     lines.push(input_line(screen));
-    lines
 }
 
 /// The picker, as lines. A frontend with a window would draw this as a panel.
@@ -1075,13 +1093,54 @@ fn select_highlight(line: &mut Line, from: usize, to: usize, theme: &Theme) {
 pub trait Session: Send {
     /// The next view, if one changed.
     async fn next(&mut self) -> Result<Option<Node>, String>;
+    /// Incremental consumers retain presentation owners between these updates.
+    async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
+        Ok(self.next().await?.map(Presentation::Snapshot))
+    }
+    async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
+        Some(match request {
+            SessionRequest::Intent(intent) => {
+                let draft = match &intent { Intent::Prompt { text, attachments } | Intent::Interrupt { text, attachments } => Some((text.clone(), attachments.clone())), _ => None };
+                SessionReply::Sent { draft, result: self.send(intent).await }
+            },
+            SessionRequest::Upload { generation, bytes, media } => SessionReply::Uploaded { generation, result: self.upload(bytes, &media).await },
+            SessionRequest::Complete { source, prefix } => {
+                let result = self.complete(&source, &prefix).await;
+                SessionReply::Complete { source, prefix, result }
+            }
+            SessionRequest::Save { node, destination } => SessionReply::Notice(match self.save_attachment(&node, &destination).await {
+                Ok(()) => format!("Saved {destination}"), Err(error) => error,
+            }),
+        })
+    }
     async fn send(&mut self, intent: Intent) -> Result<(), String>;
+    async fn upload(&mut self, _bytes: Vec<u8>, _media: &str) -> Result<misa_proto::view::BlobRef, String> {
+        Err("This client has no blob connection".into())
+    }
     async fn save_attachment(&mut self, _node: &str, _destination: &str) -> Result<(), String> {
         Err("This client has no blob connection".into())
     }
     /// Candidates a session holds, for a source this client asked about.
     async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String>;
     fn info(&self) -> Option<SessionInfo>;
+}
+
+pub enum Presentation {
+    Snapshot(Node),
+    Message(misa_proto::SessionMsg),
+    Reply(SessionReply),
+}
+pub enum SessionRequest {
+    Intent(Intent),
+    Upload { generation: u64, bytes: Vec<u8>, media: String },
+    Complete { source: String, prefix: String },
+    Save { node: String, destination: String },
+}
+pub enum SessionReply {
+    Uploaded { generation: u64, result: Result<misa_proto::view::BlobRef, String> },
+    Sent { draft: Option<(String, Vec<misa_proto::view::BlobRef>)>, result: Result<(), String> },
+    Complete { source: String, prefix: String, result: Result<(Vec<Choice>, bool), String> },
+    Notice(String),
 }
 
 /// The interactive loop.
@@ -1102,7 +1161,8 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
         KeyCode::Char(character) => Key::Char(character),
         KeyCode::Backspace => Key::Backspace,
         KeyCode::Delete => Key::Delete,
-        KeyCode::Enter if modifiers.contains(crossterm::event::KeyModifiers::ALT) => Key::Newline,
+        KeyCode::Enter if modifiers.contains(crossterm::event::KeyModifiers::ALT) => Key::InterruptSubmit,
+        KeyCode::Enter if modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => Key::Newline,
         KeyCode::Enter => Key::Submit,
         KeyCode::Tab => Key::Tab,
         KeyCode::Esc => Key::Escape,
@@ -1157,6 +1217,8 @@ pub fn sgr(style: &misa_render::Style) -> String {
 pub struct Remote {
     blobs: std::sync::Arc<misa_net::blob::Store>,
     dirty: bool,
+    restore_streams: bool,
+    requests: remote_requests::Pending,
     client: misa_net::iroh::Client,
     view: misa_proto::sync::ClientView,
     info: Option<SessionInfo>,
@@ -1202,7 +1264,7 @@ impl Remote {
             client.subscribe(source_subscription(source), query).await?;
         }
         let info = client.session();
-        Ok(Remote { client, view: Default::default(), info, blobs, dirty: false })
+        Ok(Remote { client, view: Default::default(), info, blobs, dirty: false, restore_streams: false, requests: Default::default() })
     }
 }
 
@@ -1214,6 +1276,48 @@ fn source_subscription(source: &str) -> misa_proto::SubId {
 
 #[async_trait::async_trait]
 impl Session for Remote {
+    async fn upload(&mut self, bytes: Vec<u8>, media: &str) -> Result<misa_proto::view::BlobRef, String> {
+        self.blobs.share(bytes, Some(media)).await
+    }
+    async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
+        self.submit_request(request).await
+    }
+    async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
+        if self.dirty {
+            self.dirty = false;
+            self.restore_streams = true;
+            return Ok(self.view.persisted().map(|(version, view)| Presentation::Message(misa_proto::SessionMsg::View { id: misa_proto::SubId(1), version, view })));
+        }
+        if self.restore_streams {
+            self.restore_streams = false;
+            return Ok(Some(Presentation::Message(misa_proto::SessionMsg::Streams { streams: self.view.streams() })));
+        }
+        loop {
+            let deadline = self.requests.deadline();
+            let message = tokio::select! {
+                incoming = self.client.next() => incoming?,
+                reply = self.requests.transfers.join_next(), if !self.requests.transfers.is_empty() => {
+                    return Ok(Some(Presentation::Reply(reply.unwrap().unwrap_or_else(|error| SessionReply::Notice(error.to_string())))));
+                }
+                _ = tokio::time::sleep_until(deadline), if !self.requests.is_empty() => {
+                    return Ok(Some(Presentation::Reply(self.requests.expire())));
+                }
+            };
+            let Some(message) = message else { return Ok(None); };
+            if let Some(reply) = self.request_reply(&message) { return Ok(Some(Presentation::Reply(reply))); }
+            match self.view.receive(&message) {
+                Ok(true) => return Ok(Some(Presentation::Message(message))),
+                Err(_) => self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?,
+                Ok(false) => {},
+            }
+            match message {
+                misa_proto::SessionMsg::Welcome { session, .. } => self.info = Some(session),
+                misa_proto::SessionMsg::Fault { id: Some(_), fault } => return Ok(Some(Presentation::Reply(SessionReply::Notice(fault.message)))),
+                misa_proto::SessionMsg::Fault { fault, .. } => return Err(fault.message),
+                _ => {},
+            }
+        }
+    }
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
             if self.dirty {
@@ -1913,13 +2017,17 @@ mod tests {
     }
 
     #[test]
-    fn alt_enter_inserts_a_newline_without_submitting() {
+    fn shift_enter_inserts_a_newline_and_alt_enter_interrupts_with_the_draft() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let mut screen = screen();
         screen.editor.set_text("first");
-        let key = translate(KeyCode::Enter, KeyModifiers::ALT).unwrap();
+        let key = translate(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert_eq!(screen.key(key), KeyOut::Local);
         assert_eq!(screen.editor.text(), "first\n");
+        let key = translate(KeyCode::Enter, KeyModifiers::ALT).unwrap();
+        assert_eq!(screen.key(key), KeyOut::Intent(Intent::Interrupt { text: "first\n".into(), attachments: vec![] }));
+        screen.editor.set_text("/clear");
+        assert!(matches!(screen.key(Key::InterruptSubmit), KeyOut::Intent(Intent::Command { ref name, .. }) if name == "clear"));
         assert_eq!(translate(KeyCode::Char('r'), KeyModifiers::CONTROL), Some(Key::HistorySearch));
     }
 
