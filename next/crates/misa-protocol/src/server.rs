@@ -160,7 +160,14 @@ impl Server {
         let mut out = Vec::new();
         for (id, subscription) in self.subscriptions.iter_mut() {
             if subscription.query.id == misa_proto::VIEW_QUERY {
-                let (version, replies) = sync_answer(*id, self.runtime.changes(subscription.version.as_ref()), false);
+                let changes = self.runtime.changes(subscription.version.as_ref());
+                let snapshot = matches!(changes, misa_proto::sync::ViewSync::Snapshot { .. });
+                let sync = if snapshot {
+                    let (sync, cursor) = self.runtime.sync(None);
+                    self.stream_cursor = cursor;
+                    sync
+                } else { changes };
+                let (version, replies) = sync_answer(*id, sync, snapshot);
                 subscription.version = Some(version);
                 out.extend(replies);
                 continue;

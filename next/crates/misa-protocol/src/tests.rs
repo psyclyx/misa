@@ -14,12 +14,14 @@ struct Fake {
     requests: Mutex<Vec<RequestContext>>,
     revision: watch::Sender<u64>,
     events: broadcast::Sender<Emission>,
+    streams: Mutex<Vec<Stream>>,
 }
 impl Fake {
     fn new() -> Arc<Self> { Arc::new(Self {
         current: Mutex::new((Version {epoch: "one".into(), rev: 0}, Node::section("session").id("session"), vec![])),
         clients: Mutex::new(BTreeMap::new()), requests: Mutex::new(vec![]),
         revision: watch::channel(0).0, events: broadcast::channel(16).0,
+        streams: Mutex::new(vec![]),
     }) }
     fn append(&self, id: &str) {
         let mut current = self.current.lock().unwrap();
@@ -51,7 +53,7 @@ impl Session for Fake {
             Some(since) if since.epoch == current.0.epoch && since.rev <= current.0.rev => ViewSync::Changes {
                 version: current.0.clone(), changes: current.2.iter().filter(|change| change.from.rev >= since.rev).cloned().collect(), streams: vec![],
             },
-            _ => ViewSync::Snapshot { version: current.0.clone(), view: current.1.clone(), streams: vec![] },
+            _ => ViewSync::Snapshot { version: current.0.clone(), view: current.1.clone(), streams: self.streams.lock().unwrap().clone() },
         };
         (view, 10)
     }
@@ -96,6 +98,25 @@ fn unchanged_values_are_silent_and_unknown_queries_are_correlated() {
     assert!(matches!(server.handle(request(4, "known"))[0], SessionMsg::Value {id: SubId(4), ..}));
     assert!(server.refresh().is_empty());
     assert!(matches!(server.handle(request(5, "missing"))[0], SessionMsg::QueryFault {id: SubId(5), ..}));
+}
+
+#[test]
+fn refresh_snapshot_fallback_restores_streams_before_the_next_append() {
+    use misa_proto::sync::StreamUpdate;
+    let fake = Fake::new();
+    let mut server = Server::new(fake.clone());
+    server.handle(hello());
+    let mut view = ClientView::default();
+    for message in server.handle(subscribe(None)) { view.receive(&message).unwrap(); }
+    fake.current.lock().unwrap().0.epoch = "replacement".into();
+    *fake.streams.lock().unwrap() = vec![Stream { id: "live.text".into(), role: "message.assistant".into(), text: "é".into() }];
+    let messages = server.refresh();
+    assert!(matches!(messages.as_slice(), [SessionMsg::View {..}, SessionMsg::Streams {..}]));
+    for message in messages { view.receive(&message).unwrap(); }
+    let append = SessionMsg::Event { seq: 10, event: SessionEvent::Stream {
+        update: StreamUpdate::Append {id: "live.text".into(), offset: 2, text: "!".into()},
+    }};
+    assert!(view.receive(&append).unwrap());
 }
 #[test]
 fn save_answers_are_delivered_only_to_the_requesting_connection() {
