@@ -46,6 +46,7 @@ pub mod presets;
 pub mod provider;
 pub mod store;
 pub mod tools;
+pub mod usage;
 
 pub use blobs::Blobs;
 pub use credentials::{Credentials, OAuth, Secret};
@@ -80,6 +81,10 @@ fn base64(bytes: &[u8]) -> String {
 /// the kind, and this is what an accepted kind is translated into.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    Usage {
+        id: String,
+        provider: String,
+    },
     /// Ask a provider for a completion, streaming as it arrives.
     ProviderCall {
         id: String,
@@ -188,6 +193,11 @@ pub enum CredentialAction {
 /// answer asked for one, and this is the answer arriving as a fact.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelEvent {
+    Usage {
+        id: String,
+        provider: String,
+        facts: Value,
+    },
     /// One chunk of a streamed completion.
     ProviderDelta { id: String, text: String },
     /// One chunk of a service's own reasoning, which is not the answer.
@@ -296,6 +306,7 @@ impl KernelEvent {
             KernelEvent::ProviderDelta { .. } => "provider.delta",
             KernelEvent::ProviderThinking { .. } => "provider.thinking",
             KernelEvent::ProviderFinished { .. } => "provider.finished",
+            KernelEvent::Usage { .. } => "usage",
             KernelEvent::Models { .. } => "models",
             KernelEvent::ToolFinished { .. } => "tool.finished",
             KernelEvent::Appended { .. } => "log.appended",
@@ -885,6 +896,16 @@ impl Kernel for Daemon {
                     Err(text) => (false, text),
                 };
                 let _ = out.send(KernelEvent::ToolFinished { id, call_id, ok, text });
+            }
+            Request::Usage { id, provider } => {
+                let result = async {
+                    let adapter = self.provider(&provider).ok_or("unknown provider")?;
+                    let http = self.http.as_ref().ok_or("http unavailable")?;
+                    usage::fetch(adapter.as_ref(), http).await
+                }
+                .await;
+                let facts = result.unwrap_or_else(|_: String| usage::parse(&provider, &serde_json::Value::Null));
+                let _ = out.send(KernelEvent::Usage { id, provider, facts });
             }
             Request::DiscoverModels { id, provider } => {
                 let message = |message: String| KernelEvent::Models {

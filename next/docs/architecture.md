@@ -340,10 +340,10 @@ possible:
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (21), `misa-proto` (41), `misa-reframe` (24),
-`misa-render` (46), `misa-kernel` (91), `misa-session` (87), `misa-net` (29),
+`misa-render` (46), `misa-kernel` (96), `misa-session` (88), `misa-net` (29),
 `misa-plugin` (16, and thirteen more behind `--features guest-fixture`), `misa-client` (61),
-`misa-tui` (27), `misa-web` (19), `misa-daemon` (4), `misa-skia` (5), and one more behind
-`misa-skia --features paint`. That is 471 tests and no skips: `cargo test --workspace` is the
+`misa-tui` (27), `misa-web` (20), `misa-daemon` (4), `misa-skia` (5), and one more behind
+`misa-skia --features paint`. That is 478 tests and no skips: `cargo test --workspace` is the
 gate, and these numbers are read back from it rather than remembered.
 
 The largest thing stated in this document that is _not_ built is the view's change protocol: today a
@@ -398,9 +398,6 @@ Five things are honest limitations rather than planned work:
   needs, unconditionally, because a pixel frontend that cannot paint is not a frontend.
 - **A window does not exist in any frontend.** `misa-skia` renders a PNG. The
   scene is the part worth getting right first.
-- **A panel's rows are strings, not typed facts.** `/usage` writes "spend micros" and a
-  number; a client that could render `value.money` would need the row to carry the fact and
-  its role, which is a change to what `panel()` takes and not to what a client does with it.
 - **A session still tells a client how much history to send, and still reads what a client can
   draw.** The window argument on the view query is the last place a client hands a session a
   count, and `graphics` and `native_details` are the last things a session reads about a
@@ -461,3 +458,5 @@ already made.
 - A fault is data. A handler that fails rolls back and reports; a session that
   cannot build a view keeps the last valid one. Nothing in this system panics on
   input, and `Session::read` is where that is enforced for the wire.
+
+Provider usage is the named `kernel.usage` capability: the kernel owns the endpoint, credential slot and normalization; `/usage` carries scalar facts with semantic roles. Refresh requests coalesce, stale completions are ignored, and failed refreshes clear quota facts. `kernel.blob.file` remains a named local attachment capability: its path means a file on the daemon, just as a tool file read does. It does not grant policy a general HTTP effect or let a client name a state path; `/attach` deliberately authorizes that local read.
