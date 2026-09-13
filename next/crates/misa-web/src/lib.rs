@@ -961,7 +961,7 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?;
 
-    let session = client.session().cloned();
+    let session = client.session();
     let region = Region::new();
 
     // One task owns the connection, because a client is a stream and an intent is a write

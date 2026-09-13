@@ -1192,7 +1192,7 @@ impl Remote {
             };
             client.subscribe(source_subscription(source), query).await?;
         }
-        let info = client.session().cloned();
+        let info = client.session();
         Ok(Remote { client, view: Default::default(), info, blobs, inbox: std::collections::VecDeque::new() })
     }
 }
@@ -1269,7 +1269,7 @@ impl Session for Remote {
                 Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => {
                     return Err(fault.message);
                 }
-                Some(message) => { let _ = self.view.receive(&message); }
+                Some(message) => { self.inbox.push_back(message); }
                 None => return Err("the session closed".into()),
             }
         }

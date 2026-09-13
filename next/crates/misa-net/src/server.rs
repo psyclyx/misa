@@ -171,7 +171,7 @@ mod tests {
         .expect("a connection");
         // `connect` has already read past the endpoint's greeting: the first thing a caller
         // sees from an attached connection is the session's own answer to a subscription.
-        assert_eq!(client.session().map(|session| session.id.as_str()), Some("demo"));
+        assert_eq!(client.session().as_ref().map(|session| session.id.as_str()), Some("demo"));
         within("subscribing", client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)))
             .await
             .expect("a subscription");
@@ -303,7 +303,7 @@ mod tests {
         )
         .await
         .expect("the printed ticket reaches the session");
-        assert_eq!(client.session().map(|session| session.id.as_str()), Some("demo"));
+        assert_eq!(client.session().as_ref().map(|session| session.id.as_str()), Some("demo"));
         fixture.stop().await;
     }
 
