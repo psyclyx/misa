@@ -33,7 +33,7 @@ pub mod server;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use misa_proto::frame::{self, Decoder};
+use misa_proto::chunk::{self as frame, Decoder};
 use misa_proto::wire::{
     Capabilities, ClientInfo, ClientMsg, Level, Query, SessionEvent, SessionMsg, SubId,
 };

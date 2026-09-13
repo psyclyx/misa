@@ -131,6 +131,25 @@ mod tests {
         ClientInfo::new("test-client", "0.1.0", Capabilities::plain())
     }
 
+    #[tokio::test]
+    async fn a_large_canonical_view_crosses_a_real_endpoint() {
+        let fixture = Fixture::start(Admission::open(), scripted()).await;
+        let runtime = fixture.sessions.get("demo").unwrap();
+        runtime.notice(misa_proto::Level::Info, "x".repeat(misa_proto::MAX_CONTROL_FRAME + 1024));
+        let expected = runtime.view(&Capabilities::plain()).unwrap();
+        let mut client = within(
+            "attaching",
+            Client::connect(&fixture.client, fixture.address.clone(), client_info(), "demo"),
+        ).await.unwrap();
+        within("subscribing", client.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)))
+            .await.unwrap();
+        match within("large view", client.next()).await.unwrap().unwrap() {
+            SessionMsg::View { view, .. } => assert_eq!(view, expected),
+            other => panic!("expected the whole view, got {other:?}"),
+        }
+        fixture.stop().await;
+    }
+
     /// The whole point of the transport, end to end: a real endpoint, a real client, a
     /// prompt, and a transcript that changes.
     ///

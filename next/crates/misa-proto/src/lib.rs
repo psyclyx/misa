@@ -39,6 +39,7 @@
 //! clients with different tastes both get to be right.
 
 pub mod blob;
+pub mod chunk;
 pub mod frame;
 pub mod view;
 pub mod wire;
@@ -53,11 +54,11 @@ pub use wire::{
 
 /// The version both ends announce. A peer that announces another major version is
 /// refused before it can act, rather than being partially understood.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Client to session: the whole client vocabulary. One bidirectional stream per
 /// connection carries it.
-pub const ALPN_SESSION: &[u8] = b"/misa/session/1";
+pub const ALPN_SESSION: &[u8] = b"/misa/session/2";
 
 /// Bulk content by hash. A view node that carries an image names a blob here
 /// rather than inlining bytes, so a transcript stays small and a client fetches
@@ -68,9 +69,6 @@ pub const ALPN_BLOB: &[u8] = b"/misa/blob/0";
 /// in-process, and this is the seam a separately hosted session would use.
 pub const ALPN_KERNEL: &[u8] = b"/misa/kernel/0";
 
-/// The largest control message either end will accept.
-///
-/// A transcript that grows past this must be paged or moved behind a blob
-/// reference. That is a real limit and the reason [`wire::Query`] exists: a
-/// client asks for the window it is showing instead of being handed everything.
+/// Legacy bounded framing limit, retained for non-session envelopes.
+/// Session values use [`chunk`] and have no whole-message ceiling.
 pub const MAX_CONTROL_FRAME: usize = 8 * 1024 * 1024;
