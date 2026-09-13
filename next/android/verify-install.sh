@@ -39,3 +39,13 @@ adb -P 5038 -s "$android_serial" install -r "$MISA_APK"
 adb -P 5038 -s "$android_serial" shell am start -W -n org.misa.app/.MainActivity
 adb -P 5038 -s "$android_serial" shell pidof org.misa.app
 printf 'APK installed and MainActivity launched successfully\n'
+
+# Supply an open daemon ticket reachable from the emulator (host is 10.0.2.2).
+if [[ -n "${MISA_TICKET:-}" ]]; then
+  : "${MISA_TEST_APK:?Instrumentation APK path is required}"
+  adb -P 5038 -s "$android_serial" install -r "$MISA_TEST_APK"
+  adb -P 5038 -s "$android_serial" shell am instrument -w -r -e ticket "$MISA_TICKET" \
+    org.misa.app.test/org.misa.app.ClientInstrumentation | tee "$android_check_dir/tests.log"
+  grep -F 'INSTRUMENTATION_CODE: -1' "$android_check_dir/tests.log"
+  grep -F 'PASS' "$android_check_dir/tests.log"
+fi

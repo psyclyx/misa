@@ -2,6 +2,10 @@ package org.misa.app
 
 import android.content.Intent
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.viewModels
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -39,10 +43,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+    private val model: MisaViewModel by viewModels()
+
+    override fun onStart() { super.onStart(); model.resume() }
+    override fun onStop() { model.pause(); super.onStop() }
     /**
      * A ticket or pairing string the app was opened with.
      *
@@ -59,22 +66,29 @@ class MainActivity : ComponentActivity() {
         link.value = fromIntent(intent)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                val model: MisaViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
                 val expanded by model.expanded.collectAsStateWithLifecycle()
                 val opened by link.collectAsStateWithLifecycle()
-                Misa(
-                    state = state,
-                    expanded = expanded,
-                    initial = opened,
-                    onConnect = model::connect,
-                    onDisconnect = model::disconnect,
-                    onPrompt = model::prompt,
-                    onCommand = model::command,
-                    onAction = model::action,
-                    onCancel = model::cancel,
-                    onToggle = model::toggle,
-                )
+                val upload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::attach) }
+                val download = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream"), model::saveDownload)
+                LaunchedEffect(state.download) { state.download?.let { download.launch(it.name) } }
+                CompositionLocalProvider(LocalImages provides ImageFiles(state.images, state.imageErrors, model::image, state.connected)) {
+                    Misa(
+                        state = state,
+                        expanded = expanded,
+                        initial = opened,
+                        onConnect = model::connect,
+                        onDisconnect = model::disconnect,
+                        onPrompt = model::prompt,
+                        onCommand = model::command,
+                        onAction = model::action,
+                        onCancel = model::cancel,
+                        onToggle = model::toggle,
+                        onDraft = model::draft,
+                        onAttach = { upload.launch(arrayOf("*/*")) },
+                        onRemoveAttachment = model::removeAttachment,
+                    )
+                }
             }
         }
     }
@@ -102,17 +116,20 @@ private fun Misa(
     onAction: (String, Action, List<FieldValue>) -> Unit,
     onCancel: () -> Unit,
     onToggle: (String) -> Unit,
+    onDraft: (String) -> Unit,
+    onAttach: () -> Unit,
+    onRemoveAttachment: (Int) -> Unit,
 ) {
     // A link that opened the app is a ticket somebody already chose, so it connects
     // without a second tap. `initial` is stable, so this fires once.
     LaunchedEffect(initial) {
         if (!initial.isNullOrEmpty()) onConnect(initial)
     }
-    if (!state.connected) {
-        Connect(state, initial, onConnect)
+    if (!state.connected && state.view == null) {
+        Connect(state, initial ?: state.ticket, onConnect)
         return
     }
-    Session(state, expanded, onDisconnect, onPrompt, onCommand, onAction, onCancel, onToggle)
+    Session(state, expanded, onDisconnect, onPrompt, onCommand, onAction, onCancel, onToggle, onDraft, onAttach, onRemoveAttachment, { onConnect(state.ticket) })
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -179,9 +196,13 @@ private fun Session(
     onAction: (String, Action, List<FieldValue>) -> Unit,
     onCancel: () -> Unit,
     onToggle: (String) -> Unit,
+    onDraft: (String) -> Unit,
+    onAttach: () -> Unit,
+    onRemoveAttachment: (Int) -> Unit,
+    onReconnect: () -> Unit,
 ) {
     val list = rememberLazyListState()
-    var draft by remember { mutableStateOf("") }
+    val draft = state.draft
     var palette by remember { mutableStateOf(false) }
     var arguments by remember { mutableStateOf<Command?>(null) }
     val commands = state.session?.commands ?: emptyList()
@@ -200,7 +221,8 @@ private fun Session(
             TopAppBar(
                 title = { Text(state.session?.title?.ifEmpty { state.session?.id } ?: "session") },
                 actions = {
-                    TextButton(onClick = { onCancel() }) { Text("Stop") }
+                    if (!state.connected) TextButton(onClick = onReconnect) { Text("Reconnect") }
+                    TextButton(onClick = { onCancel() }, enabled = state.connected) { Text("Stop") }
                     TextButton(onClick = { palette = true }) { Text("Commands") }
                     TextButton(onClick = { onDisconnect() }) { Text("Detach") }
                 },
@@ -208,6 +230,8 @@ private fun Session(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+            if (!state.connected) Text(state.message, modifier = Modifier.padding(12.dp))
+
             if (state.notices.isNotEmpty()) {
                 Notices(state.notices)
             }
@@ -228,15 +252,20 @@ private fun Session(
                     NodeRow(rows[index], expanded, onToggle, onAction)
                 }
             }
+            Row(Modifier.padding(horizontal = 12.dp)) {
+                TextButton(onClick = onAttach, enabled = state.connected && !state.uploading) { Text(if (state.uploading) "Uploading…" else "Attach file") }
+                state.attachments.forEachIndexed { index, attachment ->
+                    TextButton(onClick = { onRemoveAttachment(index) }) { Text("${attachment.name} ×") }
+                }
+            }
             Composer(
                 draft = draft,
-                onDraft = { draft = it },
+                onDraft = onDraft,
+                canSend = state.connected && !state.uploading && (draft.isNotBlank() || state.attachments.isNotEmpty()),
                 onSend = {
                     val text = draft.trim()
-                    draft = ""
-                    if (text.isEmpty()) return@Composer
                     val parsed = parseCommand(text, commands)
-                    if (parsed != null) onCommand(parsed.first, parsed.second) else onPrompt(text)
+                    if (parsed != null) { onCommand(parsed.first, parsed.second); onDraft("") } else onPrompt(text)
                 },
             )
         }
@@ -308,7 +337,7 @@ private fun NodeRow(node: Node, expanded: Set<String>, onToggle: (String) -> Uni
 }
 
 @Composable
-private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit) {
+private fun Composer(draft: String, onDraft: (String) -> Unit, canSend: Boolean, onSend: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(10.dp),
         verticalAlignment = Alignment.Bottom,
@@ -322,7 +351,7 @@ private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Uni
             minLines = 1,
             maxLines = 6,
         )
-        Button(onClick = onSend, enabled = draft.isNotBlank()) { Text("Send") }
+        Button(onClick = onSend, enabled = canSend) { Text("Send") }
     }
 }
 

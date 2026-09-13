@@ -50,7 +50,7 @@ result-android-check/bin/misa-android-check
 ```
 
 When Gradle dependencies change, regenerate `gradle.lock` with the pinned
-`gradle2nix`, running `:app:assembleDebug` and `:app:testDebugUnitTest`. Gradle
+`gradle2nix`, running `:app:assembleDebug`, `:app:testDebugUnitTest`, and `:app:assembleDebugAndroidTest`. Gradle
 consumes the native libraries supplied by Nix; it does not discover compilers
 or build Rust as a hidden `preBuild` task.
 
@@ -63,8 +63,8 @@ misa-daemon --session demo            # prints a ticket and a QR
 adb install -r result/share/misa/misa-debug.apk # then attach with the camera
 ```
 
-An emulator on this machine can reach a daemon on this machine at its loopback
-address, which is what `misa-daemon` prints when it binds without a relay.
+An emulator reaches the host at `10.0.2.2`; replace `127.0.0.1` in the daemon’s
+direct ticket with that address.
 
 ## What it does today
 
@@ -76,8 +76,23 @@ address, which is what `misa-daemon` prints when it binds without a relay.
 - the command palette from the session's own declarations, with an argument
   form built from what each command declared;
 - the session's own actions, including a panel's fields;
-- notices, status, and cancel.
+- notices, status, and cancel;
+- verified image caching and bounded file uploads through the blob connection;
+- attachment saving through Android’s destination picker;
+- a persistent endpoint identity, draft, ticket, expanded nodes, and canonical
+  view with its version cursor. Reopening shows the saved conversation before
+  connecting and requests changes since that cursor. In-flight text remains a
+  separate overlay and is never saved as settled history.
 
-Not yet: fetching images over the blob connection, and keeping the last session
-across a restart. The session emits semantic image nodes; the phone currently
-renders their alternative text.
+The build also produces `misa-debug-androidTest.apk`. To exercise persistent
+reconnect, upload/fetch, and directed save through the actual JNI connection,
+run the installation check against an open daemon with a scripted provider:
+
+```sh
+MISA_TICKET='misa:ENDPOINT@10.0.2.2:PORT:demo' result-android-check/bin/misa-android-check
+```
+
+The check creates and removes its own emulator and app-private test files. The
+save test writes and reads a document through Android’s content resolver, then
+removes it. Native storage and snapshot tests run with
+`cargo test --manifest-path next/android/native/Cargo.toml`.

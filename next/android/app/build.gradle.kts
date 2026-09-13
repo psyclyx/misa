@@ -14,6 +14,7 @@ android {
     ndkVersion = "29.0.14206865"
     defaultConfig {
         applicationId = "org.misa.app"
+        testInstrumentationRunner = "org.misa.app.ClientInstrumentation"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

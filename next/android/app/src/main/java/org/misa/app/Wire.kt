@@ -69,7 +69,7 @@ sealed interface Shape {
 
     data class Collapsible(val summary: List<Span>) : Shape
 
-    data class Picture(val alt: String) : Shape
+    data class Picture(val alt: String, val hash: String, val media: String) : Shape
 
     data class Status(val text: String) : Shape
 
@@ -136,7 +136,7 @@ object Wire {
                 Shape.Collapsible(
                     summary = kind.optJSONArray("summary")?.mapObjects(::parseSpan) ?: emptyList(),
                 )
-            "image" -> Shape.Picture(kind.optString("alt", ""))
+            "image" -> Shape.Picture(kind.optString("alt", ""), kind.optJSONObject("blob")?.optString("hash", "") ?: "", kind.optJSONObject("blob")?.optString("media", "") ?: "")
             "status" -> Shape.Status(kind.optString("text", ""))
             "meter" ->
                 Shape.Meter(

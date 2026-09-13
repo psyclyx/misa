@@ -16,11 +16,13 @@ object Native {
     /** The native client's version, so a bug report can say which one it was. */
     external fun version(): String
 
+    external fun cached(storage: String, hash: String): String?
+
     /**
      * Attach to a daemon. `ticket` is a ticket or a pairing string, and the
      * returned handle addresses the connection for [send] and [disconnect].
      */
-    external fun connect(ticket: String, listener: Listener): Long
+    external fun connect(ticket: String, storage: String, listener: Listener): Long
 
     /** Send one intent, as the JSON of [org.misa.app.Intents]. */
     external fun send(handle: Long, intent: String): Boolean
