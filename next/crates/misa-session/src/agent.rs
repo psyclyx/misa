@@ -56,6 +56,7 @@ use crate::views;
 pub fn registry() -> Registry {
     views::subscriptions(Registry::new())
         .on_fn("intent/prompt", 0, "agent.prompt", on_prompt)
+        .on_fn("intent/interrupt", 0, "agent.interrupt", on_interrupt)
         .on_fn("intent/cancel", 0, "agent.cancel", on_cancel)
         .on_fn("intent/command", 0, "agent.command", on_command)
         .on_fn("intent/action", 0, "agent.action", on_action)
@@ -214,6 +215,29 @@ pub fn event_for(event: KernelEvent) -> Event {
 /// Queueing rather than refusing, because somebody typing while a model answers is the
 /// normal case and not a mistake; and queueing rather than interrupting, because the
 /// previous system's answer was also that the running turn finishes.
+fn on_interrupt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let text = fields::event_text(event, "prompt");
+    if text.trim().is_empty() { return Err(Fault::handler("a prompt with no text")); }
+    let attachments = submitted_attachments(tx, event);
+    let status = tx.text("session.status");
+    if status == "idle" { return begin_turn(tx, &text, attachments); }
+    let id = next_id(tx, "session.queue_seq")?;
+    let mut queue = vec![Value::map([
+        ("text", Value::str(text)), ("attachments", attachments),
+        ("state", Value::str("waiting")), ("id", Value::Int(id)),
+        ("interrupt", Value::Bool(true)),
+    ])];
+    queue.extend(tx.get("session.queue").and_then(Value::as_list).unwrap_or(&[]).iter().cloned());
+    tx.set("session.queue", Value::list(queue))?;
+    // A completed answer already being journalled must settle once. Its log reply
+    // drains the priority prompt; cancelling it here would append a second answer.
+    if status == "recording" { return Ok(()); }
+    let pending = tx.get("session.pending").is_some();
+    on_cancel(tx, event)?;
+    if !pending { tx.dispatch(Event::new("queue/next")); }
+    Ok(())
+}
+
 fn on_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let text = fields::event_text(event, "text");
     if text.trim().is_empty() {
@@ -978,6 +1002,8 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     if fields::event_text(event, "conversation") != tx.text("session.conversation") { return Ok(()); }
     let kind = fields::event_text(event, "kind");
     let data = fields::event_value(event, "data");
+    let interrupted = tx.get("session.queue").and_then(Value::as_list).and_then(|queue| queue.first())
+        .and_then(|head| head.get("interrupt")).and_then(Value::as_bool).unwrap_or(false);
     for (path, op) in crate::journal::patches(tx.db(), &kind, &data, fields::event_int(event, "seq")) {
         tx.patch(&path.to_string(), op)?;
     }
@@ -995,6 +1021,10 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     }
     match kind.as_str() {
         "message" => match data.get("role").and_then(Value::as_str) {
+            Some("user") if interrupted => {
+                tx.set("session.status", Value::str("idle"))?;
+                tx.dispatch(Event::new("queue/next"));
+            }
             Some("user") if tx.text("session.status") == "recording" => {
                 tx.set("session.status", Value::str("thinking"))?;
                 tx.dispatch(Event::new("agent/step"));

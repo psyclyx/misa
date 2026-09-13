@@ -149,6 +149,12 @@ impl ClientMsg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "intent", rename_all = "snake_case")]
 pub enum Intent {
+    /// Interrupt the current turn and submit this prompt before queued prompts.
+    Interrupt {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<crate::view::BlobRef>,
+    },
     /// Submit a turn.
     Prompt {
         text: String,
@@ -199,6 +205,7 @@ pub enum Intent {
 impl Intent {
     pub fn name(&self) -> &'static str {
         match self {
+            Intent::Interrupt { .. } => "interrupt",
             Intent::Prompt { .. } => "prompt",
             Intent::Action { .. } => "action",
             Intent::Command { .. } => "command",

@@ -271,7 +271,7 @@ impl Runtime {
         }
         let outcome = {
             let mut state = self.state.lock().expect("session state is never poisoned");
-            if event.kind == "intent/cancel" {
+            if matches!(event.kind.as_str(), "intent/cancel" | "intent/interrupt") {
                 if let Some(seq) = pending_seq(state.state.db()) {
                     for (field, suffix) in [("text", "text"), ("thinking", "thinking")] {
                         let text = state.streams.get(&format!("msg.{seq}.{suffix}")).map(|stream| stream.text.clone()).unwrap_or_default();
@@ -496,6 +496,9 @@ impl Runtime {
             }
         }
         let event = match intent {
+            Intent::Interrupt { text, attachments } => Event::new("intent/interrupt")
+                .with("prompt", Value::str(text))
+                .with("attachments", encode_blobs(&attachments)),
             // A client may name attachments it has already put in the store. The hashes
             // travel as facts; whether the bytes are there is the store's answer, checked
             // when the request is built, so a client cannot make a session believe in an
@@ -1698,6 +1701,42 @@ mod stream_contract_tests {
         assert!(runtime.dispatch(Event::new("kernel/log.appended")
             .with("conversation", Value::str("stream-test")).with("seq", Value::Int(seq))
             .with("kind", Value::str("message")).with("data", data)).is_empty());
+    }
+    #[tokio::test]
+    async fn interrupt_prioritizes_the_draft_during_recording_and_generation() {
+        for generating in [false, true] {
+            let runtime = runtime();
+            let user = Value::map([
+                ("seq", Value::Int(1)), ("role", Value::str("user")),
+                ("text", Value::str("original")), ("state", Value::str("done")),
+                ("attachments", Value::list([])),
+            ]);
+            assert!(runtime.intent(Intent::Prompt {text: "original".into(), attachments: vec![]}).is_empty());
+            if generating { ack(&runtime, 1, user.clone()); }
+            assert!(runtime.intent(Intent::Prompt {text: "waiting".into(), attachments: vec![]}).is_empty());
+            assert!(runtime.intent(Intent::Interrupt {text: "urgent".into(), attachments: vec![]}).is_empty());
+            {
+                let state = runtime.state.lock().unwrap();
+                let session = state.state.db().get("session").unwrap();
+                let queue = session.get("queue").unwrap().as_list().unwrap();
+                assert_eq!(queue[0].get("text").unwrap().as_str(), Some("urgent"));
+                assert_eq!(queue[1].get("text").unwrap().as_str(), Some("waiting"));
+                assert!(session.get("pending").is_none());
+            }
+            if generating {
+                ack(&runtime, 2, Value::map([
+                    ("seq", Value::Int(2)), ("role", Value::str("assistant")),
+                    ("text", Value::str("partial")), ("state", Value::str("cancelled")),
+                    ("calls", Value::list([])), ("attachments", Value::list([])),
+                ]));
+            } else { ack(&runtime, 1, user); }
+            let state = runtime.state.lock().unwrap();
+            let session = state.state.db().get("session").unwrap();
+            let queue = session.get("queue").unwrap().as_list().unwrap();
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].get("text").unwrap().as_str(), Some("waiting"));
+            assert_eq!(session.get("status").unwrap().as_str(), Some("recording"));
+        }
     }
     #[tokio::test]
     async fn attaching_the_same_blob_twice_keeps_one_stable_draft_identity() {
