@@ -55,6 +55,9 @@ struct Cached {
 #[derive(Clone, Debug)]
 pub enum Key {
     Text(String),
+    Commands,
+    Up,
+    Down,
     Backspace,
     Delete,
     Left,
@@ -84,6 +87,7 @@ pub struct App {
     pub images: BTreeMap<String, Arc<image::RgbaImage>>,
     drafts: BTreeMap<(String, String), Editor>,
     save: Option<(String, Editor)>,
+    picker: Option<misa_kit::picker::Picker>,
     selection: Option<((usize, usize), (usize, usize))>,
     rows: Vec<TextRow>,
     replace_selection: bool,
@@ -110,6 +114,7 @@ impl App {
             images: BTreeMap::new(),
             drafts: BTreeMap::new(),
             save: None,
+            picker: None,
             selection: None,
             rows: vec![],
             replace_selection: false,
@@ -425,6 +430,9 @@ impl App {
         self.follow = false;
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
+        if self.picker.is_some() {
+            return vec![];
+        }
         self.invalidate_focus();
         let commands = self.pointer_inner(x, y, dragging);
         self.invalidate_focus();
@@ -608,6 +616,68 @@ impl App {
         commands
     }
     fn key_inner(&mut self, key: Key) -> Vec<Command> {
+        if matches!(key, Key::Commands) && self.save.is_none() {
+            let mut picker =
+                misa_kit::picker::Picker::new("Commands", misa_kit::picker::Accept::Run);
+            picker.set_items(
+                self.info
+                    .as_ref()
+                    .map(|info| {
+                        info.commands
+                            .iter()
+                            .map(|command| misa_proto::view::Choice {
+                                value: command.id.clone(),
+                                label: command.label.clone(),
+                                detail: Some(command.description.clone()),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                false,
+            );
+            self.picker = Some(picker);
+            return vec![];
+        }
+        if let Some(picker) = &mut self.picker {
+            match key {
+                Key::Escape => {
+                    self.picker = None;
+                }
+                Key::Up | Key::Tab { backward: true } => picker.move_selection(-1),
+                Key::Down | Key::Tab { backward: false } => picker.move_selection(1),
+                Key::Text(value) => {
+                    for character in value.chars() {
+                        picker.type_char(character);
+                    }
+                }
+                Key::Backspace => {
+                    picker.backspace();
+                }
+                Key::Enter { .. } => {
+                    if let Some(candidate) = picker.selected().cloned() {
+                        let target = self
+                            .drafts
+                            .keys()
+                            .find(|(_, field)| field == "prompt")
+                            .cloned();
+                        if let Some((node, field)) = target {
+                            self.drafts
+                                .get_mut(&(node.clone(), field.clone()))
+                                .unwrap()
+                                .set_text(&format!("/{} ", candidate.value));
+                            self.focus = Some(Control::Field { node, field });
+                            self.picker = None;
+                            self.notice =
+                                "Command inserted · add arguments, then Enter to send".into();
+                        } else {
+                            self.notice = "This view has no prompt field".into();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return vec![];
+        }
         if matches!(key, Key::Copy) {
             let text = if let Some(edit) = self.editor() {
                 edit.text().to_string()
@@ -892,6 +962,57 @@ impl App {
                 "Cancel",
                 Control::SaveCancel,
             );
+        }
+        if let Some(picker) = &self.picker {
+            self.hits.clear();
+            let y = 35.0;
+            scene.ops.push(Op::Rect {
+                x: 30.0,
+                y,
+                width: (width as f32 - 60.0).max(80.0),
+                height: 300.0,
+                style: color(35, 40, 48),
+            });
+            scene.ops.push(text(
+                42.0,
+                y + 12.0,
+                &format!("Commands · {}", picker.query),
+                color(235, 235, 240),
+            ));
+            let matches = picker.matches();
+            let start = picker.selected_index().saturating_sub(7);
+            if matches.is_empty() {
+                scene.ops.push(text(
+                    42.0,
+                    y + 48.0,
+                    "No matching commands",
+                    color(180, 180, 190),
+                ));
+            }
+            for (index, candidate) in matches.iter().enumerate().skip(start).take(8) {
+                let label = format!(
+                    "{} /{} · {}",
+                    if index == picker.selected_index() {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    candidate.value,
+                    candidate.label
+                );
+                scene.ops.push(text(
+                    42.0,
+                    y + 48.0 + (index - start) as f32 * 26.0,
+                    &label,
+                    color(235, 235, 240),
+                ));
+            }
+            scene.ops.push(text(
+                42.0,
+                y + 270.0,
+                "↑↓ select · Enter insert · Escape close",
+                color(180, 180, 190),
+            ));
         }
         scene
     }
@@ -1262,6 +1383,54 @@ mod tests {
     use super::*;
     use misa_proto::view::{Action, Field, Span};
     use misa_value::Value;
+    #[test]
+    fn command_picker_filters_navigates_and_inserts_without_sending() {
+        let mut view = form("compose", FieldKind::Inline);
+        if let Kind::Fields { fields } = &mut view.kind {
+            fields[0].id = "prompt".into();
+        }
+        let mut app = App::new(view);
+        app.info = Some(
+            serde_json::from_value(serde_json::json!({
+                "id":"test", "title":"Test", "created_ms":0,
+                "commands":[{"id":"model","label":"Model"},{"id":"clear","label":"Clear"}]
+            }))
+            .unwrap(),
+        );
+        app.key(Key::Commands);
+        app.key(Key::Down);
+        assert_eq!(
+            app.picker.as_ref().unwrap().selected().unwrap().value,
+            "clear"
+        );
+        app.key(Key::Text("mod".into()));
+        assert_eq!(app.picker.as_ref().unwrap().matches().len(), 1);
+        assert!(app.key(Key::Enter { newline: false }).is_empty());
+        assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
+        assert!(app.picker.is_none());
+        app.key(Key::Commands);
+        app.key(Key::Text("zzzz".into()));
+        assert!(app.key(Key::Enter { newline: false }).is_empty());
+        assert!(app.picker.is_some());
+        app.key(Key::Escape);
+        assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
+    }
+    #[test]
+    fn empty_picker_and_modal_input_preserve_draft() {
+        let mut app = App::new(form("form", FieldKind::Inline));
+        app.frame(900, 720);
+        app.key(Key::Commands);
+        app.key(Key::Text("query".into()));
+        assert!(app.pointer(80.0, 55.0, false).is_empty());
+        assert!(app.key(Key::Enter { newline: false }).is_empty());
+        let scene = app.frame(900, 720);
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op,Op::Text{text,..} if text == "No matching commands")
+        ));
+        app.key(Key::Escape);
+        assert!(app.picker.is_none());
+    }
     fn any_op(ops: &[Op], predicate: fn(&Op) -> bool) -> bool {
         ops.iter()
             .any(|op| predicate(op) || matches!(op,Op::Group {ops,..} if any_op(ops,predicate)))

@@ -113,8 +113,9 @@ cargo run -p misa-skia -- --view view.json --window --out frame.png
 ```
 
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
-clipboard copy. Stable owner scenes are retained across updates; the pixel command picker remains
-unimplemented. The last command saves a snapshot after each window redraw for UI tests.
+clipboard copy. Ctrl-P opens the declared command picker: type to filter, use arrows to select,
+and press Enter to insert the command into the prompt for editing. Escape closes it. Stable owner
+scenes are retained across updates. The last command saves a snapshot after each window redraw for UI tests.
 
 Build artifacts from the repository root:
 
