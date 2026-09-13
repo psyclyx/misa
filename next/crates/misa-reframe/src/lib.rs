@@ -276,6 +276,15 @@ impl<'a> Tx<'a> {
         self.get(path).and_then(Value::as_bool).unwrap_or(false)
     }
 
+    /// What has been queued in this transaction so far.
+    ///
+    /// For a handler that wants to *record* what it wrote — a journal, and nothing here does
+    /// anything else with it. It is not a way to read a result: nothing is applied until the
+    /// transaction commits, and a transaction that faults leaves no trace but this list.
+    pub fn patches(&self) -> &[(Path, Op)] {
+        &self.patches
+    }
+
     /// Queue a patch. Order is preserved, and a later patch sees an earlier one.
     pub fn patch(&mut self, path: &str, op: Op) -> Result<(), Fault> {
         let path = Path::parse(path).map_err(|err| Fault::patch(err.to_string()))?;
@@ -1053,6 +1062,23 @@ mod tests {
         let mut second = Loop::new(registry, Arc::new(AcceptsEverything), loop_.db().clone());
         assert!(second.dispatch(Event::new("read")).committed());
         let _ = loop_.dispatch(Event::new("bump"));
+    }
+
+    #[test]
+    fn a_handler_can_see_what_it_has_queued() {
+        // For a handler that records what it wrote. It is not a way to read a result: nothing is
+        // applied until the transaction commits.
+        let registry = Registry::new().on_fn("tick", 0, "writes", |tx: &mut Tx<'_>, _: &Event| {
+            tx.set("a", Value::Int(1))?;
+            tx.set("b.c", Value::Int(2))?;
+            assert_eq!(tx.patches().len(), 2, "a handler sees its own writes");
+            assert_eq!(tx.patches()[1].0.to_string(), "b.c");
+            Ok(())
+        });
+        let mut loop_ = Loop::new(Arc::new(registry), Arc::new(AcceptsEverything), Value::map([("a", Value::Null), ("b", Value::map([]))]));
+        let outcome = loop_.dispatch(Event::new("tick"));
+        assert!(outcome.committed(), "{:?}", outcome.faults);
+        assert_eq!(loop_.db().get("b").and_then(|b| b.get("c")).and_then(Value::as_i64), Some(2));
     }
 }
 

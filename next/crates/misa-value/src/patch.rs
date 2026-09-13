@@ -176,6 +176,52 @@ pub enum Op {
     AppendAll(Vec<Value>),
 }
 
+impl Op {
+    /// The operation as data: one tag and the value it is about.
+    ///
+    /// The same shape the plugin world spells in WIT, and the one a log entry carries when a patch
+    /// *is* the fact being recorded — nothing is inferred from the shape of a payload, which is
+    /// this type's whole rule.
+    pub fn to_value(&self) -> Value {
+        match self {
+            Op::Set(value) => Value::map([("set", value.clone())]),
+            Op::Merge(value) => Value::map([("merge", value.clone())]),
+            Op::Delete => Value::str("delete"),
+            Op::Append(value) => Value::map([("append", value.clone())]),
+            Op::AppendAll(items) => Value::map([("append-all", Value::list(items.clone()))]),
+        }
+    }
+
+    /// The operation a value describes, or `None` when it describes none.
+    pub fn from_value(value: &Value) -> Option<Op> {
+        match value {
+            Value::Str(tag) if tag.as_ref() == "delete" => Some(Op::Delete),
+            Value::Map(map) if map.len() == 1 => {
+                let (tag, payload) = map.iter().next()?;
+                match tag.as_str() {
+                    "set" => Some(Op::Set(payload.clone())),
+                    "merge" => Some(Op::Merge(payload.clone())),
+                    "append" => Some(Op::Append(payload.clone())),
+                    "append-all" => payload.as_list().map(|items| Op::AppendAll(items.to_vec())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The root a path starts at, when it starts at a key.
+    ///
+    /// A root is what a composition declares, so "which state is this patch about" is a question
+    /// about the first segment and never about the text of a path.
+    pub fn root_of(path: &Path) -> Option<&str> {
+        match path.segments().first()? {
+            Seg::Key(key) => Some(key.as_str()),
+            Seg::Index(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatchErrorKind {
     BadPath,
@@ -544,5 +590,36 @@ mod tests {
         let before = db();
         let after = apply(&before, &[(path("session.status"), Op::Set(Value::str("busy")))]).unwrap();
         assert!(before.get("messages").unwrap().shares(after.get("messages").unwrap()));
+    }
+
+    #[test]
+    fn a_patch_operation_goes_to_data_and_comes_back() {
+        // The shape a log entry carries when a patch is the fact being recorded, and the shape the
+        // plugin world spells in WIT: one tag, one payload, nothing inferred.
+        let ops = [
+            Op::Set(Value::map([("a", Value::Int(1))])),
+            Op::Merge(Value::str("x")),
+            Op::Delete,
+            Op::Append(Value::Bool(true)),
+            Op::AppendAll(vec![Value::Int(1), Value::Int(2)]),
+        ];
+        for op in ops {
+            let data = op.to_value();
+            assert_eq!(Op::from_value(&data), Some(op.clone()), "{data:?}");
+        }
+        // And a value that is not an operation is not one.
+        assert_eq!(Op::from_value(&Value::Null), None);
+        assert_eq!(Op::from_value(&Value::str("set")), None);
+        assert_eq!(Op::from_value(&Value::map([("nonsense", Value::Int(1))])), None);
+        assert_eq!(Op::from_value(&Value::map([("append-all", Value::Int(1))])), None);
+    }
+
+    #[test]
+    fn the_root_a_patch_is_about_is_its_first_segment() {
+        // Which state a patch is about is a question about a parsed path, never about its text.
+        assert_eq!(Op::root_of(&Path::parse("guest.turns[0].seen").unwrap()), Some("guest"));
+        assert_eq!(Op::root_of(&Path::parse("guest").unwrap()), Some("guest"));
+        assert_eq!(Op::root_of(&Path::parse("").unwrap()), None);
+        assert_eq!(Op::root_of(&Path::parse("[0]").unwrap()), None);
     }
 }

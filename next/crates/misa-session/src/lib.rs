@@ -608,7 +608,7 @@ pub(crate) mod tests {
     /// refused — arrives as a notice, which is a thing a client sees and a log does not keep.
     /// It takes what the notice should say because a session's own notices arrive on the same
     /// stream, and the one that matters is usually not the first.
-    async fn wait_notice(events: &mut tokio::sync::broadcast::Receiver<Emission>, want: &str) -> String {
+    pub(crate) async fn wait_notice(events: &mut tokio::sync::broadcast::Receiver<Emission>, want: &str) -> String {
         for _ in 0..500 {
             if let Ok(emission) = events.try_recv()
                 && let SessionEvent::Notice { text, .. } = emission.event
@@ -699,7 +699,7 @@ pub(crate) mod tests {
 
     /// Wait until the session is idle again, the way a client waits: by watching
     /// the state it can actually see.
-    async fn settle(runtime: &Arc<Runtime>) {
+    pub(crate) async fn settle(runtime: &Arc<Runtime>) {
         for _ in 0..400 {
             if runtime.status() == "idle" {
                 return;
@@ -1133,13 +1133,12 @@ fn encode_blobs(attachments: &[misa_proto::view::BlobRef]) -> Value {
 #[cfg(test)]
 mod contribution_tests {
     use super::*;
-    use crate::tests::{transcript, view};
+    use crate::tests::{settle, transcript, view, wait_notice};
 
     use std::sync::Arc;
 
+    use misa_kernel::{Provider, ScriptedProvider, Store};
     use misa_proto::view::{Kind, Node};
-
-    use misa_kernel::{Provider, ScriptedProvider};
     use misa_reframe::{Event, FnHandler, Inputs, Subscription, Tx};
     use misa_value::Value;
 
@@ -1344,6 +1343,127 @@ mod contribution_tests {
                 db.get("guest").and_then(|guest| guest.get("acted")).cloned().unwrap_or(Value::Null)
             }),
         }
+    }
+
+    /// The whole of a composition's root, as a client would read it.
+    ///
+    /// `reading` answers one key inside the root, which is what most of these tests want; this
+    /// answers the root itself, which is the only way to see a patch whose path *is* the root.
+    fn reading_all() -> Subscription {
+        Subscription {
+            inputs: Inputs::Database,
+            compute: Arc::new(|db, _inputs, _query, _previous| db.get("guest").cloned().unwrap_or(Value::Null)),
+        }
+    }
+
+    /// What a composition's subscription says right now, as a client would read it.
+    fn value(runtime: &Runtime, query: &str) -> Value {
+        match runtime.read(&Query::new(query), &Capabilities::plain()).expect("a value") {
+            Reading::Data(value) => value,
+            Reading::View(_) => panic!("a composition's subscription answered with a view"),
+        }
+    }
+
+    /// Wait for a value, the way a client waits: by looking.
+    async fn wait_for_value(runtime: &Arc<Runtime>, query: &str, want: &Value) -> Value {
+        for _ in 0..200 {
+            let value = value(runtime, query);
+            if &value == want {
+                return value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "`{query}` never became {want:?}; it is {:?}",
+            value(runtime, query)
+        );
+    }
+
+    #[tokio::test]
+    async fn what_a_composition_wrote_is_rebuilt_from_the_log_when_a_session_resumes() {
+        // The durability question, answered the way everything else here answers it: the log is the
+        // truth. Events are ephemeral, so nothing but the patches themselves can reproduce what a
+        // plugin decided — so the session records them into the conversation, and a resumed session
+        // folds them back. No file, no format, and nothing the plugin has to cooperate with.
+        let store = Arc::new(misa_kernel::MemoryStore::new());
+        let provider: Arc<dyn Provider> = ScriptedProvider::always("an answer");
+        let first = Runtime::start_with(
+            "demo",
+            "a demo session",
+            Some("demo".into()),
+            Arc::new(
+                misa_kernel::LocalKernel::new(provider.clone()).with_store(store.clone()),
+            ),
+            "scripted",
+            "scripted-1",
+            Value::Null,
+            contribution().with_subscription("guest.all", reading_all()),
+        );
+        let faults = first.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
+        assert!(faults.is_empty(), "{faults:?}");
+        assert_eq!(value(&first, "guest.seen").as_str(), Some("intent/prompt"));
+        // The turn is allowed to finish, because an append is an effect and effects reach the
+        // daemon after the transaction that asked for them.
+        settle(&first).await;
+
+        // The log has what it wrote, as its own kind of entry, in order.
+        let recorded = store
+            .load("demo", 0, 10_000)
+            .expect("the log")
+            .into_iter()
+            .filter(|entry| entry.kind == contribution::PATCH_KIND)
+            .collect::<Vec<_>>();
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0].data.get("path").and_then(Value::as_str), Some("guest.seen"));
+
+        // One entry for a root this composition is not running, and one that is not a patch at all:
+        // a log can be older than the composition, and history with nowhere to go is skipped rather
+        // than reported — while a patch that cannot be applied is reported, because state going
+        // missing in silence is worse.
+        store.append("demo", contribution::PATCH_KIND, &Value::map([
+            ("path", Value::str("nobody.declared")),
+            ("patch", Value::str("delete")),
+        ]), 0).expect("an entry for a composition that is not running");
+        store.append("demo", contribution::PATCH_KIND, &Value::map([
+            ("path", Value::str("a..b")),
+            ("patch", Value::str("delete")),
+        ]), 0).expect("an entry that is not a patch");
+        // And one whose path is the root itself, which is a patch like any other: a path is
+        // relative to the database, so `guest` is a key the replay writes exactly as the loop
+        // would, and the fold is not a second rule about what a root is.
+        store.append("demo", contribution::PATCH_KIND, &Value::map([
+            ("path", Value::str("guest")),
+            ("patch", Value::map([("merge", Value::map([("whole", Value::str("root"))]))])),
+        ]), 0).expect("an entry on the root itself");
+
+        // A second session over the same store: its root is empty until the conversation is read
+        // back.
+        let second = Runtime::start_with(
+            "demo",
+            "a demo session",
+            Some("demo".into()),
+            Arc::new(misa_kernel::LocalKernel::new(provider).with_store(store.clone())),
+            "scripted",
+            "scripted-1",
+            Value::Null,
+            contribution().with_subscription("guest.all", reading_all()),
+        );
+        assert_eq!(value(&second, "guest.seen"), Value::Null, "a fresh session starts empty");
+        let mut events = second.subscribe_events();
+        let faults = second.intent(Intent::Command { name: "resume".into(), args: Value::str("demo") });
+        assert!(faults.is_empty(), "{faults:?}");
+        let replayed = wait_for_value(&second, "guest.seen", &Value::str("intent/prompt")).await;
+        assert_eq!(replayed.as_str(), Some("intent/prompt"));
+        let whole = value(&second, "guest.all");
+        assert_eq!(whole.get("whole").and_then(Value::as_str), Some("root"), "a patch on the root itself applies: {whole:?}");
+        assert_eq!(whole.get("seen").and_then(Value::as_str), Some("intent/prompt"), "and it does not replace what was there: {whole:?}");
+
+        // And the two things the replay has to say are said: what it put back, and what it could
+        // not.
+        let notice = wait_notice(&mut events, "replayed").await;
+        assert!(notice.contains("replayed 2"), "{notice}");
+        let warning = wait_notice(&mut events, "could not be replayed").await;
+        assert!(warning.contains("1 recorded patch"), "{warning}");
     }
 
     #[tokio::test]

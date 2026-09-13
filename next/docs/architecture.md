@@ -260,7 +260,8 @@ frontend would be presentation policy written five times. So it is built once pe
 revision, by the layer that owns the document, and every frontend draws it with no frontend code at
 all.
 
-Two consequences worth naming, because both are what make it safe rather than merely possible:
+Three consequences worth naming, because all three are what make it safe rather than merely
+possible:
 
 - **A guest call is bounded.** The engine runs with fuel, and every call into a plugin is given a
   budget. A plugin that loops for ever is a fault in tens of milliseconds — a sentence in place of
@@ -272,16 +273,24 @@ Two consequences worth naming, because both are what make it safe rather than me
   A plugin may not declare an action the session itself has (`panel.close`), and a tree that offers
   an action its plugin did not declare is refused when it is presented rather than failing in
   somebody's click afterwards.
+- **A plugin's state is a fold of its patches.** Its root is neither a kernel fact nor a client's
+  presentation, so nothing but the patches themselves can reproduce it: events are ephemeral, and
+  what a plugin decided is not derivable from anything else in the log. So the session wraps the
+  handlers a composition registered and records every patch into a root that composition declared
+  as a `plugin.patch` entry, and a session that resumes the conversation folds them back with the
+  same patch application the loop itself uses. No file, no format, and nothing the plugin has to
+  cooperate with — and history that cannot be replayed, because the log and the composition
+  disagree, is counted and said out loud rather than dropped in silence.
 
 ---
 
 ## 6. What is built, and what is not
 
-Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (46), `misa-kernel` (91), `misa-session` (84), `misa-net` (29),
+Built, with tests, per crate: `misa-value` (21), `misa-proto` (41), `misa-reframe` (24),
+`misa-render` (46), `misa-kernel` (91), `misa-session` (86), `misa-net` (29),
 `misa-plugin` (16, and thirteen more behind `--features guest-fixture`), `misa-client` (61),
 `misa-tui` (27), `misa-web` (19), `misa-daemon` (4), `misa-skia` (5), and one more behind
-`misa-skia --features paint`. That is 466 tests and no skips: `cargo test --workspace` is the
+`misa-skia --features paint`. That is 470 tests and no skips: `cargo test --workspace` is the
 gate, and these numbers are read back from it rather than remembered.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
@@ -363,12 +372,7 @@ already made.
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
    protocol in §4.
-5. **Whether a plugin's state should outlive a restart.** Its root is
-   `Ownership::Plugin` and ephemeral, so a daemon that restarts forgets what a plugin kept —
-   and a plugin that wanted to keep it could journal it through `kernel.log.append` and
-   rebuild on the first event, which is work nobody has done and a decision nobody has made.
-
-6. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
+5. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
    is open and lets a plugin invent an affordance without a protocol change. It also
    means a client cannot tell a valid action from a typo before sending it. The
    session advertises its queries; it could advertise its actions.
@@ -384,8 +388,11 @@ already made.
   colour, yes. A role, no. A state, no.
 - Nothing may enter `Intent` that a session would have to trust. The test is: _could
   a client break the agent with this?_ If yes, it is not a client message.
-- A state root must be declared in `views::MANIFEST` with an owner and a lifetime.
-  A presentation root that is journalled is a bug the manifest test catches.
+- A state root must be declared: the shipped session's in `views::MANIFEST`, with an owner and a
+  lifetime, and a composition's by the `Contribution` that adds it. A name the session already owns
+  cannot be claimed — that is the manifest's job — and a root a composition declared is what makes
+  its patches recordable, and therefore replayable (§5). A presentation root that is journalled is a
+  bug the manifest test catches.
 - A fault is data. A handler that fails rolls back and reports; a session that
   cannot build a view keeps the last valid one. Nothing in this system panics on
   input, and `Session::read` is where that is enforced for the wire.

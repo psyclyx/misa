@@ -21,10 +21,61 @@
 
 use std::sync::Arc;
 
-use misa_reframe::{Handler, Registry, Subscription};
-use misa_value::Value;
+use misa_reframe::{Effect, Event, Fault, Handler, Registry, Subscription, Tx};
+use misa_value::{Op, Path, Value};
 
 use crate::views;
+
+/// The kind a recorded patch is journalled under.
+///
+/// A composition's state is a *fold of its patches*: nothing else can reproduce it, because events
+/// are ephemeral by design and a plugin's decision is not derivable from anything else in the log.
+/// So the patches go in the log as they are made, and a resumed session applies them again — which
+/// is what the transcript does with messages, and the reason a plugin's root is durable state.
+pub const PATCH_KIND: &str = "plugin.patch";
+
+/// A handler whose writes into a composition's own roots are recorded.
+struct Recording {
+    inner: std::sync::Arc<dyn Handler>,
+    roots: Vec<String>,
+}
+
+impl Handler for Recording {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn handle(&self, tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+        let before = tx.patches().len();
+        self.inner.handle(tx, event)?;
+        let conversation = tx.text("session.conversation");
+        // Collected before anything is queued: an effect is a mutable borrow and the patches are
+        // being read.
+        let recorded = tx.patches()[before..]
+            .iter()
+            .filter(|(path, _)| {
+                Op::root_of(path).is_some_and(|root| self.roots.iter().any(|declared| declared == root))
+            })
+            .map(|(path, op)| (path.to_string(), op.to_value()))
+            .collect::<Vec<_>>();
+        for (path, patch) in recorded {
+            tx.fx(
+                Effect::new("kernel.log.append")
+                    .with("conversation", Value::str(&conversation))
+                    .with("kind", Value::str(PATCH_KIND))
+                    .with("data", Value::map([("path", Value::str(&path)), ("patch", patch)])),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A patch a composition's log recorded: a path and what to do at it.
+pub(crate) fn recorded(data: &Value) -> Option<(Path, Op)> {
+    let path = data.get("path").and_then(Value::as_str)?;
+    let op = Op::from_value(data.get("patch")?)?;
+    Some((Path::parse(path).ok()?, op))
+}
 
 /// What a composition contributes to a session, beyond the shipped loop.
 ///
@@ -149,10 +200,22 @@ impl Contribution {
     }
 
     /// The shipped registry with this contribution registered.
+    ///
+    /// Every handler is wrapped so that a patch into one of the roots this contribution declared is
+    /// *recorded* — after the transaction commits, because effects run then, so a transaction that
+    /// faults leaves nothing in the log. The session records rather than the host, because the log
+    /// and its vocabulary are the session's and "what is a fact" is the middle layer's decision
+    /// everywhere else here too.
     pub(crate) fn registry(&self, shipped: Registry) -> Registry {
         let mut registry = shipped;
+        let roots: Vec<String> = self.roots.iter().map(|(name, _)| name.clone()).collect();
         for (kind, priority, handler) in &self.handlers {
-            registry = registry.on(kind.clone(), *priority, handler.clone());
+            let handler: std::sync::Arc<dyn Handler> = if roots.is_empty() {
+                handler.clone()
+            } else {
+                std::sync::Arc::new(Recording { inner: handler.clone(), roots: roots.clone() })
+            };
+            registry = registry.on(kind.clone(), *priority, handler);
         }
         for (name, subscription) in &self.subscriptions {
             registry = registry.subscription(name.clone(), subscription.clone());

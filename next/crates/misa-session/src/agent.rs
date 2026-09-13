@@ -870,6 +870,11 @@ fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             _ => {}
         }
     }
+    // What a composition wrote into its own roots, applied again: its state is a fold of the
+    // patches the log recorded, because nothing else can reproduce it. A patch that does not apply
+    // is counted rather than ignored — a log and a composition that disagree is something a person
+    // should hear about, and silence is how state goes missing.
+    let (replayed, failed) = replay_patches(tx, entries.as_list().unwrap_or(&[]));
     let loaded = messages.len();
     let previous = tx.text("session.conversation");
     tx.set("session.conversation", Value::str(&conversation))?;
@@ -889,7 +894,79 @@ fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             format!("resumed `{conversation}`: {loaded} messages")
         },
     )?;
+    if replayed > 0 {
+        notice(tx, Level::Info, format!("replayed {replayed} patches a composition recorded"))?;
+    }
+    if failed > 0 {
+        notice(
+            tx,
+            Level::Warn,
+            format!("{failed} recorded patches could not be replayed, so some plugin state is missing"),
+        )?;
+    }
     Ok(())
+}
+
+/// Fold what a composition recorded back into the roots it declared.
+///
+/// Returns how many patches were applied and how many could not be. A patch for a root this
+/// composition does not have is *skipped* rather than counted as a failure: the log may be older
+/// than the composition, and history it no longer has a place for is not a fault. Everything else —
+/// a path that will not parse, an operation this version does not know — is counted, because a
+/// session that quietly drops state is worse than one that says so.
+///
+/// The fold starts from the state the composition is running with, which is the values it declared
+/// its roots to start at, so a resumed session and a replay agree by construction.
+fn replay_patches(tx: &mut Tx<'_>, entries: &[Value]) -> (usize, usize) {
+    // The fold runs over the database as a whole rather than over each root's own value, because
+    // that is what a patch's path is relative to: `guest.turns[0]` names the first turn of the
+    // `guest` root only because `guest` is a key in the database, and applying it to anything else
+    // would be a second implementation of the rule this one is supposed to confirm.
+    let mut database = tx.db().clone();
+    let mut touched: Vec<String> = Vec::new();
+    let mut replayed = 0;
+    let mut failed = 0;
+    for entry in entries {
+        if entry.get("kind").and_then(Value::as_str) != Some(crate::contribution::PATCH_KIND) {
+            continue;
+        }
+        let Some((path, op)) = entry.get("data").and_then(crate::contribution::recorded) else {
+            failed += 1;
+            continue;
+        };
+        let Some(root) = misa_value::Op::root_of(&path) else {
+            failed += 1;
+            continue;
+        };
+        // A root this composition does not declare: history from one that is not running.
+        if tx.get(root).is_none() {
+            continue;
+        }
+        match misa_value::apply_one(&database, &path, &op) {
+            Ok(value) => {
+                database = value;
+                if !touched.iter().any(|name| name == root) {
+                    touched.push(root.to_string());
+                }
+                replayed += 1;
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    // Written back once per root, because a root is the unit a composition declares and the unit a
+    // patch here can name: the whole database is the kernel's and never a policy's to replace.
+    for root in touched {
+        let written = match database.get(&root) {
+            Some(value) => tx.set(&root, value.clone()),
+            // A recorded delete of a whole root leaves nothing to write, and leaving the root as
+            // it was would be the session disagreeing with the log it just read.
+            None => tx.delete(&root),
+        };
+        if written.is_err() {
+            failed += 1;
+        }
+    }
+    (replayed, failed)
 }
 
 /// What a credential change did.
