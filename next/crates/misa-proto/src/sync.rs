@@ -216,6 +216,7 @@ pub struct ClientView {
 
 impl ClientView {
     pub fn restore(version: Version, mut tree: Node) -> Result<Self, String> {
+        crate::view::validate(&tree).map_err(|fault| fault.to_string())?;
         address(&mut tree);
         crate::view::validate(&tree).map_err(|fault| fault.to_string())?;
         Ok(Self { version: Some(version), tree: Some(IndexedTree::new(tree)), streams: Default::default() })
@@ -322,5 +323,26 @@ mod receiver_tests {
         state.receive(&append(2)).unwrap();
         assert_eq!(state.streams()[0].text, "é🙂");
         assert_eq!(state.persisted(), before);
+    }
+    #[test]
+    fn a_large_transcript_crosses_chunks_and_restores_into_the_client() {
+        let body = "x".repeat(8 * 1024 * 1024 + 1024);
+        let view = Node::section("session").id("session").child(
+            Node::section("transcript").id("transcript").child(
+                Node::text("message.assistant", [crate::view::Span::plain(&body)]).id("msg.1.text")));
+        let message = SessionMsg::View { id: SubId(1), version: version(1), view: view.clone() };
+        let wire = crate::chunk::encode(&message).unwrap();
+        let mut decoder = crate::chunk::Decoder::new();
+        for bytes in wire.chunks(4093) { decoder.push(bytes).unwrap(); }
+        let received: SessionMsg = crate::chunk::decode(&decoder.next().unwrap().unwrap()).unwrap();
+        let mut client = ClientView::default();
+        client.receive(&received).unwrap();
+        assert_eq!(client.canonical(), Some(view));
+    }
+    #[test]
+    fn canonical_history_cardinality_is_not_a_protocol_limit() {
+        let mut root = Node::section("root").id("root");
+        root.children = (0..200_001).map(|id| Node::section("message").id(format!("msg.{id}"))).collect();
+        crate::view::validate(&root).unwrap();
     }
 }

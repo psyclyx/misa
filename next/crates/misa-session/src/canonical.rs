@@ -27,6 +27,7 @@ pub struct Canonical {
     groups: Vec<(String, usize)>,
     spend: i64,
     context: i64,
+    queue_count: usize,
     pub work: Work,
 }
 
@@ -43,7 +44,7 @@ impl Canonical {
         }
         let mut state = Self { tree: IndexedTree::new(view), version: Version { epoch, rev: 0 },
             history: VecDeque::new(), slots, order, memo: BTreeMap::new(), groups: vec![],
-            spend: 0, context: 0, work: Work::default() };
+            spend: 0, context: 0, queue_count: db.get("session").and_then(|session| session.get("queue")).and_then(Value::as_list).map_or(0, <[Value]>::len), work: Work::default() };
         state.reset_groups();
         state.reset_totals(db);
         state
@@ -70,6 +71,7 @@ impl Canonical {
     }
 
     fn slot(&mut self, name: &str, node: Option<Node>, out: &mut Vec<ViewOp>) {
+        if name == "queue" { self.queue_count = node.as_ref().map_or(0, |node| node.children.len().saturating_sub(1)); }
         let previous = self.slots.get(name).cloned();
         if let (Some(previous), Some(node)) = (&previous, &node) {
             if previous == &node.id {
@@ -126,16 +128,20 @@ impl Canonical {
             ([Seg::Key(_), Seg::Key(_)], Op::Append(row)) => {
                 if self.tree.contains("queue") {
                     self.emit(ViewOp::Insert { parent: "queue".into(), before: None, node: views::queue_item(row) }, out);
+                    self.queue_count += 1;
+                    self.emit(ViewOp::Replace { id: "queue.count".into(), node: views::count_fact("queue", self.queue_count) }, out);
                 } else {
                     let db = Value::map([("session", Value::map([("queue", Value::list([row.clone()]))]))]);
                     self.slot("queue", views::queue(&db), out);
                 }
             }
             ([Seg::Key(_), Seg::Key(_), Seg::Index(index)], Op::Delete) => {
-                if let Some(id) = self.tree.children("queue").get(*index as usize).cloned() {
+                if let Some(id) = self.tree.children("queue").get(*index as usize + 1).cloned() {
                     self.emit(ViewOp::Remove { id }, out);
+                    self.queue_count -= 1;
                 }
-                if self.tree.contains("queue") && self.tree.children("queue").is_empty() { self.slot("queue", None, out); }
+                if self.queue_count == 0 { self.slot("queue", None, out); }
+                else { self.emit(ViewOp::Replace { id: "queue.count".into(), node: views::count_fact("queue", self.queue_count) }, out); }
             }
             _ => self.slot("queue", views::queue(&change.after), out),
         }
@@ -147,9 +153,20 @@ impl Canonical {
             let mut dirty = BTreeSet::new();
             let mut calls = BTreeSet::new();
             let mut messages = BTreeSet::new();
+            let mut attempts = BTreeSet::new();
+            let mut appended_attempts = false;
+            let mut reset_attempts = false;
+            // Membership rewrites may move turn boundaries. They explicitly replace that
+            // structural owner once; ordinary settled appends never take this path.
+            let rewrite_transcript = change.patches.iter().any(|(path, op)| match path.segments() {
+                [Seg::Key(root)] if root == "messages" => !matches!(op, Op::Append(_) | Op::AppendAll(_)),
+                [Seg::Key(root), Seg::Index(_)] if root == "messages" => true,
+                _ => false,
+            });
             for (path, op) in &change.patches {
                 let segments = path.segments();
                 match segments {
+                    [Seg::Key(root), ..] if root == "messages" && rewrite_transcript => {},
                     [Seg::Key(root), tail @ ..] if root == "messages" => match (tail, op) {
                         ([], Op::Append(message)) => self.append_message(message, &mut out),
                         ([], Op::AppendAll(messages)) => for message in messages { self.append_message(message, &mut out); },
@@ -159,15 +176,13 @@ impl Canonical {
                     },
                     [Seg::Key(root), tail @ ..] if root == "attempts" => {
                         match (tail, op) {
-                            ([], Op::Append(row)) => { self.spend += cost(row); self.context = tokens(row); }
-                            ([], Op::AppendAll(rows)) => { self.spend += rows.iter().map(cost).sum::<i64>(); if let Some(row) = rows.last() { self.context = tokens(row); } }
+                            ([], Op::Append(row)) => { appended_attempts = true; self.spend += cost(row); self.context = tokens(row); }
+                            ([], Op::AppendAll(rows)) => { appended_attempts = true; self.spend += rows.iter().map(cost).sum::<i64>(); if let Some(row) = rows.last() { self.context = tokens(row); } }
+                            ([Seg::Index(_)], Op::Delete) => reset_attempts = true,
                             ([Seg::Index(index), ..], _) => {
-                                let before = change.before.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
-                                let after = change.after.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
-                                self.spend += after.get(*index as usize).map(cost).unwrap_or(0) - before.get(*index as usize).map(cost).unwrap_or(0);
-                                self.context = after.last().map(tokens).unwrap_or(0);
+                                attempts.insert(*index as usize);
                             }
-                            _ => self.reset_totals(&change.after),
+                            _ => reset_attempts = true,
                         }
                         dirty.insert("header".to_owned());
                     }
@@ -187,18 +202,35 @@ impl Canonical {
                 }
             }
             let db = &change.after;
+            if reset_attempts || (appended_attempts && !attempts.is_empty()) {
+                self.reset_totals(db);
+            } else if !attempts.is_empty() {
+                let before = change.before.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
+                let after = db.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
+                for index in attempts {
+                    self.spend += after.get(index).map(cost).unwrap_or(0) - before.get(index).map(cost).unwrap_or(0);
+                }
+                self.context = after.last().map(tokens).unwrap_or(0);
+            }
+            if rewrite_transcript {
+                self.slot("transcript", Some(views::transcript(db)), &mut out);
+                self.reset_groups();
+            }
             for (index, call) in calls {
+                let path = Path::parse(&format!("messages[{index}].calls[{call}]")).unwrap();
+                if !self.changed(&format!("call:{index}:{call}"), db, &[path]) { continue; }
                 if let Some(row) = db.get("messages").and_then(Value::as_list).and_then(|rows| rows.get(index))
                     .and_then(|message| message.get("calls")).and_then(Value::as_list).and_then(|calls| calls.get(call)) {
-                    let node = views::call_node(row, call);
-                    self.work.content_builds += 1;
+                    let seq = db.get("messages").and_then(Value::as_list).and_then(|rows| rows.get(index)).and_then(|message| message.get("seq")).and_then(Value::as_i64).unwrap_or(index as i64);
+                    let node = views::call_node(&format!("msg.{seq}"), row, call);
                     self.emit(ViewOp::Replace { id: node.id.clone(), node }, &mut out);
                 }
             }
             for index in messages {
+                let path = Path::parse(&format!("messages[{index}]")).unwrap();
+                if !self.changed(&format!("message:{index}"), db, &[path]) { continue; }
                 if let Some(row) = db.get("messages").and_then(Value::as_list).and_then(|rows| rows.get(index)) {
                     if let Some(node) = views::message_node(row) {
-                        self.work.content_builds += 1;
                         self.emit(ViewOp::Replace { id: node.id.clone(), node }, &mut out);
                     }
                 }
@@ -222,6 +254,13 @@ impl Canonical {
                     "queue" => views::queue(db), "attachments" => views::attachments(db), _ => unreachable!(),
                 };
                 self.slot(&owner, node, &mut out);
+            }
+            let label = Some(db.get("session").and_then(|session| session.get("id")).and_then(Value::as_str).unwrap_or("session").to_owned());
+            if self.tree.node("session").is_some_and(|node| node.label != label) {
+                let mut root = self.tree.snapshot();
+                self.work.snapshot_nodes += self.tree.len() as u64;
+                root.label = label;
+                self.emit(ViewOp::Replace { id: "session".into(), node: root }, &mut out);
             }
         }
         let previous = self.version.clone();
@@ -267,7 +306,7 @@ mod tests {
         let mut view = Canonical::new(&db, &[], "epoch".into());
         advance(&mut view, &mut db, vec![patch("session.queue", Op::Append(row(1))), patch("session.queue", Op::Append(row(2))), patch("session.queue", Op::Append(row(3)))], &[]);
         advance(&mut view, &mut db, vec![patch("session.queue[0]", Op::Delete), patch("session.queue[0]", Op::Delete)], &[]);
-        assert_eq!(view.tree.children("queue"), vec!["queue.3"]);
+        assert_eq!(view.tree.children("queue"), vec!["queue.count", "queue.3"]);
     }
     #[test]
     fn retention_catches_up_atomically_or_sends_the_current_snapshot() {
@@ -298,5 +337,54 @@ mod tests {
         assert_eq!(view.work, work);
         // The test-only differential oracle invokes the rebuild once; production did not.
         assert_eq!(builds.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    fn message(seq: i64, role: &str) -> Value {
+        Value::map([("seq", Value::Int(seq)), ("role", Value::str(role)), ("text", Value::str("x".repeat(64))), ("state", Value::str("done"))])
+    }
+    #[test]
+    fn membership_rewrites_and_root_metadata_still_match_the_oracle() {
+        let mut db = views::initial_state("test", "p", "m", 0);
+        let mut view = Canonical::new(&db, &[], "epoch".into());
+        advance(&mut view, &mut db, vec![patch("messages", Op::AppendAll(vec![message(1,"user"),message(2,"assistant"),message(3,"user"),message(4,"assistant")]))], &[]);
+        advance(&mut view, &mut db, vec![patch("messages[0]", Op::Delete),patch("messages[1]", Op::Delete)], &[]);
+        assert!(!view.tree.contains("msg.1"));
+        assert!(!view.tree.contains("msg.3"));
+        advance(&mut view, &mut db, vec![patch("session.id", Op::Set(Value::str("renamed")))], &[]);
+        assert_eq!(view.tree.node("session").unwrap().label.as_deref(), Some("renamed"));
+    }
+    #[test]
+    fn settled_append_work_does_not_grow_with_history() {
+        let mut results = Vec::new();
+        for history in [128, 256] {
+            let mut runs = Vec::new();
+            for _ in 0..6 {
+                let mut db = views::initial_state("test", "p", "m", 0);
+                db = misa_value::apply_one(&db, &Path::parse("messages").unwrap(), &Op::Set(Value::list((1..=history).map(|seq|message(seq,"assistant"))))).unwrap();
+                let mut view = Canonical::new(&db, &[], "epoch".into());
+                let before = view.work.clone();
+                advance(&mut view, &mut db, vec![patch("messages", Op::Append(message(history+1,"assistant")))], &[]);
+                let work = &view.work;
+                assert_eq!(work.content_builds-before.content_builds, 1);
+                assert_eq!(work.structural_ops-before.structural_ops, 2);
+                assert_eq!(work.snapshot_nodes-before.snapshot_nodes, 0);
+                runs.push(work.encoded_op_bytes-before.encoded_op_bytes);
+            }
+            assert!(runs.iter().all(|bytes| bytes == &runs[0]));
+            results.push(runs[0]);
+            eprintln!("history={history} repetitions=6 content_builds=1 view_ops=2 encoded_bytes={}", runs[0]);
+        }
+        assert!(results[1] <= results[0]+8, "only integer-width encoding may vary");
+    }
+    #[test]
+    fn aggregate_updates_coalesce_repeated_row_patches_and_membership_changes() {
+        let mut db = views::initial_state("test", "p", "m", 0);
+        let mut view = Canonical::new(&db, &[], "epoch".into());
+        let row = |cost| Value::map([("cost_micros", Value::Int(cost)), ("input_tokens", Value::Int(10))]);
+        advance(&mut view, &mut db, vec![patch("attempts", Op::AppendAll(vec![row(3), row(7)]))], &[]);
+        advance(&mut view, &mut db, vec![patch("attempts[0].cost_micros", Op::Set(Value::Int(5))), patch("attempts[0].input_tokens", Op::Set(Value::Int(20)))], &[]);
+        assert_eq!(view.spend, 12);
+        advance(&mut view, &mut db, vec![patch("attempts[0]", Op::Delete)], &[]);
+        assert_eq!(view.spend, 7);
     }
 }
