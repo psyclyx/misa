@@ -19,23 +19,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: misa [--print|-p] misa:<endpoint id>:<session> [prompt]".into());
     }
     let mut remote = Remote::attach(&positional[0]).await?;
-    if let Some(prompt) = positional.get(1) {
-        remote
-            .send(misa_proto::wire::Intent::Prompt {
-                text: prompt.clone(),
-                attachments: Vec::new(),
-            })
-            .await?;
-    }
     if misa_tui::print::interactive(
         force_print,
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
     ) {
+        if let Some(prompt) = positional.get(1) {
+            remote
+                .send(misa_proto::wire::Intent::Prompt {
+                    text: prompt.clone(),
+                    attachments: Vec::new(),
+                })
+                .await?;
+        }
         run(&mut remote).await?;
     } else {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let prompt = positional.get(1).cloned();
         std::thread::spawn(move || {
+            if let Some(prompt) = prompt {
+                if sender.blocking_send(Ok(prompt)).is_err() {
+                    return;
+                }
+            }
             for line in std::io::stdin().lock().lines() {
                 if sender
                     .blocking_send(line.map_err(|error| error.to_string()))
