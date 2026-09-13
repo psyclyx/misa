@@ -28,6 +28,7 @@ use misa_render::{Line, Style, Theme};
 /// One thing to draw.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
+    Image { x: f32, y: f32, width: f32, height: f32, image: std::sync::Arc<image::RgbaImage> },
     /// A run of text at a baseline position.
     Text { x: f32, y: f32, size: f32, style: Style, text: String },
     /// A filled rectangle, in device pixels.
@@ -118,6 +119,10 @@ fn rail(line: &Line, theme: &Theme, scene: &mut Scene, layout: Layout, y: f32) {
 
 /// The scene as a PNG.
 
+pub mod app;
+pub mod connection;
+pub mod window;
+
 pub mod paint {
     use super::{Op, Scene};
     use misa_render::Color;
@@ -142,14 +147,24 @@ pub mod paint {
         let canvas: &Canvas = surface.canvas();
         canvas.clear(skia_safe::Color::from(skia_color(background, 0xff14_161a)));
 
-        let typeface = FontMgr::default()
-            .legacy_make_typeface(None, FontStyle::default())
-            .ok_or("no typeface available; install a font machine or a font file")?;
+        let fonts = FontMgr::default();
+        let typeface = fonts.match_family_style("monospace", FontStyle::default())
+            .or_else(|| fonts.family_names().find_map(|family| {
+                fonts.match_family_style(family, FontStyle::default())
+            }))
+            .ok_or("no typeface available; install a font")?;
         let mut fill = SkPaint::default();
         fill.set_anti_alias(true);
 
         for op in &scene.ops {
             match op {
+                Op::Image { x, y, width, height, image } => {
+                    let info = skia_safe::ImageInfo::new((image.width() as i32, image.height() as i32), skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul, None);
+                    let data = skia_safe::Data::new_copy(image.as_raw());
+                    if let Some(bitmap) = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4) {
+                        canvas.draw_image_rect(bitmap, None, Rect::from_xywh(*x, *y, *width, *height), &fill);
+                    }
+                }
                 Op::Rect { x, y, width, height, style } => {
                     fill.set_style(PaintStyle::Fill);
                     fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xff9a_a2ad)));
@@ -165,7 +180,6 @@ pub mod paint {
             }
         }
 
-        let image = surface.image_snapshot();
         let pixmap = surface.peek_pixels().ok_or("no pixels")?;
         let bytes = pixmap.bytes().ok_or("no pixel bytes")?;
         let mut rgba = Vec::with_capacity((width * height * 4) as usize);
@@ -225,7 +239,7 @@ mod tests {
                     assert!(*x >= 0.0 && *y >= 0.0);
                     assert!(!text.is_empty(), "an empty run was emitted");
                 }
-                Op::Rect { width, height, .. } => assert!(*width > 0.0 && *height > 0.0),
+                Op::Image { width, height, .. } | Op::Rect { width, height, .. } => assert!(*width > 0.0 && *height > 0.0),
             }
         }
     }

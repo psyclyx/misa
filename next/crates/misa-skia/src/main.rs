@@ -1,4 +1,4 @@
-//! Render one session's view to a PNG.
+//! Open a pixel window, or export a session view as PNG.
 //!
 //! ```sh
 //! # a session, live
@@ -20,12 +20,13 @@ use misa_proto::view::Node;
 use misa_proto::{Query, SessionMsg, SubId};
 
 fn usage() -> String {
-    "usage: misa-skia (--ticket misa:<endpoint id>:<session> | --view view.json) --out frame.png [--every-ms N] [--columns N]"
+    "usage: misa-skia (--ticket misa:<endpoint id>:<session> | --view view.json) [--window] [--out frame.png] [--every-ms N] [--columns N]"
         .into()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut window = false;
     let mut ticket = None;
     let mut view_file = None;
     let mut out = None;
@@ -35,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
+            "--window" => window = true,
             "--ticket" | "-t" => ticket = arguments.next(),
             "--view" | "-v" => view_file = arguments.next(),
             "--out" | "-o" => out = arguments.next(),
@@ -44,9 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => return Err(format!("unknown argument `{other}`").into()),
         }
     }
-    let (Some(out), true) = (out, ticket.is_some() || view_file.is_some()) else {
+    if ticket.is_none() && view_file.is_none() {
         return Err(usage().into());
-    };
+    }
 
     let mut first: Option<Node> = match &view_file {
         Some(path) => {
@@ -55,6 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => None,
     };
+
+    if window || out.is_none() {
+        let view = first.take().unwrap_or_else(|| Node::section("connecting"));
+        misa_skia::window::run(view, ticket, out)?;
+        return Ok(());
+    }
+    let out = out.expect("PNG output selected");
 
     if let Some(text) = first.take() {
         write_frame(&text, columns, rows, &out)?;

@@ -221,9 +221,9 @@ These are forks that change later work, so they are answered first.
       data the app persists, so a background check is "attach with `since`".
 - [ ] Browser: apply ops to the DOM instead of re-rendering the transcript per revision; its own
       memory (theme, opened nodes, draft) in the page's storage.
-- [ ] Pixels: a window; interaction for a panel's fields; selection; and the node kinds the scene does
-      not present yet — fields, meters, a collapsible's toggle, tables. Today it draws the text of the
-      tree with capture colours.
+- [x] Pixels: a native window with editable panel fields, selection and clipboard copy, meters,
+      disclosure toggles, wrapped tables and fetched images. Native keyboard, clipboard and
+      disclosure interaction are verified under Xvfb; 12 pixel tests cover scene and local interaction.
 - [ ] Terminal: the kit's memory shape with the terminal's storage; animations and spinners drawn from
       `State::Streaming`; a pasted binary image through a clipboard capability.
 - [ ] Verify: the parity rows move, and each frontend's own suite covers what it gained.
