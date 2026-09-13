@@ -173,6 +173,13 @@ pub enum CredentialAction {
     Set { slot: String, account: String, value: String },
     Delete { slot: String },
     List,
+    /// Authorize a service by device code, and store what it hands back.
+    ///
+    /// The flow is minutes long — somebody has to open a browser and approve — so a kernel
+    /// answers this by starting it and reporting twice: once with the code to show, and once
+    /// with how it ended. A session that waited would stop answering clients until somebody
+    /// typed a code into a website.
+    OAuth { provider: String },
 }
 
 /// What the kernel reports back. Each one becomes an event in the session's loop.
@@ -234,6 +241,21 @@ pub enum KernelEvent {
         /// Slot and account pairs. Never a value.
         slots: Value,
     },
+    /// Somebody has to finish an authorization somewhere else: this is what to show them.
+    ///
+    /// The first of the two reports a device flow makes. It carries a short code and an
+    /// address and no secret at all — the code is what a person types into the service's own
+    /// page, so it is not a credential and a session may put it in a panel. The token that
+    /// follows it never travels this way.
+    CredentialPrompt {
+        id: String,
+        /// The service being authorized, which is the slot the token will be stored under.
+        provider: String,
+        /// Where to type the code.
+        url: String,
+        /// What to type.
+        code: String,
+    },
     Blob {
         id: String,
         ok: bool,
@@ -282,6 +304,7 @@ impl KernelEvent {
             KernelEvent::AttemptRecorded { .. } => "attempt.recorded",
             KernelEvent::HttpFinished { .. } => "http.finished",
             KernelEvent::Credential { .. } => "credential",
+            KernelEvent::CredentialPrompt { .. } => "credential.prompt",
             KernelEvent::Blob { .. } => "blob.stored",
             KernelEvent::BlobBytes { .. } => "blob.loaded",
             KernelEvent::ProcessFinished { .. } => "process.finished",
@@ -358,6 +381,12 @@ pub struct Composition {
     pub default_provider: String,
     /// A search backend, when one is configured.
     pub search: Option<SearchBackend>,
+    /// The device flows this daemon can authorize an account with, by provider.
+    ///
+    /// A composition decision like the rest: `presets::flows()` is what a shipped daemon
+    /// passes, and a test passes a flow pointed at a server of its own, which is the only
+    /// way a flow that talks to a service on the internet is testable at all.
+    pub flows: Vec<(String, oauth::Flow)>,
     /// Where the shell tool writes what it runs. A directory rather than a stream, because a
     /// command's output outlives the call that started it.
     pub shell: PathBuf,
@@ -412,6 +441,12 @@ pub struct Daemon {
     providers: Vec<Arc<dyn Provider>>,
     default_provider: String,
     tools: Vec<Arc<dyn Tool>>,
+    /// The device flows this daemon can authorize an account with, by provider.
+    ///
+    /// Held here rather than looked up in `presets` on demand so that a composition can
+    /// point a service at an address of its own, which is what makes a flow that talks to
+    /// a service on the internet testable at all.
+    flows: Vec<(String, oauth::Flow)>,
     /// Where a tool that keeps running after it answers reports what happened.
     events: mpsc::UnboundedSender<KernelEvent>,
     /// The other end of `events`, handed to the session exactly once.
@@ -435,6 +470,7 @@ impl Daemon {
             http: None,
             providers: vec![provider],
             default_provider: "scripted".into(),
+            flows: presets::flows().into_iter().map(|(id, flow)| (id.to_string(), flow)).collect(),
             tools: tools::shipped(&shell, &events),
             events,
             listener: std::sync::Mutex::new(Some(listener)),
@@ -460,6 +496,7 @@ impl Daemon {
                 Turn::say("this daemon has no provider of its own configured"),
             ])],
             default_provider: "scripted".into(),
+            flows: presets::flows().into_iter().map(|(id, flow)| (id.to_string(), flow)).collect(),
             tools: tools::shipped(&shell, &events),
             events,
             listener: std::sync::Mutex::new(Some(listener)),
@@ -483,6 +520,7 @@ impl Daemon {
             http: composition.http,
             default_provider: composition.default_provider,
             providers: composition.providers,
+            flows: composition.flows,
             tools,
             events,
             listener: std::sync::Mutex::new(Some(listener)),
@@ -538,6 +576,18 @@ impl Daemon {
         self
     }
 
+    /// Authorize against a flow of the composition's own making.
+    ///
+    /// The id is what a session names in `/login <provider>`, and replacing a shipped flow
+    /// with one pointed at a local server is how the whole path — a device code, a poll, a
+    /// token in the store — is exercised without reaching a service.
+    pub fn with_flow(mut self, provider: impl Into<String>, flow: oauth::Flow) -> Daemon {
+        let provider = provider.into();
+        self.flows.retain(|(name, _)| name != &provider);
+        self.flows.push((provider, flow));
+        self
+    }
+
     pub fn with_search(mut self, backend: SearchBackend) -> Daemon {
         if let Some(http) = &self.http {
             self.tools.push(Arc::new(search::WebSearch::new(http.clone(), backend)));
@@ -569,6 +619,11 @@ impl Daemon {
     /// The provider ids this daemon can reach.
     pub fn provider_ids(&self) -> Vec<String> {
         self.providers.iter().map(|provider| provider.id().to_string()).collect()
+    }
+
+    /// The providers this daemon can authorize by device code.
+    pub fn flow_ids(&self) -> Vec<String> {
+        self.flows.iter().map(|(provider, _)| provider.clone()).collect()
     }
 
     pub fn tool_names(&self) -> Vec<String> {
@@ -609,6 +664,78 @@ impl Daemon {
 
     fn tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.iter().find(|tool| tool.name() == name).cloned()
+    }
+
+    /// Start the device flow for `provider`, and report the code and then how it ended.
+    ///
+    /// Returns immediately. What it starts holds the credential store and the report channel,
+    /// and it gives up when nobody is listening any more: a client that went away should not
+    /// leave a daemon polling a service for a quarter of an hour.
+    fn authorize(&self, provider: &str, id: String, out: &mpsc::UnboundedSender<KernelEvent>) {
+        let Some((_, flow)) = self.flows.iter().find(|(name, _)| name == provider) else {
+            report_credential(
+                &self.credentials,
+                id,
+                false,
+                format!(
+                    "`{provider}` has no device flow, so there is no token to fetch from it — a key \
+                     for it is stored from a client's login panel"
+                ),
+                out,
+            );
+            return;
+        };
+        // Copied rather than borrowed: the flow is four `&'static str`s and a kind, and the task
+        // outlives this call.
+        let flow = *flow;
+        let provider = provider.to_string();
+        let credentials = self.credentials.clone();
+        let out = out.clone();
+        let reports = out.clone();
+        let asked = id.clone();
+        let named = provider.clone();
+        let waiting = provider.clone();
+        tokio::spawn(async move {
+            let token = oauth::login(
+                &flow,
+                move |prompt| {
+                    let _ = reports.send(KernelEvent::CredentialPrompt {
+                        id: asked.clone(),
+                        provider: named.clone(),
+                        url: prompt.url,
+                        code: prompt.code,
+                    });
+                },
+                || out.is_closed(),
+            )
+            .await;
+            match token {
+                Ok(token) => {
+                    let account = token.account.clone();
+                    let stored = credentials.set_oauth(
+                        &waiting,
+                        OAuth {
+                            account: token.account,
+                            access: token.access,
+                            refresh: token.refresh,
+                            expires_ms: token.expires_ms,
+                            token_url: flow.token_url.to_string(),
+                            client_id: flow.client_id.to_string(),
+                        },
+                    );
+                    let ok = stored.is_ok();
+                    let message = match stored {
+                        Ok(()) => format!(
+                            "stored a token for `{waiting}` (account `{}`); it renews itself from here",
+                            if account.is_empty() { "unknown" } else { &account }
+                        ),
+                        Err(message) => message,
+                    };
+                    report_credential(&credentials, id, ok, message, &out);
+                }
+                Err(message) => report_credential(&credentials, id, false, message, &out),
+            }
+        });
     }
 
     /// Give each attachment in a message the bytes it names.
@@ -668,6 +795,31 @@ impl Daemon {
             .map(|elapsed| elapsed.as_millis() as i64)
             .unwrap_or(0)
     }
+}
+
+/// Report how a credential change went, with the slot listing as it stands now.
+///
+/// One function because every one of the four actions ends here and all four have the same
+/// thing to say: what happened, and which slots the store holds — never a value. Free rather
+/// than a method because the task that finishes a device flow outlives the call that started
+/// it, and it may not hold the daemon.
+fn report_credential(
+    credentials: &Credentials,
+    id: String,
+    ok: bool,
+    message: String,
+    out: &mpsc::UnboundedSender<KernelEvent>,
+) {
+    let slots = Value::list(
+        credentials
+            .slots()
+            .into_iter()
+            .map(|(slot, account)| {
+                Value::map([("slot", Value::str(slot)), ("account", Value::str(account))])
+            })
+            .collect::<Vec<_>>(),
+    );
+    let _ = out.send(KernelEvent::Credential { id, ok, message, slots });
 }
 
 #[async_trait]
@@ -879,30 +1031,30 @@ impl Kernel for Daemon {
                     }
                 }
             }
-            Request::Credential { id, action } => {
-                let (ok, message) = match action {
-                    CredentialAction::Set { slot, account, value } => match self.credentials.set(&slot, &account, &value) {
+            Request::Credential { id, action } => match action {
+                // Minutes long, and answered twice: this starts the flow and returns. The code
+                // and then the outcome arrive on the same channel as every other kernel report,
+                // which is what lets a client — any client — start an authorization and be told
+                // where to go, instead of a person having to run a daemon subcommand with a
+                // terminal of its own.
+                CredentialAction::OAuth { provider } => self.authorize(&provider, id, out),
+                CredentialAction::Set { slot, account, value } => {
+                    let (ok, message) = match self.credentials.set(&slot, &account, &value) {
                         Ok(()) => (true, format!("stored a credential for `{slot}`")),
                         Err(message) => (false, message),
-                    },
-                    CredentialAction::Delete { slot } => match self.credentials.delete(&slot) {
+                    };
+                    report_credential(&self.credentials, id, ok, message, out);
+                }
+                CredentialAction::Delete { slot } => {
+                    let (ok, message) = match self.credentials.delete(&slot) {
                         Ok(true) => (true, format!("removed the credential for `{slot}`")),
                         Ok(false) => (true, format!("there was no credential for `{slot}`")),
                         Err(message) => (false, message),
-                    },
-                    CredentialAction::List => (true, String::new()),
-                };
-                let slots = Value::list(
-                    self.credentials
-                        .slots()
-                        .into_iter()
-                        .map(|(slot, account)| {
-                            Value::map([("slot", Value::str(slot)), ("account", Value::str(account))])
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                let _ = out.send(KernelEvent::Credential { id, ok, message, slots });
-            }
+                    };
+                    report_credential(&self.credentials, id, ok, message, out);
+                }
+                CredentialAction::List => report_credential(&self.credentials, id, true, String::new(), out),
+            },
             Request::BlobPut { id, bytes, media } => match self.blobs.put(&bytes, media.as_deref()) {
                 Ok(reference) => {
                     let _ = out.send(KernelEvent::Blob {
@@ -1276,6 +1428,128 @@ mod tests {
             .await;
         let events = drain(&mut rx).await;
         assert!(matches!(&events[0], KernelEvent::BlobBytes { ok: false, .. }));
+    }
+
+    /// A flow pointed at a server this machine runs.
+    ///
+    /// The shipped flows name real services, so a test that used one would reach the
+    /// internet; this is the same plumbing with the addresses replaced, which is why the
+    /// flows are a composition decision at all.
+    fn local_flow(base: &str) -> oauth::Flow {
+        oauth::Flow {
+            kind: oauth::Kind::Rfc8628,
+            client_id: "a-client",
+            authorization_url: Box::leak(format!("{base}/device").into_boxed_str()),
+            token_url: Box::leak(format!("{base}/token").into_boxed_str()),
+            verification_url: "https://example.invalid/device",
+        }
+    }
+
+    #[tokio::test]
+    async fn a_device_flow_is_reported_twice_and_what_it_hands_back_is_stored() {
+        // The whole of what a client's `/login <provider>` starts: a code to show, a poll until
+        // somebody approves it, and a token in the store. The request that asked answers
+        // *immediately* — that is the point of the two reports — so the first thing this
+        // checks is that nothing came back at once.
+        let base = oauth::script_server(vec![
+            (
+                200,
+                r#"{"device_code":"dev","user_code":"AAAA-BBBB","verification_uri":"https://example.invalid/device","interval":1,"expires_in":30}"#
+                    .into(),
+            ),
+            (400, r#"{"error":"authorization_pending"}"#.into()),
+            (
+                200,
+                r#"{"access_token":"an-access","refresh_token":"a-refresh","expires_in":3600,"account_id":"acct-9"}"#
+                    .into(),
+            ),
+        ])
+        .await;
+        let kernel = kernel().with_flow("kimi-coding", local_flow(&base));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "login".into(),
+                    action: CredentialAction::OAuth { provider: "kimi-coding".into() },
+                },
+                &tx,
+            )
+            .await;
+        assert!(drain(&mut rx).await.is_empty(), "an authorization is not answered on the spot");
+
+        let mut prompted = false;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+                .await
+                .expect("a report within the code's lifetime")
+                .expect("the channel is open");
+            match event {
+                KernelEvent::CredentialPrompt { provider, url, code, .. } => {
+                    assert_eq!(provider, "kimi-coding");
+                    assert_eq!(code, "AAAA-BBBB");
+                    assert_eq!(url, "https://example.invalid/device");
+                    prompted = true;
+                }
+                KernelEvent::Credential { ok, message, slots, .. } => {
+                    assert!(ok, "{message}");
+                    assert!(message.contains("kimi-coding"), "{message}");
+                    // The listing says which slot now holds something, and never what.
+                    let slot = &slots.as_list().expect("a list")[0];
+                    assert_eq!(slot.get("slot").and_then(Value::as_str), Some("kimi-coding"));
+                    assert_eq!(slot.get("account").and_then(Value::as_str), Some("acct-9"));
+                    assert!(slot.get("value").is_none());
+                    break;
+                }
+                other => panic!("reported `{}`", other.kind()),
+            }
+        }
+        assert!(prompted, "nobody was told where to type the code");
+        // The account the service named travels with the token, because one backend wants it
+        // back in a header on every request.
+        assert_eq!(kernel.credentials().slots(), vec![("kimi-coding".to_string(), "acct-9".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn a_service_with_no_device_flow_is_told_so_rather_than_left_waiting() {
+        // A key is a value, and a session is told the difference rather than being parked in
+        // front of a flow that will never start.
+        let kernel = kernel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "login".into(),
+                    action: CredentialAction::OAuth { provider: "anthropic".into() },
+                },
+                &tx,
+            )
+            .await;
+        match &drain(&mut rx).await[..] {
+            [KernelEvent::Credential { ok, message, slots, .. }] => {
+                assert!(!ok);
+                assert!(message.contains("anthropic"), "{message}");
+                assert!(slots.as_list().expect("a list").is_empty());
+            }
+            other => panic!("expected one refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_shipped_daemon_authorizes_exactly_the_services_that_have_a_flow() {
+        // Two lists — the presets a session offers and the flows a daemon can run — and they
+        // have to agree, because `/login <provider>` is one command for a key and a device code
+        // alike and it decides by asking the presets.
+        let flows = kernel().flow_ids();
+        assert!(flows.contains(&"openai-codex".to_string()), "{flows:?}");
+        assert!(flows.contains(&"kimi-coding".to_string()), "{flows:?}");
+        for provider in flows {
+            assert!(
+                presets::preset(&provider).is_some(),
+                "`{provider}` can be authorized but is not a service this daemon knows"
+            );
+            assert!(presets::oauth(&provider).is_some(), "`{provider}` is not in the flow list");
+        }
     }
 
     #[tokio::test]

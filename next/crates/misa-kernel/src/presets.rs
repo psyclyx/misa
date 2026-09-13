@@ -472,26 +472,41 @@ pub const PRESETS: &[Preset] = &[
 /// those tools use, and both are here rather than in a preset because a preset is
 /// about a *request* and this is about getting the credential a request needs.
 pub fn oauth(id: &str) -> Option<crate::oauth::Flow> {
+    flows().into_iter().find(|(provider, _)| *provider == id).map(|(_, flow)| flow)
+}
+
+/// Every device flow, as the provider that names it and the flow itself.
+///
+/// One list, so that the daemon which authorizes a provider and the session that offers to
+/// cannot disagree about which providers those are. A composition passes this and may
+/// replace any of them ([`crate::Daemon::with_flow`]), which is what makes a flow written
+/// against a service on the internet testable against a server on this machine.
+pub fn flows() -> Vec<(&'static str, crate::oauth::Flow)> {
     use crate::oauth::Kind;
-    Some(match id {
-        "openai-codex" => crate::oauth::Flow {
-            kind: Kind::OpenAi,
-            client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
-            authorization_url: "https://auth.openai.com/api/accounts/deviceauth/usercode",
-            token_url: "https://auth.openai.com/oauth/token",
-            verification_url: "https://auth.openai.com/codex/device",
-        },
-        "kimi-coding" => crate::oauth::Flow {
-            kind: Kind::Rfc8628,
-            client_id: "17e5f671-d194-4dfb-9706-5516cb48c098",
-            authorization_url: "https://auth.kimi.ai/api/oauth/device_authorization",
-            token_url: "https://auth.kimi.ai/api/oauth/token",
-            // RFC 8628 answers with the place to type the code; this is the
-            // fallback for a service that does not.
-            verification_url: "https://auth.kimi.ai/api/oauth/device_authorization",
-        },
-        _ => return None,
-    })
+    vec![
+        (
+            "openai-codex",
+            crate::oauth::Flow {
+                kind: Kind::OpenAi,
+                client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+                authorization_url: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+                token_url: "https://auth.openai.com/oauth/token",
+                verification_url: "https://auth.openai.com/codex/device",
+            },
+        ),
+        (
+            "kimi-coding",
+            crate::oauth::Flow {
+                kind: Kind::Rfc8628,
+                client_id: "17e5f671-d194-4dfb-9706-5516cb48c098",
+                authorization_url: "https://auth.kimi.ai/api/oauth/device_authorization",
+                token_url: "https://auth.kimi.ai/api/oauth/token",
+                // RFC 8628 answers with the place to type the code; this is the
+                // fallback for a service that does not.
+                verification_url: "https://auth.kimi.ai/api/oauth/device_authorization",
+            },
+        ),
+    ]
 }
 
 /// The preset with this id, if it is one the daemon knows by name.

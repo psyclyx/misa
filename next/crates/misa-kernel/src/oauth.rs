@@ -358,63 +358,69 @@ fn brief(body: &str) -> String {
     body.chars().take(300).collect()
 }
 
+/// A server that answers a scripted list of `(status, body)` in order, one request each.
+///
+/// `pub(crate)` and behind `cfg(test)` because a device flow is the one thing in this file
+/// that has to talk to something, and the kernel's own tests need a service to talk to: the
+/// shipped flows name real providers, so a test that used one would reach the internet.
+#[cfg(test)]
+pub(crate) async fn script_server(responses: Vec<(u16, String)>) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for (status, body) in responses {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            // Headers first, then `content-length` bytes of body.
+            loop {
+                let Ok(read) = socket.read(&mut buffer).await else {
+                    break;
+                };
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse().ok())
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let reason = match status {
+                200 => "OK",
+                403 => "Forbidden",
+                404 => "Not Found",
+                400 => "Bad Request",
+                _ => "Error",
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+    });
+    format!("http://{address}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    /// A server that answers a scripted list of `(status, body)` in order.
-    ///
-    /// One connection per request, because a token endpoint is not asked for
-    /// keep-alive, and every request is read to the end so the client is never
-    /// left waiting on a socket the test has stopped reading.
+    /// The scripted server, under the name the tests in this file know it by.
     async fn script(responses: Vec<(u16, String)>) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            for (status, body) in responses {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let mut request = Vec::new();
-                let mut buffer = [0u8; 1024];
-                // Headers first, then `content-length` bytes of body.
-                loop {
-                    let Ok(read) = socket.read(&mut buffer).await else {
-                        break;
-                    };
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&request[..end]).to_lowercase();
-                        let length: usize = head
-                            .lines()
-                            .find_map(|line| line.strip_prefix("content-length:"))
-                            .and_then(|value| value.trim().parse().ok())
-                            .unwrap_or(0);
-                        if request.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
-                }
-                let reason = match status {
-                    200 => "OK",
-                    403 => "Forbidden",
-                    404 => "Not Found",
-                    400 => "Bad Request",
-                    _ => "Error",
-                };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.flush().await;
-            }
-        });
-        format!("http://{address}")
+        script_server(responses).await
     }
 
     const KIMI: Flow = Flow {
