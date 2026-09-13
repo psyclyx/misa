@@ -337,7 +337,7 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
             // client can grow an answer in place.
             node.children.extend(body("message.assistant", &id, text_at(message, "text")));
             for (position, call) in calls(message).into_iter().enumerate() {
-                node.children.push(call_node(&call, position));
+                node.children.push(call_node(&id, &call, position));
             }
             Some(node)
         }
@@ -349,13 +349,13 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
 ///
 /// A collapsible, because a tool result is usually long and usually not what the
 /// reader came for. Clients remember their own expansion against the node id.
-pub(crate) fn call_node(call: &Value, position: usize) -> Node {
+pub(crate) fn call_node(message: &str, call: &Value, position: usize) -> Node {
     let name = text_at(call, "name");
     let id = call
         .get("id")
         .and_then(Value::as_str)
-        .map(|id| format!("call.{id}"))
-        .unwrap_or_else(|| format!("call.{position}"));
+        .map(|id| format!("{message}.call.{id}"))
+        .unwrap_or_else(|| format!("{message}.call.{position}"));
     let status = text_at(call, "status");
     let mut node = Node::new(
         "tool.call",
@@ -377,11 +377,11 @@ pub(crate) fn call_node(call: &Value, position: usize) -> Node {
         "tool.call.args",
         Kind::Fields {
             fields: vec![Field {
-                id: "args".into(),
+                id: format!("{id}.args"),
                 label: "Arguments".into(),
                 value: clip(&format!("{}", call.get("args").cloned().unwrap_or(Value::Null)), 512),
                 hint: None,
-                read_only: false,
+                read_only: true,
                 secret: false,
                 kind: FieldKind::Inline,
             }],
@@ -441,6 +441,7 @@ pub(crate) fn section_node(section: &Section, db: &Value) -> Node {
     let mut wrapper = Node::section(&role).id(&role);
     wrapper.label = Some(section.plugin.clone());
     let built = (section.build)(db).and_then(|mut tree| {
+        misa_proto::view::validate(&tree).map_err(|fault| fault.to_string())?;
         misa_proto::sync::address(&mut tree);
         misa_proto::view::validate(&tree).map_err(|fault| fault.to_string())?;
         Ok(tree)
@@ -596,7 +597,7 @@ pub(crate) fn notices(db: &Value) -> Option<Node> {
     if rows.is_empty() {
         return None;
     }
-    let mut node = Node::section("notices").id("notices");
+    let mut node = Node::section("notices").id("notices").child(count_fact("notices", rows.len()));
     for notice in rows.iter().rev().take(4) {
         let level = text_at(notice, "level");
         node.children.push(
@@ -621,7 +622,7 @@ pub(crate) fn notice_id(notice: &Value) -> String {
 pub(crate) fn queue(db: &Value) -> Option<Node> {
     let rows = db.get("session")?.get("queue")?.as_list()?;
     if rows.is_empty() { return None; }
-    let mut node = Node::section("queue").id("queue");
+    let mut node = Node::section("queue").id("queue").child(count_fact("queue", rows.len()));
     for row in rows { node.children.push(queue_item(row)); }
     node.actions = vec![
         Action { id: "queue.take".into(), on: ActionOn::Click, label: Some("Take back".into()), args: Value::Null },
@@ -638,9 +639,14 @@ pub(crate) fn queue_item(row: &Value) -> Node {
 pub(crate) fn attachments(db: &Value) -> Option<Node> {
     let rows = db.get("session")?.get("attachments")?.as_list()?;
     if rows.is_empty() { return None; }
-    let mut node = Node::section("attachments").id("attachments");
+    let mut node = Node::section("attachments").id("attachments").child(count_fact("attachments", rows.len()));
     for (position, row) in rows.iter().enumerate() { node.children.push(attachment_node(row, position)); }
     Some(node)
+}
+
+pub(crate) fn count_fact(owner: &str, count: usize) -> Node {
+    Node::new(format!("{owner}.count"), Kind::Fact { value: Value::Int(count as i64) })
+        .id(format!("{owner}.count")).label(owner)
 }
 
 /// The one agent action a view offers while a turn is in flight.
@@ -899,7 +905,7 @@ mod tests {
     #[test]
     fn a_tool_call_carries_its_arguments_and_its_result() {
         let node = document(&state(), &[]);
-        let call = find(&node, "call.call.1").expect("the tool call");
+        let call = find(&node, "msg.2.call.call.1").expect("the tool call");
         assert_eq!(call.state, Some(State::Done));
         assert_eq!(call.label.as_deref(), Some("echo"));
         assert!(call.children.iter().any(|child| child.role == "tool.result"));
@@ -933,7 +939,7 @@ mod tests {
             ),
         ]);
         let node = document(&state, &[]);
-        let result = find(&node, "call.call.1.result").expect("the result");
+        let result = find(&node, "msg.1.call.call.1.result").expect("the result");
         assert_eq!(result.role, "tool.result.diff");
         match &result.kind {
             Kind::Code { text, .. } => assert!(text.starts_with("--- a/main.rs"), "{text}"),
@@ -955,7 +961,19 @@ mod tests {
     #[test]
     fn tool_details_are_semantic() {
         let tree = document(&state(), &[]);
-        assert!(matches!(&find(&tree, "call.call.1").unwrap().kind, Kind::Collapsible { summary } if !summary.is_empty()));
+        assert!(matches!(&find(&tree, "msg.2.call.call.1").unwrap().kind, Kind::Collapsible { summary } if !summary.is_empty()));
+    }
+
+    #[test]
+    fn reused_provider_call_ids_have_distinct_message_scopes() {
+        let db = state();
+        let message = db.get("messages").unwrap().as_list().unwrap()[1].clone();
+        let message = misa_value::apply_one(&message, &misa_value::Path::parse("seq").unwrap(), &misa_value::Op::Set(Value::Int(3))).unwrap();
+        let db = misa_value::apply_one(&db, &misa_value::Path::parse("messages").unwrap(), &misa_value::Op::Append(message)).unwrap();
+        let view = document(&db, &[]);
+        misa_proto::view::validate(&view).unwrap();
+        assert!(find(&view, "msg.2.call.call.1").is_some());
+        assert!(find(&view, "msg.3.call.call.1").is_some());
     }
 
     #[test]

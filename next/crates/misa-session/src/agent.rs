@@ -1228,6 +1228,10 @@ fn on_blob(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         return Ok(());
     }
     let hash = fields::event_text(event, "hash");
+    if current_attachments(tx).as_list().unwrap_or(&[]).iter()
+        .any(|attachment| attachment.get("hash").and_then(Value::as_str) == Some(hash.as_str())) {
+        return Ok(());
+    }
     let media = fields::event_text(event, "media");
     let len = fields::event_int(event, "len");
     let source = fields::event_text(event, "id");

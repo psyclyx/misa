@@ -357,12 +357,8 @@ impl std::fmt::Display for ViewFault {
 
 impl std::error::Error for ViewFault {}
 
-/// The largest tree a session may emit.
-pub const MAX_NODES: usize = 200_000;
 /// The deepest tree a session may emit.
 pub const MAX_DEPTH: usize = 64;
-/// The largest inline text run.
-pub const MAX_TEXT: usize = 4 * 1024 * 1024;
 
 /// Check every rule a client is entitled to rely on before a tree is sent.
 ///
@@ -371,8 +367,7 @@ pub const MAX_TEXT: usize = 4 * 1024 * 1024;
 /// what a client with no validation of its own needs.
 pub fn validate(node: &Node) -> Result<(), ViewFault> {
     let mut ids = std::collections::HashSet::new();
-    let mut count = 0usize;
-    validate_at(node, &mut ids, &mut count, "0", 0)
+    validate_at(node, &mut ids, "0", 0)
 }
 
 fn fault(path: &str, reason: impl Into<String>) -> ViewFault {
@@ -382,14 +377,9 @@ fn fault(path: &str, reason: impl Into<String>) -> ViewFault {
 fn validate_at(
     node: &Node,
     ids: &mut std::collections::HashSet<String>,
-    count: &mut usize,
     path: &str,
     depth: usize,
 ) -> Result<(), ViewFault> {
-    *count += 1;
-    if *count > MAX_NODES {
-        return Err(fault(path, format!("more than {MAX_NODES} nodes")));
-    }
     if depth > MAX_DEPTH {
         return Err(fault(path, format!("deeper than {MAX_DEPTH} nodes")));
     }
@@ -455,7 +445,7 @@ fn validate_at(
         Kind::List { items, .. } => {
             for (index, item) in items.iter().enumerate() {
                 for (position, child) in item.iter().enumerate() {
-                    validate_at(child, ids, count, &format!("{path}.items[{index}][{position}]"), depth + 1)?;
+                    validate_at(child, ids, &format!("{path}.items[{index}][{position}]"), depth + 1)?;
                 }
             }
         }
@@ -512,7 +502,7 @@ fn validate_at(
         }
     }
     for (position, child) in node.children.iter().enumerate() {
-        validate_at(child, ids, count, &format!("{path}.children[{position}]"), depth + 1)?;
+        validate_at(child, ids, &format!("{path}.children[{position}]"), depth + 1)?;
     }
     Ok(())
 }
@@ -542,9 +532,6 @@ fn check_spans(spans: &[Span], path: &str) -> Result<(), ViewFault> {
 /// Tab is refused rather than expanded: an indent is the client's decision, and a
 /// session that wants one says so with structure.
 fn check_text(text: &str, path: &str) -> Result<(), ViewFault> {
-    if text.len() > MAX_TEXT {
-        return Err(fault(path, format!("holds more than {MAX_TEXT} bytes of text")));
-    }
     if let Some(offence) = text.chars().find(|ch| *ch != '\n' && ch.is_control()) {
         return Err(fault(path, format!("contains the control character {}", offence.escape_debug())));
     }

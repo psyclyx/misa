@@ -1699,6 +1699,21 @@ mod stream_contract_tests {
             .with("conversation", Value::str("stream-test")).with("seq", Value::Int(seq))
             .with("kind", Value::str("message")).with("data", data)).is_empty());
     }
+    #[tokio::test]
+    async fn attaching_the_same_blob_twice_keeps_one_stable_draft_identity() {
+        let runtime = runtime();
+        let hash = "a".repeat(64);
+        let event = Event::new("kernel/blob").with("ok", Value::Bool(true))
+            .with("hash", Value::str(&hash)).with("media", Value::str("text/plain"))
+            .with("len", Value::Int(3)).with("id", Value::str("note.txt"));
+        assert!(runtime.dispatch(event.clone()).is_empty());
+        assert!(runtime.dispatch(event).is_empty());
+        let view = runtime.view().unwrap();
+        misa_proto::view::validate(&view).unwrap();
+        let attachments = misa_proto::view::find(&view, "attachments").unwrap();
+        assert_eq!(attachments.children.len(), 2, "count plus one attachment");
+        assert!(misa_proto::view::find(&view, &format!("attachment.{hash}")).is_some());
+    }
     // No await: the kernel tasks cannot run until these controlled acknowledgments finish.
     #[tokio::test]
     async fn streaming_work_is_linear_and_canonical_state_waits_for_the_log() {
