@@ -301,6 +301,12 @@ impl Runtime {
                         settings: fields::value(effect, "settings"),
                     });
                 }
+                "kernel.usage" => {
+                    let _ = self.to_kernel.send(Request::Usage {
+                        id: fields::text(effect, "id"),
+                        provider: fields::text(effect, "provider"),
+                    });
+                }
                 "kernel.models.discover" => {
                     let _ = self.to_kernel.send(Request::DiscoverModels {
                         id: fields::text(effect, "id"),
@@ -535,6 +541,7 @@ impl Interpreter for AcceptedEffects {
             | "kernel.log.append"
             | "kernel.log.list"
             | "kernel.log.load"
+            | "kernel.usage"
             | "kernel.blob.file"
             | "kernel.attempt.started"
             | "kernel.attempt.settled"
@@ -751,6 +758,41 @@ pub(crate) mod tests {
         let plain = transcript(&runtime);
         assert!(plain.contains("image/png"), "a client that cannot draw is not told what is there:\n{plain}");
         assert!(!plain.contains("etc/shadow"), "something that is not a hash reached the transcript:\n{plain}");
+    }
+
+    #[tokio::test]
+    async fn usage_refresh_coalesces_and_ignores_stale_completions() {
+        let runtime = runtime();
+        let command = || Intent::Command { name: "usage".into(), args: Value::Null };
+        runtime.intent(command());
+        runtime.intent(command());
+        runtime.intent(command());
+        let response = |id: &str, label: &str| {
+            Event::new("kernel/usage").with("id", Value::str(id)).with(
+                "facts",
+                Value::map([
+                    ("unavailable", Value::Bool(false)),
+                    (
+                        "windows",
+                        Value::list([Value::map([("label", Value::str(label)), ("remaining", Value::Int(75))])]),
+                    ),
+                ]),
+            )
+        };
+        assert!(runtime.dispatch(response("usage.1", "Current quota")).is_empty());
+        assert!(transcript(&runtime).contains("Current quota"));
+        runtime.dispatch(response("usage.1", "Stale quota"));
+        assert!(!transcript(&runtime).contains("Stale quota"));
+        runtime.dispatch(
+            Event::new("kernel/usage")
+                .with("id", Value::str("usage.2"))
+                .with("facts", Value::map([("unavailable", Value::Bool(true))])),
+        );
+        let report = transcript(&runtime);
+        assert!(report.contains("Unavailable"));
+        assert!(!report.contains("Current quota"));
+        runtime.dispatch(response("usage.2", "Duplicate quota"));
+        assert!(!transcript(&runtime).contains("Duplicate quota"));
     }
 
     /// Something a command can be run with, for the test below.

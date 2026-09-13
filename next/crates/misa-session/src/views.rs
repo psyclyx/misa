@@ -514,6 +514,16 @@ fn panel(db: &Value) -> Option<Node> {
     if !rows.is_empty() {
         let mut list = Node::section("panel.rows").id("panel.rows");
         for (position, row) in rows.iter().enumerate() {
+            if let Some(role) = row.get("role").and_then(Value::as_str) {
+                list.children.push(
+                    Node::section("panel.row")
+                        .id(format!("panel.row.{position}"))
+                        .child(Node::text("panel.label", [Span::plain(text_at(row, "label"))]))
+                        .child(Node::new(role, Kind::Fact { value: row.get("value").cloned().unwrap_or(Value::Null) })),
+                );
+                continue;
+            }
+
             list.children.push(
                 Node::new(
                     "panel.row",

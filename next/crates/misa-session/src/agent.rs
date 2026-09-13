@@ -72,6 +72,7 @@ pub fn registry() -> Registry {
         .on_fn("agent/tools", 0, "agent.tools", on_tools)
         .on_fn("kernel/provider.delta", 0, "agent.delta", on_delta)
         .on_fn("kernel/provider.thinking", 0, "agent.thinking", on_thinking)
+        .on_fn("kernel/usage", 0, "agent.usage", on_usage)
         .on_fn("kernel/models", 0, "agent.models", on_models)
         .on_fn("kernel/provider.finished", 0, "agent.finished", on_finished)
         .on_fn("kernel/tool.finished", 0, "agent.tool.finished", on_tool_finished)
@@ -93,6 +94,10 @@ pub fn event_for(event: KernelEvent) -> Event {
         KernelEvent::ProviderThinking { id, text } => {
             Event::new("kernel/provider.thinking").with("id", Value::str(id)).with("text", Value::str(text))
         }
+        KernelEvent::Usage { id, provider, facts } => Event::new("kernel/usage")
+            .with("id", Value::str(id))
+            .with("provider", Value::str(provider))
+            .with("facts", facts),
         KernelEvent::Models { id, ok, models, message } => Event::new("kernel/models")
             .with("id", Value::str(id))
             .with("ok", Value::Bool(ok))
@@ -500,36 +505,12 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             vec![("panel.close".into(), "Close".into())],
         )?,
         "usage" => {
-            // A report over the session's own attempt rows. The numbers are facts, and the
-            // client writes them: a session that wrote "$1.24" would have decided a
-            // currency, a rounding, and a locale.
-            let rows: Vec<Value> = tx
-                .get("attempts")
-                .and_then(Value::as_list)
-                .map(<[Value]>::to_vec)
-                .unwrap_or_default();
-            let mut spent = 0i64;
-            let mut input = 0i64;
-            let mut output = 0i64;
-            for row in &rows {
-                spent += row.get("cost_micros").and_then(Value::as_i64).unwrap_or(0);
-                input += row.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
-                output += row.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+            open_usage(tx, None)?;
+            if tx.get("session.usage_request").is_some() {
+                tx.set("session.usage_again", Value::Bool(true))?;
+            } else {
+                refresh_usage(tx)?;
             }
-            panel(
-                tx,
-                "usage",
-                "Usage",
-                "Every number here comes from the attempt ledger, which is what makes it survive a restart.",
-                vec![
-                    ("calls", rows.len().to_string()),
-                    ("input tokens", input.to_string()),
-                    ("output tokens", output.to_string()),
-                    ("spend micros", spent.to_string()),
-                ],
-                Vec::new(),
-                vec![("panel.close".into(), "Close".into())],
-            )?;
         }
         "login" => {
             let slot = argument(&args, "provider").unwrap_or("scripted").to_string();
@@ -620,6 +601,107 @@ fn summary_request(messages: &Value) -> Value {
         ]),
         Value::map([("role", Value::str("user")), ("text", messages.clone())]),
     ])
+}
+
+fn refresh_usage(tx: &mut Tx<'_>) -> Result<(), Fault> {
+    let sequence = tx.int("session.usage_sequence") + 1;
+    let id = format!("usage.{sequence}");
+    tx.set("session.usage_sequence", Value::Int(sequence))?;
+    tx.set("session.usage_request", Value::str(&id))?;
+    tx.fx(Effect::new("kernel.usage")
+        .with_value(Value::map([("id", Value::str(id)), ("provider", Value::str(tx.text("session.provider")))])));
+    Ok(())
+}
+fn on_usage(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if tx.get("session.usage_request").is_none() || tx.text("session.usage_request") != fields::event_text(event, "id")
+    {
+        return Ok(());
+    }
+    tx.delete("session.usage_request")?;
+    tx.set("session.usage", event.data.get("facts").cloned().unwrap_or(Value::Null))?;
+    if tx.text("panel.id") == "usage" {
+        open_usage(tx, Some(fields::event_value(event, "facts")))?;
+    }
+    if tx.get("session.usage_again").and_then(Value::as_bool).unwrap_or(false) {
+        tx.delete("session.usage_again")?;
+        refresh_usage(tx)?;
+    }
+    Ok(())
+}
+fn open_usage(tx: &mut Tx<'_>, incoming: Option<Value>) -> Result<(), Fault> {
+    let attempts = tx.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
+    let mut rows = vec![usage_row("Calls", "value.number", Value::Int(attempts.len() as i64))];
+    for (key, label, role) in [
+        ("input_tokens", "Input tokens", "value.tokens"),
+        ("output_tokens", "Output tokens", "value.tokens"),
+        ("cost_micros", "Spend", "value.money"),
+    ] {
+        let sum = attempts.iter().map(|a| a.get(key).and_then(Value::as_i64).unwrap_or(0)).sum();
+        rows.push(usage_row(label, role, Value::Int(sum)));
+    }
+    let facts = incoming.or_else(|| tx.get("session.usage").cloned()).unwrap_or(Value::Null);
+    if let Some(plan) = facts.get("plan").filter(|v| **v != Value::Null) {
+        rows.push(usage_row("Plan", "value.text", plan.clone()));
+    }
+    if facts.get("unavailable").and_then(Value::as_bool).unwrap_or(true) {
+        rows.push(usage_row("Provider quota", "value.text", Value::str("Unavailable")));
+    }
+    for window in facts.get("windows").and_then(Value::as_list).unwrap_or(&[]) {
+        let label = window.get("label").and_then(Value::as_str).unwrap_or("Quota");
+        for (key, suffix, role) in [
+            ("used", "used", "value.number"),
+            ("limit", "limit", "value.number"),
+            ("remaining", "remaining", "value.number"),
+            ("reset", "reset", "value.datetime"),
+            ("reset_after_seconds", "reset after seconds", "value.number"),
+        ] {
+            if let Some(value) = window.get(key).filter(|v| **v != Value::Null) {
+                let role = if ["used", "limit", "remaining"].contains(&key)
+                    && window.get("unit").and_then(Value::as_str) == Some("percent")
+                {
+                    "value.percent"
+                } else {
+                    role
+                };
+                rows.push(usage_row(&format!("{label} · {suffix}"), role, value.clone()));
+            }
+        }
+    }
+    if let Some(count) = facts.get("reset_count").filter(|v| **v != Value::Null) {
+        rows.push(usage_row("Quota resets available", "value.number", count.clone()));
+    }
+    for credit in facts.get("reset_credits").and_then(Value::as_list).unwrap_or(&[]) {
+        let label = credit.get("label").and_then(Value::as_str).unwrap_or("Quota reset");
+        for key in ["status", "granted", "expires"] {
+            if let Some(value) = credit.get(key).filter(|v| **v != Value::Null) {
+                rows.push(usage_row(
+                    &format!("{label} · {key}"),
+                    if key == "status" { "value.text" } else { "value.datetime" },
+                    value.clone(),
+                ));
+            }
+        }
+    }
+    if let Some(credits) = facts.get("credits") {
+        for key in ["enabled", "currency", "limit", "used", "remaining", "unlimited", "has_credits"] {
+            if let Some(value) = credits.get(key).filter(|v| **v != Value::Null) {
+                rows.push(usage_row(&format!("Credits · {key}"), "value.number", value.clone()));
+            }
+        }
+    }
+    panel(
+        tx,
+        "usage",
+        "Usage",
+        "Session ledger and provider quota",
+        vec![],
+        vec![],
+        vec![("panel.close".into(), "Close".into())],
+    )?;
+    tx.set("panel.rows", Value::list(rows))
+}
+fn usage_row(label: &str, role: &str, value: Value) -> Value {
+    Value::map([("label", Value::str(label)), ("role", Value::str(role)), ("value", value)])
 }
 
 /// Open a panel: a title, some text, rows of facts, fields, and actions.

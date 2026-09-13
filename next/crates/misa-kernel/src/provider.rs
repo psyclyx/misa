@@ -90,6 +90,11 @@ pub trait Provider: Send + Sync {
     /// The id a session names in its composition.
     fn id(&self) -> &str;
 
+    /// The configured API base, used by capabilities scoped to this adapter.
+    fn api_base(&self) -> Option<&str> {
+        None
+    }
+
     /// Where this service lists its models, when it has such a thing.
     ///
     /// On the trait rather than in a table beside it, because the address is the adapter's own
@@ -329,6 +334,10 @@ impl OpenAiChat {
 impl Provider for OpenAiChat {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn api_base(&self) -> Option<&str> {
+        Some(&self.base_url)
     }
 
     fn models_url(&self) -> Option<String> {
@@ -580,6 +589,10 @@ impl AnthropicMessages {
 impl Provider for AnthropicMessages {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn api_base(&self) -> Option<&str> {
+        Some(&self.base_url)
     }
 
     fn models_url(&self) -> Option<String> {

@@ -163,15 +163,15 @@ These are forks that change later work, so they are answered first.
 
 ### 5. Usage
 
-- [ ] `kernel.usage` per provider, kernel-side: endpoint, credential slot, and parsing for Claude's
+- [x] `kernel.usage` per provider, kernel-side: endpoint, credential slot, and parsing for Claude's
       windows and credits, Codex's `wham/usage` and reset credits, and Kimi scoped to `api_base`.
-- [ ] The session renders a panel of typed rows, so every surface presents it in its own idiom with
+- [x] The session renders a panel of typed rows, so every surface presents it in its own idiom with
       no client change.
-- [ ] Port the parity fixtures: `tests/{claude,codex,kimi}-usage.fnl`, `usage-dashboard.fnl`,
+- [x] Port the parity fixtures: `tests/{claude,codex,kimi}-usage.fnl`, `usage-dashboard.fnl`,
       `usage-state.fnl`.
-- [ ] While here: decide whether `kernel.blob.file` (a path) is something a policy should be able to
+- [x] While here: decide whether `kernel.blob.file` (a path) is something a policy should be able to
       ask for.
-- [ ] Verify: provider fixtures for the three shapes; the panel asserted on two surfaces.
+- [x] Verify: provider fixtures for the three shapes; the panel asserted on two surfaces.
 
 ### 6. The terminal merge
 

@@ -1074,6 +1074,40 @@ mod tests {
     use super::*;
     use misa_proto::view::{Action, BlobRef, Capture, Field};
 
+    #[tokio::test]
+    async fn usage_dashboard_is_typed_and_renders_on_terminal_and_browser() {
+        use misa_proto::wire::Intent;
+        use misa_value::Value;
+        let kernel = misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::new([]));
+        let runtime = misa_session::Runtime::start(
+            "usage",
+            "Usage",
+            None,
+            std::sync::Arc::new(kernel),
+            "scripted",
+            "test",
+            Value::Null,
+        );
+        assert!(runtime.intent(Intent::Command { name: "usage".into(), args: Value::Null }).is_empty());
+        let facts = misa_kernel::usage::parse("kimi", &serde_json::json!({"usage":{"limit":100,"used":25}}));
+        assert!(
+            runtime
+                .dispatch(
+                    misa_reframe::Event::new("kernel/usage").with("id", Value::str("usage.1")).with("facts", facts)
+                )
+                .is_empty()
+        );
+        let tree = runtime.view().unwrap();
+        misa_proto::view::validate(&tree).unwrap();
+        let html = render_main(&tree);
+        let terminal = misa_render::to_plain(&misa_render::render(&tree, &misa_render::Theme::plain(), 100));
+        for expected in ["Kimi", "remaining", "75", "$0.00"] {
+            assert!(html.contains(expected), "{expected}: {html}");
+            assert!(terminal.contains(expected), "{expected}: {terminal}");
+        }
+        assert!(html.contains("value.money"));
+    }
+
     /// Bytes the store will recognise as a picture, which is what a store sniffs for.
     const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
 
