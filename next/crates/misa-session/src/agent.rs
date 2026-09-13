@@ -58,6 +58,7 @@ pub fn registry() -> Registry {
         .on_fn("intent/prompt", 0, "agent.prompt", on_prompt)
         .on_fn("intent/cancel", 0, "agent.cancel", on_cancel)
         .on_fn("intent/command", 0, "agent.command", on_command)
+        .on_fn("clients/changed", 0, "agent.clients", on_clients_changed)
         .on_fn("intent/action", 0, "agent.action", on_action)
         .on_fn("intent/queue.take", 0, "agent.queue.take", on_queue_take)
         .on_fn("intent/queue.clear", 0, "agent.queue.clear", on_queue_clear)
@@ -483,29 +484,7 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                 .with("provider", Value::str(&provider)));
             notice(tx, Level::Info, format!("asking `{provider}` for its models…"))?;
         }
-        "status" => panel(
-            tx,
-            "status",
-            "Session",
-            "",
-            vec![
-                ("provider", tx.text("session.provider")),
-                ("model", tx.text("session.model")),
-                ("effort", tx.text("session.effort")),
-                ("turns", tx.int("session.turn").to_string()),
-                ("queued", queue_len(tx).to_string()),
-                ("attachments", current_attachments(tx).as_list().map(<[Value]>::len).unwrap_or(0).to_string()),
-                (
-                    "credentials",
-                    tx.get("session.credentials")
-                        .and_then(Value::as_list)
-                        .map(|slots| slots.len().to_string())
-                        .unwrap_or_else(|| "unknown".into()),
-                ),
-            ],
-            Vec::new(),
-            vec![("panel.close".into(), "Close".into())],
-        )?,
+        "status" => open_status(tx)?,
         "usage" => {
             open_usage(tx, None)?;
             if tx.get("session.usage_request").is_some() {
@@ -1685,4 +1664,45 @@ impl FieldSummary {
     fn fields(fields: Vec<Field>) -> misa_proto::view::Kind {
         misa_proto::view::Kind::Fields { fields }
     }
+}
+
+fn open_status(tx: &mut Tx<'_>) -> Result<(), Fault> {
+    let clients = tx.get("session.clients").cloned().unwrap_or(Value::Null);
+    status_panel(tx, &clients)
+}
+
+fn status_panel(tx: &mut Tx<'_>, clients: &Value) -> Result<(), Fault> {
+    panel(
+            tx,
+            "status",
+            "Session",
+            "",
+            vec![
+                ("clients", clients.as_list().unwrap_or(&[]).iter().map(|client| {
+                    format!("{} {}", client.get("name").and_then(Value::as_str).unwrap_or("client"), client.get("version").and_then(Value::as_str).unwrap_or(""))
+                }).collect::<Vec<_>>().join("\n")),
+                ("provider", tx.text("session.provider")),
+                ("model", tx.text("session.model")),
+                ("effort", tx.text("session.effort")),
+                ("turns", tx.int("session.turn").to_string()),
+                ("queued", queue_len(tx).to_string()),
+                ("attachments", current_attachments(tx).as_list().map(<[Value]>::len).unwrap_or(0).to_string()),
+                (
+                    "credentials",
+                    tx.get("session.credentials")
+                        .and_then(Value::as_list)
+                        .map(|slots| slots.len().to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+            ],
+            Vec::new(),
+            vec![("panel.close".into(), "Close".into())],
+        )
+}
+
+fn on_clients_changed(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let clients = event.get("clients").cloned().unwrap_or_else(|| Value::list(vec![]));
+    tx.set("session.clients", clients.clone())?;
+    if tx.text("panel.id") == "status" { status_panel(tx, &clients)?; }
+    Ok(())
 }

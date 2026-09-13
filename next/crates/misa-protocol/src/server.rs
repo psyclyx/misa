@@ -17,10 +17,12 @@ use tokio::sync::{broadcast, mpsc, watch};
 /// attached from a browser while the other is a terminal of a very different width.
 pub struct Server {
     recipient: u64,
+    replies: Option<mpsc::Receiver<crate::Emission>>,
     runtime: Arc<dyn Backend>,
     client: Option<ClientInfo>,
     subscriptions: BTreeMap<SubId, Subscription>,
     last_seq: u64,
+    stream_cursor: u64,
     welcomed: bool,
 }
 
@@ -32,18 +34,32 @@ struct Subscription {
 
 impl Server {
     pub fn new(runtime: Arc<dyn Backend>) -> Self {
+        let recipient = misa_proto::wire::RequestContext::connection();
+        let replies = Some(runtime.subscribe_replies(recipient));
         Server {
-            recipient: misa_proto::wire::RequestContext::connection(),
+            recipient,
+            replies,
             runtime,
             client: None,
             subscriptions: BTreeMap::new(),
             last_seq: 0,
+            stream_cursor: 0,
             welcomed: false,
         }
     }
 
     pub fn client(&self) -> Option<&ClientInfo> {
         self.client.as_ref()
+    }
+
+    pub fn take_replies(&mut self) -> Option<mpsc::Receiver<crate::Emission>> { self.replies.take() }
+
+    fn directed(&self, emission: crate::Emission) -> Option<SessionMsg> {
+        if emission.recipient != Some(self.recipient) { return None; }
+        match emission.event {
+            SessionEvent::DownloadReady {id, download} => Some(SessionMsg::Download {id, download}),
+            _ => None,
+        }
     }
 
     /// Handle one client message. Anything arriving before `Hello` is refused.
@@ -78,7 +94,8 @@ impl Server {
             }
             ClientMsg::Subscribe { id, query, since } => {
                 if query.id == misa_proto::VIEW_QUERY {
-                    let sync = self.runtime.sync(since.as_ref());
+                    let (sync, cursor) = self.runtime.sync(since.as_ref());
+                    self.stream_cursor = cursor;
                     let (version, replies) = sync_answer(id, sync, true);
                     self.subscriptions.insert(id, Subscription { query, current: None, version: Some(version) });
                     replies
@@ -170,12 +187,24 @@ impl Server {
     }
 
     fn resync(&mut self) -> Vec<SessionMsg> {
-        for subscription in self.subscriptions.values_mut() {
-            subscription.current = None;
-            subscription.version = None;
+        let mut replies = Vec::new();
+        for (id, subscription) in &mut self.subscriptions {
+            if subscription.query.id == misa_proto::VIEW_QUERY {
+                let (sync, cursor) = self.runtime.sync(None);
+                let (version, messages) = sync_answer(*id, sync, true);
+                self.stream_cursor = cursor;
+                subscription.version = Some(version);
+                replies.extend(messages);
+            } else {
+                match self.runtime.read(&subscription.query) {
+                    Ok(reading) => {
+                        subscription.current = Some(reading.clone());
+                        replies.extend(answer(*id, self.runtime.rev(), reading));
+                    }
+                    Err(fault) => replies.push(SessionMsg::QueryFault {id: *id, fault}),
+                }
+            }
         }
-        let mut replies = self.refresh();
-        replies.push(SessionMsg::Streams { streams: self.runtime.streams() });
         replies
     }
 
@@ -192,6 +221,7 @@ impl Server {
                 continue;
             }
             self.last_seq = emission.seq + 1;
+            if matches!(emission.event, SessionEvent::Stream { .. }) && emission.seq < self.stream_cursor { continue; }
             if emission.recipient.is_some_and(|recipient| recipient != self.recipient) { continue; }
             match &emission.event {
                 SessionEvent::DownloadReady { id, download } if emission.recipient.is_some() =>
@@ -206,7 +236,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if self.client.is_some() { self.runtime.detached(self.recipient); }
+        self.runtime.detached(self.recipient);
     }
 }
 
@@ -279,9 +309,15 @@ pub async fn drive(
     mut revision: watch::Receiver<u64>,
     mut events: broadcast::Receiver<crate::Emission>,
 ) {
+    let mut replies = session.take_replies().expect("a connection owns its reply receiver");
     let mut behind = false;
     loop {
         tokio::select! {
+            reply = replies.recv(), if !replies.is_closed() || !replies.is_empty() => {
+                if let Some(reply) = reply.and_then(|reply| session.directed(reply)) {
+                    if outbound.send(vec![reply]).await.is_err() { return; }
+                }
+            }
             permit = outbound.reserve(), if behind => {
                 let Ok(permit) = permit else { return };
                 permit.send(session.resync());

@@ -47,6 +47,7 @@ pub use contribution::Contribution;
 pub mod contribution;
 pub mod agent;
 mod protocol;
+mod replies;
 /// What a session declares: its commands, their arguments, and where a value can
 /// come from.
 pub mod catalog;
@@ -68,6 +69,8 @@ pub struct Runtime {
     to_kernel: mpsc::UnboundedSender<Request>,
     rev: watch::Sender<u64>,
     events: broadcast::Sender<Emission>,
+    replies: replies::Replies,
+    clients: Mutex<std::collections::BTreeMap<u64, misa_proto::ClientInfo>>,
     seq: AtomicU64,
     info: SessionInfo,
     provider: String,
@@ -175,6 +178,8 @@ impl Runtime {
             rev,
             events,
             seq: AtomicU64::new(1),
+            replies: replies::Replies::default(),
+            clients: Mutex::new(std::collections::BTreeMap::new()),
             info,
             provider,
             model,
@@ -399,7 +404,7 @@ impl Runtime {
                         wire::parse::<misa_proto::wire::Download>(&fields::value(effect, "download")),
                     ) {
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-                        let _ = self.events.send(Emission { seq, recipient: Some(recipient), event: SessionEvent::DownloadReady { id, download } });
+                        self.replies.send(recipient, id, Emission { seq, recipient: Some(recipient), event: SessionEvent::DownloadReady { id, download } });
                     }
                 }
                 "kernel.blob.file" => {
@@ -491,8 +496,11 @@ impl Runtime {
                     return vec![Fault::unsupported("This node does not offer an attachment to save")];
                 };
                 let misa_proto::view::Kind::Image { blob, .. } = &target.kind else { return vec![Fault::unsupported("This node is not an attachment")]; };
-                return self.dispatch(Event::new("intent/attachment.save")
+                if let Err(error) = self.replies.reserve(context.recipient, context.id) { return vec![Fault::unsupported(error)]; }
+                let faults = self.dispatch(Event::new("intent/attachment.save")
                     .with("hash", Value::str(&blob.hash)).with("recipient", Value::str(context.recipient.to_string())).with("id", Value::str(context.id.to_string())));
+                if !faults.is_empty() { self.replies.cancel(context.recipient, context.id); }
+                return faults;
             }
         }
         let event = match intent {
@@ -545,9 +553,13 @@ impl Runtime {
     }
 
     pub fn sync(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
+        self.sync_with_events(since).0
+    }
+
+    pub fn sync_with_events(&self, since: Option<&misa_proto::sync::Version>) -> (misa_proto::sync::ViewSync, u64) {
         let mut state = self.state.lock().expect("session state is never poisoned");
         let streams = state.streams.values().cloned().collect();
-        state.view.sync(since, streams)
+        (state.view.sync(since, streams), self.seq.load(Ordering::Relaxed))
     }
 
     pub fn changes(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
@@ -1028,7 +1040,7 @@ pub(crate) mod tests {
         let panel = misa_proto::view::find(&node, "status").expect("a panel");
         assert_eq!(panel.label.as_deref(), Some("Session"));
         let rows = misa_proto::view::find(&node, "panel.rows").expect("rows");
-        assert_eq!(rows.children.len(), 7, "one row per fact the panel reported");
+        assert_eq!(rows.children.len(), 8, "one row per fact the panel reported");
         match &rows.children[0].kind {
             misa_proto::view::Kind::Fields { fields } => assert!(
                 fields[0].read_only,

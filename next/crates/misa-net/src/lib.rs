@@ -102,9 +102,12 @@ mod tests {
         let mut owner = Session::new(runtime.clone());
         let mut other = Session::new(runtime.clone());
         owner.handle(hello("owner")); other.handle(hello("other"));
-        let mut events = runtime.subscribe_events();
+        let mut events = owner.take_replies().unwrap();
         let replies = owner.handle(ClientMsg::Intent { id: 42, intent: Intent::Action { node, action: "attachment.save".into(), args: misa_value::Value::str("/etc/shadow"), fields: vec![] } });
         assert!(matches!(replies.as_slice(), [SessionMsg::Ack { id: 42 }]));
+        let mut noisy = runtime.subscribe_events();
+        for _ in 0..600 { runtime.notice(misa_proto::Level::Info, "stream backlog"); }
+        assert!(matches!(noisy.recv().await, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))));
         let emission = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop { let event = events.recv().await.unwrap(); if matches!(event.event, SessionEvent::DownloadReady { .. }) { break event; } }
         }).await.unwrap();

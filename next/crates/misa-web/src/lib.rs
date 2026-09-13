@@ -692,21 +692,23 @@ async fn local_download(
     State(app): State<Arc<App>>,
     Form(fields): Form<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let mut events = app.runtime.subscribe_events();
-    let context =
-        misa_proto::wire::RequestContext { recipient: misa_proto::wire::RequestContext::connection(), id: next_id() };
-    let faults = app.runtime.intent_from(save_intent(fields.get("node").cloned().unwrap_or_default()), Some(context));
-    if let Some(fault) = faults.first() {
+    let mut connection = misa_net::Session::new(app.runtime.clone());
+    connection.handle(misa_proto::ClientMsg::Hello {
+        version: misa_proto::PROTOCOL_VERSION,
+        client: misa_proto::ClientInfo::new("web-test", "1"),
+    });
+    let id = next_id();
+    let mut events = connection.take_replies().unwrap();
+    let replies = connection.handle(misa_proto::ClientMsg::Intent {
+        id, intent: save_intent(fields.get("node").cloned().unwrap_or_default()),
+    });
+    if let Some(misa_proto::SessionMsg::Fault {fault, ..}) = replies.iter().find(|reply| matches!(reply, misa_proto::SessionMsg::Fault { .. })) {
         return (StatusCode::BAD_REQUEST, fault.message.clone()).into_response();
     }
     let answer = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        while let Ok(emission) = events.recv().await {
-            if emission.recipient == Some(context.recipient) {
-                if let misa_proto::wire::SessionEvent::DownloadReady { id, download } = emission.event {
-                    if id == context.id {
-                        return Some(download);
-                    }
-                }
+        while let Some(emission) = events.recv().await {
+            if let misa_proto::wire::SessionEvent::DownloadReady { id: reply, download } = emission.event {
+                if reply == id { return Some(download); }
             }
         }
         None

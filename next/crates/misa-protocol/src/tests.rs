@@ -45,16 +45,17 @@ impl Session for Fake {
         self.requests.lock().unwrap().push(context.unwrap()); vec![]
     }
     fn complete(&self, _: &str, _: &str, _: Option<u32>) -> Result<(Vec<Choice>, bool), Fault> { Ok((vec![], false)) }
-    fn sync(&self, since: Option<&Version>) -> ViewSync {
+    fn sync(&self, since: Option<&Version>) -> (ViewSync, u64) {
         let current = self.current.lock().unwrap();
-        match since {
+        let view = match since {
             Some(since) if since.epoch == current.0.epoch && since.rev <= current.0.rev => ViewSync::Changes {
                 version: current.0.clone(), changes: current.2.iter().filter(|change| change.from.rev >= since.rev).cloned().collect(), streams: vec![],
             },
             _ => ViewSync::Snapshot { version: current.0.clone(), view: current.1.clone(), streams: vec![] },
-        }
+        };
+        (view, 10)
     }
-    fn changes(&self, since: Option<&Version>) -> ViewSync { self.sync(since) }
+    fn changes(&self, since: Option<&Version>) -> ViewSync { self.sync(since).0 }
     fn streams(&self) -> Vec<Stream> { vec![] }
     fn watch_rev(&self) -> watch::Receiver<u64> { self.revision.subscribe() }
     fn subscribe_events(&self) -> broadcast::Receiver<Emission> { self.events.subscribe() }
@@ -107,4 +108,22 @@ fn save_answers_are_delivered_only_to_the_requesting_connection() {
     assert!(second.events(&[emission.clone()]).is_empty());
     assert!(matches!(first.events(&[emission.clone()])[0], SessionMsg::Download {id: 7, ..}));
     assert!(first.events(&[emission]).is_empty());
+}
+
+#[test]
+fn queued_stream_events_cannot_rewind_a_newer_current_snapshot() {
+    use misa_proto::sync::StreamUpdate;
+    let fake = Fake::new(); let mut server = Server::new(fake); server.handle(hello());
+    let snapshot = server.handle(subscribe(None));
+    assert!(snapshot.iter().any(|message| matches!(message, SessionMsg::Streams {streams} if streams.is_empty())));
+    let old = Emission {recipient: None, seq: 2, event: SessionEvent::Stream {
+        update: StreamUpdate::Current {stream: Stream {id: "msg.1.text".into(), role: "assistant".into(), text: "obsolete".into()}},
+    }};
+    assert!(server.events(&[old]).is_empty(), "queued current resurrected a finished stream");
+    let notice = Emission {recipient: None, seq: 3, event: SessionEvent::Status {text: "notice".into()}};
+    assert_eq!(server.events(&[notice]).len(), 1, "the stream watermark dropped an unrelated notice");
+    let fresh = Emission {recipient: None, seq: 10, event: SessionEvent::Stream {
+        update: StreamUpdate::Current {stream: Stream {id: "msg.2.text".into(), role: "assistant".into(), text: "fresh".into()}},
+    }};
+    assert_eq!(server.events(&[fresh]).len(), 1);
 }
