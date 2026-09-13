@@ -113,13 +113,44 @@
         browser.scrollTo({ top: doc.body.scrollHeight });
       }
     }
+    function changes(ops) {
+      function held(id) {
+        var node = doc.getElementById(id);
+        if (!node || !main.contains(node))
+          throw Error("missing view node: " + id);
+        return node;
+      }
+      function fragment(html) {
+        var template = doc.createElement("template");
+        template.innerHTML = html;
+        if (template.content.childElementCount !== 1)
+          throw Error("view operation needs one root");
+        return template.content.firstElementChild;
+      }
+      ops.forEach(function (op) {
+        if (op.op === "remove") held(op.id).remove();
+        else if (op.op === "replace")
+          held(op.id).replaceWith(fragment(op.html));
+        else if (op.op === "insert") {
+          var parent = held(op.parent);
+          var before = op.before == null ? null : held(op.before);
+          if (before && before.parentElement !== parent)
+            throw Error("view insertion anchor belongs to another parent");
+          parent.insertBefore(fragment(op.html), before);
+        } else throw Error("unknown view operation: " + op.op);
+      });
+      restore();
+    }
     if (browser.EventSource) {
       var stream = new browser.EventSource("/events");
       stream.onmessage = function (message) {
         snapshot(message.data);
       };
+      stream.addEventListener("changes", function (message) {
+        changes(JSON.parse(message.data));
+      });
     }
-    return { prefs: prefs, snapshot: snapshot };
+    return { prefs: prefs, snapshot: snapshot, changes: changes };
   }
   global.MisaClient = { memory: memory, start: start };
   if (global.document) start(global.document, global);
