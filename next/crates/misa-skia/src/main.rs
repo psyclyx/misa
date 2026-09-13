@@ -78,17 +78,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // A ticket, or a pairing string: whatever the daemon printed or the QR said.
     let (parsed, code) = misa_proto::Pairing::given(&ticket)?;
-    let endpoint = misa_net::iroh::bind_for(&parsed.node).await?;
-    let target = misa_net::iroh::address_of(&parsed.node)?;
+    let endpoint = misa_transport::iroh::bind_for(&parsed.node).await?;
+    let target = misa_transport::iroh::address_of(&parsed.node)?;
     if let Some(code) = &code {
-        let message = misa_net::iroh::Client::pair(&endpoint, target.clone(), code, "the pixel frontend").await?;
+        let message = misa_transport::iroh::Client::pair(&endpoint, target.clone(), code, "the pixel frontend").await?;
         eprintln!("[paired] {message}");
     }
     let info = misa_proto::ClientInfo::new("misa-skia", env!("CARGO_PKG_VERSION"));
     // `Arc` because a reconnect needs the endpoint again; there is exactly one here and
     // the client takes it by reference.
     let endpoint = Arc::new(endpoint);
-    let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
+    let mut client = misa_transport::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client
         .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY))
         .await?;

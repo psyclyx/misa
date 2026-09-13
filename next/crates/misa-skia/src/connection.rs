@@ -32,14 +32,14 @@ async fn run(
     mut outgoing: tokio::sync::mpsc::Receiver<Command>,
 ) -> Result<(), String> {
     let (ticket, code) = misa_proto::Pairing::given(ticket).map_err(|error| error.to_string())?;
-    let endpoint = misa_net::iroh::bind_for(&ticket.node).await?;
-    let address = misa_net::iroh::address_of(&ticket.node)?;
+    let endpoint = misa_transport::iroh::bind_for(&ticket.node).await?;
+    let address = misa_transport::iroh::address_of(&ticket.node)?;
     if let Some(code) = code {
-        misa_net::iroh::Client::pair(&endpoint, address.clone(), &code, "the pixel frontend")
+        misa_transport::iroh::Client::pair(&endpoint, address.clone(), &code, "the pixel frontend")
             .await?;
     }
-    let blobs = misa_net::blob::Store::new(endpoint.clone(), address.clone());
-    let mut client = misa_net::iroh::Client::connect(
+    let blobs = misa_transport::blob::Store::new(endpoint.clone(), address.clone());
+    let mut client = misa_transport::iroh::Client::connect(
         &endpoint,
         address,
         misa_proto::ClientInfo::new("misa-skia", env!("CARGO_PKG_VERSION")),

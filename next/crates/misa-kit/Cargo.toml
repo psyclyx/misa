@@ -1,5 +1,5 @@
 [package]
-name = "misa-client"
+name = "misa-kit"
 description = "The client kit: a picker, an editor, and the intents they produce"
 version.workspace = true
 edition.workspace = true

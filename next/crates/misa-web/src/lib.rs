@@ -143,7 +143,7 @@ fn lead(pending: &[BlobRef]) -> String {
 ///
 /// The browser's own completion, driven by the session's own declaration, with no
 /// script and no round trip. A client that wants ranking, previews, or frecency is
-/// welcome to build one — that is what `misa-client`'s picker is — but the plainest
+/// welcome to build one — that is what `misa-kit`'s picker is — but the plainest
 /// possible frontend still knows what the session can do.
 pub fn declarations(session: &SessionInfo) -> String {
     if session.commands.is_empty() {
@@ -596,7 +596,7 @@ pub enum Source {
     #[cfg(test)]
     Local(Arc<misa_kernel::Blobs>),
     /// The bytes are on the daemon that hosts the session.
-    Remote(Arc<misa_net::blob::Store>),
+    Remote(Arc<misa_transport::blob::Store>),
 }
 
 impl Source {
@@ -692,7 +692,7 @@ async fn local_download(
     State(app): State<Arc<App>>,
     Form(fields): Form<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let mut connection = misa_net::Session::new(app.runtime.clone());
+    let mut connection = misa_transport::Session::new(app.runtime.clone());
     connection.handle(misa_proto::ClientMsg::Hello {
         version: misa_proto::PROTOCOL_VERSION,
         client: misa_proto::ClientInfo::new("web-test", "1"),
@@ -966,17 +966,17 @@ async fn listen(app: Arc<App>, address: std::net::SocketAddr) -> Result<(), Stri
 pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), String> {
     // A ticket, or a pairing string: whatever the daemon printed or the QR said.
     let (parsed, code) = misa_proto::Pairing::given(&ticket)?;
-    let endpoint = misa_net::iroh::bind_for(&parsed.node).await?;
-    let target = misa_net::iroh::address_of(&parsed.node)?;
+    let endpoint = misa_transport::iroh::bind_for(&parsed.node).await?;
+    let target = misa_transport::iroh::address_of(&parsed.node)?;
     if let Some(code) = &code {
-        let message = misa_net::iroh::Client::pair(&endpoint, target.clone(), code, "a browser").await?;
+        let message = misa_transport::iroh::Client::pair(&endpoint, target.clone(), code, "a browser").await?;
         tracing::info!(%message, "paired");
     }
     // The address the session is reached at serves that session's blobs too: a ticket names one
     // node, so a client that can reach a session can fetch what its views point at.
-    let blobs = Arc::new(Source::Remote(misa_net::blob::Store::new(endpoint.clone(), target.clone())));
+    let blobs = Arc::new(Source::Remote(misa_transport::blob::Store::new(endpoint.clone(), target.clone())));
     let info = misa_proto::ClientInfo::new("misa-web", env!("CARGO_PKG_VERSION"));
-    let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
+    let mut client = misa_transport::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?;
 
     let session = client.session();

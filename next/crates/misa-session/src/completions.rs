@@ -10,7 +10,7 @@
 //!   so a client asks for a prefix and is answered with candidates it did not have.
 //!
 //! What is *not* here: matching, ranking, frecency, key bindings, layout, and when to
-//! open. Those are the client's, and `misa-client`'s picker is one implementation of
+//! open. Those are the client's, and `misa-kit`'s picker is one implementation of
 //! them. A platform that wants a different picker — a browser's `<datalist>`, a
 //! native autocomplete, a remote control's list — changes nothing here.
 //!

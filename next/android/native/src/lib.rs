@@ -2,7 +2,7 @@
 //!
 //! A phone cannot run the desktop workspace, and it should not have to: a
 //! frontend is a client, and everything a client needs is already a Rust
-//! library. This crate is a thin JNI seam over [`misa_net::iroh`] and
+//! library. This crate is a thin JNI seam over [`misa_transport::iroh`] and
 //! [`misa_proto`] — the same transport, the same pairing, the same intent
 //! vocabulary the terminal, browser, and pixel frontends use. The Kotlin side
 //! owns the appearance (a `Compose` tree instead of cells or HTML) and nothing
@@ -283,7 +283,7 @@ async fn session(
             serde_json::json!({"kind":"view", "view":tree}),
         );
     }
-    let endpoint = match misa_net::iroh::bind(Some(identity), !parsed.node.contains('@')).await {
+    let endpoint = match misa_transport::iroh::bind(Some(identity), !parsed.node.contains('@')).await {
         Ok(endpoint) => endpoint,
         Err(message) => {
             emit(
@@ -294,7 +294,7 @@ async fn session(
             return;
         }
     };
-    let target = match misa_net::iroh::address_of(&parsed.node) {
+    let target = match misa_transport::iroh::address_of(&parsed.node) {
         Ok(target) => target,
         Err(message) => {
             emit(
@@ -313,7 +313,7 @@ async fn session(
             &listener,
             state("pairing", "showing the daemon a pairing code".into()),
         );
-        match misa_net::iroh::Client::pair(&endpoint, target.clone(), code, "the phone").await {
+        match misa_transport::iroh::Client::pair(&endpoint, target.clone(), code, "the phone").await {
             Ok(message) => {
                 emit(
                     &vm,
@@ -334,7 +334,7 @@ async fn session(
 
     let info = ClientInfo::new("misa-android", env!("CARGO_PKG_VERSION"));
     let mut client =
-        match misa_net::iroh::Client::connect(&endpoint, target.clone(), info, &parsed.session)
+        match misa_transport::iroh::Client::connect(&endpoint, target.clone(), info, &parsed.session)
             .await
         {
             Ok(client) => client,
@@ -378,7 +378,7 @@ async fn session(
         state("connected", format!("attached to {}", parsed.session)),
     );
 
-    let blobs = misa_net::blob::Store::new(endpoint.clone(), target);
+    let blobs = misa_transport::blob::Store::new(endpoint.clone(), target);
     let mut transfers = tokio::task::JoinSet::new();
     emit(
         &vm,
@@ -506,7 +506,7 @@ fn level_word(level: Level) -> &'static str {
 }
 
 async fn fetch(
-    blobs: Arc<misa_net::blob::Store>,
+    blobs: Arc<misa_transport::blob::Store>,
     files: Arc<files::Files>,
     hash: String,
     name: Option<String>,

@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 futures.workspace = true
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
-misa-net.workspace = true
+misa-transport.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
 misa-value.workspace = true
@@ -19,4 +19,4 @@ tokio.workspace = true
 winit = "0.30.13"
 softbuffer = "0.4.8"
 arboard = { version = "3.6", default-features = false }
-misa-client = { path = "../misa-client" }
+misa-kit = { path = "../misa-kit" }

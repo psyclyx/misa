@@ -1,7 +1,7 @@
 //! Client-owned interaction and layout. No field draft, disclosure state or destination leaves
 //! this module until the person activates an action the session advertised.
 use crate::{Layout, Op, Scene};
-use misa_client::editor::{Editor, Motion};
+use misa_kit::editor::{Editor, Motion};
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
 use misa_proto::wire::{Intent, SessionInfo};
@@ -569,8 +569,8 @@ impl App {
                 .as_ref()
                 .map(|info| info.commands.as_slice())
                 .unwrap_or(&[]);
-            let parsed = misa_client::intent::parse(text, commands);
-            let Some(intent) = misa_client::intent::intent(&parsed) else {
+            let parsed = misa_kit::intent::parse(text, commands);
+            let Some(intent) = misa_kit::intent::intent(&parsed) else {
                 self.notice = format!("Cannot submit: {parsed:?}");
                 return vec![];
             };

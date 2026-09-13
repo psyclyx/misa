@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 jni = "0.21"
-misa-net = { path = "../../crates/misa-net" }
+misa-transport = { path = "../../crates/misa-transport" }
 misa-proto = { path = "../../crates/misa-proto" }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }

@@ -6,7 +6,7 @@ other client takes.
 
 It is a frontend and not a second implementation. The Kotlin side owns the
 surface — a `Compose` tree instead of cells, HTML, or pixels — and the protocol
-is the shared Rust client (`misa-net`, `misa-proto`, `misa-client`), reached
+is the shared Rust client (`misa-transport`, `misa-proto`, `misa-kit`), reached
 through a small JNI seam in `native/`. One connection per session, one view
 tree, one intent vocabulary.
 
@@ -16,7 +16,7 @@ tree, one intent vocabulary.
         └───────────────────────┬────────────────────────────┘
                                 │ JNI, JSON both ways
         ┌───────────────────────┴────────────────────────────┐
-        │  native/libmisa_android.so  (misa-net + iroh)       │
+        │  native/libmisa_android.so  (misa-transport + iroh)       │
         └───────────────────────┬────────────────────────────┘
                                 │  /misa/session/1
                             misa-daemon

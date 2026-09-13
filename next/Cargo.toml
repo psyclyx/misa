@@ -16,7 +16,7 @@ misa-render = { path = "crates/misa-render" }
 misa-kernel = { path = "crates/misa-kernel" }
 misa-session = { path = "crates/misa-session" }
 misa-protocol = { path = "crates/misa-protocol" }
-misa-net = { path = "crates/misa-net" }
+misa-transport = { path = "crates/misa-transport" }
 misa-plugin = { path = "crates/misa-plugin" }
 
 async-trait = "0.1"
