@@ -52,7 +52,7 @@ async fn run(
     client
         .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY))
         .await?;
-    let mut current = None;
+    let mut current = misa_proto::sync::ClientView::default();
     let mut fetched = BTreeSet::new();
     let mut saves = BTreeMap::<u64, (String, tokio::time::Instant)>::new();
     let mut next = 1u64;
@@ -72,10 +72,11 @@ async fn run(
                 Some(Command::Copy(_))=>{}
                 None=>return Ok(()),
             },
-            message=client.next()=>match message? {
-                Some(SessionMsg::View {view,..})=>{
-                    current=Some(view.clone());
-                    let _=proxy.send_event(Update::View(view.clone()));
+            message=client.next()=> {
+                let Some(message)=message? else {return Err("The session disconnected".into());};
+                match current.receive(&message) {
+                    Ok(true)=>if let Some(view)=current.rendered() {
+                        let _=proxy.send_event(Update::View(view.clone()));
                     for hash in images(&view) {
                         if !fetched.insert(hash.clone()) {continue;}
                         match blobs.get(&hash).await {
@@ -87,8 +88,15 @@ async fn run(
                             Err(error)=>{let _=proxy.send_event(Update::Notice(error));}
                         }
                     }
+                    },
+                    Err(error)=>{
+                        let _=proxy.send_event(Update::Notice(format!("Refreshing session: {error}")));
+                        client.subscribe(SubId(1),Query::new(misa_proto::VIEW_QUERY)).await?;
+                    },
+                    Ok(false)=>{}
                 }
-                Some(SessionMsg::Download {id,download})=>if let Some((destination,_))=saves.remove(&id) {
+                match message {
+                SessionMsg::Download {id,download}=>if let Some((destination,_))=saves.remove(&id) {
                     let result=async {
                         let reference=download.blob.ok_or(download.error)?;
                         let blob=blobs.get(&reference.hash).await?.ok_or("The attachment is no longer available")?;
@@ -98,16 +106,13 @@ async fn run(
                     }.await;
                     let _=proxy.send_event(Update::Notice(result.unwrap_or_else(|error|error)));
                 },
-                Some(SessionMsg::Event {event,..})=>match event {
-                    misa_proto::SessionEvent::TextDelta {node,text}=>if let Some(view)=current.as_mut() {
-                        if let Some(target)=find_mut(view,&node) {if let Kind::Text {spans}=&mut target.kind {spans.push(misa_proto::view::Span::plain(text));let _=proxy.send_event(Update::View(view.clone()));}}
-                    },
+                SessionMsg::Event {event,..}=>match event {
                     misa_proto::SessionEvent::Notice {text,..}|misa_proto::SessionEvent::Status {text}=>{let _=proxy.send_event(Update::Notice(text));}
                     _=>{}
                 },
-                Some(SessionMsg::Fault {id,fault})=>{if let Some(id)=id{saves.remove(&id);}let _=proxy.send_event(Update::Notice(fault.message));}
-                Some(_)=>{}
-                None=>return Err("The session disconnected".into()),
+                SessionMsg::Fault {id,fault}=>{if let Some(id)=id{saves.remove(&id);}let _=proxy.send_event(Update::Notice(fault.message));}
+                _=>{}
+                }
             }
         }
     }
@@ -126,15 +131,12 @@ fn images(node: &Node) -> Vec<String> {
     for child in &node.children {
         hashes.extend(images(child));
     }
-    hashes
-}
-fn find_mut<'a>(node: &'a mut Node, id: &str) -> Option<&'a mut Node> {
-    if node.id == id {
-        return Some(node);
+    if let Kind::List { items, .. } = &node.kind {
+        for child in items.iter().flatten() {
+            hashes.extend(images(child));
+        }
     }
-    node.children
-        .iter_mut()
-        .find_map(|child| find_mut(child, id))
+    hashes
 }
 pub fn write_new(path: &str, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write as _;

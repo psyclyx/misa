@@ -223,7 +223,7 @@ These are forks that change later work, so they are answered first.
       memory (theme, opened nodes, draft) in the page's storage.
 - [x] Pixels: a native window with editable panel fields, selection and clipboard copy, meters,
       disclosure toggles, wrapped tables and fetched images. Native keyboard, clipboard and
-      disclosure interaction are verified under Xvfb; 12 pixel tests cover scene and local interaction.
+      disclosure interaction are verified under Xvfb; 14 pixel tests cover scene and local interaction.
 - [ ] Terminal: the kit's memory shape with the terminal's storage; animations and spinners drawn from
       `State::Streaming`; a pasted binary image through a clipboard capability.
 - [ ] Verify: the parity rows move, and each frontend's own suite covers what it gained.
