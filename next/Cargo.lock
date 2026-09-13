@@ -2054,6 +2054,7 @@ name = "misa-client"
 version = "0.1.0"
 dependencies = [
  "misa-proto",
+ "misa-render",
  "misa-value",
 ]
 
@@ -2169,6 +2170,7 @@ name = "misa-tui"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "crossterm",
  "misa-client",
  "misa-net",

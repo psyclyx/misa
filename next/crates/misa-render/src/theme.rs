@@ -151,6 +151,9 @@ impl Theme {
         set("composer", Style::fg(hex(0xe6e8ea)));
         set("dialog", Style::fg(hex(0xe6e8ea)));
         set("dialog.title", Style::fg(hex(0xe6e8ea)).bold());
+        // A reader's selection. A background rather than a foreground, because it has
+        // to sit over whatever the role underneath already decided.
+        set("selection", Style::PLAIN.on(hex(0x39415a)));
         set("value.money", Style::fg(hex(0xc9a227)));
         set("value.count", Style::fg(hex(0x8a8f98)));
 
