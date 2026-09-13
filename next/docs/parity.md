@@ -9,9 +9,9 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the ordinary gate. Guest fixtures, Chromium DOM checks and Xvfb
-window/clipboard checks extend it. Skia painting is unconditional. Final artifact builds and
-emulator installation remain pending; no historical test total is presented as the current gate.
+`cargo test --workspace` passes 580 tests. Guest fixtures, Chromium DOM checks and native X11 and
+Wayland checks extend it. Skia painting is unconditional. The final Android installation passes
+five emulator scenarios; the combined packaged desktop check passes. See [`verification.md`](verification.md).
 
 ## The mechanisms everything else is built on
 
@@ -49,9 +49,9 @@ emulator installation remain pending; no historical test total is presented as t
 | Submission history, deduplicated, with draft restoration                                   | built, and the draft is written to the client's own state file: a restart, or a client that was killed, comes back with what somebody was in the middle of typing. The _history_ is deliberately not written down — a prompt can contain a secret somebody pasted, and a log of every question on a machine is the session's, which nobody agreed to keep twice    |
 | Interrupt keeping the draft (Ctrl-C)                                                       | built                                                                                                                                                                                                                                                                                                                                                              |
 | A queued prompt while the model responds, taken back or dropped                            | built: the session queues, the dock has `queue.take` and `queue.clear`, and taking one back arrives as `SessionEvent::Recover`                                                                                                                                                                                                                                     |
-| Interrupt _and_ send the pending message (the old Alt-Enter)                               | partly: `queue.take` then submit is two steps rather than one                                                                                                                                                                                                                                                                                                      |
+| Interrupt _and_ send the pending message (the old Alt-Enter)                               | built: Alt-Enter submits one Interrupt intent; it preserves queued drafts, stops generation, and settles running tools before the priority prompt                                                                                                                                                                                                                  |
 | History search (Ctrl-R, fuzzy, global dedup)                                               | built: Ctrl-R searches client-held submission history, supports refinement/cycling, and restores the draft on cancellation                                                                                                                                                                                                                                         |
-| Modal editing's full operator set (`d`/`c`/`y` with motions, `dd`, `o`/`O`, visual ranges) | built: modal operators, line operators, open-line commands and client-side visual ranges; Alt-Enter inserts a newline                                                                                                                                                                                                                                              |
+| Modal editing's full operator set (`d`/`c`/`y` with motions, `dd`, `o`/`O`, visual ranges) | built: modal operators, line operators, open-line commands and client-side visual ranges; Shift-Enter inserts a newline                                                                                                                                                                                                                                            |
 | Attachments and images (Ctrl-V, `/attach <path>`, a file input in the browser)             | built end to end: `/attach` reads a file where the daemon is, a browser uploads one over the blob connection, the message carries a hash, the view carries an image hash and alt text and each client chooses its rendering, and each provider adapter sends the bytes as an image part. A model sees the picture; a client that cannot draw is told what is there |
 | Terminal paste of a binary image                                                           | built: Ctrl-V reads an injected desktop clipboard, encodes an image as PNG and uploads over the blob capability. References stay local until prompt send succeeds; Ctrl-Alt-V discards them. Native image/text roundtrip is tested under Xvfb                                                                                                                      |
 
@@ -86,7 +86,7 @@ emulator installation remain pending; no historical test total is presented as t
 | Structural navigation and vim visual ranges with byte offsets          | built and purely client-side: `misa-kit::select` holds a selection over the rendered rows — an anchor, a head, and a kind (`char`, `line`, or a column block) — with motions, word motions, and node-wise moves that hop between the node ids the renderer left on each row. Byte offsets are offsets into the rendered text, which is why the client can do this with nothing from a session                                                                                                                                                                                                                                               |
 | Copy, independent of selection                                         | built: `y` in normal mode copies the whole body; `v` opens a selection, `y` (or Enter) copies what it covers, Esc drops it. The text goes out as OSC 52, so it never leaves the machine and no session ever hears about it — the previous system needed a `clipboard/write` effect for this                                                                                                                                                                                                                                                                                                                                                 |
 | Group headers and footers                                              | built: user-led message runs are `message.group` sections with stable ids, a header, and a footer carrying the message count                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Animations and spinners                                                | in progress: streaming state and a responsive animation timer are built; final terminal retained-output and animation integration remains in the client gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Animations and spinners                                                | built: retained output and a responsive animation timer keep streaming indicators live                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Hover highlighting and click routing                                   | built where it is expressible: an action on a node, and a hit region on a rendered line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Session and daemon features
@@ -132,8 +132,8 @@ Three things move the bytes, and they are deliberately three:
 
 Received attachments can be kept through terminal `/save`, browser downloads and the pixel local
 destination dialog. Each asks for the advertised attachment, receives a directed kernel-confirmed
-file offer, then fetches its hash. A destination never becomes a daemon path. Android reconnect, blob and local-save scenarios are verified on Android 35; final packaged-ABI
-installation is still pending.
+file offer, then fetches its hash. A destination never becomes a daemon path. Android reconnect,
+blob and local-save scenarios pass on Android 35 using the final APK and packaged daemon.
 
 ## What moved, on purpose
 
@@ -167,15 +167,15 @@ installation is still pending.
 
 The shared kit is `misa-kit`; protocol state machines live in `misa-protocol`, and IO drivers in
 `misa-transport`. `android/` is a fourth surface over JNI. Its indexed canonical tree and cursor persist independently of live text; Android 35 reconnect,
-blob and save scenarios pass. Final installation against the packaged ABI is tracked in `plan.md`.
+blob and save scenarios pass against the final packaged APK and daemon.
 
 The web frontend is the proof that the boundary is real: it uses _none_ of the picker kit and
 still offers the same commands, because what it needed was the declaration.
 
 ## What is left, and in what order
 
-[`plan.md`](plan.md) tracks terminal client integration, final artifact/check builds and
-emulator installation. Pixel command picking remains a distinct frontend gap. Subagent inheritance,
+The terminal integration and pixel command picker are built. [`plan.md`](plan.md) records their
+verification and the packaged artifact gates. Subagent inheritance,
 session registry operations and conversation-fork UX remain product decisions outside this plan.
 
 Browser updates preserve untouched DOM owners through named subtree/stream events and recover

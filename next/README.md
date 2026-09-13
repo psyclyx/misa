@@ -93,7 +93,9 @@ the packaged ABI remains pending.
 
 Paste text or a desktop clipboard image with Ctrl-V in the terminal. Images become PNG blobs and
 remain staged until an explicit prompt send succeeds; Ctrl-Alt-V discards staged attachments.
-Alt-Enter inserts a newline, and Ctrl-R searches submission history.
+Alt-Enter interrupts and submits the draft; Shift-Enter inserts a newline, and Ctrl-R searches
+submission history. Running tools settle before the priority prompt starts, while unstarted calls
+are recorded as cancelled.
 
 Desktop clipboard support includes native Wayland on compositors exposing a data-control
 protocol (tested with headless Sway, with `DISPLAY` unset), and X11/XWayland fallback.

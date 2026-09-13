@@ -324,22 +324,26 @@ cover editable forms, tables, meters, images, selection and retained scene group
 exercise window input and clipboard. The terminal combines interactive and print modes, has local
 memory through injected storage, and stages pasted clipboard images through the blob capability.
 
-`cargo test --workspace` is the ordinary gate. Guest fixtures, native display checks, packaged
-artifact checks and Android emulator installation add separate gates. Historical workspace totals
-are intentionally omitted: the final combined run is still pending. Component evidence lives in
-commit messages, `incremental-evidence.md` and `pixel-retained-evidence.md`.
+`cargo test --workspace` passes 580 tests. The native clipboard test runs separately under X11 and
+Wayland. Guest fixtures, packaged display checks and Android emulator installation add separate
+gates; all pass in the final integration recorded in [`verification.md`](verification.md). Component evidence lives in
+commit messages, `incremental-evidence.md`, `pixel-retained-evidence.md` and
+`terminal-retained-evidence.md`.
 
 1. **Files and cancellation.** Terminal `/save [number] <local path>`, browser downloads and pixel
    destination dialogs request `attachment.save`, receive a kernel-confirmed offer, and keep the
    fetched bytes. Android reconnect, blob and save scenarios are also verified on Android 35. Destinations stay
    client-local. The kernel's named cancellation capability stops
-   the session-owned device flow; dismissing its panel alone does not stop polling. Final installation against the packaged Android ABI remains pending.
-2. **Remaining client integration.** Terminal retained output/keyboard finishing is active work.
-   Android separates incremental canonical state from live text and persists only canonical changes. The pixel command picker is
-   still a parity gap; the native window, input and disclosure toggle are built.
+   the session-owned device flow; dismissing its panel alone does not stop polling. The final packaged
+   Android client passes all five emulator scenarios against the packaged daemon without an external ticket.
+2. **Client interaction.** The terminal retains line owners and keeps input responsive while bounded
+   requests await replies. Its physical rows also define selection and cursor placement. Android
+   separates incremental canonical state from live text and persists only canonical changes. The
+   pixel window includes a local command picker. Native Wayland clipboard transfer is tested with
+   compositor data-control support; XWayland remains the fallback for other compositors.
 3. **Artifact verification.** Per-artifact derivations, an artifact-derived shell, offline Android
-   dependencies and a daemon module exist. Final clean artifact builds, combined checks and the
-   exact APK's emulator installation must still be recorded before this gate is complete.
+   dependencies and a daemon module are verified. Final product builds, combined checks and the
+   exact APK's emulator installation pass; see [`verification.md`](verification.md).
 
 Present limitations are explicit:
 

@@ -2,7 +2,7 @@
 
 The Rust rewrite lives in [`next/`](next/README.md): a daemon, one terminal client, browser and
 pixel frontends, wasm plugins and an Android app. Its [implementation plan](next/docs/plan.md)
-records completed work and the remaining final client/artifact gates. Build the Rust artifacts
+records completed work and links the final verification evidence. Build the Rust artifacts
 with `nix-build next -A packages.<name>` and enter their environment with `nix-shell next -A shell`.
 
 The rest of this README documents the legacy Zig/Fennel harness and its locally built executable.

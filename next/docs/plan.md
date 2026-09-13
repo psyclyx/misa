@@ -1,6 +1,6 @@
 # Plan
 
-The rewrite's remaining work, in one place: the invariants the design commits to, what to build in
+The rewrite implementation plan, in one place: the invariants the design commits to, what to build in
 what order, and what verifies each step. [`architecture.md`](architecture.md) holds the positions,
 [`parity.md`](parity.md) holds per-capability status, and this file holds the order.
 
@@ -142,10 +142,10 @@ These are forks that change later work, so they are answered first.
 - [x] Stable identity for list elements whose front can move (notices, queue) — an index is not an id.
 - [x] The audit: rebuild-and-compare on every dispatch in the tests, and a debug assertion for small
       states.
-- [ ] Complete the client operation gate. Browser SSE emits subtree operations and separate stream
-      events; pixels retain owner paint groups with cold-raster parity tests. Terminal retained
-      presentation remains in integration; Android applies indexed canonical changes and persists
-      canonical state independently of live streams.
+- [x] Complete the client operation gate. Browser SSE emits subtree operations and separate stream
+      events; pixels retain owner paint groups with cold-raster parity tests. The terminal retains
+      line owners and copies only visible rows during streaming; Android applies indexed canonical
+      changes and persists canonical state independently of live streams.
 - [x] Verify server audit, operation folding and bounded encoded-change work. See
       `incremental-evidence.md`; pixel layout work is measured separately in `pixel-retained-evidence.md`.
 
@@ -192,12 +192,10 @@ These are forks that change later work, so they are answered first.
 - [x] Android native libraries, pinned SDK/NDK inputs, offline Gradle dependencies, debug signing and
       an emulator install-check derivation are defined. Native outputs use 16 KiB page alignment.
 - [x] A separate Rust daemon NixOS module exposes `services.misa`; legacy Zig modules remain separate.
-- [ ] Finish artifact integration and housekeeping after the crate rename: refresh locks, check exact
-      native runtime inputs and review dependency declarations.
-- [ ] Verify every `nix-build next -A packages.<name>` from the final tree, the combined checks
-      derivation, and installation/launch of the exact APK on an emulator. Defined checks and earlier
-      component tests are not evidence that this final artifact gate has passed. The guest artifact
-      build has passed; remaining final artifact results must still be recorded.
+- [x] Finish artifact integration and housekeeping after the crate rename: locks are refreshed,
+      native runtime inputs are declared, and Android builds include only their normal dependency closure.
+- [x] Verify the final product derivations, combined checks, guest component, and installation/launch
+      of the exact APK on an emulator. All passed; see [`verification.md`](verification.md).
 
 ### 8. Client finishing
 
@@ -205,8 +203,7 @@ These are forks that change later work, so they are answered first.
       cancel a device flow a client started. Both are an intent a session asks the kernel for and an
       answer that is a file or a stop (`architecture.md` §6 item 1).
       Device cancellation and directed save replies are built; terminal file export and browser
-      downloads are verified end to end. Pixels also offer a local destination dialog. Android reconnect, blob and save scenarios are verified on Android 35; final packaged-ABI
-      installation remains in the artifact gate.
+      downloads are verified end to end. Pixels also offer a local destination dialog. Android reconnect, blob and save scenarios are verified on Android 35; the final packaged APK also passes emulator installation and launch.
 - [x] Android: fetch blobs over `/misa/blob/0` so a picture is a picture; the cursor and the tree are
       data the app persists, so a background check is "attach with `since`".
 - [x] Browser: subtree operations and independent streams update the DOM; bounded SSE lag recovers
@@ -214,11 +211,12 @@ These are forks that change later work, so they are answered first.
 - [x] Pixels: a native window with editable panel fields, selection and clipboard copy, meters,
       disclosure toggles, wrapped tables and fetched images. Native keyboard, clipboard and
       disclosure interaction are verified under Xvfb; the pixel suite covers local interaction, retained scene identity and cold-raster parity.
-- [ ] Finish terminal retained presentation and keyboard integration. Injected filesystem memory,
-      responsive idle input, and Ctrl-V text/image paste are built. Images become PNG blobs, remain
-      staged until send succeeds, and can be discarded with Ctrl-Alt-V; native clipboard roundtrip
-      is verified under Xvfb. Final stream-animation and retained-output checks remain pending.
-- [ ] Verify: the parity rows move, and each frontend's own suite covers what it gained.
+- [x] Finish terminal retained presentation and keyboard integration. Bounded request correlation
+      keeps input live during completion, upload and save. Images become PNG blobs, survive failed
+      submissions, and can be discarded with Ctrl-Alt-V. Alt-Enter interrupts and submits;
+      Shift-Enter inserts a newline. Physical rows govern multiline input, selection and cursor placement.
+- [x] Verify each frontend's additions, including native X11 and Wayland clipboard transfer.
+      Wayland requires compositor data-control support. Final combined artifact verification is recorded below.
 
 ### 9. Documentation
 
@@ -226,8 +224,8 @@ These are forks that change later work, so they are answered first.
       protocol boundary, native pixel window, browser updates and attachment flows.
 - [x] Remove stale per-client render classes, optional Skia, local-browser runtime instructions and
       historical test totals. Document the single terminal binary and artifact entry points.
-- [ ] Reconcile the remaining terminal and final packaged-Android/artifact gates with final integration evidence.
-      Record final test totals only from that final run.
+- [x] Reconcile terminal and packaged-Android/artifact gates with final integration evidence.
+      [`verification.md`](verification.md) records totals from the final runs.
 
 ## Parity rows this plan does not cover, and why
 
@@ -252,6 +250,5 @@ above or one of these — saying which is the difference between a plan and a wi
 - Real-endpoint tests cover reconnect, multiple clients, large chunked views and attachment transfer.
   Browser and terminal file-save tests verify kernel-confirmed bytes; targeted native UI checks
   supplement pure rendering and interaction tests.
-- The final combined workspace, packaged checks, artifact builds and emulator installation remain
-  pending until their final-tree results are recorded. Commit messages retain the component test
-  evidence without treating earlier counts as the current workspace total.
+- The final workspace, packaged checks, artifact builds and emulator installation all pass.
+  [`verification.md`](verification.md) records their scope and final totals.
