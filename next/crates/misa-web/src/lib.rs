@@ -173,6 +173,11 @@ fn render_node(node: &Node, out: &mut String) {
         .unwrap_or_default();
     let kind = format!(" kind.{}.", node.role);
     let _ = kind;
+    // A thematic break is a void element: it has no closing tag to match.
+    if let Kind::Rule = &node.kind {
+        out.push_str(&format!("<hr class=\"n-{role}\"{id}{state}>"));
+        return;
+    }
 
     // A node that offers a submit action is a form, and its fields are its inputs.
     // That is the only reason a view node ever becomes a form, and it is enough for
@@ -201,6 +206,12 @@ fn render_node(node: &Node, out: &mut String) {
     match &node.kind {
         Kind::Section => {}
         Kind::Text { spans } => inline(spans, out),
+        Kind::Heading { spans, .. } => inline(spans, out),
+        // A quote's blocks and a rule's emptiness are structure, not content: the
+        // element carries them and the stylesheet draws them. A rule is written before
+        // this match, as a void element, so nothing goes inside it here.
+        Kind::Quote => {}
+        Kind::Rule => {}
         Kind::Code { lang, text, captures } => {
             out.push_str("<pre><code");
             if let Some(lang) = lang {
@@ -373,20 +384,25 @@ fn render_node(node: &Node, out: &mut String) {
     }
 }
 
-fn element_for(node: &Node) -> &'static str {
+fn element_for(node: &Node) -> String {
     match &node.kind {
-        Kind::Text { .. } => "p",
-        Kind::Code { .. } => "div",
-        Kind::List { ordered: true, .. } => "ol",
-        Kind::List { .. } => "ul",
-        Kind::Table { .. } => "div",
-        Kind::Fields { .. } => "dl",
-        Kind::Collapsible { .. } => "details",
-        Kind::Image { .. } => "figure",
-        Kind::Status { .. } => "p",
-        Kind::Fact { .. } => "data",
-        Kind::Meter { .. } => "p",
-        Kind::Section => "section",
+        Kind::Text { .. } => "p".into(),
+        // HTML has one element per heading level, so the level picks the tag.
+        Kind::Heading { level, .. } => format!("h{}", (*level).clamp(1, 6)),
+        Kind::Code { .. } => "div".into(),
+        Kind::List { ordered: true, .. } => "ol".into(),
+        Kind::List { .. } => "ul".into(),
+        Kind::Table { .. } => "div".into(),
+        Kind::Fields { .. } => "dl".into(),
+        Kind::Collapsible { .. } => "details".into(),
+        Kind::Image { .. } => "figure".into(),
+        Kind::Status { .. } => "p".into(),
+        Kind::Fact { .. } => "data".into(),
+        Kind::Meter { .. } => "p".into(),
+        Kind::Quote => "blockquote".into(),
+        // A rule is written before this is reached; named here so the match stays total.
+        Kind::Rule => "hr".into(),
+        Kind::Section => "section".into(),
     }
 }
 
@@ -1354,5 +1370,25 @@ mod tests {
             sources: Vec::new(),
         };
         assert!(declarations(&session).is_empty());
+    }
+
+    #[test]
+    fn a_heading_picks_its_level_and_a_quote_becomes_a_blockquote() {
+        let node = Node::section("message.assistant")
+            .child(Node::new(
+                "message.assistant.markdown.heading",
+                Kind::Heading { level: 2, spans: vec![Span::plain("Title")] },
+            ))
+            .child(
+                Node::new("message.assistant.markdown.quote", Kind::Quote)
+                    .child(Node::text("message.assistant.markdown.paragraph", [Span::plain("quoted")])),
+            )
+            .child(Node::new("message.assistant.markdown.rule", Kind::Rule));
+        let html = render_main(&node);
+        assert!(html.contains("<h2 class=\"n-message.assistant.markdown.heading\"><span>Title</span></h2>"), "{html}");
+        assert!(html.contains("<blockquote"), "{html}");
+        // A rule is void: one tag, and no closing tag to mismatch.
+        assert!(html.contains("<hr class=\"n-message.assistant.markdown.rule\">"), "{html}");
+        assert!(!html.contains("</hr>"), "{html}");
     }
 }

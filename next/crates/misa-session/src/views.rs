@@ -250,9 +250,7 @@ fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
             // expects anyway.
             let mut node = Node::section("message.user").id(&id);
             node.state = state;
-            node.children.push(
-                Node::text("message.user.text", [Span::plain(text_at(message, "text"))]).id(format!("{id}.text")),
-            );
+            node.children.extend(body("message.user", &id, text_at(message, "text")));
             for (position, attachment) in message_attachments(message).into_iter().enumerate() {
                 node.children.push(attachment_node(&attachment, position, capabilities));
             }
@@ -292,22 +290,7 @@ fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
             }
             // The first text node carries the id a streamed delta appends to, so a
             // client can grow an answer in place.
-            for (index, segment) in segments(text_at(message, "text")).into_iter().enumerate() {
-                let child = match segment {
-                    Segment::Text(text) => {
-                        let mut child = Node::text("message.assistant.text", [Span::plain(text)]);
-                        if index == 0 {
-                            child = child.id(format!("{id}.text"));
-                        }
-                        child
-                    }
-                    Segment::Code { lang, text } => Node::new(
-                        "message.assistant.code",
-                        Kind::Code { lang, text, captures: Vec::new() },
-                    ),
-                };
-                node.children.push(child);
-            }
+            node.children.extend(body("message.assistant", &id, text_at(message, "text")));
             for (position, call) in calls(message).into_iter().enumerate() {
                 node.children.push(call_node(&call, position, capabilities));
             }
@@ -415,51 +398,24 @@ fn cancel(db: &Value) -> Option<Node> {
     )
 }
 
-/// A piece of an assistant message.
+/// The blocks of a message body, with the node a streamed delta appends to.
 ///
-/// The shipped segmentation is one rule: a fenced block is code, everything else is
-/// prose. That is not a Markdown parser and does not pretend to be one. It exists to
-/// demonstrate the shape a real one would take — the *session* emits structure, so
-/// no frontend has to parse anything and every frontend agrees on what a code block is.
-enum Segment {
-    Text(String),
-    Code { lang: Option<String>, text: String },
-}
-
-fn segments(text: &str) -> Vec<Segment> {
-    let mut out = Vec::new();
-    let mut prose = String::new();
-    let mut lines = text.split('\n').peekable();
-    while let Some(line) = lines.next() {
-        if let Some(rest) = line.trim_start().strip_prefix("```") {
-            if !prose.trim().is_empty() {
-                out.push(Segment::Text(std::mem::take(&mut prose)));
-            }
-            let lang = rest.trim();
-            let mut body = String::new();
-            for line in lines.by_ref() {
-                if line.trim_start().starts_with("```") {
-                    break;
-                }
-                body.push_str(line);
-                body.push('\n');
-            }
-            out.push(Segment::Code {
-                lang: if lang.is_empty() { None } else { Some(lang.to_string()) },
-                text: body.trim_end_matches('\n').to_string(),
-            });
-            continue;
-        }
-        prose.push_str(line);
-        prose.push('\n');
+/// Markdown is parsed here, in the middle layer, so that no frontend has to parse it and
+/// every frontend agrees on what a quote is. The first block keeps `{id}.text` when it is a
+/// run of text, because that is the id a `TextDelta` grows: a client watching an answer
+/// arrive appends to it instead of re-reading a tree per token.
+fn body(prefix: &str, id: &str, text: &str) -> Vec<Node> {
+    let mut blocks = crate::markdown::blocks(prefix, text);
+    if blocks.is_empty() {
+        // An empty body still has a line, so a delta always has somewhere to land.
+        blocks.push(Node::text(format!("{prefix}.text"), Vec::new()));
     }
-    if !prose.trim().is_empty() {
-        out.push(Segment::Text(prose));
+    if let Some(first) = blocks.first_mut()
+        && matches!(first.kind, Kind::Text { .. })
+    {
+        first.id = format!("{id}.text");
     }
-    if out.is_empty() {
-        out.push(Segment::Text(String::new()));
-    }
-    out
+    blocks
 }
 
 fn calls(message: &Value) -> Vec<Value> {

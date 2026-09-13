@@ -82,6 +82,18 @@ private fun ShapeView(node: Node, expanded: Set<String>, onToggle: (String) -> U
     when (val shape = node.shape) {
         is Shape.Section -> node.children.forEach { NodeView(it, expanded, onToggle, onAction) }
         is Shape.Text -> Text(inline(shape.spans), style = bodyFor(node.role))
+        // A heading's level picks a type size; a quote gets a marker of the medium's own and
+        // its blocks behind it; a rule is a row of the same character. The session said only
+        // *what* each of those is.
+        is Shape.Heading -> Text(inline(shape.spans), style = headingFor(shape.level), fontWeight = FontWeight.SemiBold)
+        is Shape.Quote ->
+            Row {
+                Text("▏", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    node.children.forEach { NodeView(it, expanded, onToggle, onAction) }
+                }
+            }
+        is Shape.Rule -> Text("─".repeat(24), color = MaterialTheme.colorScheme.onSurfaceVariant)
         is Shape.Code -> CodeBlock(shape)
         is Shape.Bullets -> Bullets(shape, node, expanded, onToggle, onAction)
         is Shape.Table -> DataTable(shape)
@@ -255,6 +267,15 @@ private fun bodyFor(role: String) =
         role.startsWith("tool.") -> MaterialTheme.typography.bodySmall
         role.startsWith("message.system") -> MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic)
         else -> MaterialTheme.typography.bodyMedium
+    }
+
+/** The size a heading's level earns. The session decided the level; this decides the type. */
+@Composable
+private fun headingFor(level: Int) =
+    when {
+        level <= 1 -> MaterialTheme.typography.titleLarge
+        level == 2 -> MaterialTheme.typography.titleMedium
+        else -> MaterialTheme.typography.titleSmall
     }
 
 @Composable

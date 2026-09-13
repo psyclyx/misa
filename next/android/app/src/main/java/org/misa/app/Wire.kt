@@ -48,6 +48,15 @@ sealed interface Shape {
 
     data class Text(val spans: List<Span>) : Shape
 
+    /** A heading, and the level a document source gave it. */
+    data class Heading(val level: Int, val spans: List<Span>) : Shape
+
+    /** A block quotation; the blocks it quotes are the node's children. */
+    data object Quote : Shape
+
+    /** A thematic break. */
+    data object Rule : Shape
+
     data class Code(val lang: String?, val text: String, val captures: List<Capture>) : Shape
 
     data class Bullets(val ordered: Boolean, val items: List<List<Node>>) : Shape
@@ -88,6 +97,13 @@ object Wire {
         return when (val shape = kind.optString("shape", "section")) {
             "section" -> Shape.Section
             "text" -> Shape.Text(kind.optJSONArray("spans")?.mapObjects(::parseSpan) ?: emptyList())
+            "heading" ->
+                Shape.Heading(
+                    level = kind.optInt("level", 1),
+                    spans = kind.optJSONArray("spans")?.mapObjects(::parseSpan) ?: emptyList(),
+                )
+            "quote" -> Shape.Quote
+            "rule" -> Shape.Rule
             "code" ->
                 Shape.Code(
                     lang = kind.optStringOrNull("lang"),

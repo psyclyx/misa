@@ -9,7 +9,7 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the gate: 363 tests, no skips. Counts per crate are in
+`cargo test --workspace` is the gate: 383 tests, no skips. Counts per crate are in
 `docs/architecture.md`.
 
 ## The mechanisms everything else is built on
@@ -71,20 +71,20 @@ _do_.
 
 ## Transcript
 
-| Feature                                                                | State                                                                                                                                                                                              |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rendering: rails, roles, wrapping, tables, lists, fields, meters, code | built (`misa-render::lines`)                                                                                                                                                                       |
-| Tool call collapsed by default, expandable, with its result            | built; the decision is the client's                                                                                                                                                                |
-| Thinking blocks, collapsed preview                                     | built as a collapsible, and three adapters now stream thinking: Anthropic's `thinking_delta` block, a chat service's `reasoning_content` or `reasoning`, and the responses api's reasoning summary |
-| Scrolling, follow-the-tail, stop following when scrolled away          | built                                                                                                                                                                                              |
-| Markdown: headings, lists, quotes, emphasis, links, inline code        | partly: fenced code is segmented into `Kind::Code` and everything else is prose. A parser belongs in the session so every frontend agrees; it is not written                                       |
-| Syntax highlighting from captures                                      | built: the session emits `Capture` ranges, the client maps a capture name to a style                                                                                                               |
-| Diff presentation (the old `content.diff` component)                   | next: a role and a view-builder branch — the vocabulary has `Kind::Code` and does not need a new kind                                                                                              |
-| Structural navigation and vim visual ranges with byte offsets          | next, and purely client-side: the client holds the rows and the node ids, so no protocol change                                                                                                    |
-| Copy, independent of selection                                         | next, and now trivially client-side: the previous system needed a `clipboard/write` effect, and this does not, because only the client knows what was selected                                     |
-| Group headers and footers                                              | next: a view-tree shape, so a `misa-session::views` change                                                                                                                                         |
-| Animations and spinners                                                | next: `State::Streaming` is carried; the animation is a client of that fact                                                                                                                        |
-| Hover highlighting and click routing                                   | built where it is expressible: an action on a node, and a hit region on a rendered line                                                                                                            |
+| Feature                                                                | State                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rendering: rails, roles, wrapping, tables, lists, fields, meters, code | built (`misa-render::lines`)                                                                                                                                                                                                                                                                                  |
+| Tool call collapsed by default, expandable, with its result            | built; the decision is the client's                                                                                                                                                                                                                                                                           |
+| Thinking blocks, collapsed preview                                     | built as a collapsible, and three adapters now stream thinking: Anthropic's `thinking_delta` block, a chat service's `reasoning_content` or `reasoning`, and the responses api's reasoning summary                                                                                                            |
+| Scrolling, follow-the-tail, stop following when scrolled away          | built                                                                                                                                                                                                                                                                                                         |
+| Markdown: headings, lists, quotes, emphasis, links, inline code        | built: `misa-session::markdown` parses a message body once — headings, nested lists, quotes, thematic rules, and inline strong/emphasis/code/strikethrough/links — into `Kind::Heading`, `Kind::List`, `Kind::Quote`, `Kind::Rule`, and `Kind::Text`, so every frontend agrees. A pipe table is left as prose |
+| Syntax highlighting from captures                                      | built: the session emits `Capture` ranges, the client maps a capture name to a style                                                                                                                                                                                                                          |
+| Diff presentation (the old `content.diff` component)                   | next: a role and a view-builder branch — the vocabulary has `Kind::Code` and does not need a new kind                                                                                                                                                                                                         |
+| Structural navigation and vim visual ranges with byte offsets          | next, and purely client-side: the client holds the rows and the node ids, so no protocol change                                                                                                                                                                                                               |
+| Copy, independent of selection                                         | next, and now trivially client-side: the previous system needed a `clipboard/write` effect, and this does not, because only the client knows what was selected                                                                                                                                                |
+| Group headers and footers                                              | next: a view-tree shape, so a `misa-session::views` change                                                                                                                                                                                                                                                    |
+| Animations and spinners                                                | next: `State::Streaming` is carried; the animation is a client of that fact                                                                                                                                                                                                                                   |
+| Hover highlighting and click routing                                   | built where it is expressible: an action on a node, and a hit region on a rendered line                                                                                                                                                                                                                       |
 
 ## Session and daemon features
 
@@ -148,8 +148,8 @@ input uploads and a view shows, and nothing writes a received image to a directo
 
 ## Order I would do the rest in
 
-1. **Markdown structure in the session**, so every frontend gets headings, lists, and links
-   from one parser rather than three.
+1. **A diff role in the session**, so a diff is laid out as a diff by every frontend rather
+   than as a code block. (Markdown structure is done, in `misa-session::markdown`.)
 2. **Selection, structure navigation, and copy in `misa-client`** — the largest purely
    client-side piece, and it needs nothing from a session.
 3. **Reconnect and a two-client test**, both of which are small and both of which the

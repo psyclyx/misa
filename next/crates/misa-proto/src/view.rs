@@ -144,6 +144,22 @@ pub enum Kind {
     Section,
     /// Inline content: text with semantic runs.
     Text { spans: Vec<Span> },
+    /// A heading, and the level it sits at.
+    ///
+    /// The level is *structure*, not size: two clients may draw a level-2 heading
+    /// differently and both be right, but neither of them may decide that a
+    /// document's `##` was really a paragraph. It is a field rather than a suffix
+    /// on the role because a role has no place to put a number that a client is
+    /// entitled to rely on.
+    Heading {
+        /// 1 through 6, as a document source counts them.
+        level: u8,
+        spans: Vec<Span>,
+    },
+    /// A block quotation. The blocks it quotes are the node's children.
+    Quote,
+    /// A thematic break: a horizontal rule between blocks.
+    Rule,
     /// A code block with its language, its text, and derived syntax captures.
     ///
     /// Captures are computed once, session-side, because a grammar and a parser
@@ -407,8 +423,16 @@ fn validate_at(
         }
     }
     match &node.kind {
-        Kind::Section | Kind::Status { .. } => {}
+        Kind::Section | Kind::Quote | Kind::Rule | Kind::Status { .. } => {}
         Kind::Text { spans } => check_spans(spans, path)?,
+        Kind::Heading { level, spans } => {
+            // A document heading is `h1` through `h6`. A level outside that is a
+            // session that decided something no renderer agreed to draw.
+            if *level == 0 || *level > 6 {
+                return Err(fault(path, format!("has a heading level of {level}, which is outside 1..=6")));
+            }
+            check_spans(spans, path)?;
+        }
         Kind::Code { text, captures, .. } => {
             check_text(text, path)?;
             let mut last_end = 0u32;
@@ -763,6 +787,9 @@ mod tests {
             Node::new("a.status", Kind::Status { text: "idle".into() }),
             Node::new("a.meter", Kind::Meter { label: "Budget".into(), value: 0.5, max: 1.0, text: "half".into() }),
             Node::new("a.fact", Kind::Fact { value: Value::Int(1) }),
+            Node::new("a.heading", Kind::Heading { level: 2, spans: vec![Span::plain("A heading")] }),
+            Node::new("a.quote", Kind::Quote).child(Node::text("a.quote.text", [Span::plain("quoted")])),
+            Node::new("a.rule", Kind::Rule),
         ]
     }
 

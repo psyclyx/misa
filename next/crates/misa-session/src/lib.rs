@@ -49,6 +49,8 @@ pub mod agent;
 pub mod catalog;
 /// Answering a request for candidates.
 pub mod completions;
+/// Markdown, parsed once so that no frontend has to.
+pub mod markdown;
 pub mod views;
 
 /// What a query produced.

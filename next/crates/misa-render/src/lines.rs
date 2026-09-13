@@ -122,6 +122,38 @@ impl<'a> Renderer<'a> {
                 }
                 self.state_mark(node, indent, out);
             }
+            Kind::Heading { level, spans } => {
+                // A heading is structure, so the linear medium makes it visible without a
+                // theme's help: the first level is underlined as well as bold, the rest are
+                // bold. A theme that wants to say more names the role.
+                let base = if *level <= 1 { style.bold().underline() } else { style.bold() };
+                let budget = self.budget(indent);
+                for line in wrap_spans(spans, budget) {
+                    out.push(Line {
+                        indent,
+                        spans: line.iter().map(|span| (self.span_style(span, base), span.text.clone())).collect(),
+                        node: Some(node.id.clone()),
+                    });
+                }
+                self.state_mark(node, indent, out);
+            }
+            Kind::Quote => {
+                // The marker is the medium's, not the theme's: a quote has to read as a
+                // quote in a theme that named nothing at all.
+                let mut rendered = Vec::new();
+                for child in &node.children {
+                    self.node(child, depth + 1, &mut rendered);
+                }
+                for mut line in rendered {
+                    line.spans.insert(0, (style.dim(), "▏ ".to_string()));
+                    out.push(line);
+                }
+                self.state_mark(node, indent, out);
+            }
+            Kind::Rule => {
+                let width = self.budget(indent).min(60).max(1);
+                out.push(Line::simple(indent, style.dim(), "─".repeat(width), Some(&node.id)));
+            }
             Kind::Code { lang, text, captures } => {
                 if let Some(lang) = lang {
                     out.push(Line::simple(
@@ -601,5 +633,30 @@ mod tests {
         assert_eq!(value_text(&Value::Bool(true)), "yes");
         assert_eq!(value_text(&Value::str("x")), "x");
         assert_eq!(value_text(&Value::Null), "");
+    }
+
+    #[test]
+    fn a_heading_is_bold_and_a_quote_carries_a_marker() {
+        let heading = Node::new(
+            "message.assistant.markdown.heading",
+            Kind::Heading { level: 2, spans: vec![Span::plain("Title")] },
+        );
+        let lines = render(&heading, &Theme::dark(), 40);
+        assert_eq!(lines[0].text(), "Title");
+        assert!(lines[0].spans[0].0.bold, "a heading is not set apart at all");
+
+        let quote = Node::new("message.assistant.markdown.quote", Kind::Quote)
+            .child(Node::text("message.assistant.markdown.paragraph", [Span::plain("quoted")]));
+        let lines = render(&quote, &Theme::dark(), 40);
+        assert!(lines[0].text().contains("quoted"));
+        assert!(lines[0].text().ends_with("▏ quoted"), "a quote has no marker: {:?}", lines[0].text());
+    }
+
+    #[test]
+    fn a_rule_is_a_line_of_its_own_and_a_list_item_is_not_one() {
+        let node = Node::new("message.assistant.markdown.rule", Kind::Rule);
+        let lines = render(&node, &theme(), 40);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].text().chars().all(|ch| ch == '─'), "{:?}", lines[0].text());
     }
 }

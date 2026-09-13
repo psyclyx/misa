@@ -165,8 +165,9 @@ Consequences worth naming, because they are the design's cost:
   `session.view` takes a window argument; the default is 40 messages.
 - a frame is capped at 8 MiB (`misa_proto::MAX_CONTROL_FRAME`). A transcript that
   grows past that must be paged or moved behind a blob reference. That is the
-  reason `Kind::Image` carries a content hash and not bytes, and it is the reason a
-  `misa/blob/0` ALPN is reserved and unbuilt.
+  reason `Kind::Image` carries a content hash and not bytes: the bytes travel on a
+  connection of their own (`misa/blob/0`, `misa-net::blob`) rather than through a
+  control frame sized for tokens.
 
 ### Reserved: the kernel protocol
 
@@ -230,9 +231,9 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (41), `misa-kernel` (88), `misa-session` (49), `misa-net` (27),
-`misa-client` (35), `misa-tui` (16), `misa-web` (17), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 363 tests and no skips:
+`misa-render` (43), `misa-kernel` (88), `misa-session` (66), `misa-net` (27),
+`misa-client` (35), `misa-tui` (16), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
+and one more behind `misa-skia --features paint`. That is 383 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
@@ -269,9 +270,10 @@ items with no code at all, plus the two that are structural.
    which is why a restart forgets where somebody was.
 3. **Selection, structural navigation, and copy** in `misa-client`: the largest purely
    client-side piece, and it needs nothing from a session.
-4. **Markdown structure, in the session.** Fenced code is segmented; headings, lists, quotes,
-   and links are not, so every frontend shows prose where a document has structure — and
-   **a diff role** for the same reason, since a diff is a kind of code.
+4. **A diff role, in the session.** A diff is a kind of code and deserves its own role and
+   view-builder branch so a frontend can lay it out as one. (Markdown structure is done:
+   `misa-session::markdown` parses headings, lists, quotes, rules, and inline runs once, for
+   every frontend, and `Kind::Heading`, `Kind::Quote`, and `Kind::Rule` carry the structure.)
 5. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards.
 6. **Reconnect**, and a test with two clients on one session. Both are small and the
