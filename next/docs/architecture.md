@@ -378,10 +378,10 @@ it.
 Not built, in the order they matter. `docs/parity.md` is the full matrix; these are the
 items with no code at all, plus the two that are structural.
 
-1. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
-   one to a place a person could find it afterwards. A device flow a client started cannot be
-   cancelled either, and both are the same shape of work: an intent a session asks the kernel
-   for, and an answer that is a file or a stop.
+1. **Saving on the remaining surfaces.** Terminal `/save [number] <local path>` and browser
+   Save attachment actions request a kernel-confirmed file offer and keep the received bytes.
+   The protocol routes each answer only to the requesting connection; the destination stays
+   client-local. Android and pixel clients still need their own destination pickers.
 2. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
 3. **The same memory for the browser and the phone.** `misa-client::prefs` is the terminal's
@@ -403,10 +403,9 @@ Five things are honest limitations rather than planned work:
   count, and `graphics` and `native_details` are the last things a session reads about a
   surface. `plan.md` phases 1 and 2 delete them — the first with the class a view is memoised
   by, the second when the transport can carry a value of any size.
-- **A device flow cannot be cancelled by a client.** The kernel starts one, reports the code,
-  and reports the outcome; nothing in `Request` stops it, so a person who thought better of
-  it dismisses the panel and waits for the code to expire. The task does give up when the
-  session it reports to goes away.
+- **Device authorization is session-scoped.** Any attached client can use the panel's Cancel
+  authorization action. The kernel stops the named flow owned by that session and reports its
+  outcome; dismissing a panel alone keeps the flow running.
 
 ---
 

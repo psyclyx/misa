@@ -2446,6 +2446,7 @@ dependencies = [
  "base64 0.22.1",
  "crossterm",
  "misa-client",
+ "misa-kernel",
  "misa-net",
  "misa-proto",
  "misa-render",

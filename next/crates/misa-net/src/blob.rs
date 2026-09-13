@@ -197,7 +197,12 @@ impl Client {
     /// cannot show an image has to be able to say so rather than fail.
     pub async fn get(&mut self, hash: &str) -> Result<Option<Blob>, String> {
         match self.ask(&BlobMsg::Get { hash: hash.to_string() }).await? {
-            BlobReply::Bytes { hash, media, bytes } => Ok(Some(Blob { hash, media, bytes })),
+            BlobReply::Bytes { hash: received, media, bytes } => {
+                if received != hash || misa_kernel::blobs::hash_of(&bytes) != hash {
+                    return Err("The blob response does not match the requested content hash".into());
+                }
+                Ok(Some(Blob { hash: received, media, bytes }))
+            },
             BlobReply::Missing { .. } => Ok(None),
             other => Err(format!("expected bytes, got a `{}`", other.name())),
         }
@@ -285,7 +290,12 @@ impl Store {
     /// The bytes a hash names, or `None` when the store does not have them.
     pub async fn get(&self, hash: &str) -> Result<Option<Blob>, String> {
         match self.ask(BlobMsg::Get { hash: hash.to_string() }).await? {
-            BlobReply::Bytes { hash, media, bytes } => Ok(Some(Blob { hash, media, bytes })),
+            BlobReply::Bytes { hash: received, media, bytes } => {
+                if received != hash || misa_kernel::blobs::hash_of(&bytes) != hash {
+                    return Err("The blob response does not match the requested content hash".into());
+                }
+                Ok(Some(Blob { hash: received, media, bytes }))
+            },
             BlobReply::Missing { .. } => Ok(None),
             other => Err(format!("expected bytes, got a `{}`", other.name())),
         }

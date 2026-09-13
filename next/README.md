@@ -81,6 +81,15 @@ cargo run -p misa-web -- --ticket misa:<endpoint id>:demo --listen 127.0.0.1:808
 cargo run -p misa-cli -- misa:<endpoint id>:demo "say something"
 ```
 
+Save a received attachment in the terminal with `/save ./photo.png`, or choose an attachment
+by its transcript order with `/save 2 ./photo.png`. The command keeps the destination on the
+client and refuses to overwrite an existing file. The browser's **Save attachment** button
+uses the browser's download location. Both paths ask the session for the attachment it offered,
+then fetch the kernel-confirmed bytes.
+
+A device login panel offers **Cancel authorization** to stop polling immediately. Dismissing
+the panel alone leaves the authorization running.
+
 The daemon ships a scripted provider, so a session runs end to end with no network,
 no account, and no spend. That is the provider every test uses.
 

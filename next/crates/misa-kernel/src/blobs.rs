@@ -148,6 +148,15 @@ impl Blobs {
         Ok(BlobRef { hash, len, media })
     }
 
+    /// Metadata for a stored, well-formed content name. No path crosses this boundary.
+    pub fn describe(&self, hash: &str) -> Option<BlobRef> {
+        if !valid_hash(hash) { return None; }
+        let len = if let Some(root) = &self.root {
+            std::fs::metadata(root.join(format!("{hash}.bin"))).ok()?.len()
+        } else { self.index.lock().ok()?.get(hash)?.0 };
+        Some(BlobRef { hash: hash.to_string(), len, media: self.media(hash) })
+    }
+
     /// Read bytes back, from memory or from the store.
     pub fn get(&self, hash: &str) -> Option<Vec<u8>> {
         if !valid_hash(hash) {
