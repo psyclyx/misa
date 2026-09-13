@@ -88,6 +88,12 @@ versus round trip**:
 `Intent` is a round trip, and `Copy` is neither — it is what only the client can do,
 because only the client knows what was selected.
 
+A client's memory of itself is a file, and it is presentation state by construction:
+`misa-client::prefs` writes a theme, the nodes somebody opened, an unsent draft, and the
+counts a picker ranks by. A session is never told, a corrupt document is the defaults rather
+than an error, and losing all of it is a client that opens dark with an empty drawer. The
+prompt history is deliberately not there: what somebody typed is not a taste.
+
 A panel is where the line is easiest to get wrong, so it is drawn explicitly. The session
 owns the _question_: that a credential is being asked for, what the field is called, that it
 is a secret, and what the actions mean. The client owns the _answer_: the text in the field
@@ -241,8 +247,8 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
 `misa-render` (46), `misa-kernel` (91), `misa-session` (76), `misa-net` (29),
-`misa-client` (55), `misa-tui` (23), `misa-web` (19), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 429 tests and no skips:
+`misa-client` (61), `misa-tui` (27), `misa-web` (19), `misa-daemon` (3), `misa-skia` (5),
+and one more behind `misa-skia --features paint`. That is 439 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
@@ -274,13 +280,15 @@ items with no code at all, plus the two that are structural.
 
 1. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
    them. This is the item with the least code and the most design already written down.
-2. **Durable state for the _client_.** A theme, the nodes somebody opened, a draft, and the
-   picker's frecency are presentation state and belong client-side. None of it is persisted,
-   which is why a restart forgets where somebody was.
-3. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
-   one to a place a person could find it afterwards.
-4. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
+2. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
+   one to a place a person could find it afterwards. A device flow a client started cannot be
+   cancelled either, and both are the same shape of work: an intent a session asks the kernel
+   for, and an answer that is a file or a stop.
+3. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
+4. **The same memory for the browser and the phone.** `misa-client::prefs` is the terminal's
+   today: a surface that renders server-side has to decide whose state a page's draft is,
+   which is a question about browsers rather than about this architecture.
 
 Two things are honest limitations rather than planned work:
 

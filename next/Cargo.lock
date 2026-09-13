@@ -2056,6 +2056,8 @@ dependencies = [
  "misa-proto",
  "misa-render",
  "misa-value",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

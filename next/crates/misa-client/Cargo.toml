@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
 misa-proto.workspace = true
 misa-value.workspace = true
 # A selection moves over what was *rendered*, so the kit needs the renderer's output

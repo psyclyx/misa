@@ -20,10 +20,11 @@
 //! holds; the matching happens here. A session is asked only when a source has no
 //! items to hold — see [`misa_client::picker`].
 
-use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use misa_client::picker::{Accept, Effect as PickerEffect, Picker};
+use misa_client::prefs::Prefs;
 use misa_client::{editor as ed, intent as line, select};
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
 use misa_proto::wire::{Capabilities, Command, Intent, SessionInfo, Source, SourceKind};
@@ -135,7 +136,13 @@ pub struct Screen {
     pub picker: Option<Picker>,
     /// Which command an accepted argument belongs to.
     pending_command: Option<String>,
-    pub opened: BTreeSet<String>,
+    /// What this client remembers between runs: the theme, the nodes somebody opened, the
+    /// draft, and which choices they reach for. Presentation state, all of it, and the reason
+    /// a restart no longer forgets where somebody was.
+    pub prefs: Prefs,
+    /// Where that memory is written. `None` for a client that was not told, which is what a
+    /// test is: a client with no home directory should still run.
+    pub prefs_path: Option<PathBuf>,
     pub notice: Option<String>,
     /// The reader's selection, when one is open. It is over the rendered body, so
     /// moving it needs the view — which is why `selection_key` takes one.
@@ -159,7 +166,8 @@ impl Screen {
             editor: ed::Editor::new(),
             picker: None,
             pending_command: None,
-            opened: BTreeSet::new(),
+            prefs: Prefs::default(),
+            prefs_path: None,
             notice: None,
             selection: None,
             panel: None,
@@ -169,6 +177,47 @@ impl Screen {
             follow: true,
             width,
             height,
+        }
+    }
+
+    /// A screen that remembers, which is the one a person gets.
+    ///
+    /// Separate from [`Screen::new`] because a test wants a screen with no state directory:
+    /// a client that wrote to somebody's home during a test would be a client whose tests
+    /// depend on the order they ran in.
+    pub fn durable() -> Screen {
+        let path = Prefs::default_path();
+        Screen::remembering(Prefs::load(&path), path)
+    }
+
+    /// A screen remembering a document somebody else decided where to keep.
+    ///
+    /// The seam a test needs: the default path is somebody's home directory, and a test
+    /// that wrote there would be a test that depends on the machine it ran on.
+    pub fn remembering(prefs: Prefs, path: PathBuf) -> Screen {
+        let mut screen = Screen::new(100, 40);
+        screen.theme = match prefs.theme.as_str() {
+            "plain" => Theme::plain(),
+            _ => Theme::dark(),
+        };
+        screen.editor.set_text(prefs.draft.clone());
+        screen.prefs = prefs;
+        screen.prefs_path = Some(path);
+        screen
+    }
+
+    /// Write what this client knows, and say so when it cannot.
+    ///
+    /// Called where a decision changed something and once on the way out — not on every
+    /// keystroke: a write per character is a write per character. The draft is the one thing
+    /// that waits for somebody to stop typing, which is the price of this being a file.
+    pub fn save(&mut self) {
+        let Some(path) = self.prefs_path.clone() else {
+            return;
+        };
+        self.prefs.draft = self.editor.text().to_string();
+        if let Err(error) = self.prefs.save(&path) {
+            self.notice = Some(error);
         }
     }
 
@@ -224,7 +273,12 @@ impl Screen {
     fn open_argument_picker(&mut self, command: &str, argument: &str, source: &str) {
         self.pending_command = Some(command.to_string());
         let accept = Accept::Argument { command: command.to_string(), argument: argument.to_string() };
-        self.picker = Some(Picker::over(source, format!("/{command} {argument}"), accept));
+        // Ranked by what this client remembers: a list that started from nothing every run
+        // would be a list that learned nothing.
+        self.picker = Some(
+            Picker::over(source, format!("/{command} {argument}"), accept)
+                .with_frecency(self.prefs.frecency()),
+        );
     }
 
     /// Give the picker the items a source produced.
@@ -439,8 +493,10 @@ impl Screen {
             }
             Key::Interrupt => {
                 // The draft is kept: an interrupt is about the model, not about what
-                // somebody has typed.
+                // somebody has typed. Kept, and written down, because that is the whole point
+                // of keeping it.
                 self.editor.interrupt();
+                self.save();
                 KeyOut::Intent(Intent::Cancel { target: None })
             }
             Key::Submit => self.submit(),
@@ -505,6 +561,9 @@ impl Screen {
                 Some(intent) => {
                     self.editor.submit();
                     self.notice = None;
+                    // The draft is spent; what is left is written down, so a client that is
+                    // killed after this does not resurrect what was just sent.
+                    self.save();
                     KeyOut::Intent(intent)
                 }
                 None => KeyOut::Local,
@@ -546,21 +605,19 @@ impl Screen {
     fn open_command_picker(&mut self) -> KeyOut {
         // `/` on an empty line is a request for the session's commands, and the
         // promise the declaration made is that they can be listed without asking.
-        if self.sources.iter().any(|source| source.id == "commands") {
-            let mut picker = Picker::over("commands", "Commands", Accept::Run);
-            picker.set_items(self.command_candidates(), false);
-            self.picker = Some(picker);
+        let mut picker = if self.sources.iter().any(|source| source.id == "commands") {
+            Picker::over("commands", "Commands", Accept::Run)
         } else {
-            let mut picker = Picker::new("Commands", Accept::Run);
-            picker.set_items(self.command_candidates(), false);
-            self.picker = Some(picker);
-        }
+            Picker::new("Commands", Accept::Run)
+        };
+        picker.set_items(self.command_candidates(), false);
+        self.picker = Some(picker.with_frecency(self.prefs.frecency()));
         KeyOut::Local
     }
 
     /// Open the client's own actions.
     fn open_action_palette(&mut self) -> KeyOut {
-        let mut picker = Picker::new("Actions", Accept::Run);
+        let mut picker = Picker::new("Actions", Accept::Run).with_frecency(self.prefs.frecency());
         picker.set_items(
             Action::ALL
                 .iter()
@@ -612,7 +669,16 @@ impl Screen {
             }
             PickerEffect::Ask { source, prefix } => KeyOut::Complete { source, prefix },
             PickerEffect::Accepted(accepted) => {
+                // An accepted candidate is what frecency is *for*: the next list is ranked by
+                // it, and a count a restart forgets is a list ranked by nothing. Taken from
+                // the picker before it is dropped, because that is where the counts are.
+                if let Some(picker) = &self.picker {
+                    let frecency = picker.frecency().clone();
+                    self.prefs.remember_frecency(&frecency);
+                }
                 self.picker = None;
+                self.prefs.remembered(&accepted.value);
+                self.save();
                 // An accepted argument completes the line rather than sending it, so
                 // somebody can add the next argument or edit what they got.
                 if matches!(accepted.accept, Accept::Argument { .. }) {
@@ -646,12 +712,14 @@ impl Screen {
         match action {
             Action::ToggleDetail => {
                 // Presentation state, and only presentation state: which nodes are
-                // showing their long form is the client's to remember.
-                if self.opened.is_empty() {
-                    self.opened.insert("*".to_string());
+                // showing their long form is the client's to remember — and now the
+                // client remembers it between runs, which is what this file is for.
+                if self.prefs.any_open() {
+                    self.prefs.close_all();
                 } else {
-                    self.opened.clear();
+                    self.prefs.open_all();
                 }
+                self.save();
                 KeyOut::Local
             }
             Action::ScrollTop => {
@@ -665,10 +733,14 @@ impl Screen {
             }
             Action::ThemeDark => {
                 self.theme = Theme::dark();
+                self.prefs.theme = "dark".into();
+                self.save();
                 KeyOut::Local
             }
             Action::ThemePlain => {
                 self.theme = Theme::plain();
+                self.prefs.theme = "plain".into();
+                self.save();
                 KeyOut::Local
             }
             Action::OpenCommands => self.open_command_picker(),
@@ -699,7 +771,7 @@ impl Screen {
             field.value = state.text.clone();
         }
         if let Kind::Collapsible { summary, open } = &node.kind {
-            let open = *open || self.opened.contains(&node.id) || self.opened.contains("*");
+            let open = *open || self.prefs.is_open(&node.id);
             if open {
                 node.kind = Kind::Section;
             } else {
@@ -904,7 +976,7 @@ pub trait Session: Send {
 /// The interactive loop.
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     use crossterm::event;
-    let mut screen = Screen::new(100, 40);
+    let mut screen = Screen::durable();
     if let Some(info) = session.info() {
         screen.declare(&info);
     }
@@ -965,6 +1037,8 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
         }
     };
     crossterm::terminal::disable_raw_mode().map_err(|err| err.to_string())?;
+    // The draft is the one thing that could not be written while somebody was typing it.
+    screen.save();
     result
 }
 
@@ -1510,6 +1584,89 @@ mod tests {
         type_text(&mut screen, "half written");
         assert_eq!(screen.key(Key::Interrupt), KeyOut::Intent(Intent::Cancel { target: None }));
         assert_eq!(screen.editor.text(), "half written");
+    }
+
+    /// A path for one test's memory, removed first so a rerun does not read a stale one.
+    fn memory(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("misa-tui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("client.json")
+    }
+
+    #[test]
+    fn a_client_that_remembers_starts_where_somebody_left_off() {
+        // What "a restart forgets where somebody was" meant: the theme, the nodes they had
+        // opened, and the draft were in memory and nowhere else.
+        let path = memory("remember");
+        let mut first = Screen::remembering(Prefs::default(), path.clone());
+        assert_eq!(first.theme.name, "dark", "a client that remembers nothing opens dark");
+        first.key(Key::Action(Action::ThemePlain));
+        first.key(Key::Action(Action::ToggleDetail));
+        type_text(&mut first, "half a question");
+        first.save();
+
+        let second = Screen::remembering(Prefs::load(&path), path.clone());
+        // The theme somebody chose is the one they are drawn with next time.
+        assert_eq!(second.theme.name, "plain");
+        assert_eq!(second.editor.text(), "half a question");
+        // And the opened node is open in what it draws, not only in what it remembers.
+        assert!(text_of(&second, &view()).contains("the result"), "{}", text_of(&second, &view()));
+        let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
+    }
+
+    #[test]
+    fn what_was_sent_is_not_resurrected_by_the_next_run() {
+        let path = memory("spent");
+        let mut screen = Screen::remembering(Prefs::default(), path.clone());
+        type_text(&mut screen, "send me");
+        assert!(matches!(screen.key(Key::Submit), KeyOut::Intent(_)));
+        assert!(screen.editor.is_empty());
+        // The line went out, so the memory of it goes out with it.
+        let next = Screen::remembering(Prefs::load(&path), path.clone());
+        assert_eq!(next.editor.text(), "");
+        let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
+    }
+
+    #[test]
+    fn what_somebody_reaches_for_ranks_the_next_list() {
+        // Frecency was a picker's own memory, which meant it was ranked by nothing the second
+        // time a client started. It is the client's memory now.
+        let path = memory("frecency");
+        let mut first = Screen::remembering(Prefs::default(), path.clone());
+        // A remembering client is a client like any other: it has the session's declarations
+        // and it knows how to parse a line.
+        first.declare(&declaration());
+        first.editor.set_text("/model");
+        first.key(Key::Submit);
+        let candidates = || {
+            ["scripted-1", "scripted-chatty"]
+                .into_iter()
+                .map(|value| Choice { value: value.into(), label: value.into(), detail: None })
+                .collect::<Vec<_>>()
+        };
+        first.candidates("models", candidates(), false);
+        // The second one, deliberately: the first is what a list would offer anyway.
+        first.key(Key::Motion(ed::Motion::Down));
+        assert!(matches!(first.key(Key::Submit), KeyOut::Intent(_)));
+
+        let mut second = Screen::remembering(Prefs::load(&path), path.clone());
+        second.declare(&declaration());
+        second.editor.set_text("/model");
+        second.key(Key::Submit);
+        second.candidates("models", candidates(), false);
+        assert_eq!(second.picker.as_ref().expect("a picker").selected().map(|choice| choice.value.as_str()), Some("scripted-chatty"));
+        let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
+    }
+
+    #[test]
+    fn a_client_with_nowhere_to_write_still_runs() {
+        // A screen with no path is a screen that keeps its memory in memory, which is what a
+        // test has and what a client with no home directory has.
+        let mut screen = Screen::new(80, 24);
+        type_text(&mut screen, "a draft");
+        screen.save();
+        assert_eq!(screen.editor.text(), "a draft");
+        assert!(screen.notice.is_none(), "nothing failed, so there is nothing to say");
     }
 
     #[test]
