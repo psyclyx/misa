@@ -105,7 +105,7 @@ mod tests {
     use crate::blob as blob_client;
     use crate::iroh::Client;
     use misa_kernel::{Provider, ScriptedProvider, Turn};
-    use misa_proto::wire::{Capabilities, Intent, SessionMsg, SubId};
+    use misa_proto::wire::{Intent, SessionMsg, SubId};
     use misa_proto::{ClientInfo, Query};
     use misa_value::Value;
 
@@ -128,7 +128,7 @@ mod tests {
     }
 
     fn client_info() -> ClientInfo {
-        ClientInfo::new("test-client", "0.1.0", Capabilities::plain())
+        ClientInfo::new("test-client", "0.1.0")
     }
 
     /// The whole point of the transport, end to end: a real endpoint, a real client, a
@@ -149,7 +149,7 @@ mod tests {
         // `connect` has already read past the endpoint's greeting: the first thing a caller
         // sees from an attached connection is the session's own answer to a subscription.
         assert_eq!(client.session().map(|session| session.id.as_str()), Some("demo"));
-        within("subscribing", client.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)))
+        within("subscribing", client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)))
             .await
             .expect("a subscription");
         let first = within("a view", client.next()).await.expect("a message").expect("a view");
@@ -222,7 +222,7 @@ mod tests {
 
         // And the session connection is still attached, which is what "in step" means here:
         // two connections, one identity, neither disturbing the other.
-        within("a subscription", session.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)))
+        within("a subscription", session.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)))
             .await
             .expect("a subscription");
         assert!(matches!(
@@ -317,7 +317,7 @@ mod tests {
         .expect("a connection");
         within(
             "subscribing",
-            client.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)),
+            client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)),
         )
         .await
         .expect("a subscription");

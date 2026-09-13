@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use misa_proto::view::{Node, validate};
-use misa_proto::wire::{Capabilities, Intent, SessionEvent, SessionInfo};
+use misa_proto::wire::{Intent, SessionEvent, SessionInfo};
 use misa_proto::{Fault, Query};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Outcome};
 use misa_reframe::fields;
@@ -92,13 +92,13 @@ pub struct Runtime {
 
 struct State {
     state: Loop,
-    /// The last view built, with the revision and client class it was built for.
+    /// The last view built, keyed by revision and the temporary history window.
     ///
     /// Cached because building a tree over a long transcript is the one expensive
     /// thing this layer does, and because a view is a pure function of the database
-    /// and the client's capabilities: the same two inputs must produce the same
+    /// and requested history window: the same inputs must produce the same
     /// tree, so caching cannot be observed.
-    view: Option<(String, u64, Node)>,
+    view: Option<(u64, usize, Node)>,
 }
 
 /// The composition a session runs. Named so a client can display it and a
@@ -166,7 +166,7 @@ impl Runtime {
         state.set_config(config);
         // The transport pushes a snapshot to a client that asks for it; the view is
         // what a client draws before it has sent anything.
-        state.watch(Query::new(views::VIEW_QUERY));
+        state.watch(Query::new(misa_proto::VIEW_QUERY));
 
         let info = SessionInfo {
             id: id.clone(),
@@ -454,8 +454,8 @@ impl Runtime {
     }
 
     /// The view a client would see right now, without going through a query.
-    pub fn view(&self, capabilities: &Capabilities) -> Result<Node, Fault> {
-        match self.read(&Query::new(views::VIEW_QUERY), capabilities)? {
+    pub fn view(&self) -> Result<Node, Fault> {
+        match self.read(&Query::new(misa_proto::VIEW_QUERY))? {
             Reading::View(node) => Ok(node),
             Reading::Data(_) => Err(Fault::new("view", "the view query answered with data")),
         }
@@ -483,31 +483,29 @@ impl Runtime {
 
     /// Read a query. The view is answered here; every other query goes through the
     /// loop's own scope.
-    pub fn read(&self, query: &Query, capabilities: &Capabilities) -> Result<Reading, Fault> {
+    pub fn read(&self, query: &Query) -> Result<Reading, Fault> {
         let mut state = self.state.lock().expect("session state is never poisoned");
-        if query.id == views::VIEW_QUERY {
+        if query.id == misa_proto::VIEW_QUERY {
             let rev = state.state.rev();
-            let class = capabilities.class.as_str().to_string();
-            if let Some((cached_class, cached_rev, node)) = &state.view
-                && *cached_class == class
-                && *cached_rev == rev
-            {
-                return Ok(Reading::View(node.clone()));
-            }
             let limit = query
                 .args
                 .first()
                 .and_then(Value::as_i64)
                 .unwrap_or(views::DEFAULT_WINDOW as i64)
                 .max(1) as usize;
-            let node = views::document(state.state.db(), capabilities, limit, &self.sections);
+            if let Some((cached_rev, cached_limit, node)) = &state.view
+                && *cached_rev == rev && *cached_limit == limit
+            {
+                return Ok(Reading::View(node.clone()));
+            }
+            let node = views::document(state.state.db(), limit, &self.sections);
             // A tree a client cannot rely on is not sent: the session reports and
             // keeps the last valid view, which is what the previous system learned
             // at its frame boundary.
             if let Err(fault) = validate(&node) {
                 return Err(Fault::new("view", fault.to_string()));
             }
-            state.view = Some((class, rev, node.clone()));
+            state.view = Some((rev, limit, node.clone()));
             return Ok(Reading::View(node));
         }
         let value = state
@@ -578,7 +576,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn view(runtime: &Runtime) -> Node {
-        match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::plain()).unwrap() {
+        match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
             Reading::View(node) => node,
             Reading::Data(_) => panic!("expected a view"),
         }
@@ -738,8 +736,8 @@ pub(crate) mod tests {
         });
         assert!(faults.is_empty(), "{faults:?}");
 
-        // A client that can draw is sent the reference; a client that cannot is sent the words.
-        let drawn = match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::browser()).unwrap() {
+        // Every client receives the image reference and its alternative text.
+        let drawn = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
             Reading::View(node) => node,
             Reading::Data(_) => panic!("expected a view"),
         };
@@ -872,7 +870,7 @@ pub(crate) mod tests {
         match &input.kind {
             misa_proto::view::Kind::Fields { fields } => {
                 assert_eq!(fields.len(), 1);
-                assert_eq!(fields[0].kind, misa_proto::view::FieldKind::Secret);
+                assert!(fields[0].secret);
             }
             other => panic!("expected a field, got {other:?}"),
         }
@@ -895,9 +893,8 @@ pub(crate) mod tests {
         let rows = misa_proto::view::find(&node, "panel.rows").expect("rows");
         assert_eq!(rows.children.len(), 7, "one row per fact the panel reported");
         match &rows.children[0].kind {
-            misa_proto::view::Kind::Fields { fields } => assert_eq!(
-                fields[0].kind,
-                misa_proto::view::FieldKind::ReadOnly,
+            misa_proto::view::Kind::Fields { fields } => assert!(
+                fields[0].read_only,
                 "a row a client could type into is a row nobody can save"
             ),
             other => panic!("expected a row, got {other:?}"),
@@ -948,7 +945,7 @@ pub(crate) mod tests {
 
         // Told to the model as a system message, which is where both providers read a note that
         // is not part of the conversation.
-        let messages = match runtime.read(&Query::new("session.conversation"), &Capabilities::plain()).unwrap() {
+        let messages = match runtime.read(&Query::new("session.conversation")).unwrap() {
             Reading::Data(value) => value,
             Reading::View(_) => panic!("expected data"),
         };
@@ -1009,14 +1006,14 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_view_query_is_advertised_and_answers() {
         let runtime = runtime();
-        assert!(runtime.queries().iter().any(|query| query == views::VIEW_QUERY));
+        assert!(runtime.queries().iter().any(|query| query == misa_proto::VIEW_QUERY));
         assert_eq!(view(&runtime).role, "session");
     }
 
     #[tokio::test]
     async fn a_data_query_is_answered_as_data() {
         let runtime = runtime();
-        match runtime.read(&Query::new("session.status"), &Capabilities::plain()).unwrap() {
+        match runtime.read(&Query::new("session.status")).unwrap() {
             Reading::Data(value) => assert_eq!(value.get("status").and_then(Value::as_str), Some("idle")),
             Reading::View(_) => panic!("expected data"),
         }
@@ -1026,36 +1023,34 @@ pub(crate) mod tests {
     async fn the_view_is_cached_until_the_database_changes() {
         let runtime = runtime();
         let first = view(&runtime);
-        let (class, rev, cached) = runtime.state.lock().unwrap().view.clone().expect("a cached view");
+        let (rev, window, cached) = runtime.state.lock().unwrap().view.clone().expect("a cached view");
         assert_eq!(first.id, cached.id);
-        assert_eq!(class, "plain");
+        assert_eq!(window, views::DEFAULT_WINDOW);
         assert_eq!(rev, runtime.rev());
     }
 
     #[tokio::test]
-    async fn a_client_that_cannot_show_details_is_handed_a_tree_it_can_draw() {
+    async fn repeated_reads_return_the_same_tree() {
         let runtime = runtime();
-        let plain = match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::plain()).unwrap() {
+        let plain = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
             Reading::View(node) => node,
             Reading::Data(_) => panic!("expected a view"),
         };
-        let rich = match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::browser()).unwrap() {
+        let rich = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
             Reading::View(node) => node,
             Reading::Data(_) => panic!("expected a view"),
         };
-        // Same structure, and the one difference is the *default* a client that has
-        // no disclosure widget needs.
-        assert_eq!(plain.children.len(), rich.children.len());
+        assert_eq!(plain, rich);
     }
 
     #[tokio::test]
     async fn the_view_window_is_an_argument_not_a_property_of_the_session() {
         let runtime = runtime();
         let narrow = runtime
-            .read(&Query::new(views::VIEW_QUERY).arg(Value::Int(1)), &Capabilities::plain())
+            .read(&Query::new(misa_proto::VIEW_QUERY).arg(Value::Int(1)))
             .unwrap();
         let wide = runtime
-            .read(&Query::new(views::VIEW_QUERY).arg(Value::Int(40)), &Capabilities::plain())
+            .read(&Query::new(misa_proto::VIEW_QUERY).arg(Value::Int(40)))
             .unwrap();
         match (narrow, wide) {
             (Reading::View(a), Reading::View(b)) => {
@@ -1209,7 +1204,7 @@ mod contribution_tests {
     fn presenting(plugin: &'static str) -> views::Section {
         views::Section {
             plugin: plugin.to_string(),
-            build: std::sync::Arc::new(|_capabilities, db, _window| {
+            build: std::sync::Arc::new(|db, _window| {
                 let mut tree = Node::section("test.widget").id("widget");
                 tree.label = Some(format!("{} bytes of state", misa_render::to_plain(&[]).len()));
                 tree.children.push(
@@ -1279,7 +1274,7 @@ mod contribution_tests {
         // difference between a widget that is missing and a session whose view nobody can draw.
         let broken = views::Section {
             plugin: "test.broken".to_string(),
-            build: std::sync::Arc::new(|_capabilities, _db, _window| Err("nothing to draw".to_string())),
+            build: std::sync::Arc::new(|_db, _window| Err("nothing to draw".to_string())),
         };
         let runtime = session(Contribution::new().with_section(broken));
         let node = view(&runtime);
@@ -1317,7 +1312,7 @@ mod contribution_tests {
             fields: Vec::new(),
         });
         assert!(faults.is_empty(), "{faults:?}");
-        match runtime.read(&Query::new("guest.acted"), &Capabilities::plain()).expect("a value") {
+        match runtime.read(&Query::new("guest.acted")).expect("a value") {
             Reading::Data(value) => assert_eq!(value.as_str(), Some("refresh")),
             Reading::View(_) => panic!("expected data"),
         }
@@ -1358,7 +1353,7 @@ mod contribution_tests {
 
     /// What a composition's subscription says right now, as a client would read it.
     fn value(runtime: &Runtime, query: &str) -> Value {
-        match runtime.read(&Query::new(query), &Capabilities::plain()).expect("a value") {
+        match runtime.read(&Query::new(query)).expect("a value") {
             Reading::Data(value) => value,
             Reading::View(_) => panic!("a composition's subscription answered with a view"),
         }
@@ -1474,14 +1469,14 @@ mod contribution_tests {
         let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
         assert!(faults.is_empty(), "{faults:?}");
 
-        let reading = runtime.read(&Query::new("guest.seen"), &Capabilities::plain()).expect("a value");
+        let reading = runtime.read(&Query::new("guest.seen")).expect("a value");
         match reading {
             Reading::Data(value) => assert_eq!(value.as_str(), Some("intent/prompt")),
             Reading::View(_) => panic!("a composition's subscription answered with a view"),
         }
         // And a client can see the turn the shipped loop ran, which is what says the two
         // registrations live in one loop rather than two.
-        let text = match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::plain()).unwrap() {
+        let text = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
             Reading::View(node) => misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100)),
             Reading::Data(_) => panic!("expected a view"),
         };

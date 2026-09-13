@@ -112,7 +112,7 @@ impl Guest for Shell {
     /// on is one this plugin offered. The database is checked for `spin`, which is a switch a
     /// test flips to prove that a runaway guest is stopped by its budget rather than by anybody
     /// noticing.
-    fn view(capabilities: String, db: String, window: u32) -> Result<ViewTree, Fault> {
+    fn view(db: String, window: u32) -> Result<ViewTree, Fault> {
         if db.contains("\"spin\"") {
             let mut turns: u64 = 0;
             loop {
@@ -147,15 +147,12 @@ impl Guest for Shell {
                     id: "guest.summary".to_string(),
                     role: "guest.summary".to_string(),
                     kind: "status".to_string(),
-                    // What a plugin can honestly say about the call it was given: how many
-                    // messages the session is showing, how much state it handed over, and what the
-                    // client said it can draw. A plugin learns a client's *capabilities* and
-                    // nothing else about it.
+                    // A semantic report of the state the session supplied.
                     data: Some(format!(
                         "{{\"text\":\"{} messages, {} bytes of state, drawn for {}\"}}",
                         window,
                         db.len(),
-                        capabilities.replace('"', "'"),
+                        "semantic",
                     )),
                     parent: Some(0),
                     actions: Vec::new(),

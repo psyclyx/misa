@@ -47,7 +47,7 @@ pub use blob::{BlobMsg, BlobReply, MAX_BLOB_BYTES, MAX_BLOB_FRAME};
 pub use frame::{FrameError, decode, encode};
 pub use view::Node;
 pub use wire::{
-    Capabilities, ClientInfo, ClientMsg, Fault, Intent, Level, Query, RenderClass, SessionEvent, SessionInfo,
+    ClientInfo, ClientMsg, Fault, Intent, Level, Query, SessionEvent, SessionInfo,
     Pairing, SessionMsg, SubId, Ticket,
 };
 
@@ -74,3 +74,20 @@ pub const ALPN_KERNEL: &[u8] = b"/misa/kernel/0";
 /// reference. That is a real limit and the reason [`wire::Query`] exists: a
 /// client asks for the window it is showing instead of being handed everything.
 pub const MAX_CONTROL_FRAME: usize = 8 * 1024 * 1024;
+
+/// The canonical session document query.
+pub const VIEW_QUERY: &str = "session.view";
+
+/// Names of the shipped completion sources, shared by sessions and clients.
+pub mod completion {
+    pub const MODELS: &str = "models";
+    pub const EFFORT: &str = "effort";
+    pub const COMMANDS: &str = "commands";
+    pub const PROVIDERS: &str = "providers";
+    pub const CONVERSATIONS: &str = "conversations";
+    pub const CONVERSATIONS_QUERY: &str = "session.conversations";
+    pub const MODELS_QUERY: &str = "completion.models";
+    pub const EFFORT_QUERY: &str = "completion.effort";
+    pub const COMMANDS_QUERY: &str = "completion.commands";
+    pub const PROVIDERS_QUERY: &str = "completion.providers";
+}

@@ -10,7 +10,7 @@
 //! data and the client draws it" has to mean to be testable. It is also what a script
 //! uses, so it prints only when the rendered text actually changed.
 
-use misa_proto::wire::{Capabilities, Intent};
+use misa_proto::wire::Intent;
 use misa_proto::{Query, SessionMsg, SubId};
 
 #[tokio::main]
@@ -30,10 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let message = misa_net::iroh::Client::pair(&endpoint, target.clone(), code, "the command line").await?;
         eprintln!("[paired] {message}");
     }
-    let info = misa_proto::ClientInfo::new("misa-cli", env!("CARGO_PKG_VERSION"), Capabilities::plain());
+    let info = misa_proto::ClientInfo::new("misa-cli", env!("CARGO_PKG_VERSION"));
     let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client
-        .subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY))
+        .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY))
         .await?;
     // The declarations arrive with the session, and they are what makes this frontend as
     // capable as any other: a client that holds them knows that `/models` exists and that

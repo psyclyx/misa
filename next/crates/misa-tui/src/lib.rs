@@ -27,7 +27,7 @@ use misa_client::picker::{Accept, Effect as PickerEffect, Picker};
 use misa_client::prefs::Prefs;
 use misa_client::{editor as ed, intent as line, select};
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
-use misa_proto::wire::{Capabilities, Command, Intent, SessionInfo, Source, SourceKind};
+use misa_proto::wire::{Command, Intent, SessionInfo, Source, SourceKind};
 use misa_render::{Line, Theme};
 
 /// One action this program can take on its own display.
@@ -221,9 +221,6 @@ impl Screen {
         }
     }
 
-    pub fn capabilities(&self) -> Capabilities {
-        Capabilities::tui(self.width as u32, self.height as u32)
-    }
 
     /// Take the session's declarations.
     ///
@@ -757,8 +754,8 @@ impl Screen {
     /// Apply the client's own decisions to the tree the session sent.
     ///
     /// A collapsible the reader opened keeps its children and drops its summary; one
-    /// they closed does the opposite. The session's `open` is a default and nothing
-    /// more, which is why a theme change or a re-render never loses somebody's place.
+    /// they closed does the opposite. Expansion belongs to the client;
+    /// this is why a theme change or a re-render never loses somebody's place.
     pub fn resolve(&self, node: &Node) -> Node {
         let mut node = node.clone();
         node.children = node.children.iter().map(|child| self.resolve(child)).collect();
@@ -770,8 +767,8 @@ impl Screen {
         {
             field.value = state.text.clone();
         }
-        if let Kind::Collapsible { summary, open } = &node.kind {
-            let open = *open || self.prefs.is_open(&node.id);
+        if let Kind::Collapsible { summary } = &node.kind {
+            let open = self.prefs.is_open(&node.id);
             if open {
                 node.kind = Kind::Section;
             } else {
@@ -798,7 +795,7 @@ fn panel_of(view: &Node) -> Option<&Node> {
 /// The field a panel wants typed into, if it wants one.
 fn panel_field(panel: &Node) -> Option<&Field> {
     panel.children.iter().find_map(|child| match &child.kind {
-        Kind::Fields { fields } if child.actions.iter().any(|action| action.on == ActionOn::Submit) => fields.first(),
+        Kind::Fields { fields } if child.actions.iter().any(|action| action.on == ActionOn::Submit) => fields.iter().find(|field| !field.read_only),
         _ => None,
     })
 }
@@ -1154,17 +1151,17 @@ impl Remote {
         if let Some(code) = &code {
             misa_net::iroh::Client::pair(&endpoint, address.clone(), code, "the tui").await?;
         }
-        let info = misa_proto::ClientInfo::new("misa-tui", env!("CARGO_PKG_VERSION"), Capabilities::tui(100, 40));
+        let info = misa_proto::ClientInfo::new("misa-tui", env!("CARGO_PKG_VERSION"));
         let mut client = misa_net::iroh::Client::connect(&endpoint, address, info, &ticket.session).await?;
         client
-            .subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_session::views::VIEW_QUERY))
+            .subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY))
             .await?;
         // Every resident source the declaration offered, held once. This is the whole
         // cost of a picker that never asks again.
         client
             .subscribe(
                 misa_proto::SubId(2),
-                misa_proto::Query::new(misa_session::completions::CONVERSATIONS_QUERY),
+                misa_proto::Query::new(misa_proto::completion::CONVERSATIONS_QUERY),
             )
             .await?;
         for source in ["models", "effort", "commands"] {
@@ -1305,7 +1302,7 @@ impl Session for Local {
             return Ok(None);
         }
         self.seen = self.runtime.rev();
-        match self.runtime.view(&Capabilities::tui(100, 40)) {
+        match self.runtime.view() {
             Ok(view) => Ok(Some(view)),
             Err(fault) => Err(fault.message),
         }
@@ -1371,7 +1368,7 @@ mod tests {
             .child(
                 Node::new("tool.call", Kind::Collapsible {
                     summary: vec![misa_proto::view::Span::plain("echo (collapsed)")],
-                    open: false,
+
                 })
                 .id("call.1")
                 .child(Node::text("tool.result", [misa_proto::view::Span::plain("the result")])),
@@ -1397,7 +1394,9 @@ mod tests {
                             label: "Token".into(),
                             value: String::new(),
                             hint: None,
-                            kind: misa_proto::view::FieldKind::Secret,
+                            read_only: false,
+                            secret: true,
+                            kind: misa_proto::view::FieldKind::Inline,
                         }],
                     },
                 )
@@ -1429,9 +1428,9 @@ mod tests {
         for character in "sk-a-secret".chars() {
             assert_eq!(screen.panel_key(&view, &Key::Char(character)), Some(KeyOut::Local));
         }
-        // The composer never saw a key, and what was typed is on the screen.
+        // The composer never saw a key, and the secret is masked on screen.
         assert_eq!(screen.editor.text(), "", "the panel's keys went into the composer");
-        assert!(text_of(&screen, &view).contains("sk-a-secret"), "{}", text_of(&screen, &view));
+        assert!(!text_of(&screen, &view).contains("sk-a-secret"), "{}", text_of(&screen, &view));
 
         match screen.panel_key(&view, &Key::Submit) {
             Some(KeyOut::Intent(Intent::Action { action, fields, .. })) => {

@@ -108,7 +108,7 @@ private fun ShapeView(node: Node, expanded: Set<String>, onToggle: (String) -> U
                         progress = { (shape.value / shape.max.coerceAtLeast(1.0)).toFloat().coerceIn(0f, 1f) },
                         modifier = Modifier.width(120.dp),
                     )
-                    Text("  ${shape.text}", style = MaterialTheme.typography.bodySmall)
+                    Text("  ${shape.value}/${shape.max}", style = MaterialTheme.typography.bodySmall)
                 }
                 if (shape.meterLabel.isNotEmpty()) {
                     Text(shape.meterLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -179,7 +179,7 @@ private fun DataTable(shape: Shape.Table) {
 
 @Composable
 private fun Collapsible(node: Node, shape: Shape.Collapsible, expanded: Set<String>, onToggle: (String) -> Unit, onAction: (String, Action, List<FieldValue>) -> Unit) {
-    val open = if (node.id.isEmpty()) shape.open else (node.id in expanded)
+    val open = node.id in expanded
     Column {
         TextButton(onClick = { if (node.id.isNotEmpty()) onToggle(node.id) }, enabled = node.id.isNotEmpty()) {
             Text((if (open) "▾ " else "▸ ") + inline(shape.summary).text, style = MaterialTheme.typography.bodyMedium)
@@ -199,8 +199,23 @@ private fun Form(node: Node, shape: Shape.Fields, onAction: (String, Action, Lis
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         shape.fields.forEach { field ->
             val current = values[field.id] ?: field.value
-            when (field.shape) {
-                "multiline" ->
+            when {
+                // A row rather than an input: a panel's facts are read, and a text field
+                // anybody could type into would be an edit nothing can save.
+                field.readOnly ->
+                    Column {
+                        Text(field.label, style = MaterialTheme.typography.labelMedium)
+                        Text(if (field.secret) "••••" else field.value, style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                field.secret -> OutlinedTextField(
+                    value = current,
+                    onValueChange = { values[field.id] = it },
+                    label = { Text(field.label) },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                field.shape == "block" ->
                     OutlinedTextField(
                         value = current,
                         onValueChange = { values[field.id] = it },
@@ -208,16 +223,7 @@ private fun Form(node: Node, shape: Shape.Fields, onAction: (String, Action, Lis
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2,
                     )
-                // A row rather than an input: a panel's facts are read, and a text field
-                // anybody could type into would be an edit nothing can save.
-                // A row rather than an input: a panel's facts are read, and a text field
-                // anybody could type into would be an edit nothing can save.
-                "read_only" ->
-                    Column {
-                        Text(field.label, style = MaterialTheme.typography.labelMedium)
-                        Text(field.value, style = MaterialTheme.typography.bodyMedium)
-                    }
-                "bool" ->
+                field.shape == "bool" ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
                             checked = current == "true",
@@ -225,7 +231,7 @@ private fun Form(node: Node, shape: Shape.Fields, onAction: (String, Action, Lis
                         )
                         Text(field.label)
                     }
-                "choice" -> {
+                field.shape == "choice" -> {
                     Column {
                         Text(field.label, style = MaterialTheme.typography.labelMedium)
                         field.options.forEach { option ->

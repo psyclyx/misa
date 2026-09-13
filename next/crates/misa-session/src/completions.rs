@@ -30,7 +30,7 @@ use crate::catalog;
 
 /// A fact about the conversation list, as its own query so a client can show a
 /// count without asking for candidates.
-pub const CONVERSATIONS_QUERY: &str = "session.conversations";
+use misa_proto::completion::CONVERSATIONS_QUERY;
 
 /// Every resident source the shipped session installs.
 ///
@@ -39,7 +39,7 @@ pub const CONVERSATIONS_QUERY: &str = "session.conversations";
 pub fn subscriptions(registry: Registry) -> Registry {
     registry
         .subscription(
-            "completion.models",
+            misa_proto::completion::MODELS_QUERY,
             read_query(|db, _query| {
                 let session = db.get("session");
                 let current = session
@@ -72,7 +72,7 @@ pub fn subscriptions(registry: Registry) -> Registry {
         .subscription(
             // Only the levels the current model takes: offering "high" to a model
             // that ignores it is telling a person a setting exists.
-            "completion.effort",
+            misa_proto::completion::EFFORT_QUERY,
             read_query(|db, _query| {
                 let model_id = db
                     .get("session")
@@ -109,7 +109,7 @@ pub fn subscriptions(registry: Registry) -> Registry {
             // command's candidate carries its slash. The declaration omits it
             // because a slash is punctuation and punctuation belongs to whoever is
             // writing the line.
-            "completion.commands",
+            misa_proto::completion::COMMANDS_QUERY,
             read_query(|_db, _query| {
                 Value::list(
                     catalog::commands()
@@ -141,7 +141,7 @@ pub fn subscriptions(registry: Registry) -> Registry {
         .subscription(
             // The services the kernel knows by name. The list is the *daemon's*, not the
             // client's, because which services exist is a composition decision.
-            "completion.providers",
+            misa_proto::completion::PROVIDERS_QUERY,
             read_query(|_db, _query| {
                 Value::list(
                     misa_kernel::presets::ids()

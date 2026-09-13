@@ -362,20 +362,14 @@ impl Plugin {
     /// The validation is [`misa_proto::view::validate`] — the same function a session's own
     /// view is held to — so a plugin's tree is not merely *its* tree: it is a tree every
     /// client may assume things about, or it is a fault.
-    pub fn view(&self, capabilities: &misa_proto::wire::Capabilities, db: &Value, window: usize) -> Result<Node, PluginFault> {
-        // The client's capabilities go over as the json a client declared: the render class,
-        // whether it has a native disclosure widget, its size. That is the *whole* of what a
-        // plugin learns about a client, which is what keeps presentation policy in one place —
-        // the tree it returns is placed by the session for every frontend at once.
-        let capabilities = serde_json::to_string(capabilities)
-            .map_err(|error| PluginFault::host(format!("the client's capabilities: {error}")))?;
+    pub fn view(&self, db: &Value, window: usize) -> Result<Node, PluginFault> {
         let db = to_json(db, "this session's state")?;
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
         fuelled(store)?;
         let tree = bindings
             .interface0
-            .call_view(store, &capabilities, &db, window as u32)
+            .call_view(store, &db, window as u32)
             .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
             .map_err(|fault| PluginFault::guest(&fault))?;
         let node = tree_of(&tree)?;
