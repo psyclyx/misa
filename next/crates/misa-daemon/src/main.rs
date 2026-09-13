@@ -614,7 +614,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_plugin_is_a_path_given_once_or_more() {
         // Repeatable because it is a list, and a path because what a daemon runs is a decision
         // somebody makes where the daemon is.
@@ -625,6 +624,7 @@ mod tests {
         assert!(none.plugins.is_empty(), "a daemon with no plugins runs none");
     }
 
+    #[test]
     fn login_names_a_provider_and_a_key_is_never_an_argument() {
         // The command line has no way to carry a secret: it names what to authorize, and the
         // value comes from a device flow — or, for a service with a key, from a client's login

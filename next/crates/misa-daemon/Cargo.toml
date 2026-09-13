@@ -10,7 +10,6 @@ rust-version.workspace = true
 # The pairing code, drawn for a camera. An encoder rather than a link to one: a daemon that
 # cannot show a code without reaching the network is a daemon that cannot be paired offline.
 qrcode = { version = "0.14", default-features = false }
-clap.workspace = true
 misa-kernel.workspace = true
 misa-net.workspace = true
 misa-proto.workspace = true
