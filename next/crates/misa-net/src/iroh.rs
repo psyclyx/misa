@@ -36,6 +36,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::{Session, encode};
+#[path = "actor.rs"]
+mod actor;
+pub use actor::Client;
 /// Bind an endpoint.
 ///
 /// `relay` off means the endpoint uses only addresses it can reach directly, which
@@ -482,7 +485,7 @@ async fn converse(
 /// current state, so a client that re-subscribes converges on whatever happened while it was
 /// away and nothing has to be replayed. An *intent* is never replayed, because it either
 /// happened or it did not and only a person knows which they meant.
-pub struct Client {
+struct WireClient {
     /// Kept so a connection can be re-established. A client that did not keep these would
     /// have to be handed its ticket again, which is a frontend's problem becoming a person's.
     endpoint: Endpoint,
@@ -495,7 +498,7 @@ pub struct Client {
     decoder: Decoder,
 }
 
-impl Client {
+impl WireClient {
     /// How many times a dropped connection is re-established before a read gives up.
     ///
     /// Bounded, because "the daemon is gone" has to be an answer rather than a loop, and
@@ -507,9 +510,9 @@ impl Client {
         address: EndpointAddr,
         info: ClientInfo,
         session: &str,
-    ) -> Result<Client, String> {
+    ) -> Result<WireClient, String> {
         let (send, recv) = dial(endpoint, &address).await?;
-        let mut client = Client {
+        let mut client = WireClient {
             endpoint: endpoint.clone(),
             address,
             state: misa_protocol::Client::new(info, session),
@@ -644,10 +647,7 @@ impl Client {
     }
 
     async fn send_subscription(&mut self, message: ClientMsg) -> Result<(), String> {
-        match self.write(&message).await {
-            Ok(()) => Ok(()),
-            Err(error) => self.restore().await.map_err(|_| error),
-        }
+        self.write(&message).await
     }
 
     /// An intent, which is never replayed: it either happened or it did not.
@@ -656,14 +656,7 @@ impl Client {
     /// bytes left — so this reports the failure rather than sending it again. A prompt a
     /// session recorded twice is worse than a prompt somebody has to type again.
     pub async fn intent(&mut self, id: u64, intent: misa_proto::wire::Intent) -> Result<(), String> {
-        match self.write(&ClientMsg::Intent { id, intent }).await {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                // For the *next* call, not this one.
-                let _ = self.restore().await;
-                Err(error)
-            }
-        }
+        self.write(&ClientMsg::Intent { id, intent }).await
     }
 
     async fn write(&mut self, message: &ClientMsg) -> Result<(), String> {
@@ -684,37 +677,6 @@ impl Client {
         Err(last)
     }
 
-    /// The next message, or `None` when the session is gone.
-    ///
-    /// A dropped connection is not the end of a session: the facts live elsewhere and a
-    /// subscription converges, so the way back is to re-subscribe and keep reading. What
-    /// this will not do is retry for ever — a daemon that is not there has to be an answer.
-    pub async fn next(&mut self) -> Result<Option<SessionMsg>, String> {
-        let mut attempts = 0;
-        loop {
-            // What to report if this turns out to be the last try: the error that closed the
-            // connection, or nothing at all for a connection that closed quietly, which a
-            // daemon that is restarting cannot announce any other way.
-            let last = match self.read_next().await {
-                Ok(Some(message)) => return Ok(Some(message)),
-                Ok(None) => None,
-                Err(error) => Some(error),
-            };
-            if attempts >= Self::RECONNECT_TRIES {
-                return match last {
-                    Some(error) => Err(error),
-                    None => Ok(None),
-                };
-            }
-            attempts += 1;
-            tokio::time::sleep(backoff(attempts)).await;
-            // A re-establishment that fails is not remembered: the next read fails on that
-            // same connection and says the same thing, and the message a person needs is the
-            // one that arrives when the tries run out.
-            let _ = self.reestablish().await;
-        }
-    }
-
     /// Read one message from the connection this client has now.
     async fn read_next(&mut self) -> Result<Option<SessionMsg>, String> {
         loop {
@@ -722,19 +684,13 @@ impl Client {
                 let payload = frame.map_err(|err| err.to_string())?;
                 let message: SessionMsg = misa_proto::chunk::decode(&payload).map_err(|err| err.to_string())?;
                 if let Err(error) = self.state.receive(&message) {
-                    if let SessionMsg::Changes { id, .. } = &message {
-                        if let Some(reset) = self.state.reset_view(*id) {
-                            self.write(&reset).await?;
-                            continue;
-                        }
-                    }
                     return Err(error);
                 }
                 return Ok(Some(message));
             }
             let mut buffer = vec![0u8; 16 * 1024];
             match self.recv.read(&mut buffer).await {
-                Ok(None) => return Ok(None),
+                Ok(None) => { self.decoder.finish().map_err(|error| error.to_string())?; return Ok(None); },
                 Ok(Some(bytes)) => {
                     self.decoder.push(&buffer[..bytes]).map_err(|err| err.to_string())?;
                 }
