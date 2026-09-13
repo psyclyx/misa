@@ -62,7 +62,9 @@ pub fn registry() -> Registry {
         .on_fn("intent/queue.take", 0, "agent.queue.take", on_queue_take)
         .on_fn("intent/queue.clear", 0, "agent.queue.clear", on_queue_clear)
         .on_fn("kernel/conversations", 0, "agent.conversations", on_conversations)
+        .on_fn("kernel/log.loaded", 0, "agent.loaded", on_loaded)
         .on_fn("kernel/credential", 0, "agent.credential", on_credential)
+        .on_fn("kernel/credential.prompt", 0, "agent.credential.prompt", on_credential_prompt)
         .on_fn("kernel/blob", 0, "agent.blob", on_blob)
         .on_fn("kernel/process.finished", 0, "agent.process.finished", on_process_finished)
         .on_fn("queue/next", 0, "agent.queue.next", on_queue_next)
@@ -122,11 +124,39 @@ pub fn event_for(event: KernelEvent) -> Event {
         KernelEvent::Conversations { id, headers } => {
             Event::new("kernel/conversations").with("id", Value::str(id)).with("headers", headers)
         }
+        // A conversation read back: its entries in the order they were appended, each with the
+        // kind that says what it is. This is the one event that *rebuilds* a transcript rather
+        // than adding to one, which is why it is not noted and dropped like the rest.
+        KernelEvent::Loaded { conversation, entries } => Event::new("kernel/log.loaded")
+            .with("conversation", Value::str(conversation))
+            .with(
+                "entries",
+                Value::list(
+                    entries
+                        .into_iter()
+                        .map(|entry| {
+                            Value::map([
+                                ("seq", Value::Int(entry.seq)),
+                                ("kind", Value::str(entry.kind)),
+                                ("data", entry.data),
+                            ])
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            ),
         KernelEvent::Credential { id, ok, message, slots } => Event::new("kernel/credential")
             .with("id", Value::str(id))
             .with("ok", Value::Bool(ok))
             .with("message", Value::str(message))
             .with("slots", slots),
+        // The one kernel event a person has to act on: a code and where to type it. It is
+        // carried as the two strings it is, because what to do with them — a panel, a
+        // notification, a link — is the session's decision and not the kernel's.
+        KernelEvent::CredentialPrompt { id, provider, url, code } => Event::new("kernel/credential.prompt")
+            .with("id", Value::str(id))
+            .with("provider", Value::str(provider))
+            .with("url", Value::str(url))
+            .with("code", Value::str(code)),
         KernelEvent::Blob { id, ok, hash, len, media, message } => Event::new("kernel/blob")
             .with("id", Value::str(id))
             .with("ok", Value::Bool(ok))
@@ -159,7 +189,7 @@ pub fn event_for(event: KernelEvent) -> Event {
             Event::new("kernel/failed").with("id", Value::str(id)).with("message", Value::str(message))
         }
         // A recorded fact changes nothing the loop decides, so it is not an event.
-        KernelEvent::Appended { .. } | KernelEvent::Loaded { .. } | KernelEvent::AttemptRecorded { .. } => {
+        KernelEvent::Appended { .. } | KernelEvent::AttemptRecorded { .. } => {
             Event::new("kernel/noted").with_value(Value::Null)
         }
     }
@@ -356,7 +386,7 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             tx.set("session.status", Value::str("idle"))?;
             tx.set("session.attachments", Value::list([]))?;
             tx.delete("session.pending")?;
-            tx.delete("session.panel")?;
+            tx.delete("panel")?;
             tx.fx(Effect::new("kernel.log.append")
                 .with("conversation", Value::str(&conversation))
                 .with("kind", Value::str("reset"))
@@ -502,9 +532,22 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             )?;
         }
         "login" => {
+            let slot = argument(&args, "provider").unwrap_or("scripted").to_string();
+            // A service that hands out tokens rather than keys has nothing for anybody to
+            // paste, so `/login` asks the kernel to start its device flow and the code comes
+            // back as a panel. That is the difference between a subscription being usable
+            // from this session and it being usable only from the daemon's own command line.
+            if misa_kernel::presets::oauth(&slot).is_some() {
+                tx.fx(Effect::new("kernel.credential").with_value(Value::map([
+                    ("id", Value::str("login")),
+                    ("action", Value::str("oauth")),
+                    ("provider", Value::str(&slot)),
+                ])));
+                notice(tx, Level::Info, format!("authorizing `{slot}` — a code is about to be shown"))?;
+                return Ok(());
+            }
             // A secret is never an argument: it goes in a field, and the effect that stores
             // it is the only thing that ever sees it.
-            let slot = argument(&args, "provider").unwrap_or("scripted").to_string();
             panel(
                 tx,
                 "login",
@@ -517,7 +560,7 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                     ("panel.close".into(), "Cancel".into()),
                 ],
             )?;
-            tx.set("session.panel.slot", Value::str(&slot))?;
+            tx.set("panel.slot", Value::str(&slot))?;
         }
         "logout" => {
             let slot = argument(&args, "provider").unwrap_or("").to_string();
@@ -595,11 +638,11 @@ fn panel(
     fields: Vec<(String, String)>,
     actions: Vec<(String, String)>,
 ) -> Result<(), Fault> {
-    if tx.get("session.panel").is_some() {
-        tx.delete("session.panel.slot")?;
+    if tx.get("panel").is_some() {
+        tx.delete("panel.slot")?;
     }
     tx.set(
-        "session.panel",
+        "panel",
         Value::map([
             ("id", Value::str(id)),
             ("title", Value::str(title)),
@@ -677,14 +720,14 @@ fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             Ok(())
         }
         "panel.close" => {
-            tx.delete("session.panel")?;
+            tx.delete("panel")?;
             Ok(())
         }
         "panel.submit" => {
             // The only path a secret takes: from a client's field, through this effect, into
             // the daemon's store.
-            let id = tx.text("session.panel.id");
-            let slot = tx.text("session.panel.slot");
+            let id = tx.text("panel.id");
+            let slot = tx.text("panel.slot");
             let fields = fields::event_value(event, "fields");
             let value = fields
                 .as_list()
@@ -693,7 +736,7 @@ fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if id != "login" {
-                tx.delete("session.panel")?;
+                tx.delete("panel")?;
                 return Ok(());
             }
             if value.trim().is_empty() {
@@ -731,6 +774,88 @@ fn on_conversations(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     Ok(())
 }
 
+/// Somebody has to finish an authorization in a browser, so they are shown how.
+///
+/// A panel rather than a notice, because a code and an address are things a person copies
+/// and comes back to, and because a panel is what every frontend already draws — which is
+/// what makes a device flow startable from a terminal, a browser, and a phone alike rather
+/// than from a daemon's console.
+///
+/// It is replaced by the outcome: the same `kernel.credential` event that follows closes it,
+/// so an approved code never sits on a screen looking like something still to do.
+fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let provider = fields::event_text(event, "provider");
+    let url = fields::event_text(event, "url");
+    let code = fields::event_text(event, "code");
+    panel(
+        tx,
+        "authorize",
+        &format!("Authorize `{provider}`"),
+        "Open the address, enter the code, and approve it. This session is polling until it is \
+         approved, and the token it gets back is stored by the daemon.",
+        vec![("code", code), ("address", url)],
+        Vec::new(),
+        vec![("panel.close".into(), "Dismiss".into())],
+    )
+}
+
+/// A stored conversation, read back, which is what `/resume <id>` asked for.
+///
+/// The log is the truth, so the transcript is *rebuilt* from the entries rather than merged
+/// with what is on screen: somebody who asked for another conversation asked to see that one.
+/// A `reset` entry is honoured because it says an earlier part of the branch was cleared, and
+/// a resumed conversation that opened with the messages compaction replaced would be a
+/// transcript nobody ever had.
+///
+/// A message that was still streaming when the log was written is settled exactly as it was:
+/// an unfinished turn is a fact about what happened, and nothing here re-issues it.
+fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let conversation = fields::event_text(event, "conversation");
+    let entries = fields::event_value(event, "entries");
+    let mut messages: Vec<Value> = Vec::new();
+    for entry in entries.as_list().unwrap_or(&[]) {
+        match entry.get("kind").and_then(Value::as_str).unwrap_or_default() {
+            "reset" => messages.clear(),
+            "message" => {
+                if let Some(message) = entry.get("data").and_then(Value::as_map) {
+                    let mut message = message.clone();
+                    // A sequence is the id every node made from this message is keyed by, and
+                    // two messages with no id are two nodes with the same id — a tree no client
+                    // may be sent. An entry that carries none gets the log's own.
+                    if !matches!(message.get("seq"), Some(Value::Int(_))) {
+                        let seq = entry.get("seq").and_then(Value::as_i64).unwrap_or(messages.len() as i64);
+                        message.insert("seq".to_string(), Value::Int(seq));
+                    }
+                    messages.push(Value::Map(std::sync::Arc::new(message)));
+                }
+            }
+            // A kind this session does not know is a fact from a version that knew more, and
+            // skipping it is the only honest thing to do with it.
+            _ => {}
+        }
+    }
+    let loaded = messages.len();
+    let previous = tx.text("session.conversation");
+    tx.set("session.conversation", Value::str(&conversation))?;
+    tx.set("messages", Value::list(messages))?;
+    // Nothing that was in flight is in flight any more, and a queue of prompts belongs to the
+    // branch somebody was in: they asked to be somewhere else.
+    tx.set("session.status", Value::str("idle"))?;
+    tx.set("session.turn", Value::Int(loaded as i64))?;
+    tx.delete("session.queue")?;
+    tx.delete("panel")?;
+    notice(
+        tx,
+        Level::Info,
+        if previous == conversation {
+            format!("reloaded {loaded} messages")
+        } else {
+            format!("resumed `{conversation}`: {loaded} messages")
+        },
+    )?;
+    Ok(())
+}
+
 /// What a credential change did.
 fn on_credential(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
@@ -740,8 +865,11 @@ fn on_credential(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     }
     let slots = fields::event_value(event, "slots");
     tx.set("session.credentials", slots)?;
-    tx.delete("session.panel")?;
-    tx.delete("session.panel.slot")?;
+    // The panel root holds the slot, so removing the root removes both. This is not a
+    // formality: an authorization can finish long after somebody dismissed the panel, and a
+    // delete of a *child* of a root that is not there fails the whole transaction — which is
+    // how a report whose panel had already gone became a fault and no notice at all.
+    tx.delete("panel")?;
     Ok(())
 }
 
@@ -1014,7 +1142,7 @@ fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     {
         return on_summary(tx, event);
     }
-    let Some((index, _)) = active_message(tx, &id) else {
+    let Some((index, seq)) = active_message(tx, &id) else {
         return Ok(());
     };
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
@@ -1069,7 +1197,22 @@ fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 
     let calls = normalise_calls(&calls);
     tx.set(&format!("messages[{index}].calls"), Value::list(calls.clone()))?;
-    tx.fx(log_effect(tx, "message", assistant_record(tx, index, &calls)));
+    // The journalled message is the one that finished, written from the values this
+    // transaction has rather than read back out of the database: a read would see the text as
+    // of the previous commit, which for a streamed answer is the text before the last delta.
+    tx.fx(log_effect(
+        tx,
+        "message",
+        Value::map([
+            ("seq", Value::Int(seq)),
+            ("role", Value::str("assistant")),
+            ("text", Value::str(&text)),
+            ("state", Value::str(if ok { "done" } else { "failed" })),
+            ("thinking", Value::str(&thinking)),
+            ("calls", Value::list(calls.clone())),
+            ("attachments", Value::list([])),
+        ]),
+    ));
 
     if calls.is_empty() {
         tx.set("session.status", Value::str("idle"))?;
@@ -1300,19 +1443,6 @@ fn normalise_calls(calls: &Value) -> Vec<Value> {
             ])
         })
         .collect()
-}
-
-fn assistant_record(tx: &Tx<'_>, index: usize, calls: &[Value]) -> Value {
-    let text = messages(tx.db())
-        .get(index)
-        .and_then(|message| message.get("text"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    Value::map([
-        ("role", Value::str("assistant")),
-        ("text", text),
-        ("calls", Value::list(calls.to_vec())),
-    ])
 }
 
 fn log_effect(tx: &Tx<'_>, kind: &str, data: Value) -> Effect {

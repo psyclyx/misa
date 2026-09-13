@@ -139,6 +139,36 @@ pub fn subscriptions(registry: Registry) -> Registry {
             }),
         )
         .subscription(
+            // The services the kernel knows by name. The list is the *daemon's*, not the
+            // client's, because which services exist is a composition decision.
+            "completion.providers",
+            read_query(|_db, _query| {
+                Value::list(
+                    misa_kernel::presets::ids()
+                        .into_iter()
+                        .map(|id| {
+                            let preset = misa_kernel::presets::preset(id);
+                            let mut row = vec![
+                                ("value", Value::str(id)),
+                                ("label", Value::str(preset.map(|preset| preset.label).unwrap_or(id))),
+                            ];
+                            // One line, and the one thing that decides what `/login` will do
+                            // with it: a service with a device flow has no key to paste.
+                            let detail = match preset {
+                                Some(preset) if misa_kernel::presets::oauth(id).is_some() => {
+                                    format!("{} · authorized by a device code", preset.note)
+                                }
+                                Some(preset) => preset.note.to_string(),
+                                None => String::new(),
+                            };
+                            row.push(("detail", Value::str(detail)));
+                            Value::map(row)
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }),
+        )
+        .subscription(
             CONVERSATIONS_QUERY,
             read_query(|db, _query| db.get("conversations").cloned().unwrap_or(Value::list([]))),
         )

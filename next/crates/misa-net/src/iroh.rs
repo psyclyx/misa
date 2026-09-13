@@ -705,17 +705,15 @@ impl Client {
     /// this will not do is retry for ever — a daemon that is not there has to be an answer.
     pub async fn next(&mut self) -> Result<Option<SessionMsg>, String> {
         let mut attempts = 0;
-        let mut last: Option<String> = None;
         loop {
-            match self.read_next().await {
+            // What to report if this turns out to be the last try: the error that closed the
+            // connection, or nothing at all for a connection that closed quietly, which a
+            // daemon that is restarting cannot announce any other way.
+            let last = match self.read_next().await {
                 Ok(Some(message)) => return Ok(Some(message)),
-                Ok(None) => {
-                    // A closed connection, which a daemon that is restarting cannot announce
-                    // any other way. Treated as a drop, and reported as one when it sticks.
-                    last = None;
-                }
-                Err(error) => last = Some(error),
-            }
+                Ok(None) => None,
+                Err(error) => Some(error),
+            };
             if attempts >= Self::RECONNECT_TRIES {
                 return match last {
                     Some(error) => Err(error),
@@ -724,9 +722,10 @@ impl Client {
             }
             attempts += 1;
             tokio::time::sleep(backoff(attempts)).await;
-            if let Err(error) = self.reestablish().await {
-                last = Some(error);
-            }
+            // A re-establishment that fails is not remembered: the next read fails on that
+            // same connection and says the same thing, and the message a person needs is the
+            // one that arrives when the tries run out.
+            let _ = self.reestablish().await;
         }
     }
 

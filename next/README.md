@@ -55,6 +55,8 @@ surface is narrow and that a disclosure has somewhere to live.
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # prints a ticket
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
+                                                   # (a client can start the same flow: `/login openai-codex`)
+                                                   # (a client can start the same flow: `/login openai-codex`)
 cargo run -p misa-tui -- misa:<endpoint id>:demo
 cargo run -p misa-web -- --ticket misa:<endpoint id>:demo --listen 127.0.0.1:8080
 cargo run -p misa-cli -- misa:<endpoint id>:demo "say something"

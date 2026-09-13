@@ -255,7 +255,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ])),
         // A real service, from the table or from a base url. The credential slot is the
         // provider's id: a key for `openai` is stored from a client's login panel, and a
-        // subscription like `openai-codex` is authorized here.
+        // subscription like `openai-codex` is authorized by a device flow — started here by
+        // the `login` subcommand, or by `/login openai-codex` from any client.
         provider => LocalKernel::new(adapter_for(provider, &options, http.clone())?)
             .with_default_provider(provider),
     };

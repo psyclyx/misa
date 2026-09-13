@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use misa_client::picker::{Accept, Effect as PickerEffect, Picker};
 use misa_client::{editor as ed, intent as line, select};
-use misa_proto::view::{Choice, Field, Kind, Node};
+use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
 use misa_proto::wire::{Capabilities, Command, Intent, SessionInfo, Source, SourceKind};
 use misa_render::{Line, Theme};
 
@@ -98,6 +98,20 @@ impl Action {
     }
 }
 
+/// What somebody has typed into a panel.
+///
+/// A panel is the session's state — what question is open, what field it has — and this is the
+/// client's: the text in the field before it is submitted, which belongs to whoever is typing
+/// and is never sent until they say so.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PanelInput {
+    /// The id of the panel node this is an answer to.
+    pub panel: String,
+    /// The field being typed into, by id. Empty when the panel has nothing to type into.
+    pub field: String,
+    pub text: String,
+}
+
 /// What a keypress caused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOut {
@@ -126,6 +140,8 @@ pub struct Screen {
     /// The reader's selection, when one is open. It is over the rendered body, so
     /// moving it needs the view — which is why `selection_key` takes one.
     pub selection: Option<select::Selection>,
+    /// What has been typed into an open panel, and which panel it is for.
+    pub panel: Option<PanelInput>,
     pub commands: Vec<Command>,
     pub sources: Vec<Source>,
     pub scroll: usize,
@@ -146,6 +162,7 @@ impl Screen {
             opened: BTreeSet::new(),
             notice: None,
             selection: None,
+            panel: None,
             commands: Vec::new(),
             sources: Vec::new(),
             scroll: 0,
@@ -250,6 +267,105 @@ impl Screen {
             Key::Char('y') => Some(self.copy_body(view)),
             _ => None,
         }
+    }
+
+    /// A key that concerns an open panel, if one is open.
+    ///
+    /// The panel is modal in the terminal, the way the picker is: it is the one thing on the
+    /// screen that is a question rather than something to read, so while it is up every key
+    /// that is not the way out belongs to it. The two exceptions are the ways out of the
+    /// *program*, because a person may always stop.
+    ///
+    /// A client that wanted a non-modal panel would put the field somewhere else; what it may
+    /// not do is decide the panel is not a question.
+    pub fn panel_key(&mut self, view: &Node, key: &Key) -> Option<KeyOut> {
+        let panel = panel_of(view)?;
+        if matches!(key, Key::Quit | Key::Interrupt) {
+            return None;
+        }
+        let asking = panel.id.clone();
+        if self.panel.as_ref().map(|state| &state.panel) != Some(&asking) {
+            // A draft belongs to the question that asked for it: a value carried into the next
+            // panel is a value nobody wrote.
+            let field = panel_field(panel).map(|field| field.id.clone()).unwrap_or_default();
+            self.notice = if field.is_empty() {
+                Some(format!("{} — esc dismisses", panel.label.clone().unwrap_or_default()))
+            } else {
+                Some("typing into the panel — enter sends it, esc dismisses".to_string())
+            };
+            self.panel = Some(PanelInput { panel: asking, field, text: String::new() });
+        }
+        Some(match key {
+            Key::Escape => self.dismiss_panel(panel),
+            Key::Submit => self.submit_panel(panel),
+            Key::Backspace | Key::Delete => {
+                if let Some(state) = self.panel.as_mut() {
+                    state.text.pop();
+                }
+                KeyOut::Local
+            }
+            Key::Char(character) => {
+                if let Some(state) = self.panel.as_mut() {
+                    state.text.push(*character);
+                }
+                KeyOut::Local
+            }
+            _ => KeyOut::Local,
+        })
+    }
+
+    /// Take the panel away, by the action the session offered for it.
+    fn dismiss_panel(&mut self, panel: &Node) -> KeyOut {
+        let close = panel.actions.iter().find(|action| action.on == ActionOn::Click);
+        let Some(close) = close else {
+            // A panel nobody can dismiss is the session's decision; this client will not
+            // invent one, and it says so rather than eating the key in silence.
+            self.notice = Some("this panel has no way out".to_string());
+            return KeyOut::Local;
+        };
+        self.panel = None;
+        self.notice = None;
+        KeyOut::Intent(Intent::Action {
+            node: panel.id.clone(),
+            action: close.id.clone(),
+            args: misa_value::Value::Null,
+            fields: Vec::new(),
+        })
+    }
+
+    /// Send what is in the field, if the panel asked for something.
+    fn submit_panel(&mut self, panel: &Node) -> KeyOut {
+        let Some(form) = panel.children.iter().find(|child| matches!(&child.kind, Kind::Fields { fields } if !fields.is_empty()))
+        else {
+            return KeyOut::Local;
+        };
+        let Some(action) = form.actions.iter().find(|action| action.on == ActionOn::Submit) else {
+            return KeyOut::Local;
+        };
+        let Kind::Fields { fields: declared } = &form.kind else {
+            return KeyOut::Local;
+        };
+        let typed = self.panel.as_ref().map(|state| state.text.clone()).unwrap_or_default();
+        let focused = self.panel.as_ref().map(|state| state.field.clone()).unwrap_or_default();
+        let fields = declared
+            .iter()
+            .map(|field| Field {
+                value: if field.id == focused { typed.clone() } else { field.value.clone() },
+                ..field.clone()
+            })
+            .collect::<Vec<_>>();
+        // What was typed goes out of this client's hands as it leaves the screen: a secret
+        // that stays in a field after it has been sent is a secret on a screen.
+        if let Some(state) = self.panel.as_mut() {
+            state.text.clear();
+        }
+        self.notice = Some("sent".to_string());
+        KeyOut::Intent(Intent::Action {
+            node: form.id.clone(),
+            action: action.id.clone(),
+            args: misa_value::Value::Null,
+            fields,
+        })
     }
 
     /// Start a selection at the bottom, which is where somebody following the tail is
@@ -574,6 +690,14 @@ impl Screen {
     pub fn resolve(&self, node: &Node) -> Node {
         let mut node = node.clone();
         node.children = node.children.iter().map(|child| self.resolve(child)).collect();
+        // What is being typed into a panel is drawn in the panel's field. The session sent an
+        // empty one and knows nothing about the draft, which is the whole of why a secret can
+        // be typed into a terminal and still never reach a log.
+        if let (Kind::Fields { fields }, Some(state)) = (&mut node.kind, &self.panel)
+            && let Some(field) = fields.iter_mut().find(|field| field.id == state.field)
+        {
+            field.value = state.text.clone();
+        }
         if let Kind::Collapsible { summary, open } = &node.kind {
             let open = *open || self.opened.contains(&node.id) || self.opened.contains("*");
             if open {
@@ -585,6 +709,26 @@ impl Screen {
         }
         node
     }
+}
+
+/// The panel in a view, if the session has one open.
+///
+/// By role rather than by id: the id is the session's name for the panel — `login`,
+/// `authorize` — and that is what an action has to name, so the role is what says what a node
+/// *is*.
+fn panel_of(view: &Node) -> Option<&Node> {
+    if view.role == "panel" {
+        return Some(view);
+    }
+    view.children.iter().find_map(panel_of)
+}
+
+/// The field a panel wants typed into, if it wants one.
+fn panel_field(panel: &Node) -> Option<&Field> {
+    panel.children.iter().find_map(|child| match &child.kind {
+        Kind::Fields { fields } if child.actions.iter().any(|action| action.on == ActionOn::Submit) => fields.first(),
+        _ => None,
+    })
 }
 
 /// A key, in the vocabulary the client cares about.
@@ -791,7 +935,10 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
             // open every key that moves it belongs to the reader rather than the composer.
             let out = match screen.selection_key(&view, &interpreted) {
                 Some(out) => out,
-                None => screen.key(interpreted),
+                None => match screen.panel_key(&view, &interpreted) {
+                    Some(out) => out,
+                    None => screen.key(interpreted),
+                },
             };
             match out {
                 KeyOut::Local => {}
@@ -1159,6 +1306,96 @@ mod tests {
 
     fn text_of(screen: &Screen, view: &Node) -> String {
         misa_render::to_plain(&draw(screen, view))
+    }
+
+    /// A view with a panel in it, the shape the session opens for `/login`.
+    fn panel_view(with_field: bool) -> Node {
+        let mut session = view();
+        let mut panel = Node::section("panel").id("login").label("Credential for `anthropic`");
+        panel.children.push(Node::text("panel.text", [misa_proto::view::Span::plain("the daemon stores it")]));
+        if with_field {
+            panel.children.push(
+                Node::new(
+                    "panel.input",
+                    Kind::Fields {
+                        fields: vec![Field {
+                            id: "value".into(),
+                            label: "Token".into(),
+                            value: String::new(),
+                            hint: None,
+                            kind: misa_proto::view::FieldKind::Secret,
+                        }],
+                    },
+                )
+                .id("panel.input")
+                .action(misa_proto::view::Action {
+                    id: "panel.submit".into(),
+                    on: ActionOn::Submit,
+                    label: Some("Store".into()),
+                    args: misa_value::Value::Null,
+                }),
+            );
+        }
+        panel.actions.push(misa_proto::view::Action {
+            id: "panel.close".into(),
+            on: ActionOn::Click,
+            label: Some("Cancel".into()),
+            args: misa_value::Value::Null,
+        });
+        session.children.push(panel);
+        session
+    }
+
+    #[test]
+    fn a_panel_takes_the_keyboard_and_a_secret_does_not_stay_on_the_screen() {
+        // The terminal could offer the login panel and nothing else: there was no way to type
+        // into it, so `/login <provider>` was a command a person could send and not finish.
+        let mut screen = screen();
+        let view = panel_view(true);
+        for character in "sk-a-secret".chars() {
+            assert_eq!(screen.panel_key(&view, &Key::Char(character)), Some(KeyOut::Local));
+        }
+        // The composer never saw a key, and what was typed is on the screen.
+        assert_eq!(screen.editor.text(), "", "the panel's keys went into the composer");
+        assert!(text_of(&screen, &view).contains("sk-a-secret"), "{}", text_of(&screen, &view));
+
+        match screen.panel_key(&view, &Key::Submit) {
+            Some(KeyOut::Intent(Intent::Action { action, fields, .. })) => {
+                assert_eq!(action, "panel.submit");
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].id, "value");
+                assert_eq!(fields[0].value, "sk-a-secret");
+            }
+            other => panic!("expected a submit, got {other:?}"),
+        }
+        // A secret that stays in a field after it has gone is a secret on a screen.
+        assert!(!text_of(&screen, &view).contains("sk-a-secret"), "{}", text_of(&screen, &view));
+    }
+
+    #[test]
+    fn a_panel_is_left_by_the_action_the_session_offered_and_by_nothing_this_client_invents() {
+        let asking = panel_view(true);
+        let mut typing = screen();
+        match typing.panel_key(&asking, &Key::Escape) {
+            Some(KeyOut::Intent(Intent::Action { node, action, .. })) => {
+                assert_eq!(node, "login");
+                assert_eq!(action, "panel.close");
+            }
+            other => panic!("expected a dismissal, got {other:?}"),
+        }
+
+        // A view with no panel in it is none of the panel's business, and the ways out of the
+        // program are never the panel's either: a person may always stop.
+        let mut composer = screen();
+        assert_eq!(composer.panel_key(&view(), &Key::Char('a')), None);
+        assert_eq!(composer.panel_key(&asking, &Key::Quit), None);
+        assert_eq!(composer.panel_key(&asking, &Key::Interrupt), None);
+
+        // A report has nothing to type into, and esc still means "the session's way out".
+        let report = panel_view(false);
+        let mut reading = screen();
+        assert_eq!(reading.panel_key(&report, &Key::Char('x')), Some(KeyOut::Local));
+        assert!(matches!(reading.panel_key(&report, &Key::Escape), Some(KeyOut::Intent(_))));
     }
 
     #[test]

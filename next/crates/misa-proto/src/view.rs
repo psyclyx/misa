@@ -287,6 +287,12 @@ pub enum FieldKind {
     /// A single line of text.
     #[default]
     Text,
+    /// A value that is shown and not typed into.
+    ///
+    /// The difference matters on a surface that has an input for every field: a panel's rows
+    /// are facts — a code, an address, a total — and a client that drew them as text boxes
+    /// would be offering an edit nobody can save.
+    ReadOnly,
     /// Several lines.
     Multiline,
     /// A value that must not be echoed. A client renders its own affordance; the

@@ -163,6 +163,9 @@ pub fn sources() -> Vec<Source> {
         Source::resident("models", "Models"),
         Source::resident("effort", "Reasoning effort"),
         Source::resident("commands", "Commands"),
+        // The services this daemon knows by name, so `/login <Tab>` offers them instead of
+        // asking somebody to remember an id.
+        Source::resident("providers", "Providers"),
         Source::on_demand(
             "conversations",
             "Conversations",
@@ -182,10 +185,15 @@ pub fn resident_query(source: &str) -> Option<String> {
 
 /// The commands a session declares.
 ///
-/// Five, and each one is an operation on the *session*: nothing here is a report or
-/// a piece of interface. `/usage` is deliberately absent — a usage report is a
-/// presentation of facts the session already publishes, so it is a client's own
-/// action, and a client that does not have one is still correct.
+/// Each one is an operation on the *session* or on a capability behind it. What is here is
+/// also what a client offers: the declaration is the whole of what a palette, a completion,
+/// and a hint read, so a command the loop handles and this list omits is a command nobody can
+/// run — which is a worse answer than not having it.
+///
+/// `/status` and `/usage` are here rather than being each client's own report because they
+/// are *facts the session has*: the panel they open is part of the view tree, so one
+/// implementation of "what this session is set to" serves every frontend, and a client that
+/// wants a different one can build it from the data subscriptions instead.
 pub fn commands() -> Vec<Command> {
     vec![
         Command::new("clear", "Clear", "forget this branch and start again")
@@ -199,6 +207,21 @@ pub fn commands() -> Vec<Command> {
         // service serve" is a request to a service, and a client opening a list should not cost
         // one. A person asking is a person who wants to know.
         Command::new("models", "Models", "ask the provider which models it has"),
+        Command::new("status", "Status", "what this session is set to, as facts"),
+        Command::new("usage", "Usage", "what it has cost, from the attempt ledger"),
+        // A credential is a slot. `/login` with a key opens a panel with one secret field;
+        // with a service that issues tokens it starts a device flow and shows a code, which is
+        // why the two are one command and not two.
+        Command::new("login", "Log in", "store a key, or authorize an account by device code")
+            .arg(Arg::new("provider", "Provider").required().from("providers")),
+        Command::new("logout", "Log out", "forget what was stored for a provider")
+            .arg(Arg::new("provider", "Provider").required().from("providers")),
+        // A path, not a hash: the file is read where the daemon is, which is the only place a
+        // path means anything. A client that has the bytes uploads them instead.
+        Command::new("attach", "Attach", "send a file from the daemon's machine as an attachment")
+            .arg(Arg::new("path", "Path").required()),
+        Command::new("image", "Image", "the same, for a picture somebody thinks of as one")
+            .arg(Arg::new("path", "Path").required()),
         Command::new("resume", "Resume", "load a stored conversation")
             .arg(Arg::new("conversation", "Conversation").from("conversations")),
     ]

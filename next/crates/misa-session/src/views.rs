@@ -71,6 +71,9 @@ pub fn initial_state(id: &str, provider: &str, model: &str, created_ms: i64) -> 
         ("messages", Value::list([])),
         ("attempts", Value::list([])),
         ("notices", Value::list([])),
+        // Nothing open. The root is declared anyway, because what a session may write is a
+        // question about the manifest and not about the state it happens to start from.
+        ("panel", Value::Null),
     ])
 }
 
@@ -117,6 +120,9 @@ pub fn document(db: &Value, capabilities: &Capabilities, window: usize) -> Node 
 
     root.children.push(header(db, session));
     root.children.push(transcript(db, capabilities, window));
+    if let Some(panel) = panel(db) {
+        root.children.push(panel);
+    }
     if let Some(notices) = notices(db) {
         root.children.push(notices);
     }
@@ -386,6 +392,115 @@ fn is_unified_diff(text: &str) -> bool {
     false
 }
 
+/// The panel the session is showing, if it is showing one.
+///
+/// A panel is the half of a dialog that is not the composer: a title, a line explaining
+/// itself, rows of facts, the fields somebody types into, and the actions they can take. It
+/// is built here rather than by each frontend because it is *presentation policy* — what a
+/// dialog has in it — and a plugin that opens one should not have to write it five times.
+///
+/// Two things about the shape matter to a client:
+///
+/// - a row is a `FieldKind::ReadOnly` field, so a surface that gives every field an input
+///   does not offer an edit that could never be saved;
+/// - the action that submits the form travels on the fields node, and every other action is
+///   a button on the panel itself, because those are the two pairings clients already read.
+fn panel(db: &Value) -> Option<Node> {
+    let panel = db.get("panel")?;
+    let id = text_at(panel, "id");
+    if id.is_empty() {
+        // An id is what says a panel is open at all: the root is set as one map and taken
+        // away as a whole, so a panel without an id is a panel that is not there.
+        return None;
+    }
+    let actions = panel.get("actions").and_then(Value::as_list).unwrap_or(&[]);
+    let label_of = |want: &str| {
+        actions
+            .iter()
+            .find(|action| text_at(action, "id") == want)
+            .map(|action| text_at(action, "label").to_string())
+            .unwrap_or_else(|| want.to_string())
+    };
+
+    let mut node = Node::section("panel").id(id);
+    node.label = Some(text_at(panel, "title").to_string());
+    let text = text_at(panel, "text");
+    if !text.is_empty() {
+        node.children.push(Node::text("panel.text", [Span::plain(text)]));
+    }
+
+    // Rows are what a session has to say and a person has to copy: a code, an address, a
+    // total. Facts rather than fields, which is a distinction a client can draw.
+    let rows = panel.get("rows").and_then(Value::as_list).unwrap_or(&[]);
+    if !rows.is_empty() {
+        let mut list = Node::section("panel.rows").id("panel.rows");
+        for (position, row) in rows.iter().enumerate() {
+            list.children.push(
+                Node::new(
+                    "panel.row",
+                    Kind::Fields {
+                        fields: vec![Field {
+                            id: format!("row.{position}"),
+                            label: text_at(row, "label").to_string(),
+                            value: text_at(row, "value").to_string(),
+                            hint: None,
+                            kind: FieldKind::ReadOnly,
+                        }],
+                    },
+                )
+                .id(format!("panel.row.{position}")),
+            );
+        }
+        node.children.push(list);
+    }
+
+    // What somebody types into. A secret is a field like any other and the value never
+    // travels back in a view, which is what makes the login panel a field and not a
+    // protocol of its own.
+    let fields: Vec<Field> = panel
+        .get("fields")
+        .and_then(Value::as_list)
+        .unwrap_or(&[])
+        .iter()
+        .map(|field| Field {
+            id: text_at(field, "id").to_string(),
+            label: text_at(field, "label").to_string(),
+            value: String::new(),
+            hint: None,
+            kind: match field.get("secret").and_then(Value::as_bool).unwrap_or(false) {
+                true => FieldKind::Secret,
+                false => FieldKind::Text,
+            },
+        })
+        .collect();
+    if !fields.is_empty() {
+        let mut form = Node::new("panel.input", Kind::Fields { fields }).id("panel.input");
+        if actions.iter().any(|action| text_at(action, "id") == "panel.submit") {
+            form.actions.push(Action {
+                id: "panel.submit".into(),
+                on: ActionOn::Submit,
+                label: Some(label_of("panel.submit")),
+                args: Value::Null,
+            });
+        }
+        node.children.push(form);
+    }
+
+    for action in actions {
+        let action_id = text_at(action, "id");
+        if action_id == "panel.submit" {
+            continue;
+        }
+        node.actions.push(Action {
+            id: action_id.to_string(),
+            on: ActionOn::Click,
+            label: Some(text_at(action, "label").to_string()),
+            args: Value::Null,
+        });
+    }
+    Some(node)
+}
+
 fn notices(db: &Value) -> Option<Node> {
     let rows = db.get("notices").and_then(Value::as_list)?;
     if rows.is_empty() {
@@ -546,6 +661,9 @@ pub const MANIFEST: &[(&str, Ownership, Lifetime)] = &[
     ("messages", Ownership::Kernel, Lifetime::Log),
     ("attempts", Ownership::Kernel, Lifetime::Log),
     ("notices", Ownership::Presentation, Lifetime::Ephemeral),
+    // A panel is a report or a small form, and it is presentation: it exists to be drawn,
+    // and a restart has nothing to say about whether somebody had it open.
+    ("panel", Ownership::Presentation, Lifetime::Ephemeral),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

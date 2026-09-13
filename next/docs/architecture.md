@@ -88,6 +88,14 @@ versus round trip**:
 `Intent` is a round trip, and `Copy` is neither — it is what only the client can do,
 because only the client knows what was selected.
 
+A panel is where the line is easiest to get wrong, so it is drawn explicitly. The session
+owns the _question_: that a credential is being asked for, what the field is called, that it
+is a secret, and what the actions mean. The client owns the _answer_: the text in the field
+before it is sent (`misa-tui::PanelInput`, the browser's own input), whether the panel takes
+the keyboard while it is up, and where on the screen it goes. That is why a session never
+sees a draft and why a client cannot invent a panel: `panel.submit` is an action the session
+offered, and `panel.close` is one it offered too.
+
 ---
 
 ## 3. The three stages, and where each stage is enforced
@@ -232,9 +240,9 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (46), `misa-kernel` (88), `misa-session` (69), `misa-net` (29),
-`misa-client` (55), `misa-tui` (21), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 416 tests and no skips:
+`misa-render` (46), `misa-kernel` (91), `misa-session` (76), `misa-net` (29),
+`misa-client` (55), `misa-tui` (23), `misa-web` (19), `misa-daemon` (3), `misa-skia` (5),
+and one more behind `misa-skia --features paint`. That is 429 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
@@ -282,6 +290,13 @@ Two things are honest limitations rather than planned work:
   the `paint` feature is opt-in because it needs a linkable Skia.
 - **A window does not exist in any frontend.** `misa-skia` renders a PNG. The
   scene is the part worth getting right first.
+- **A panel's rows are strings, not typed facts.** `/usage` writes "spend micros" and a
+  number; a client that could render `value.money` would need the row to carry the fact and
+  its role, which is a change to what `panel()` takes and not to what a client does with it.
+- **A device flow cannot be cancelled by a client.** The kernel starts one, reports the code,
+  and reports the outcome; nothing in `Request` stops it, so a person who thought better of
+  it dismisses the panel and waits for the code to expire. The task does give up when the
+  session it reports to goes away.
 
 ---
 

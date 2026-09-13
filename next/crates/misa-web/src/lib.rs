@@ -297,6 +297,9 @@ fn render_node(node: &Node, out: &mut String) {
                         escape(&field.id),
                         escape(&field.value)
                     )),
+                    // A row is something to read, and the value is the whole of it: an input
+                    // here would be an edit that nothing could save.
+                    FieldKind::ReadOnly => out.push_str(&escape(&field.value)),
                 }
                 if let Some(hint) = &field.hint {
                     out.push_str(&format!("<small>{}</small>", escape(hint)));
@@ -363,12 +366,18 @@ fn render_node(node: &Node, out: &mut String) {
         render_node(child, out);
     }
 
-    // A node that is not a form may still offer a click action.
+    // A node that is not a form may still offer a click action, and a button that is not in a
+    // form posts nothing: each one gets a one-button form of its own, which is the whole of
+    // what it takes for a panel's buttons to work in a browser with no script at all.
     if submit.is_none() {
         for action in &node.actions {
             out.push_str(&format!(
-                "<button class=\"n-{role}.action\" name=\"action\" value=\"{action}\">{label}</button>",
+                "<form class=\"n-{role}.action\" method=\"post\" action=\"/intent\">\
+<input type=\"hidden\" name=\"node\" value=\"{node_id}\">\
+<input type=\"hidden\" name=\"action\" value=\"{action}\">\
+<button type=\"submit\">{label}</button></form>",
                 role = role,
+                node_id = escape(&node.id),
                 action = escape(&action.id),
                 label = escape(action.label.as_deref().unwrap_or(&action.id))
             ));
@@ -1258,6 +1267,45 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("type=\"submit\""), "{html}");
+    }
+
+    #[test]
+    fn a_panel_is_a_report_whose_buttons_work_without_the_script() {
+        // The shape a session opens for `/login`: a row that is a fact, a field somebody types
+        // into, and a dismiss. A row is not a text box, and each button posts on its own —
+        // a button outside a form is a button that does nothing.
+        let panel = Node::section("panel")
+            .id("authorize")
+            .label("Authorize `kimi-coding`")
+            .child(
+                Node::new(
+                    "panel.row",
+                    Kind::Fields {
+                        fields: vec![Field {
+                            id: "row.0".into(),
+                            label: "code".into(),
+                            value: "AAAA-BBBB".into(),
+                            hint: None,
+                            kind: FieldKind::ReadOnly,
+                        }],
+                    },
+                )
+                .id("panel.row.0"),
+            )
+            .action(Action {
+                id: "panel.close".into(),
+                on: ActionOn::Click,
+                label: Some("Dismiss".into()),
+                args: misa_value::Value::Null,
+            });
+        let html = render_main(&panel);
+        assert!(html.contains("<dt>code</dt><dd>AAAA-BBBB</dd>"), "{html}");
+        assert!(!html.contains("<input type=\"text\" name=\"row.0\""), "a row became an input: {html}");
+        assert!(
+            html.contains("method=\"post\" action=\"/intent\"") && html.contains("value=\"panel.close\""),
+            "a panel's button does not post anything: {html}"
+        );
+        assert!(html.contains("value=\"authorize\""), "the form does not name the node: {html}");
     }
 
     #[test]

@@ -39,7 +39,7 @@ use misa_reframe::fields;
 use misa_value::Value;
 use tokio::sync::{broadcast, mpsc, watch};
 
-use misa_kernel::{Kernel, KernelEvent, Request};
+use misa_kernel::{CredentialAction, Kernel, KernelEvent, Request};
 
 /// Who may attach, as configuration rather than code.
 pub mod admission;
@@ -295,6 +295,26 @@ impl Runtime {
                         data: fields::value(effect, "data"),
                     });
                 }
+                // Reading the log back, which is what `/resume` is: a listing when no
+                // conversation was named, and the entries themselves when one was.
+                "kernel.log.list" => {
+                    let _ = self.to_kernel.send(Request::Conversations { id: fields::text(effect, "id") });
+                }
+                "kernel.log.load" => {
+                    let _ = self.to_kernel.send(Request::Load {
+                        conversation: fields::text(effect, "conversation"),
+                        after: fields::int(effect, "after"),
+                        limit: fields::int(effect, "limit").max(1) as usize,
+                    });
+                }
+                // A file read where the daemon is, which is the only place a path means
+                // anything. `/attach <path>` is the whole of this.
+                "kernel.blob.file" => {
+                    let _ = self.to_kernel.send(Request::BlobFile {
+                        id: fields::text(effect, "id"),
+                        path: fields::text(effect, "path"),
+                    });
+                }
                 "kernel.attempt.started" => {
                     let conversation = fields::text(effect, "conversation");
                     let _ = self.to_kernel.send(Request::AttemptStarted {
@@ -305,6 +325,28 @@ impl Runtime {
                         model: fields::text(effect, "model"),
                         kind: fields::text(effect, "kind"),
                     });
+                }
+                // A credential is a slot and, one action at a time, what to do with it. The
+                // bytes of a key travel this way once — from a client's field, through the
+                // session, into the daemon — and never come back.
+                "kernel.credential" => {
+                    let action = match fields::text(effect, "action").as_str() {
+                        "set" => CredentialAction::Set {
+                            slot: fields::text(effect, "slot"),
+                            account: fields::text(effect, "account"),
+                            value: fields::text(effect, "value"),
+                        },
+                        "delete" => CredentialAction::Delete { slot: fields::text(effect, "slot") },
+                        // A device code rather than a value: the provider names the flow, and
+                        // the daemon is the only side that knows how to run one.
+                        "oauth" => CredentialAction::OAuth { provider: fields::text(effect, "provider") },
+                        // A listing asks for nothing and stores nothing, which makes it the
+                        // safe reading of an action a handler spelled wrong.
+                        _ => CredentialAction::List,
+                    };
+                    let _ = self
+                        .to_kernel
+                        .send(Request::Credential { id: fields::text(effect, "id"), action });
                 }
                 "kernel.attempt.settled" => {
                     let _ = self.to_kernel.send(Request::AttemptSettled {
@@ -463,9 +505,13 @@ impl Interpreter for OnlyKnownEffects {
             "kernel.provider.call"
             | "kernel.tool.run"
             | "kernel.log.append"
+            | "kernel.log.list"
+            | "kernel.log.load"
+            | "kernel.blob.file"
             | "kernel.attempt.started"
             | "kernel.attempt.settled"
             | "kernel.models.discover"
+            | "kernel.credential"
             | "wire.event" => Ok(()),
             other => Err(format!("this session does not know the effect `{other}`")),
         }
@@ -510,6 +556,115 @@ mod tests {
 
     fn transcript(runtime: &Runtime) -> String {
         misa_render::to_plain(&misa_render::render(&view(runtime), &misa_render::Theme::plain(), 100))
+    }
+
+    /// Wait until the view says something, the way a client waits: by reading what it can
+    /// actually see.
+    async fn wait_for(runtime: &Arc<Runtime>, want: impl Fn(&str) -> bool) -> String {
+        for _ in 0..500 {
+            let text = transcript(runtime);
+            if want(&text) {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the view never said it:
+{}", transcript(runtime));
+    }
+
+    /// Wait for a notice that says a particular thing.
+    ///
+    /// An outcome that is not part of the transcript — a token stored, an authorization
+    /// refused — arrives as a notice, which is a thing a client sees and a log does not keep.
+    /// It takes what the notice should say because a session's own notices arrive on the same
+    /// stream, and the one that matters is usually not the first.
+    async fn wait_notice(events: &mut tokio::sync::broadcast::Receiver<Emission>, want: &str) -> String {
+        for _ in 0..500 {
+            if let Ok(emission) = events.try_recv()
+                && let SessionEvent::Notice { text, .. } = emission.event
+                && text.contains(want)
+            {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no notice said `{want}`");
+    }
+
+    /// A device-authorization server this machine runs: one request per connection, the
+    /// answers scripted in order.
+    ///
+    /// The shipped flows name services on the internet, which is why the flows a daemon knows
+    /// are a composition decision at all: without a way to point one at a local address, the
+    /// only test of a device flow would be a test that needs an account.
+    async fn device_server() -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let address = listener.local_addr().expect("an address");
+        tokio::spawn(async move {
+            let script = [
+                (
+                    "200 OK",
+                    r#"{"device_code":"dev","user_code":"AAAA-BBBB","verification_uri":"https://example.invalid/device","interval":1,"expires_in":30}"#,
+                ),
+                (
+                    "200 OK",
+                    r#"{"access_token":"an-access","refresh_token":"a-refresh","expires_in":3600,"account_id":"acct-9"}"#,
+                ),
+            ];
+            for (status, body) in script {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                // Read the request to the end, so the client is never left writing into a
+                // socket nobody is reading.
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                loop {
+                    let Ok(read) = socket.read(&mut buffer).await else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let length: usize = head
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// A session whose daemon can authorize `kimi-coding` against `base`.
+    fn flow_runtime(base: &str) -> Arc<Runtime> {
+        let provider: Arc<dyn Provider> = ScriptedProvider::always("no turns here");
+        let kernel = misa_kernel::LocalKernel::new(provider).with_flow(
+            "kimi-coding",
+            misa_kernel::oauth::Flow {
+                kind: misa_kernel::oauth::Kind::Rfc8628,
+                client_id: "a-client",
+                authorization_url: Box::leak(format!("{base}/device").into_boxed_str()),
+                token_url: Box::leak(format!("{base}/token").into_boxed_str()),
+                verification_url: "https://example.invalid/device",
+            },
+        );
+        Runtime::start("demo", "a demo session", None, Arc::new(kernel), "scripted", "scripted-1", Value::Null)
     }
 
     /// Wait until the session is idle again, the way a client waits: by watching
@@ -568,6 +723,172 @@ mod tests {
         let plain = transcript(&runtime);
         assert!(plain.contains("image/png"), "a client that cannot draw is not told what is there:\n{plain}");
         assert!(!plain.contains("etc/shadow"), "something that is not a hash reached the transcript:\n{plain}");
+    }
+
+    /// Something a command can be run with, for the test below.
+    fn argument_for(command: &str) -> Value {
+        match command {
+            "model" => Value::str("scripted-1"),
+            "effort" => Value::str("medium"),
+            "login" | "logout" => Value::str("scripted"),
+            "attach" | "image" => Value::str("/tmp/there-is-no-file-here"),
+            "resume" => Value::str("c1"),
+            _ => Value::Null,
+        }
+    }
+
+    #[tokio::test]
+    async fn every_declared_command_is_one_the_loop_can_actually_run() {
+        // The promise a declaration makes is that a client may send it. `/status`, `/usage`,
+        // `/login`, `/logout`, and `/attach` were handled by the loop and declared to nobody,
+        // so a palette could not offer them and a client that sent one anyway was told there
+        // was no such command: a frontend could not do what the previous terminal could.
+        let runtime = runtime();
+        let declared = crate::catalog::commands();
+        assert!(declared.len() >= 11, "the declarations are the whole of what a client sees");
+        for command in declared {
+            let faults = runtime.intent(Intent::Command {
+                name: command.id.clone(),
+                args: argument_for(&command.id),
+            });
+            assert!(faults.is_empty(), "`/{}` is declared and cannot run: {faults:?}", command.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_reads_a_conversation_back_out_of_the_log() {
+        // `/resume <id>` asked the daemon for a conversation and then dropped the answer: the
+        // `Loaded` event was mapped to a no-op, so the command could not have loaded anything
+        // even once its effect was accepted. The whole path is here — the two journalled
+        // entries, the request, the answer, and the transcript rebuilt from it.
+        let runtime = runtime();
+        let mut events = runtime.subscribe_events();
+        runtime.intent(Intent::Prompt { text: "remember this".into(), attachments: vec![] });
+        settle(&runtime).await;
+
+        let faults = runtime.intent(Intent::Command { name: "resume".into(), args: Value::str("demo") });
+        assert!(faults.is_empty(), "{faults:?}");
+        let notice = wait_notice(&mut events, "reloaded").await;
+        assert!(notice.contains("reloaded 3 messages"), "the log was not read back: {notice}");
+
+        let text = transcript(&runtime);
+        assert!(text.contains("remember this"), "{text}");
+        assert!(text.contains("all done"), "the answer came back with it:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn attach_reads_a_file_where_the_daemon_is() {
+        // `/attach <path>` is a capability, not a client's upload: the path means something
+        // only on the machine the daemon runs on. Its effect was refused too, so the command
+        // was declared and unreachable.
+        let path = std::env::temp_dir().join("misa-session-attach-test.txt");
+        std::fs::write(&path, b"a note").expect("a file");
+        let runtime = runtime();
+        let mut events = runtime.subscribe_events();
+        let faults = runtime.intent(Intent::Command {
+            name: "attach".into(),
+            args: Value::str(path.to_string_lossy().to_string()),
+        });
+        assert!(faults.is_empty(), "{faults:?}");
+        let notice = wait_notice(&mut events, "attached").await;
+        assert!(notice.contains("6 bytes"), "{notice}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_client_can_start_a_device_flow_and_the_code_arrives_as_a_panel() {
+        // The item this closes: a subscription used to be authorizable only by
+        // `misa-daemon login <provider>`, on the daemon's own terminal, because a client had
+        // nothing to paste. Now the client asks, the daemon starts the flow, and the code
+        // comes back as a panel — which is a thing every frontend already draws.
+        let base = device_server().await;
+        let runtime = flow_runtime(&base);
+        let mut events = runtime.subscribe_events();
+        let faults = runtime.intent(Intent::Command { name: "login".into(), args: Value::str("kimi-coding") });
+        assert!(faults.is_empty(), "{faults:?}");
+        // Not the secret panel: a service that hands out tokens has no value for anybody to
+        // type, and a text box would be a lie.
+        assert!(misa_proto::view::find(&view(&runtime), "login").is_none(), "a subscription is not a key");
+
+        // The code, and where to type it.
+        let shown = wait_for(&runtime, |text| text.contains("AAAA-BBBB")).await;
+        assert!(shown.contains("Authorize `kimi-coding`"), "{shown}");
+        assert!(shown.contains("https://example.invalid/device"), "{shown}");
+
+        // Then the verdict, and the panel goes away with it: a code that has been approved
+        // must not sit on a screen looking like something still to do.
+        let notice = wait_notice(&mut events, "stored a token").await;
+        assert!(notice.contains("stored a token for `kimi-coding`"), "{notice}");
+        assert!(notice.contains("acct-9"), "{notice}");
+        let after = wait_for(&runtime, |text| !text.contains("AAAA-BBBB")).await;
+        assert!(after.contains("kimi-coding"), "the session still works:
+{after}");
+    }
+
+    #[tokio::test]
+    async fn a_key_is_a_panel_with_a_field_and_the_action_that_stores_it() {
+        // The other half of `/login`: a service that takes a key has a form, and the field is
+        // a secret, which is a shape a client can draw without knowing what it is for.
+        let runtime = runtime();
+        let faults = runtime.intent(Intent::Command { name: "login".into(), args: Value::str("anthropic") });
+        assert!(faults.is_empty(), "{faults:?}");
+        let node = view(&runtime);
+        let panel = misa_proto::view::find(&node, "login").expect("a panel");
+        assert_eq!(panel.label.as_deref(), Some("Credential for `anthropic`"));
+        let input = misa_proto::view::find(&node, "panel.input").expect("a form");
+        assert_eq!(input.actions.len(), 1);
+        assert_eq!(input.actions[0].id, "panel.submit");
+        assert_eq!(input.actions[0].on, misa_proto::view::ActionOn::Submit);
+        match &input.kind {
+            misa_proto::view::Kind::Fields { fields } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].kind, misa_proto::view::FieldKind::Secret);
+            }
+            other => panic!("expected a field, got {other:?}"),
+        }
+        // And it can be got rid of by the action the session offered, which is the only way
+        // anything in this system is got rid of.
+        assert!(panel.actions.iter().any(|action| action.id == "panel.close"));
+    }
+
+    #[tokio::test]
+    async fn a_report_is_in_the_view_and_not_only_in_the_sessions_own_state() {
+        // `/status` wrote a panel into the session's state that no frontend could see: the
+        // panel existed for nobody. It is in the tree now, and a row is a fact rather than an
+        // input, so a surface that gives every field a text box does not offer an edit that
+        // could never be saved.
+        let runtime = runtime();
+        runtime.intent(Intent::Command { name: "status".into(), args: Value::Null });
+        let node = view(&runtime);
+        let panel = misa_proto::view::find(&node, "status").expect("a panel");
+        assert_eq!(panel.label.as_deref(), Some("Session"));
+        let rows = misa_proto::view::find(&node, "panel.rows").expect("rows");
+        assert_eq!(rows.children.len(), 7, "one row per fact the panel reported");
+        match &rows.children[0].kind {
+            misa_proto::view::Kind::Fields { fields } => assert_eq!(
+                fields[0].kind,
+                misa_proto::view::FieldKind::ReadOnly,
+                "a row a client could type into is a row nobody can save"
+            ),
+            other => panic!("expected a row, got {other:?}"),
+        }
+        // The same tree is what every frontend renders, so the transcript says it too.
+        let text = transcript(&runtime);
+        assert!(text.contains("Session"), "{text}");
+        assert!(text.contains("scripted-1"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn changing_a_credential_reaches_the_daemon_and_its_answer_comes_back() {
+        // The bug this covers: `kernel.credential` was not an effect the session's interpreter
+        // accepted, so the transaction failed before it committed and `/logout` — and the
+        // login panel's Store button — did nothing at all but report a fault.
+        let runtime = runtime();
+        let mut events = runtime.subscribe_events();
+        let faults = runtime.intent(Intent::Command { name: "logout".into(), args: Value::str("anthropic") });
+        assert!(faults.is_empty(), "the effect was refused: {faults:?}");
+        let notice = wait_notice(&mut events, "no credential").await;
+        assert!(notice.contains("no credential for `anthropic`"), "the daemon did not answer: {notice}");
     }
 
     #[tokio::test]
