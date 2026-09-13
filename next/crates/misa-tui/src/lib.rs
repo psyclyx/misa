@@ -1185,12 +1185,10 @@ impl Remote {
                 misa_proto::Query::new(misa_proto::completion::CONVERSATIONS_QUERY),
             )
             .await?;
-        for source in ["models", "effort", "commands"] {
-            let query = match misa_session::completions::query_for(source) {
-                Ok(query) => query,
-                Err(fault) => return Err(fault.message),
-            };
-            client.subscribe(source_subscription(source), query).await?;
+        if let Some(declaration) = client.session().cloned() {
+            for source in declaration.sources.iter().filter(|source| source.kind == SourceKind::Resident) {
+                client.subscribe(source_subscription(&source.id), misa_proto::Query::new(source.query())).await?;
+            }
         }
         let info = client.session().cloned();
         Ok(Remote { client, view: Default::default(), info, blobs, inbox: std::collections::VecDeque::new() })
@@ -1302,12 +1300,14 @@ pub fn prompt_field(view: &Node) -> Option<&Field> {
 }
 
 /// A session this binary can drive with no network, for tests.
+#[cfg(test)]
 pub struct Local {
     pub runtime: std::sync::Arc<misa_session::Runtime>,
     pub seen: u64,
     pub info: Option<SessionInfo>,
 }
 
+#[cfg(test)]
 impl Local {
     pub fn new(runtime: std::sync::Arc<misa_session::Runtime>) -> Local {
         let info = Some(runtime.info());
@@ -1315,6 +1315,7 @@ impl Local {
     }
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl Session for Local {
     async fn next(&mut self) -> Result<Option<Node>, String> {

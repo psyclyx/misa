@@ -37,16 +37,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Form, Multipart, Path, State};
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::sse::{Event as SseEvent, Sse};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
+#[cfg(test)]
 use tokio_stream::StreamExt as _;
+#[cfg(test)]
+use axum::response::sse::KeepAlive;
 use misa_proto::view::{ActionOn, BlobRef, FieldKind, Kind, Node, Span, SpanKind, State as NodeState};
 use misa_proto::wire::{Intent, SessionInfo};
 use misa_proto::{SubId, Query};
+#[cfg(test)]
 use misa_session::Runtime;
+#[cfg(test)]
 use tokio::sync::broadcast;
 
 /// The stylesheet. Roles from the view tree, and nothing else.
@@ -502,6 +507,7 @@ pub fn escape(text: &str) -> String {
 }
 
 /// The client server: one runtime, one HTML region, and a stream of replacements.
+#[cfg(test)]
 pub struct App {
     runtime: Arc<Runtime>,
     /// The last rendered region, so a browser that connects mid-turn is sent a
@@ -520,6 +526,7 @@ pub struct App {
     pending: std::sync::Mutex<Vec<BlobRef>>,
 }
 
+#[cfg(test)]
 impl App {
     pub fn new(runtime: Arc<Runtime>) -> Arc<App> {
         let (updates, _) = broadcast::channel(64);
@@ -583,14 +590,10 @@ impl App {
     }
 }
 
-/// Where the bytes a view names come from.
-///
-/// Two sources because there are two kinds of client process here, and the difference is
-/// exactly the architecture's difference: the local one holds the store, and the remote one
-/// has to ask the daemon over the same ticket it uses for the session. A frontend that decided
-/// *how* to fetch would be a frontend with a transport inside it.
+/// The daemon's blob connection; tests may inject an in-memory store.
 pub enum Source {
-    /// The store is in this process, which is what `--local` is.
+    /// An in-memory test adapter.
+    #[cfg(test)]
     Local(Arc<misa_kernel::Blobs>),
     /// The bytes are on the daemon that hosts the session.
     Remote(Arc<misa_net::blob::Store>),
@@ -604,6 +607,7 @@ impl Source {
     /// bytes, which is what makes attaching the same screenshot twice free.
     pub async fn put(&self, bytes: Vec<u8>, media: Option<&str>) -> Result<BlobRef, String> {
         match self {
+            #[cfg(test)]
             Source::Local(blobs) => blobs.put(&bytes, media),
             Source::Remote(store) => store.share(bytes, media).await,
         }
@@ -613,6 +617,7 @@ impl Source {
     pub async fn get(&self, hash: &str) -> Result<Option<(String, Vec<u8>)>, String> {
         let unknown = || "application/octet-stream".to_string();
         match self {
+            #[cfg(test)]
             Source::Local(blobs) => {
                 Ok(blobs.get(hash).map(|bytes| (blobs.media(hash).unwrap_or_else(unknown), bytes)))
             }
@@ -682,6 +687,7 @@ async fn download_response(source: Option<&Source>, download: misa_proto::wire::
     response
 }
 
+#[cfg(test)]
 async fn local_download(
     State(app): State<Arc<App>>,
     Form(fields): Form<std::collections::HashMap<String, String>>,
@@ -737,11 +743,13 @@ async fn remote_download(
     }
 }
 
+#[cfg(test)]
 async fn blob(State(app): State<Arc<App>>, Path(hash): Path<String>) -> Response {
     blob_response(app.blobs.as_deref(), &hash).await
 }
 
 /// The routes. A document, a stream, a form, and two assets.
+#[cfg(test)]
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
@@ -762,12 +770,14 @@ pub fn router(app: Arc<App>) -> Router {
 /// second decision about what "attach three files at once" means. The bytes go straight into
 /// the content-addressed store the views already point at, so what is uploaded is addressable
 /// by hash the moment it arrives, and nothing but a name ever enters an intent.
+#[cfg(test)]
 async fn attach_file(State(app): State<Arc<App>>, multipart: Multipart) -> Response {
     upload(app.blobs.as_deref(), &app.pending, multipart).await
 }
 
 /// Forget what is pending, without deleting anything: a blob belongs to the store once it is
 /// written, and an upload somebody changed their mind about is not a reason to touch it.
+#[cfg(test)]
 async fn detach(State(app): State<Arc<App>>) -> Response {
     app.pending.lock().expect("the pending list is never poisoned").clear();
     Redirect::to("/").into_response()
@@ -818,6 +828,7 @@ fn upload_fault(message: &str) -> Response {
         .into_response()
 }
 
+#[cfg(test)]
 async fn page(State(app): State<Arc<App>>) -> Html<String> {
     let view = app.runtime.view().ok();
     let lead = lead(&app.pending.lock().expect("the pending list is never poisoned"));
@@ -836,11 +847,13 @@ async fn page(State(app): State<Arc<App>>) -> Html<String> {
 /// least clever thing that works. A finer-grained patch protocol would need the
 /// browser to know node ids, which would mean the browser participated in the view
 /// tree — and the point of rendering on the server is that it does not.
+#[cfg(test)]
 async fn events(State(app): State<Arc<App>>) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let current = app.latest.lock().expect("the last region is never poisoned").clone();
     let lead = lead(&app.pending.lock().expect("the pending list is never poisoned"));
     region_stream(current, lead, app.updates.subscribe())
 }
+#[cfg(test)]
 async fn intent(State(app): State<Arc<App>>, Form(form): Form<HashMap<String, String>>) -> Response {
     let mut pending = app.pending.lock().expect("the pending list is never poisoned");
     let intent = submitted_intent(&form, &pending);
@@ -918,11 +931,13 @@ fn intent_from_form(form: &HashMap<String, String>) -> Intent {
 }
 
 /// Serve one session to browsers on a loopback address.
+#[cfg(test)]
 pub async fn serve(runtime: Arc<Runtime>, address: std::net::SocketAddr) -> Result<(), String> {
     listen(App::new(runtime), address).await
 }
 
 /// The same, with a store to fetch the bytes a view's images name.
+#[cfg(test)]
 pub async fn serve_with(
     runtime: Arc<Runtime>,
     blobs: Arc<Source>,
@@ -931,6 +946,7 @@ pub async fn serve_with(
     listen(App::new(runtime).with_blobs(blobs), address).await
 }
 
+#[cfg(test)]
 async fn listen(app: Arc<App>, address: std::net::SocketAddr) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(address).await.map_err(|err| err.to_string())?;
     let bound = listener.local_addr().map_err(|err| err.to_string())?;
@@ -1115,6 +1131,7 @@ async fn remote_events(
 
 /// The stream a browser reads: the region it should be showing, then every change
 /// to it. One stream type for both paths, so the browser cannot tell them apart.
+#[cfg(test)]
 fn region_stream(
     current: Arc<String>,
     lead: String,

@@ -15,7 +15,6 @@ misa-client = { path = "../misa-client" }
 misa-net.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
-misa-session.workspace = true
 misa-value.workspace = true
 tokio.workspace = true
 
@@ -28,4 +27,5 @@ name = "misa-tui"
 path = "src/alias.rs"
 
 [dev-dependencies]
+misa-session.workspace = true
 misa-kernel.workspace = true
