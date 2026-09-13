@@ -218,8 +218,10 @@ pub fn event_for(event: KernelEvent) -> Event {
 /// previous system's answer was also that the running turn finishes.
 fn on_interrupt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let text = fields::event_text(event, "prompt");
-    if text.trim().is_empty() { return Err(Fault::handler("a prompt with no text")); }
     let attachments = submitted_attachments(tx, event);
+    if text.trim().is_empty() && attachments.as_list().is_none_or(|items| items.is_empty()) {
+        return Err(Fault::handler("a prompt with no text or attachments"));
+    }
     let status = tx.text("session.status");
     if status == "idle" { return begin_turn(tx, &text, attachments); }
     let id = next_id(tx, "session.queue_seq")?;
@@ -241,10 +243,10 @@ fn on_interrupt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 
 fn on_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let text = fields::event_text(event, "text");
-    if text.trim().is_empty() {
-        return Err(Fault::handler("a prompt with no text"));
-    }
     let attachments = submitted_attachments(tx, event);
+    if text.trim().is_empty() && attachments.as_list().is_none_or(|items| items.is_empty()) {
+        return Err(Fault::handler("a prompt with no text or attachments"));
+    }
     if tx.text("session.status") != "idle" {
         let waiting = queue_len(tx) + 1;
         let queue_id = next_id(tx, "session.queue_seq")?;

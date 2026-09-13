@@ -1828,6 +1828,19 @@ mod stream_contract_tests {
         }
     }
     #[tokio::test]
+    async fn image_only_prompts_can_submit_or_interrupt() {
+        let image = misa_proto::view::BlobRef { hash: "a".repeat(64), media: Some("image/png".into()), len: 4 };
+        for intent in [
+            Intent::Prompt { text: String::new(), attachments: vec![image.clone()] },
+            Intent::Interrupt { text: String::new(), attachments: vec![image] },
+        ] {
+            let runtime = runtime();
+            assert!(runtime.intent(intent).is_empty());
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(state.state.db().get("session").unwrap().get("status").unwrap().as_str(), Some("recording"));
+        }
+    }
+    #[tokio::test]
     async fn attaching_the_same_blob_twice_keeps_one_stable_draft_identity() {
         let runtime = runtime();
         let hash = "a".repeat(64);
