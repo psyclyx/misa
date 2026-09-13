@@ -104,6 +104,7 @@
       var following =
         browser.scrollY + browser.innerHeight >= doc.body.scrollHeight - 40;
       main.innerHTML = html;
+      restoreStreams();
       restore();
       draft = composer();
       if (focused && draft) {
@@ -139,7 +140,50 @@
           parent.insertBefore(fragment(op.html), before);
         } else throw Error("unknown view operation: " + op.op);
       });
+      restoreStreams();
       restore();
+    }
+    var activeStreams = new Map();
+    function restoreStreams() {
+      activeStreams.forEach(function (held) {
+        if (!main.contains(held.node))
+          (doc.getElementById("transcript") || main).appendChild(held.node);
+      });
+    }
+    function streamUpdate(update) {
+      if (update.update === "current") {
+        var current = update.stream;
+        streamUpdate({ update: "end", id: current.id });
+        var node = doc.createElement("pre");
+        node.dataset.stream = current.id;
+        node.className = "stream";
+        var text = doc.createTextNode(current.text);
+        node.appendChild(text);
+        (doc.getElementById("transcript") || main).appendChild(node);
+        activeStreams.set(current.id, {
+          node: node,
+          text: text,
+          bytes: new TextEncoder().encode(current.text).length,
+        });
+      } else if (update.update === "append") {
+        var held = activeStreams.get(update.id);
+        if (!held || held.bytes !== update.offset)
+          throw Error("stream append is missing its predecessor");
+        held.text.appendData(update.text);
+        held.bytes += new TextEncoder().encode(update.text).length;
+      } else if (update.update === "end") {
+        var ended = activeStreams.get(update.id);
+        if (ended) ended.node.remove();
+        activeStreams.delete(update.id);
+      } else throw Error("unknown stream update");
+    }
+    function streams(current) {
+      activeStreams.forEach(function (_, id) {
+        streamUpdate({ update: "end", id: id });
+      });
+      current.forEach(function (stream) {
+        streamUpdate({ update: "current", stream: stream });
+      });
     }
     if (browser.EventSource) {
       var stream = new browser.EventSource("/events");
@@ -149,8 +193,20 @@
       stream.addEventListener("changes", function (message) {
         changes(JSON.parse(message.data));
       });
+      stream.addEventListener("streams", function (message) {
+        streams(JSON.parse(message.data));
+      });
+      stream.addEventListener("stream", function (message) {
+        streamUpdate(JSON.parse(message.data));
+      });
     }
-    return { prefs: prefs, snapshot: snapshot, changes: changes };
+    return {
+      prefs: prefs,
+      snapshot: snapshot,
+      changes: changes,
+      streams: streams,
+      streamUpdate: streamUpdate,
+    };
   }
   global.MisaClient = { memory: memory, start: start };
   if (global.document) start(global.document, global);

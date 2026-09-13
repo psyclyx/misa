@@ -122,7 +122,45 @@
           );
           client.changes([{ op: "remove", id: "earlier" }]);
           assert(!doc.getElementById("earlier"), "remove deletes its target");
+          client.streams([{ id: "answer", role: "assistant", text: "é" }]);
+          const streamNode = doc.querySelector('[data-stream="answer"]');
+          const streamText = streamNode.firstChild;
+          client.streamUpdate({
+            update: "append",
+            id: "answer",
+            offset: 2,
+            text: "🙂",
+          });
+          assert(
+            streamNode.textContent === "é🙂" &&
+              streamNode.firstChild === streamText,
+            "stream appends use byte offsets and preserve the text node",
+          );
+          let rejected = false;
+          try {
+            client.streamUpdate({
+              update: "append",
+              id: "answer",
+              offset: 3,
+              text: "gap",
+            });
+          } catch (_) {
+            rejected = true;
+          }
+          assert(
+            rejected && streamNode.textContent === "é🙂",
+            "gapped append is rejected",
+          );
           client.snapshot(region);
+          assert(
+            doc.querySelector('[data-stream="answer"]') === streamNode,
+            "canonical snapshot preserves the separate stream",
+          );
+          client.streamUpdate({ update: "end", id: "answer" });
+          assert(
+            !doc.querySelector('[data-stream="answer"]'),
+            "settled stream is removed",
+          );
           draft = doc.querySelector("textarea");
           assert(draft.value === "unsent", "snapshot preserves unsent draft");
           assert(
