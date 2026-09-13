@@ -15,8 +15,7 @@ documentation (`docs/architecture.md`, `docs/subscriptions.md`, `docs/catalogs.m
 A change that violates one of these is a bug in the change, not a trade-off to weigh.
 
 1. **The session emits semantics; the client renders.** The tree carries what a thing _is_ — a role,
-   a state, a fact, an image's hash and alt, a message's structure — never how it is drawn or what
-   state it is in. So `graphics`, `native_details`, `RenderClass` and `Capabilities` leave the
+   a state, a fact, an image's hash and alt, a message's structure — never local presentation choices. So `graphics`, `native_details`, `RenderClass` and `Capabilities` leave the
    protocol; an image node is emitted with its `alt`, and a client that cannot draw it says so in its
    own idiom; a collapsible's expansion is the client's, remembered against the node's `id`.
 2. **A client is what it asks for, not what it is.** The hello carries a name and a version; the name
@@ -50,8 +49,7 @@ A change that violates one of these is a bug in the change, not a trade-off to w
 8. **The client end of the protocol is one crate, and a client build links no session and no
    kernel.** `misa-proto` (types, and the names both ends must agree on), `misa-protocol` (both ends
    of the state machine, over traits), `misa-transport` (iroh, blobs, the accept loop, the drivers),
-   `misa-kit` (picker, editor, selection, prefs — storage injected, no `$HOME`). Today the phone
-   links `misa-session` and `misa-kernel` to learn one query name.
+   `misa-kit` (picker, editor, selection, prefs — storage injected, no `$HOME`). The final dependency gate checks that desktop and Android client builds link neither session nor kernel.
 9. **Every artifact is a derivation, and the shell is built from the same inputs.** The daemon, the
    terminal, the web frontend, the pixel frontend, the guest component and the phone package are each
    a derivation that declares exactly what it builds against and nothing more, and the development
@@ -73,7 +71,7 @@ The shape of the change is mostly subtraction, so it is worth listing what goes:
 | `ClientMsg::Ping`/`Pong`                               | `misa-protocol`           | QUIC acks and flow control are the liveness signal (3)     |
 | four copies of attach-hello-subscribe                  | tui, cli, web, android    | one client end of the protocol (8)                         |
 | `prefs`' `std::fs` and `$HOME`                         | `misa-kit`                | a browser and a phone have their own storage (8)           |
-| `misa-net`'s dependency on session and kernel          | `misa-protocol`           | a trait inverts it, so a phone links neither (8)           |
+| `misa-transport`'s dependency on session and kernel    | `misa-protocol`           | a trait inverts it, so a phone links neither (8)           |
 | `admission`/`Roster` in the session crate              | → transport or the daemon | deployment policy is not turn policy (8)                   |
 
 ## Phases
@@ -102,7 +100,7 @@ These are forks that change later work, so they are answered first.
 
 - [x] Delete `Capabilities`, `RenderClass` and the class constructors; the hello carries a name and
       a version.
-- [ ] `views::document(db, sections)`: delete the `graphics` read (`image_node` always emits
+- [x] `views::document(db, sections)`: delete the `graphics` read (`image_node` always emits
       `Kind::Image` with its `alt`), the `native_details` read (`Kind::Collapsible { summary }`, body
       as children), the memo's class key (memo by revision, one tree for every client), and the
       capabilities argument to `Section::build`.
@@ -122,44 +120,46 @@ These are forks that change later work, so they are answered first.
 
 ### 2. Streaming and sync: content is not the document
 
-- [ ] The in-flight body leaves the tree: a stream per node id with a current value and appends.
+- [x] The in-flight body leaves the tree: a stream per node id with a current value and appends.
       `TextDelta` becomes that stream rather than a duplicate of the tree's content.
-- [ ] `since` on `Subscribe`: a re-attach inside one session takes the ops it missed; a restart is a
+- [x] `since` on `Subscribe`: a re-attach inside one session takes the ops it missed; a restart is a
       fresh sync through the canonical view.
-- [ ] Replace the unbounded per-connection channels with bounded ones; a full queue marks the client
+- [x] Replace the unbounded per-connection channels with bounded ones; a full queue marks the client
       behind.
-- [ ] Delete `ClientMsg::Ping`/`Pong` and the ACK question along with it.
-- [ ] Transport: carry a value of any size (bound the chunk, not the message). Then the `window`
+- [x] Delete `ClientMsg::Ping`/`Pong` and the ACK question along with it.
+- [x] Transport: carry a value of any size (bound the chunk, not the message). Then the `window`
       argument can go, and a client that wants less history is simply rendering less.
-- [ ] Verify: per token the session writes O(appended bytes) and no tree op; a client that missed ops
+- [x] Verify: per token the session writes O(appended bytes) and no tree op; a client that missed ops
       converges by taking the canonical view; a differential test folds the op stream and compares
       with the canonical view.
 
 ### 3. The incremental view
 
-- [ ] The `Δdb → Δview` mapping in one place, keyed by path prefix; structural ops explicit (append
+- [x] The `Δdb → Δview` mapping in one place, keyed by path prefix; structural ops explicit (append
       child, remove, replace subtree); node content memoised by declared inputs.
-- [ ] Enumerate the aggregates and give them declared inputs: spend, context meter, queue and notice
+- [x] Enumerate the aggregates and give them declared inputs: spend, context meter, queue and notice
       counts, attachments.
-- [ ] Stable identity for list elements whose front can move (notices, queue) — an index is not an id.
-- [ ] The audit: rebuild-and-compare on every dispatch in the tests, and a debug assertion for small
+- [x] Stable identity for list elements whose front can move (notices, queue) — an index is not an id.
+- [x] The audit: rebuild-and-compare on every dispatch in the tests, and a debug assertion for small
       states.
-- [ ] Clients apply ops: the terminal appends spans, the browser patches a DOM node, the pixel
-      frontend patches a scene node, android applies to its tree.
-- [ ] Verify: the audit; the op-stream differential test; bytes per change bounded by the change.
+- [ ] Complete the client operation gate. Browser SSE emits subtree operations and separate stream
+      events; pixels retain owner paint groups with cold-raster parity tests. Terminal retained
+      presentation remains in integration; Android applies indexed canonical changes and persists
+      canonical state independently of live streams.
+- [x] Verify server audit, operation folding and bounded encoded-change work. See
+      `incremental-evidence.md`; pixel layout work is measured separately in `pixel-retained-evidence.md`.
 
 ### 4. The crate slice
 
-- [ ] `misa-proto` (types and names) · `misa-protocol` (both ends over a session trait: read, rev,
-      intent, complete, info, events, watch_rev) · `misa-transport` (iroh, blobs, `serve`, drivers) ·
-      `misa-kit` (today's `misa-client`, renamed, storage injected).
-- [ ] Collapse the four attach copies into the protocol's client end.
-- [ ] Move `admission`/`Roster` out of `misa-session`.
-- [ ] The docs' crate names follow the rename — `misa-client` → `misa-kit`, `misa-net` →
-      `misa-protocol` and `misa-transport` — in `architecture.md`, `parity.md`, `README.md` and this
-      file.
-- [ ] Verify: the android native crate links no session and no kernel; the protocol's tests run over
-      a fake session rather than a live runtime.
+- [x] `misa-proto` (types and names) · `misa-protocol` (both ends over injected session
+      queries, synchronization, intents, completion, info, events and directed replies) · `misa-transport` (iroh, blobs, `serve`, drivers) ·
+      `misa-kit` (editor, picker, selection and memory with storage injected).
+- [x] Collapse the four attach copies into the protocol's client end.
+- [x] Move `admission`/`Roster` out of `misa-session`.
+- [x] Documentation follows the completed central crate rename. The final dependency verification
+      remains a separate gate below.
+- [x] Verify: normal dependency graphs for all four clients contain neither session nor kernel;
+      protocol tests use a fake session. Final packaged client checks remain in phase 7.
 
 ### 5. Usage
 
@@ -185,62 +185,49 @@ These are forks that change later work, so they are answered first.
 
 ### 7. Packaging
 
-- [ ] A derivation per artifact in `next/nix/packages/*`, exposed by `next/default.nix` and
-      re-exported through the root `default.nix` (`pkgs.misa-daemon`, …), each declaring exactly the
-      inputs it builds against: - `misa-daemon`, `misa` (the terminal) and `misa-web`: the Rust toolchain, and a C compiler
-      because `rusqlite` bundles sqlite. Everything else they use (`iroh`, `axum`, `wasmtime`,
-      `qrcode`) is pure Rust, so no system sqlite, no OpenSSL, no pkg-config; - `misa-skia`: Skia, freetype and fontconfig, always. The `paint` feature is deleted, the crate
-      builds against `skia-safe` unconditionally, and `a_scene_paints_to_a_png` joins the default
-      gate; - the guest component: `wasm32-unknown-unknown` and `wasm-tools`/`wit-component`; - `checks`: `cargo test --workspace`, and the fixture tests with the wasm tooling on `PATH`.
-- [ ] The shell is composed from those same inputs — the package set's own `nativeBuildInputs` and
-      `buildInputs`, not a second list — plus the tools the repository works with (rustfmt, clippy,
-      rust-analyzer, cargo-nextest, treefmt, nixfmt, prettier, the wasm tools), so a build and the
-      shell cannot drift.
-- [ ] Android: the `.so` per ABI through `pkgsCross.<abi>-android` (rustc 1.97.1) and
-      `androidenv.androidPkgs` (build-tools 37.0.0, platforms 33–37, NDK 29.0.14206865 — the version
-      the README tells people to install by hand), replacing `native/build.sh`; the APK through
-      Gradle 9.3.1 with its dependencies available offline (`gradle2nix`, or a fixed-output cache);
-      `android_sdk.accept_license`, because the SDK is unfree.
-- [ ] The daemon's NixOS module as separate work: the existing module wraps the Zig harness with
-      `MISA_CONFIG`, while the Rust daemon takes `--session`, `--data-dir`, `--plugin`,
-      `--open`/`--allow` and writes credentials 0600.
-- [ ] Housekeeping: `next/android/native/Cargo.lock` has drifted (`misa-client` gained
-      dependencies); `views.rs`'s "four roots" comment lists five; `misa-daemon` depends on `clap`
-      and parses its arguments by hand, so either the dependency or the parsing goes.
-- [ ] Verify: `nix-build next -A packages.<name>` for each from a clean store; the shell can build
-      and test the workspace; the APK installs on an emulator.
+- [x] Artifact derivations exist for the daemon, terminal, web server, pixel window, guest component,
+      Android APK and checks, exposed through `next/default.nix` and the root package set.
+      Skia is unconditional, with a pinned archive, fonts and native libraries.
+- [x] The development shell derives its build inputs from those artifacts, plus development tools.
+- [x] Android native libraries, pinned SDK/NDK inputs, offline Gradle dependencies, debug signing and
+      an emulator install-check derivation are defined. Native outputs use 16 KiB page alignment.
+- [x] A separate Rust daemon NixOS module exposes `services.misa`; legacy Zig modules remain separate.
+- [ ] Finish artifact integration and housekeeping after the crate rename: refresh locks, check exact
+      native runtime inputs and review dependency declarations.
+- [ ] Verify every `nix-build next -A packages.<name>` from the final tree, the combined checks
+      derivation, and installation/launch of the exact APK on an emulator. Defined checks and earlier
+      component tests are not evidence that this final artifact gate has passed. The guest artifact
+      build has passed; remaining final artifact results must still be recorded.
 
 ### 8. Client finishing
 
-- [ ] A client that keeps what it receives: fetch a blob and write it where a person can find it, and
+- [x] A client that keeps what it receives: fetch a blob and write it where a person can find it, and
       cancel a device flow a client started. Both are an intent a session asks the kernel for and an
       answer that is a file or a stop (`architecture.md` §6 item 1).
       Device cancellation and directed save replies are built; terminal file export and browser
-      downloads are verified end to end. Android and pixel destination selection use the same reply.
-- [ ] Android: fetch blobs over `/misa/blob/0` so a picture is a picture; the cursor and the tree are
+      downloads are verified end to end. Pixels also offer a local destination dialog. Android reconnect, blob and save scenarios are verified on Android 35; final packaged-ABI
+      installation remains in the artifact gate.
+- [x] Android: fetch blobs over `/misa/blob/0` so a picture is a picture; the cursor and the tree are
       data the app persists, so a background check is "attach with `since`".
-- [ ] Browser: apply ops to the DOM instead of re-rendering the transcript per revision; its own
-      memory (theme, opened nodes, draft) in the page's storage.
+- [x] Browser: subtree operations and independent streams update the DOM; bounded SSE lag recovers
+      canonical HTML plus current streams. Theme, disclosure state and draft belong to page storage.
 - [x] Pixels: a native window with editable panel fields, selection and clipboard copy, meters,
       disclosure toggles, wrapped tables and fetched images. Native keyboard, clipboard and
-      disclosure interaction are verified under Xvfb; 14 pixel tests cover scene and local interaction.
-- [ ] Terminal: the kit's memory shape with the terminal's storage; animations and spinners drawn from
-      `State::Streaming`; a pasted binary image through a clipboard capability.
+      disclosure interaction are verified under Xvfb; the pixel suite covers local interaction, retained scene identity and cold-raster parity.
+- [ ] Finish terminal retained presentation and keyboard integration. Injected filesystem memory,
+      responsive idle input, and Ctrl-V text/image paste are built. Images become PNG blobs, remain
+      staged until send succeeds, and can be discarded with Ctrl-Alt-V; native clipboard roundtrip
+      is verified under Xvfb. Final stream-animation and retained-output checks remain pending.
 - [ ] Verify: the parity rows move, and each frontend's own suite covers what it gained.
 
 ### 9. Documentation
 
-- [ ] `architecture.md`: §6's "what is not built" list as each part of it lands — the change protocol
-      in phases 2 and 3, the crate slice in phase 4, the pixel frontend's Skia in phase 7 — and the
-      counts as the gate moves. The positions themselves are stated: §1's seams, §2's corollary,
-      §3's one tree, §4's "what a change sends", §5's plugin bullets, and §6's limitations.
-- [ ] `parity.md`: the rows that move, and the counts. (Its frontend table, its crate-name note and
-      its count line were corrected with this plan: the pixel frontend has no picker, no input and no
-      collapsible toggle yet, which is phase 8.)
-- [ ] `README.md`: one terminal binary and its commands (phase 6), the crate names after the rename
-      (phase 4), how to build the packaged outputs (phase 7), and the pixel frontend's build section
-      once the `paint` feature is gone (phase 7). A plugin's presentation, the android render class
-      and the temporary `paint` feature are already rewritten.
+- [x] Audit architecture, parity and README claims against the implemented semantic tree, sync,
+      protocol boundary, native pixel window, browser updates and attachment flows.
+- [x] Remove stale per-client render classes, optional Skia, local-browser runtime instructions and
+      historical test totals. Document the single terminal binary and artifact entry points.
+- [ ] Reconcile the remaining terminal and final packaged-Android/artifact gates with final integration evidence.
+      Record final test totals only from that final run.
 
 ## Parity rows this plan does not cover, and why
 
@@ -256,14 +243,15 @@ above or one of these — saying which is the difference between a plan and a wi
 
 ## Verification spine
 
-- `cargo test --workspace` is the gate. Thirteen more tests live behind
-  `misa-plugin --features guest-fixture`, and one behind `misa-skia --features paint` until phase 7
-  deletes that feature and it joins the gate.
-- Two invariants need pinning before the phases that depend on them: the incremental view's audit
-  (rebuild against incremental, per dispatch) and the op stream's differential test (fold the ops,
-  compare with the canonical view).
-- Commit messages record the test count, as the previous ones do, and each phase leaves the gate
-  green.
-- Three claims stay checked _by hand_, because only two processes can check them: a daemon and `misa`
-  over a real endpoint; a web upload and the blob it serves; a name that is not a content hash
-  refused before the store is asked. They are named here so they are not mistaken for automated ones.
+- `cargo test --workspace` is the ordinary gate. Guest component fixtures additionally run with
+  `misa-plugin/guest-fixture` and the wasm tools. Skia raster tests are ordinary tests; native window
+  and clipboard checks run under Xvfb, and browser DOM checks run in Chromium.
+- Server differential audits compare incremental state with a rebuild; operation folding and
+  stream-offset tests check synchronization. Retained pixel tests compare cold-render pixels and
+  count actual semantic layout work. No elapsed-time speedup is inferred from concurrent builds.
+- Real-endpoint tests cover reconnect, multiple clients, large chunked views and attachment transfer.
+  Browser and terminal file-save tests verify kernel-confirmed bytes; targeted native UI checks
+  supplement pure rendering and interaction tests.
+- The final combined workspace, packaged checks, artifact builds and emulator installation remain
+  pending until their final-tree results are recorded. Commit messages retain the component test
+  evidence without treating earlier counts as the current workspace total.

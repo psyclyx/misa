@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use misa_client::prefs::Storage;
+use misa_kit::prefs::Storage;
 
 pub struct File {
     path: PathBuf,
@@ -80,7 +80,7 @@ impl Storage for File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_client::Prefs;
+    use misa_kit::Prefs;
 
     #[test]
     fn a_terminal_saves_private_complete_documents_and_reports_write_failures() {

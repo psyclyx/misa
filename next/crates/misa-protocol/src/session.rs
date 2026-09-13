@@ -4,7 +4,7 @@ use misa_proto::view::Choice;
 use misa_proto::wire::{ClientInfo, Intent, RequestContext, SessionEvent};
 use misa_proto::sync::{Stream, Version, ViewSync};
 use misa_value::Value;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 #[derive(Clone, Debug)]
 pub enum Reading { View(Node), Data(Value) }
@@ -23,11 +23,15 @@ pub trait Session: Send + Sync {
     fn info(&self) -> SessionInfo;
     fn intent_from(&self, intent: Intent, context: Option<RequestContext>) -> Vec<Fault>;
     fn complete(&self, source: &str, prefix: &str, limit: Option<u32>) -> Result<(Vec<Choice>, bool), Fault>;
-    fn sync(&self, since: Option<&Version>) -> ViewSync;
+    /// The event cursor is captured under the same lock as current stream values.
+    fn sync(&self, since: Option<&Version>) -> (ViewSync, u64);
     fn changes(&self, since: Option<&Version>) -> ViewSync;
     fn streams(&self) -> Vec<Stream>;
     fn watch_rev(&self) -> watch::Receiver<u64>;
     fn subscribe_events(&self) -> broadcast::Receiver<Emission>;
+    fn subscribe_replies(&self, _connection: u64) -> mpsc::Receiver<Emission> {
+        mpsc::channel(1).1
+    }
     /// The connection, rather than a client-supplied name, is its lifecycle identity.
     fn attached(&self, _connection: u64, _client: ClientInfo) {}
     fn detached(&self, _connection: u64) {}

@@ -1,9 +1,13 @@
 {
   callPackage,
+  stdenv,
   misa-guest,
   wasm-tools,
   lld,
   chromium,
+  xorg-server,
+  xdotool,
+  xclip,
 }:
 let
   skia = callPackage ../skia.nix { };
@@ -14,6 +18,9 @@ in
     wasm-tools
     lld
     chromium
+    xorg-server
+    xdotool
+    xclip
   ];
   inherit (skia) buildInputs preCheck;
   env = skia.env // {
@@ -27,6 +34,8 @@ in
   ];
   postCheck = ''
     bash crates/misa-web/tests/browser.sh
+    bash crates/misa-skia/tests/window.sh target/${stdenv.hostPlatform.rust.rustcTarget}/release/misa-skia
+    bash crates/misa-tui/tests/clipboard.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
   '';
   installPhase = ''
     mkdir -p "$out"

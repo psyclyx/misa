@@ -1,7 +1,8 @@
 //! Client-owned interaction and layout. No field draft, disclosure state or destination leaves
 //! this module until the person activates an action the session advertised.
 use crate::{Layout, Op, Scene};
-use misa_client::editor::{Editor, Motion};
+use misa_kit::editor::{Editor, Motion};
+use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
 use misa_proto::wire::{Intent, SessionInfo};
 use misa_render::{Color, Style, Theme};
@@ -39,11 +40,24 @@ impl Hit {
 }
 #[derive(Clone, Debug)]
 struct TextRow {
+    x: f32,
+    y: f32,
     text: String,
+}
+#[derive(Clone)]
+struct Cached {
+    width: f32,
+    height: f32,
+    ops: Arc<Vec<Op>>,
+    hits: Vec<Hit>,
+    rows: Vec<TextRow>,
 }
 #[derive(Clone, Debug)]
 pub enum Key {
     Text(String),
+    Commands,
+    Up,
+    Down,
     Backspace,
     Delete,
     Left,
@@ -58,7 +72,13 @@ pub enum Key {
 }
 
 pub struct App {
-    pub view: Node,
+    #[cfg(test)]
+    rendered_nodes: usize,
+    tree: IndexedTree,
+    root: String,
+    streams: BTreeMap<String, Node>,
+    cache: BTreeMap<String, Arc<Cached>>,
+    cache_width: u32,
     pub info: Option<SessionInfo>,
     pub notice: String,
     pub hits: Vec<Hit>,
@@ -67,6 +87,7 @@ pub struct App {
     pub images: BTreeMap<String, Arc<image::RgbaImage>>,
     drafts: BTreeMap<(String, String), Editor>,
     save: Option<(String, Editor)>,
+    picker: Option<misa_kit::picker::Picker>,
     selection: Option<((usize, usize), (usize, usize))>,
     rows: Vec<TextRow>,
     replace_selection: bool,
@@ -78,7 +99,13 @@ pub struct App {
 impl App {
     pub fn new(view: Node) -> Self {
         let mut app = Self {
-            view: Node::section("session"),
+            #[cfg(test)]
+            rendered_nodes: 0,
+            tree: IndexedTree::new(Node::section("session")),
+            root: "session".into(),
+            streams: BTreeMap::new(),
+            cache: BTreeMap::new(),
+            cache_width: 0,
             info: None,
             notice: String::new(),
             hits: vec![],
@@ -87,6 +114,7 @@ impl App {
             images: BTreeMap::new(),
             drafts: BTreeMap::new(),
             save: None,
+            picker: None,
             selection: None,
             rows: vec![],
             replace_selection: false,
@@ -98,7 +126,10 @@ impl App {
         app.set_view(view);
         app
     }
-    pub fn set_view(&mut self, view: Node) {
+    pub fn set_view(&mut self, mut view: Node) {
+        misa_proto::sync::address(&mut view);
+        self.cache.clear();
+        self.streams.clear();
         fn fields(node: &Node, keys: &mut Vec<(String, misa_proto::view::Field)>) {
             if let Kind::Fields { fields } = &node.kind {
                 for field in fields {
@@ -140,15 +171,253 @@ impl App {
         }
         if self.save.is_some() {
             // A live update cannot steal focus from a local destination dialog.
-        } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && misa_proto::view::find(&self.view, node).is_none()) {
+        } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && self.tree.node(node).is_none()) {
             if !matches!(&self.focus, Some(Control::Field { node: focused, .. }) if focused == node) {
                 self.focus = Some(Control::Field { node: node.clone(), field: field.id.clone() });
             }
         } else if self.focus.as_ref().is_none_or(|control| matches!(control, Control::Field { node, field } if !self.drafts.contains_key(&(node.clone(),field.clone())))) {
             self.focus = keys.last().map(|(node,field)| Control::Field { node: node.clone(), field: field.id.clone() });
         }
-        self.view = view;
+        self.root = view.id.clone();
+        self.tree = IndexedTree::new(view);
         self.selection = None;
+    }
+
+    fn visible_streams(&self) -> Vec<String> {
+        self.streams.iter().filter(|(id,node)| {
+            !self.tree.contains(id.rsplit_once('.').map(|(owner,_)|owner).unwrap_or(id)) && matches!(&node.kind,Kind::Text {spans} if spans.iter().any(|span|!span.text.is_empty()))
+        }).map(|(id,_)|id.clone()).collect()
+    }
+    fn stream_parent(&self) -> &str {
+        if self.tree.contains("transcript") {
+            "transcript"
+        } else {
+            &self.root
+        }
+    }
+    fn invalidate(&mut self, id: &str) {
+        let mut cursor = Some(id.to_string());
+        while let Some(id) = cursor {
+            self.cache.remove(&id);
+            cursor = self.tree.parent(&id).map(str::to_owned);
+        }
+    }
+    fn invalidate_focus(&mut self) {
+        let id = match &self.focus {
+            Some(Control::Field { node, .. })
+            | Some(Control::Action { node, .. })
+            | Some(Control::Disclosure(node)) => Some(node.clone()),
+            _ => None,
+        };
+        if let Some(id) = id {
+            self.invalidate(&id);
+        }
+    }
+    fn invalidate_streams(&mut self) {
+        self.cache.remove("streams");
+        let parent = self.stream_parent().to_string();
+        self.invalidate(&parent);
+    }
+    fn forget_subtree(&mut self, id: &str) {
+        for child in self.tree.children(id) {
+            self.forget_subtree(&child);
+        }
+        self.cache.remove(id);
+    }
+    fn refresh_fields(&mut self, node: &Node) {
+        if let Kind::Fields { fields } = &node.kind {
+            for field in fields.iter().filter(|field| !field.read_only) {
+                self.drafts
+                    .entry((node.id.clone(), field.id.clone()))
+                    .or_insert_with(|| {
+                        let mut edit = Editor::new();
+                        let value = match &field.kind {
+                            FieldKind::Choice {
+                                selected: Some(value),
+                                ..
+                            } => value,
+                            _ => &field.value,
+                        };
+                        edit.set_text(value);
+                        edit
+                    });
+            }
+            if node.id == "panel.input" && self.save.is_none() {
+                if let Some(field) = fields.iter().find(|field| !field.read_only) {
+                    self.focus = Some(Control::Field {
+                        node: node.id.clone(),
+                        field: field.id.clone(),
+                    });
+                }
+            }
+        }
+        for child in &node.children {
+            self.refresh_fields(child);
+        }
+    }
+    pub fn receive(&mut self, message: &misa_proto::SessionMsg) -> Result<(), String> {
+        use misa_proto::{SessionEvent, SessionMsg};
+        match message {
+            SessionMsg::View { view, .. } => self.set_view(view.clone()),
+            SessionMsg::Changes { changes, .. } => {
+                for op in changes.iter().flat_map(|change| &change.ops) {
+                    match op {
+                        ViewOp::Insert { parent, node, .. } => {
+                            self.invalidate(parent);
+                            self.tree.apply(op)?;
+                            self.refresh_fields(node);
+                        }
+                        ViewOp::Remove { id } | ViewOp::Replace { id, .. } => {
+                            self.invalidate(id);
+                            self.forget_subtree(id);
+                            self.tree.apply(op)?;
+                            if let ViewOp::Replace { node, .. } = op {
+                                self.refresh_fields(node);
+                            }
+                        }
+                    }
+                }
+                self.drafts.retain(|(id,field),_|self.tree.node(id).is_some_and(|node|matches!(&node.kind,Kind::Fields {fields} if fields.iter().any(|value|&value.id==field && !value.read_only))));
+                if matches!(&self.focus,Some(Control::Field {node,field}) if !self.drafts.contains_key(&(node.clone(),field.clone())))
+                {
+                    self.focus = None;
+                }
+                if self.focus.is_none() && self.save.is_none() {
+                    self.focus =
+                        self.drafts
+                            .keys()
+                            .next_back()
+                            .map(|(node, field)| Control::Field {
+                                node: node.clone(),
+                                field: field.clone(),
+                            });
+                }
+            }
+            SessionMsg::Streams { streams } => {
+                for id in self.streams.keys() {
+                    self.cache.remove(id);
+                }
+                self.streams.clear();
+                for stream in streams {
+                    self.streams.insert(
+                        stream.id.clone(),
+                        Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
+                            .id(&stream.id)
+                            .state(misa_proto::view::State::Streaming),
+                    );
+                }
+                self.invalidate_streams();
+            }
+            SessionMsg::Event {
+                event: SessionEvent::Stream { update },
+                ..
+            } => {
+                match update {
+                    StreamUpdate::Current { stream } => {
+                        self.cache.remove(&stream.id);
+                        self.streams.insert(
+                            stream.id.clone(),
+                            Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
+                                .id(&stream.id)
+                                .state(misa_proto::view::State::Streaming),
+                        );
+                    }
+                    StreamUpdate::Append { id, text, .. } => {
+                        self.cache.remove(id);
+                        if let Some(Node {
+                            kind: Kind::Text { spans },
+                            ..
+                        }) = self.streams.get_mut(id)
+                        {
+                            if let Some(span) = spans.first_mut() {
+                                span.text.push_str(text);
+                            }
+                        }
+                    }
+                    StreamUpdate::End { id } => {
+                        self.cache.remove(id);
+                        self.streams.remove(id);
+                    }
+                }
+                self.invalidate_streams();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    pub fn image(&mut self, hash: String, image: Arc<image::RgbaImage>) {
+        // Image decode is infrequent; only owners containing this reference are invalidated.
+        let ids: Vec<_> = self
+            .cache
+            .keys()
+            .filter(|id| {
+                self.tree.node(id).is_some_and(
+                    |node| matches!(&node.kind,Kind::Image {blob,..} if blob.hash==hash),
+                )
+            })
+            .cloned()
+            .collect();
+        for id in ids {
+            self.invalidate(&id);
+        }
+        self.images.insert(hash, image);
+    }
+    fn present(
+        &mut self,
+        id: &str,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let cached = if let Some(cached) = self.cache.get(id).filter(|cached| cached.width == width)
+        {
+            cached.clone()
+        } else {
+            let node = if id == "streams" {
+                Node::section("streams").id("streams")
+            } else if let Some(node) = self.streams.get(id).or_else(|| self.tree.node(id)) {
+                node.clone()
+            } else {
+                return;
+            };
+            let outer_hits = std::mem::take(&mut self.hits);
+            let outer_rows = std::mem::take(&mut self.rows);
+            let mut local = Scene::default();
+            let mut height = 0.0;
+            self.node_uncached(&node, 0.0, &mut height, width, theme, &mut local);
+            let cached = Arc::new(Cached {
+                width,
+                height,
+                ops: Arc::new(local.ops),
+                hits: std::mem::replace(&mut self.hits, outer_hits),
+                rows: std::mem::replace(&mut self.rows, outer_rows),
+            });
+            self.cache.insert(id.to_string(), cached.clone());
+            cached
+        };
+        scene.ops.push(Op::Group {
+            x,
+            y: *y,
+            ops: cached.ops.clone(),
+        });
+        let base = self.rows.len();
+        self.rows.extend(cached.rows.iter().map(|row| TextRow {
+            x: row.x + x,
+            y: row.y + *y,
+            text: row.text.clone(),
+        }));
+        self.hits.extend(cached.hits.iter().map(|hit| {
+            let mut hit = hit.clone();
+            hit.x += x;
+            hit.y += *y;
+            if let Control::Text(row) = &mut hit.control {
+                *row += base;
+            }
+            hit
+        }));
+        *y += cached.height;
     }
     pub fn field_text(&self, node: &str, field: &str) -> Option<&str> {
         self.drafts
@@ -161,6 +430,15 @@ impl App {
         self.follow = false;
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
+        if self.picker.is_some() {
+            return vec![];
+        }
+        self.invalidate_focus();
+        let commands = self.pointer_inner(x, y, dragging);
+        self.invalidate_focus();
+        commands
+    }
+    fn pointer_inner(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
         let hit = self
             .hits
             .iter()
@@ -205,6 +483,12 @@ impl App {
         self.activate(hit.control)
     }
     fn activate(&mut self, control: Control) -> Vec<Command> {
+        match &control {
+            Control::Disclosure(id)
+            | Control::Field { node: id, .. }
+            | Control::Action { node: id, .. } => self.invalidate(id),
+            _ => {}
+        }
         match control {
             Control::Disclosure(id) => {
                 if !self.expanded.remove(&id) {
@@ -212,14 +496,13 @@ impl App {
                 }
             }
             Control::Field { node, field } => {
-                let kind =
-                    misa_proto::view::find(&self.view, &node).and_then(|node| match &node.kind {
-                        Kind::Fields { fields } => fields
-                            .iter()
-                            .find(|value| value.id == field)
-                            .map(|field| field.kind.clone()),
-                        _ => None,
-                    });
+                let kind = self.tree.node(&node).and_then(|node| match &node.kind {
+                    Kind::Fields { fields } => fields
+                        .iter()
+                        .find(|value| value.id == field)
+                        .map(|field| field.kind.clone()),
+                    _ => None,
+                });
                 if let Some(edit) = self.drafts.get_mut(&(node, field)) {
                     match kind {
                         Some(FieldKind::Bool) => edit.set_text(if edit.text() == "true" {
@@ -268,7 +551,7 @@ impl App {
         vec![]
     }
     fn submit(&mut self, node_id: &str, action_id: &str) -> Vec<Command> {
-        let Some(node) = misa_proto::view::find(&self.view, node_id) else {
+        let Some(node) = self.tree.node(node_id) else {
             return vec![];
         };
         let Some(action) = node.actions.iter().find(|action| action.id == action_id) else {
@@ -294,8 +577,8 @@ impl App {
                 .as_ref()
                 .map(|info| info.commands.as_slice())
                 .unwrap_or(&[]);
-            let parsed = misa_client::intent::parse(text, commands);
-            let Some(intent) = misa_client::intent::intent(&parsed) else {
+            let parsed = misa_kit::intent::parse(text, commands);
+            let Some(intent) = misa_kit::intent::intent(&parsed) else {
                 self.notice = format!("Cannot submit: {parsed:?}");
                 return vec![];
             };
@@ -327,6 +610,74 @@ impl App {
         }
     }
     pub fn key(&mut self, key: Key) -> Vec<Command> {
+        self.invalidate_focus();
+        let commands = self.key_inner(key);
+        self.invalidate_focus();
+        commands
+    }
+    fn key_inner(&mut self, key: Key) -> Vec<Command> {
+        if matches!(key, Key::Commands) && self.save.is_none() {
+            let mut picker =
+                misa_kit::picker::Picker::new("Commands", misa_kit::picker::Accept::Run);
+            picker.set_items(
+                self.info
+                    .as_ref()
+                    .map(|info| {
+                        info.commands
+                            .iter()
+                            .map(|command| misa_proto::view::Choice {
+                                value: command.id.clone(),
+                                label: command.label.clone(),
+                                detail: Some(command.description.clone()),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                false,
+            );
+            self.picker = Some(picker);
+            return vec![];
+        }
+        if let Some(picker) = &mut self.picker {
+            match key {
+                Key::Escape => {
+                    self.picker = None;
+                }
+                Key::Up | Key::Tab { backward: true } => picker.move_selection(-1),
+                Key::Down | Key::Tab { backward: false } => picker.move_selection(1),
+                Key::Text(value) => {
+                    for character in value.chars() {
+                        picker.type_char(character);
+                    }
+                }
+                Key::Backspace => {
+                    picker.backspace();
+                }
+                Key::Enter { .. } => {
+                    if let Some(candidate) = picker.selected().cloned() {
+                        let target = self
+                            .drafts
+                            .keys()
+                            .find(|(_, field)| field == "prompt")
+                            .cloned();
+                        if let Some((node, field)) = target {
+                            self.drafts
+                                .get_mut(&(node.clone(), field.clone()))
+                                .unwrap()
+                                .set_text(&format!("/{} ", candidate.value));
+                            self.focus = Some(Control::Field { node, field });
+                            self.picker = None;
+                            self.notice =
+                                "Command inserted · add arguments, then Enter to send".into();
+                        } else {
+                            self.notice = "This view has no prompt field".into();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return vec![];
+        }
         if matches!(key, Key::Copy) {
             let text = if let Some(edit) = self.editor() {
                 edit.text().to_string()
@@ -387,7 +738,9 @@ impl App {
                     }
                     return vec![];
                 }
-                let action = misa_proto::view::find(&self.view, &node)
+                let action = self
+                    .tree
+                    .node(&node)
                     .and_then(|node| {
                         node.actions
                             .iter()
@@ -405,7 +758,7 @@ impl App {
         }
         if let Some(control @ Control::Field { .. }) = self.focus.clone() {
             let discrete = match &control {
-                Control::Field {node,field} => misa_proto::view::find(&self.view,node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && matches!(value.kind,FieldKind::Bool|FieldKind::Choice {..})))),
+                Control::Field {node,field} => self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && matches!(value.kind,FieldKind::Bool|FieldKind::Choice {..})))),
                 _ => false,
             };
             if discrete {
@@ -475,6 +828,14 @@ impl App {
             .join("\n")
     }
     pub fn frame(&mut self, width: u32, height: u32) -> Scene {
+        if self.cache_width != width {
+            self.cache.clear();
+            self.cache_width = width;
+        }
+        #[cfg(test)]
+        {
+            self.rendered_nodes = 0;
+        }
         self.viewport_height = height as f32;
         let scene = self.layout(width, height);
         let max = (self.content_height - height as f32 + 40.0).max(0.0);
@@ -497,11 +858,11 @@ impl App {
             height: height as f32,
             ops: vec![],
         };
-        let view = self.view.clone();
+        let root = self.root.clone();
         let theme = Theme::dark();
         let mut y = 20.0 - self.scroll;
-        self.node(
-            &view,
+        self.present(
+            &root,
             20.0,
             &mut y,
             (width as f32 - 40.0).max(40.0),
@@ -509,6 +870,37 @@ impl App {
             &mut scene,
         );
         self.content_height = y + self.scroll + 20.0;
+        if let Some((a, b)) = self.selection {
+            let (start, end) = if a <= b { (a, b) } else { (b, a) };
+            for (index, row) in self
+                .rows
+                .iter()
+                .enumerate()
+                .skip(start.0)
+                .take(end.0.saturating_sub(start.0) + 1)
+            {
+                let from = if index == start.0 { start.1 } else { 0 };
+                let to = if index == end.0 { end.1 } else { usize::MAX };
+                let prefix = row.text.chars().take(from).collect::<String>();
+                let selected = row
+                    .text
+                    .chars()
+                    .skip(from)
+                    .take(to.saturating_sub(from))
+                    .collect::<String>();
+                let x = row.x + misa_render::width(&prefix) as f32 * 8.4;
+                scene.ops.push(Op::Rect {
+                    x,
+                    y: row.y,
+                    width: misa_render::width(&selected) as f32 * 8.4,
+                    height: 21.0,
+                    style: color(55, 86, 120),
+                });
+                scene
+                    .ops
+                    .push(text(x, row.y, &selected, color(230, 232, 236)));
+            }
+        }
         if !self.notice.is_empty() {
             scene.ops.push(Op::Rect {
                 x: 0.0,
@@ -570,6 +962,57 @@ impl App {
                 "Cancel",
                 Control::SaveCancel,
             );
+        }
+        if let Some(picker) = &self.picker {
+            self.hits.clear();
+            let y = 35.0;
+            scene.ops.push(Op::Rect {
+                x: 30.0,
+                y,
+                width: (width as f32 - 60.0).max(80.0),
+                height: 300.0,
+                style: color(35, 40, 48),
+            });
+            scene.ops.push(text(
+                42.0,
+                y + 12.0,
+                &format!("Commands · {}", picker.query),
+                color(235, 235, 240),
+            ));
+            let matches = picker.matches();
+            let start = picker.selected_index().saturating_sub(7);
+            if matches.is_empty() {
+                scene.ops.push(text(
+                    42.0,
+                    y + 48.0,
+                    "No matching commands",
+                    color(180, 180, 190),
+                ));
+            }
+            for (index, candidate) in matches.iter().enumerate().skip(start).take(8) {
+                let label = format!(
+                    "{} /{} · {}",
+                    if index == picker.selected_index() {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    candidate.value,
+                    candidate.label
+                );
+                scene.ops.push(text(
+                    42.0,
+                    y + 48.0 + (index - start) as f32 * 26.0,
+                    &label,
+                    color(235, 235, 240),
+                ));
+            }
+            scene.ops.push(text(
+                42.0,
+                y + 270.0,
+                "↑↓ select · Enter insert · Escape close",
+                color(180, 180, 190),
+            ));
         }
         scene
     }
@@ -638,36 +1081,6 @@ impl App {
             .map(|(_, text)| text.as_str())
             .collect::<String>();
         let index = self.rows.len();
-        if let Some((a, b)) = self.selection {
-            let (start, end) = if a <= b { (a, b) } else { (b, a) };
-            if index >= start.0 && index <= end.0 {
-                let from = if index == start.0 {
-                    start.1.min(plain.chars().count())
-                } else {
-                    0
-                };
-                let to = if index == end.0 {
-                    end.1.min(plain.chars().count())
-                } else {
-                    plain.chars().count()
-                };
-                scene.ops.push(Op::Rect {
-                    x: x + misa_render::width(&plain.chars().take(from).collect::<String>()) as f32
-                        * 8.4,
-                    y,
-                    width: misa_render::width(
-                        &plain
-                            .chars()
-                            .skip(from)
-                            .take(to.saturating_sub(from))
-                            .collect::<String>(),
-                    ) as f32
-                        * 8.4,
-                    height: 21.0,
-                    style: color(55, 86, 120),
-                });
-            }
-        }
         let mut xx = x;
         for (style, value) in spans {
             scene.ops.push(text(xx, y, &value, style));
@@ -680,9 +1093,9 @@ impl App {
             height: 21.0,
             control: Control::Text(index),
         });
-        self.rows.push(TextRow { text: plain });
+        self.rows.push(TextRow { x, y, text: plain });
     }
-    fn node(
+    fn node_uncached(
         &mut self,
         node: &Node,
         x: f32,
@@ -691,6 +1104,10 @@ impl App {
         theme: &Theme,
         scene: &mut Scene,
     ) {
+        #[cfg(test)]
+        {
+            self.rendered_nodes += 1;
+        }
         if let Some(label) = &node.label {
             self.row(scene, x, *y, vec![(theme.role(&node.role), label.clone())]);
             *y += 25.0;
@@ -871,7 +1288,14 @@ impl App {
                         )],
                     );
                     for child in item {
-                        self.node(child, x + 25.0, y, (width - 25.0).max(10.0), theme, scene);
+                        self.node_uncached(
+                            child,
+                            x + 25.0,
+                            y,
+                            (width - 25.0).max(10.0),
+                            theme,
+                            scene,
+                        );
                     }
                 }
             }
@@ -907,8 +1331,20 @@ impl App {
             }
         }
         if children {
+            for id in self.tree.children(&node.id) {
+                self.present(&id, x, y, width, theme, scene);
+            }
             for child in &node.children {
-                self.node(child, x, y, width, theme, scene);
+                self.node_uncached(child, x, y, width, theme, scene);
+            }
+            if node.id == self.stream_parent() && !self.visible_streams().is_empty() {
+                self.present("streams", x, y, width, theme, scene);
+            }
+            if node.id == "streams" {
+                let ids = self.visible_streams();
+                for id in ids {
+                    self.present(&id, x, y, width, theme, scene);
+                }
             }
         }
         for action in &node.actions {
@@ -947,6 +1383,58 @@ mod tests {
     use super::*;
     use misa_proto::view::{Action, Field, Span};
     use misa_value::Value;
+    #[test]
+    fn command_picker_filters_navigates_and_inserts_without_sending() {
+        let mut view = form("compose", FieldKind::Inline);
+        if let Kind::Fields { fields } = &mut view.kind {
+            fields[0].id = "prompt".into();
+        }
+        let mut app = App::new(view);
+        app.info = Some(
+            serde_json::from_value(serde_json::json!({
+                "id":"test", "title":"Test", "created_ms":0,
+                "commands":[{"id":"model","label":"Model"},{"id":"clear","label":"Clear"}]
+            }))
+            .unwrap(),
+        );
+        app.key(Key::Commands);
+        app.key(Key::Down);
+        assert_eq!(
+            app.picker.as_ref().unwrap().selected().unwrap().value,
+            "clear"
+        );
+        app.key(Key::Text("mod".into()));
+        assert_eq!(app.picker.as_ref().unwrap().matches().len(), 1);
+        assert!(app.key(Key::Enter { newline: false }).is_empty());
+        assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
+        assert!(app.picker.is_none());
+        app.key(Key::Commands);
+        app.key(Key::Text("zzzz".into()));
+        assert!(app.key(Key::Enter { newline: false }).is_empty());
+        assert!(app.picker.is_some());
+        app.key(Key::Escape);
+        assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
+    }
+    #[test]
+    fn empty_picker_and_modal_input_preserve_draft() {
+        let mut app = App::new(form("form", FieldKind::Inline));
+        app.frame(900, 720);
+        app.key(Key::Commands);
+        app.key(Key::Text("query".into()));
+        assert!(app.pointer(80.0, 55.0, false).is_empty());
+        assert!(app.key(Key::Enter { newline: false }).is_empty());
+        let scene = app.frame(900, 720);
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op,Op::Text{text,..} if text == "No matching commands")
+        ));
+        app.key(Key::Escape);
+        assert!(app.picker.is_none());
+    }
+    fn any_op(ops: &[Op], predicate: fn(&Op) -> bool) -> bool {
+        ops.iter()
+            .any(|op| predicate(op) || matches!(op,Op::Group {ops,..} if any_op(ops,predicate)))
+    }
     fn form(id: &str, kind: FieldKind) -> Node {
         Node::new(
             "panel",
@@ -1078,13 +1566,11 @@ mod tests {
             )),
         );
         let scene = app.frame(200, 600);
-        assert!(scene.ops.iter().any(|op| matches!(op, Op::Image { .. })));
-        assert!(
-            scene
-                .ops
-                .iter()
-                .any(|op| matches!(op,Op::Rect {width,height,..} if *width==80.0 && *height==10.0))
-        );
+        assert!(any_op(&scene.ops, |op| matches!(op, Op::Image { .. })));
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op,Op::Rect {width,height,..} if *width==80.0 && *height==10.0)
+        ));
         assert!(app.rows.len() > 6, "long table cell must wrap");
         let raster = crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap();
         assert!(raster.pixels().any(|pixel| pixel.0 == [255, 0, 0, 255]));
@@ -1115,5 +1601,237 @@ mod tests {
         app.pointer(20.0 + 2.1 * 8.4, 25.0, false);
         app.pointer(20.0 + 3.1 * 8.4, 25.0, true);
         assert_eq!(app.selected_text(), "h");
+    }
+    #[test]
+    fn deterministic_raster_oracle_and_unchanged_frames_do_no_layout() {
+        for owners in [10, 1000] {
+            let view = Node::section("session").id("session").child(
+                Node::section("transcript")
+                    .id("transcript")
+                    .children((0..owners).map(|index| {
+                        Node::text("message", [Span::plain("unchanged transcript")])
+                            .id(format!("message.{index}"))
+                    })),
+            );
+            let mut app = App::new(view.clone());
+            let mut hashes = std::collections::BTreeSet::new();
+            for _ in 0..6 {
+                app.set_view(view.clone());
+                let scene = app.frame(800, 600);
+                let bytes = crate::paint::png(&scene, Color::Rgb(20, 22, 26)).unwrap();
+                hashes.insert(bytes);
+            }
+            assert_eq!(hashes.len(), 1, "render oracle is not deterministic");
+            app.frame(800, 600);
+            assert_eq!(app.rendered_nodes, 0);
+        }
+    }
+    fn protocol_view(owners: usize) -> misa_proto::SessionMsg {
+        misa_proto::SessionMsg::View {
+            id: misa_proto::SubId(1),
+            version: misa_proto::sync::Version {
+                epoch: "test".into(),
+                rev: 0,
+            },
+            view: Node::section("session").id("session").child(
+                Node::section("transcript")
+                    .id("transcript")
+                    .children((0..owners).map(|index| {
+                        Node::text("message", [Span::plain("unchanged transcript")])
+                            .id(format!("message.{index}"))
+                    })),
+            ),
+        }
+    }
+    fn apply(
+        app: &mut App,
+        oracle: &mut misa_proto::sync::ClientView,
+        message: misa_proto::SessionMsg,
+    ) {
+        oracle.receive(&message).unwrap();
+        app.receive(&message).unwrap();
+    }
+    fn assert_cold_pixels(app: &mut App, oracle: &misa_proto::sync::ClientView) {
+        let scene = app.frame(800, 600);
+        let mut cold = App::new(oracle.rendered().unwrap());
+        let expected = cold.frame(800, 600);
+        assert_eq!(
+            crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap(),
+            crate::paint::raster(&expected, Color::Rgb(20, 22, 26)).unwrap()
+        );
+    }
+    #[test]
+    fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
+        use misa_proto::{
+            SessionEvent, SessionMsg,
+            sync::{Change, ClientView, Stream, StreamUpdate, Version},
+        };
+        for owners in [10, 1000] {
+            let mut app = App::new(Node::section("empty"));
+            let mut oracle = ClientView::default();
+            apply(&mut app, &mut oracle, protocol_view(owners));
+            app.frame(800, 600);
+            let retained: Vec<_> = (0..owners)
+                .map(|index| app.cache[&format!("message.{index}")].ops.clone())
+                .collect();
+            apply(
+                &mut app,
+                &mut oracle,
+                SessionMsg::Streams {
+                    streams: vec![Stream {
+                        id: "live.text".into(),
+                        role: "message.assistant".into(),
+                        text: "hello".into(),
+                    }],
+                },
+            );
+            app.frame(800, 600);
+            apply(
+                &mut app,
+                &mut oracle,
+                SessionMsg::Event {
+                    seq: 1,
+                    event: SessionEvent::Stream {
+                        update: StreamUpdate::Append {
+                            id: "live.text".into(),
+                            offset: 5,
+                            text: " world".into(),
+                        },
+                    },
+                },
+            );
+            app.frame(800, 600);
+            assert_eq!(
+                app.rendered_nodes, 4,
+                "only root, transcript, stream group and changed stream lay out"
+            );
+            for (index, ops) in retained.iter().enumerate() {
+                assert!(Arc::ptr_eq(
+                    ops,
+                    &app.cache[&format!("message.{index}")].ops
+                ));
+            }
+            assert_cold_pixels(&mut app, &oracle);
+            apply(
+                &mut app,
+                &mut oracle,
+                SessionMsg::Changes {
+                    id: misa_proto::SubId(1),
+                    changes: vec![Change {
+                        from: Version {
+                            epoch: "test".into(),
+                            rev: 0,
+                        },
+                        version: Version {
+                            epoch: "test".into(),
+                            rev: 1,
+                        },
+                        ops: vec![ViewOp::Replace {
+                            id: "message.0".into(),
+                            node: Node::text("message", [Span::plain("changed")]).id("message.0"),
+                        }],
+                    }],
+                },
+            );
+            app.frame(800, 600);
+            assert_eq!(
+                app.rendered_nodes, 3,
+                "only root, transcript and replaced owner lay out"
+            );
+            for (index, ops) in retained.iter().enumerate().skip(1) {
+                assert!(Arc::ptr_eq(
+                    ops,
+                    &app.cache[&format!("message.{index}")].ops
+                ));
+            }
+            assert_cold_pixels(&mut app, &oracle);
+        }
+    }
+    #[test]
+    fn stream_completion_and_owner_removal_match_cold_rebuilds() {
+        use misa_proto::{
+            SessionEvent, SessionMsg,
+            sync::{Change, ClientView, Stream, StreamUpdate, Version},
+        };
+        let mut app = App::new(Node::section("empty"));
+        let mut oracle = ClientView::default();
+        apply(&mut app, &mut oracle, protocol_view(4));
+        apply(
+            &mut app,
+            &mut oracle,
+            SessionMsg::Streams {
+                streams: vec![Stream {
+                    id: "live.text".into(),
+                    role: "message.assistant".into(),
+                    text: "streamed answer".into(),
+                }],
+            },
+        );
+        assert_cold_pixels(&mut app, &oracle);
+        apply(
+            &mut app,
+            &mut oracle,
+            SessionMsg::Changes {
+                id: misa_proto::SubId(1),
+                changes: vec![Change {
+                    from: Version {
+                        epoch: "test".into(),
+                        rev: 0,
+                    },
+                    version: Version {
+                        epoch: "test".into(),
+                        rev: 1,
+                    },
+                    ops: vec![
+                        ViewOp::Insert {
+                            parent: "transcript".into(),
+                            before: Some("message.2".into()),
+                            node: Node::text("message", [Span::plain("committed answer")])
+                                .id("live"),
+                        },
+                        ViewOp::Remove {
+                            id: "message.0".into(),
+                        },
+                    ],
+                }],
+            },
+        );
+        assert_cold_pixels(&mut app, &oracle);
+        apply(
+            &mut app,
+            &mut oracle,
+            SessionMsg::Event {
+                seq: 1,
+                event: SessionEvent::Stream {
+                    update: StreamUpdate::End {
+                        id: "live.text".into(),
+                    },
+                },
+            },
+        );
+        assert_cold_pixels(&mut app, &oracle);
+    }
+    #[test]
+    fn editing_a_field_does_not_relayout_the_transcript() {
+        let view = Node::section("session")
+            .id("session")
+            .child(
+                Node::section("transcript")
+                    .id("transcript")
+                    .child(Node::text("message", [Span::plain("old text")]).id("message.1")),
+            )
+            .child(form("panel.input", FieldKind::Inline));
+        let mut app = App::new(view);
+        app.frame(800, 600);
+        let owner = app.cache["transcript"].ops.clone();
+        app.key(Key::Text("draft".into()));
+        app.frame(800, 600);
+        assert_eq!(app.rendered_nodes, 2);
+        assert!(Arc::ptr_eq(&owner, &app.cache["transcript"].ops));
+        assert_eq!(app.field_text("panel.input", "value"), Some("draft"));
+        let sent = app.key(Key::Enter { newline: false });
+        assert!(
+            matches!(&sent[..],[Command::Intent(Intent::Action {fields,..})] if fields[0].value=="draft")
+        );
     }
 }

@@ -6,7 +6,7 @@ other client takes.
 
 It is a frontend and not a second implementation. The Kotlin side owns the
 surface — a `Compose` tree instead of cells, HTML, or pixels — and the protocol
-is the shared Rust client (`misa-net`, `misa-proto`, `misa-client`), reached
+is the shared Rust client (`misa-transport`, `misa-proto`), reached
 through a small JNI seam in `native/`. One connection per session, one view
 tree, one intent vocabulary.
 
@@ -16,7 +16,7 @@ tree, one intent vocabulary.
         └───────────────────────┬────────────────────────────┘
                                 │ JNI, JSON both ways
         ┌───────────────────────┴────────────────────────────┐
-        │  native/libmisa_android.so  (misa-net + iroh)       │
+        │  native/libmisa_android.so  (misa-transport + iroh)       │
         └───────────────────────┬────────────────────────────┘
                                 │  /misa/session/1
                             misa-daemon
@@ -42,7 +42,8 @@ To build only a native library:
 nix-build next -A packages.misa-android.native.x86_64
 ```
 
-To verify installation and launch in a temporary x86_64 emulator (requires KVM):
+To run three integration scenarios and two deterministic client checks in a
+temporary x86_64 emulator (requires KVM):
 
 ```sh
 nix-build next -A packages.misa-android.installCheck -o result-android-check
@@ -82,17 +83,31 @@ direct ticket with that address.
 - a persistent endpoint identity, draft, ticket, expanded nodes, and canonical
   view with its version cursor. Reopening shows the saved conversation before
   connecting and requests changes since that cursor. In-flight text remains a
-  separate overlay and is never saved as settled history.
+  separate overlay and is never saved as settled history. JNI forwards canonical
+  operations and stream updates directly; Kotlin updates indexed nodes along
+  their ancestor path and observes stream text separately from the transcript.
 
-The build also produces `misa-debug-androidTest.apk`. To exercise persistent
-reconnect, upload/fetch, and directed save through the actual JNI connection,
-run the installation check against an open daemon with a scripted provider:
+The build also produces `misa-debug-androidTest.apk`. The installation check
+starts its packaged scripted daemon with temporary credentials and tests
+persistent reconnect, image upload/fetch/decoding, and directed save through the
+actual JNI connection. It requires no ticket or pre-existing service.
 
-```sh
-MISA_TICKET='misa:ENDPOINT@10.0.2.2:PORT:demo' result-android-check/bin/misa-android-check
-```
+The check removes its own daemon, emulator, and app-private test files. The save
+test writes and reads a document through Android’s content resolver, then
+removes it. To use an existing open scripted daemon instead, set `MISA_TICKET`
+to its ticket with host address `10.0.2.2`. Native storage and snapshot tests run
+with `cargo test --manifest-path next/android/native/Cargo.toml`.
 
-The check creates and removes its own emulator and app-private test files. The
-save test writes and reads a document through Android’s content resolver, then
-removes it. Native storage and snapshot tests run with
-`cargo test --manifest-path next/android/native/Cargo.toml`.
+The native incremental test sends the same 101 stream messages against histories
+of 1 and 1,000 nodes: both produce 8,676 serialized UTF-8 JSON bytes and zero
+snapshot writes. Android checks unchanged-node identity, ancestor updates, and
+UTF-8 stream offsets. These are deterministic counts, not timing measurements.
+
+The native source closure contains the JNI crate, the four normal path
+dependencies (`misa-proto`, `misa-protocol`, `misa-transport`, `misa-value`), and
+the workspace manifest needed for inherited package metadata. It uses the
+native lockfile; unrelated frontend source and the root lockfile are excluded.
+
+Live text retains its UTF-8 byte count, so checking an append offset examines
+only the new suffix. Appending still copies the current immutable string for
+Compose, so that part of the work depends on live text length.

@@ -105,16 +105,16 @@ mod transport_tests {
         let runtime =
             misa_session::Runtime::start("save", "Save", None, kernel, "scripted", "test", misa_value::Value::Null);
         runtime.intent(misa_proto::wire::Intent::Prompt { text: "file".into(), attachments: vec![stored] });
-        let endpoint = misa_net::iroh::bind(None, false).await.unwrap();
-        let sessions = misa_net::iroh::Sessions::new();
+        let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
+        let sessions = misa_transport::iroh::Sessions::new();
         sessions.insert(runtime);
-        let router = misa_net::server::serve(
+        let router = misa_transport::server::serve(
             endpoint.clone(),
             sessions,
             std::sync::Arc::new(KernelBlobs(blobs)),
-            std::sync::Arc::new(misa_net::admission::Admission::open()),
+            std::sync::Arc::new(misa_transport::admission::Admission::open()),
         );
-        let ticket = misa_net::iroh::ticket(&endpoint, "save").to_string();
+        let ticket = misa_transport::iroh::ticket(&endpoint, "save").to_string();
         let mut client = crate::Remote::attach(&ticket).await.unwrap();
         let view =
             tokio::time::timeout(std::time::Duration::from_secs(5), client.next()).await.unwrap().unwrap().unwrap();
@@ -140,7 +140,7 @@ mod transport_tests {
 #[cfg(test)]
 struct KernelBlobs(std::sync::Arc<misa_kernel::Blobs>);
 #[cfg(test)]
-impl misa_net::blob::BlobStore for KernelBlobs {
+impl misa_transport::blob::BlobStore for KernelBlobs {
     fn get(&self, hash: &str) -> Option<Vec<u8>> { self.0.get(hash) }
     fn media(&self, hash: &str) -> Option<String> { self.0.media(hash) }
     fn has(&self, hash: &str) -> bool { self.0.has(hash) }

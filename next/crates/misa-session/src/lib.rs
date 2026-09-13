@@ -47,6 +47,7 @@ pub use contribution::Contribution;
 pub mod contribution;
 pub mod agent;
 mod protocol;
+mod replies;
 /// What a session declares: its commands, their arguments, and where a value can
 /// come from.
 pub mod catalog;
@@ -68,6 +69,8 @@ pub struct Runtime {
     to_kernel: mpsc::UnboundedSender<Request>,
     rev: watch::Sender<u64>,
     events: broadcast::Sender<Emission>,
+    replies: replies::Replies,
+    clients: Mutex<std::collections::BTreeMap<u64, misa_proto::ClientInfo>>,
     seq: AtomicU64,
     info: SessionInfo,
     provider: String,
@@ -175,6 +178,8 @@ impl Runtime {
             rev,
             events,
             seq: AtomicU64::new(1),
+            replies: replies::Replies::default(),
+            clients: Mutex::new(std::collections::BTreeMap::new()),
             info,
             provider,
             model,
@@ -399,7 +404,7 @@ impl Runtime {
                         wire::parse::<misa_proto::wire::Download>(&fields::value(effect, "download")),
                     ) {
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-                        let _ = self.events.send(Emission { seq, recipient: Some(recipient), event: SessionEvent::DownloadReady { id, download } });
+                        self.replies.send(recipient, id, Emission { seq, recipient: Some(recipient), event: SessionEvent::DownloadReady { id, download } });
                     }
                 }
                 "kernel.blob.file" => {
@@ -491,8 +496,11 @@ impl Runtime {
                     return vec![Fault::unsupported("This node does not offer an attachment to save")];
                 };
                 let misa_proto::view::Kind::Image { blob, .. } = &target.kind else { return vec![Fault::unsupported("This node is not an attachment")]; };
-                return self.dispatch(Event::new("intent/attachment.save")
+                if let Err(error) = self.replies.reserve(context.recipient, context.id) { return vec![Fault::unsupported(error)]; }
+                let faults = self.dispatch(Event::new("intent/attachment.save")
                     .with("hash", Value::str(&blob.hash)).with("recipient", Value::str(context.recipient.to_string())).with("id", Value::str(context.id.to_string())));
+                if !faults.is_empty() { self.replies.cancel(context.recipient, context.id); }
+                return faults;
             }
         }
         let event = match intent {
@@ -548,9 +556,13 @@ impl Runtime {
     }
 
     pub fn sync(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
+        self.sync_with_events(since).0
+    }
+
+    pub fn sync_with_events(&self, since: Option<&misa_proto::sync::Version>) -> (misa_proto::sync::ViewSync, u64) {
         let mut state = self.state.lock().expect("session state is never poisoned");
         let streams = state.streams.values().cloned().collect();
-        state.view.sync(since, streams)
+        (state.view.sync(since, streams), self.seq.load(Ordering::Relaxed))
     }
 
     pub fn changes(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
@@ -1031,7 +1043,7 @@ pub(crate) mod tests {
         let panel = misa_proto::view::find(&node, "status").expect("a panel");
         assert_eq!(panel.label.as_deref(), Some("Session"));
         let rows = misa_proto::view::find(&node, "panel.rows").expect("rows");
-        assert_eq!(rows.children.len(), 7, "one row per fact the panel reported");
+        assert_eq!(rows.children.len(), 8, "one row per fact the panel reported");
         match &rows.children[0].kind {
             misa_proto::view::Kind::Fields { fields } => assert!(
                 fields[0].read_only,
@@ -1701,6 +1713,83 @@ mod stream_contract_tests {
         assert!(runtime.dispatch(Event::new("kernel/log.appended")
             .with("conversation", Value::str("stream-test")).with("seq", Value::Int(seq))
             .with("kind", Value::str("message")).with("data", data)).is_empty());
+    }
+    #[tokio::test]
+    async fn repeated_interrupts_do_not_cancel_the_new_priority_turn() {
+        let runtime = runtime();
+        runtime.intent(Intent::Prompt {text:"original".into(), attachments:vec![]});
+        runtime.intent(Intent::Prompt {text:"waiting".into(), attachments:vec![]});
+        for text in ["urgent1", "urgent2"] {
+            runtime.intent(Intent::Interrupt {text:text.into(), attachments:vec![]});
+        }
+        for (seq,text) in [(1,"original"),(2,"urgent2")] {
+            ack(&runtime,seq,Value::map([("seq",Value::Int(seq)),("role",Value::str("user")),("text",Value::str(text))]));
+        }
+        let state = runtime.state.lock().unwrap();
+        let session = state.state.db().get("session").unwrap();
+        assert_eq!(session.get("status").unwrap().as_str(),Some("thinking"));
+        assert!(session.get("pending").is_some());
+        let queue = session.get("queue").unwrap().as_list().unwrap();
+        assert_eq!(queue.len(),2);
+        assert_eq!(queue[0].get("text").unwrap().as_str(),Some("urgent1"));
+        assert_eq!(queue[1].get("text").unwrap().as_str(),Some("waiting"));
+        assert!(queue.iter().all(|item| item.get("interrupt").is_none()));
+    }
+    #[tokio::test]
+    async fn empty_interrupt_preserves_active_turn_and_queue() {
+        let runtime = runtime();
+        runtime.intent(Intent::Prompt {text:"original".into(), attachments:vec![]});
+        runtime.intent(Intent::Prompt {text:"waiting".into(), attachments:vec![]});
+        let before = runtime.state.lock().unwrap().state.db().clone();
+        assert!(!runtime.intent(Intent::Interrupt {text:"  ".into(), attachments:vec![]}).is_empty());
+        assert_eq!(&before, runtime.state.lock().unwrap().state.db());
+    }
+    #[tokio::test]
+    async fn interrupt_settles_tool_results_before_priority_prompt_without_another_generation() {
+        for recording in [false, true] {
+            let runtime = runtime();
+            runtime.intent(Intent::Prompt {text:"original".into(), attachments:vec![]});
+            ack(&runtime,1,Value::map([("seq",Value::Int(1)),("role",Value::str("user")),("text",Value::str("original"))]));
+            let calls = Value::list([Value::map([
+                ("id",Value::str("tool-1")),("name",Value::str("echo")),("args",Value::map([])),("status",Value::str("pending")),
+            ])]);
+            assert!(runtime.dispatch(Event::new("kernel/provider.finished").with("id",Value::str("r1")).with("ok",Value::Bool(true)).with("tool_calls",calls.clone())).is_empty());
+            let assistant = Value::map([("seq",Value::Int(2)),("role",Value::str("assistant")),("calls",calls)]);
+            if !recording { ack(&runtime,2,assistant.clone()); }
+            runtime.intent(Intent::Prompt {text:"waiting".into(), attachments:vec![]});
+            runtime.intent(Intent::Interrupt {text:"urgent".into(), attachments:vec![]});
+            if recording {
+                let mut state = runtime.state.lock().unwrap();
+                let outcome = state.state.dispatch(Event::new("kernel/log.appended")
+                    .with("conversation",Value::str("stream-test")).with("seq",Value::Int(2))
+                    .with("kind",Value::str("message")).with("data",assistant));
+                assert!(outcome.committed());
+                let State { state: loop_, view, .. } = &mut *state;
+                view.advance(loop_.db(), &outcome.changes, &runtime.sections, loop_.rev());
+                assert!(!outcome.effects.iter().any(|effect| effect.kind == "kernel.tool.run"));
+                let records: Vec<_> = outcome.effects.iter().filter(|effect| effect.kind == "kernel.log.append").collect();
+                assert_eq!(records.len(),1);
+                assert_eq!(records[0].get("data").unwrap().get("text").unwrap().as_str(),Some("cancelled before starting"));
+                let repeated = state.state.dispatch(Event::new("agent/tools"));
+                assert!(repeated.effects.is_empty(), "cancellation must be journalled once");
+            }
+            {
+                let state = runtime.state.lock().unwrap();
+                let session = state.state.db().get("session").unwrap();
+                assert_eq!(session.get("status").unwrap().as_str(),Some("tools"));
+                assert_eq!(session.get("queue").unwrap().as_list().unwrap().len(),2);
+            }
+            runtime.dispatch(Event::new("kernel/log.appended").with("conversation",Value::str("stream-test")).with("seq",Value::Int(3)).with("kind",Value::str("tool_result")).with("data",Value::map([
+                ("call",Value::str("tool-1")),("ok",Value::Bool(true)),("text",Value::str("result")),
+            ])));
+            let state = runtime.state.lock().unwrap();
+            let session = state.state.db().get("session").unwrap();
+            assert_eq!(session.get("status").unwrap().as_str(),Some("recording"));
+            assert_eq!(session.get("requests").unwrap().as_i64(),Some(1));
+            let queue = session.get("queue").unwrap().as_list().unwrap();
+            assert_eq!(queue.len(),1);
+            assert_eq!(queue[0].get("text").unwrap().as_str(),Some("waiting"));
+        }
     }
     #[tokio::test]
     async fn interrupt_prioritizes_the_draft_during_recording_and_generation() {

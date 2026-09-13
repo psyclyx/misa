@@ -10,5 +10,6 @@ in
     SKIA_BINARIES_URL = null;
     FONTCONFIG_FILE = null;
     FONTCONFIG_PATH = null;
+    LD_LIBRARY_PATH = null;
   } shell;
 }

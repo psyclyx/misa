@@ -140,10 +140,14 @@ impl ApplicationHandler<Update> for Host {
     }
     fn user_event(&mut self, _: &ActiveEventLoop, update: Update) {
         match update {
-            Update::View(view) => self.app.set_view(view),
+            Update::Presentation(message) => {
+                if let Err(error) = self.app.receive(&message) {
+                    self.app.notice = error;
+                }
+            }
             Update::Info(info) => self.app.info = Some(info),
             Update::Image { hash, image } => {
-                self.app.images.insert(hash, image);
+                self.app.image(hash, image);
             }
             Update::Notice(notice) => self.app.notice = notice,
         }
@@ -190,6 +194,11 @@ impl ApplicationHandler<Update> for Host {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 let command = self.modifiers.control_key() || self.modifiers.super_key();
                 match event.logical_key {
+                    WinitKey::Character(ref text) if command && text.eq_ignore_ascii_case("p") => {
+                        self.key(Key::Commands)
+                    }
+                    WinitKey::Named(NamedKey::ArrowUp) => self.key(Key::Up),
+                    WinitKey::Named(NamedKey::ArrowDown) => self.key(Key::Down),
                     WinitKey::Character(ref text) if command && text.eq_ignore_ascii_case("c") => {
                         self.key(Key::Copy)
                     }

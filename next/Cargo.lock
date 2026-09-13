@@ -2694,25 +2694,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "misa-client"
-version = "0.1.0"
-dependencies = [
- "misa-proto",
- "misa-render",
- "misa-value",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "misa-daemon"
 version = "0.1.0"
 dependencies = [
  "misa-kernel",
- "misa-net",
  "misa-plugin",
  "misa-proto",
  "misa-session",
+ "misa-transport",
  "misa-value",
  "qrcode",
  "tokio",
@@ -2740,20 +2729,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "misa-net"
+name = "misa-kit"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "blake3",
- "iroh",
- "misa-kernel",
  "misa-proto",
- "misa-protocol",
  "misa-render",
- "misa-session",
  "misa-value",
- "tokio",
- "tracing",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2831,16 +2814,33 @@ dependencies = [
  "arboard",
  "futures",
  "image",
- "misa-client",
- "misa-net",
+ "misa-kit",
  "misa-proto",
  "misa-render",
+ "misa-transport",
  "misa-value",
  "serde_json",
  "skia-safe",
  "softbuffer",
  "tokio",
  "winit",
+]
+
+[[package]]
+name = "misa-transport"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "iroh",
+ "misa-kernel",
+ "misa-proto",
+ "misa-protocol",
+ "misa-render",
+ "misa-session",
+ "misa-value",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2852,12 +2852,12 @@ dependencies = [
  "base64 0.22.1",
  "crossterm",
  "image",
- "misa-client",
  "misa-kernel",
- "misa-net",
+ "misa-kit",
  "misa-proto",
  "misa-render",
  "misa-session",
+ "misa-transport",
  "misa-value",
  "tokio",
 ]
@@ -2877,11 +2877,11 @@ dependencies = [
  "axum",
  "futures",
  "misa-kernel",
- "misa-net",
  "misa-proto",
  "misa-reframe",
  "misa-render",
  "misa-session",
+ "misa-transport",
  "misa-value",
  "serde_json",
  "tokio",

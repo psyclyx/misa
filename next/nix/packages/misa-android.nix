@@ -75,6 +75,7 @@ let
       inherit (android) sdk emulator native;
       installCheck = import ../android-check.nix {
         inherit pkgs;
+        daemon = pkgs.callPackage ./misa-daemon.nix { };
         inherit apk;
         inherit (android) emulator;
       };

@@ -22,4 +22,12 @@ cp "$work/frame.png" "$work/before.png"
 xdotool mousemove --window "$window" 80 102 click 1
 sleep 1
 ! cmp -s "$work/before.png" "$work/frame.png"
+cp "$work/frame.png" "$work/closed.png"
+xdotool key --window "$window" ctrl+p
+sleep 1
+! cmp -s "$work/closed.png" "$work/frame.png"
+xdotool type --window "$window" --clearmodifiers 'filter'
+xdotool key --window "$window" Down Return Escape
+sleep 1
+cmp -s "$work/closed.png" "$work/frame.png"
 printf 'native window keyboard, clipboard, disclosure redraw passed\n'

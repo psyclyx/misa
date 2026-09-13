@@ -18,7 +18,7 @@
 //! Nothing, in the common case. The declarations say a command needs a model and
 //! that models come from a source; the items arrive as a subscription the client
 //! holds; the matching happens here. A session is asked only when a source has no
-//! items to hold — see [`misa_client::picker`].
+//! items to hold — see [`misa_kit::picker`].
 
 pub mod print;
 pub mod output;
@@ -33,9 +33,9 @@ pub mod save;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use misa_client::picker::{Accept, Effect as PickerEffect, Picker};
-use misa_client::prefs::Prefs;
-use misa_client::{editor as ed, intent as line, select};
+use misa_kit::picker::{Accept, Effect as PickerEffect, Picker};
+use misa_kit::prefs::Prefs;
+use misa_kit::{editor as ed, intent as line, select};
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
 use misa_proto::wire::{Command, Intent, SessionInfo, Source, SourceKind};
 use misa_render::{Line, Theme};
@@ -1215,11 +1215,11 @@ pub fn sgr(style: &misa_render::Style) -> String {
 
 /// A session reached over iroh.
 pub struct Remote {
-    blobs: std::sync::Arc<misa_net::blob::Store>,
+    blobs: std::sync::Arc<misa_transport::blob::Store>,
     dirty: bool,
     restore_streams: bool,
     requests: remote_requests::Pending,
-    client: misa_net::iroh::Client,
+    client: misa_transport::iroh::Client,
     view: misa_proto::sync::ClientView,
     info: Option<SessionInfo>,
 }
@@ -1237,14 +1237,14 @@ impl Remote {
     pub async fn attach(ticket: &str) -> Result<Remote, String> {
         // A ticket, or a pairing string: whatever the daemon printed or the QR said.
         let (ticket, code) = misa_proto::Pairing::given(ticket)?;
-        let endpoint = misa_net::iroh::bind_for(&ticket.node).await?;
-        let address = misa_net::iroh::address_of(&ticket.node)?;
+        let endpoint = misa_transport::iroh::bind_for(&ticket.node).await?;
+        let address = misa_transport::iroh::address_of(&ticket.node)?;
         if let Some(code) = &code {
-            misa_net::iroh::Client::pair(&endpoint, address.clone(), code, "the tui").await?;
+            misa_transport::iroh::Client::pair(&endpoint, address.clone(), code, "the tui").await?;
         }
         let info = misa_proto::ClientInfo::new("misa-tui", env!("CARGO_PKG_VERSION"));
-        let blobs = misa_net::blob::Store::new(endpoint.clone(), address.clone());
-        let mut client = misa_net::iroh::Client::connect(&endpoint, address, info, &ticket.session).await?;
+        let blobs = misa_transport::blob::Store::new(endpoint.clone(), address.clone());
+        let mut client = misa_transport::iroh::Client::connect(&endpoint, address, info, &ticket.session).await?;
         client
             .subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY))
             .await?;
@@ -1256,12 +1256,10 @@ impl Remote {
                 misa_proto::Query::new(misa_proto::completion::CONVERSATIONS_QUERY),
             )
             .await?;
-        for source in ["models", "effort", "commands"] {
-            let query = match misa_session::completions::query_for(source) {
-                Ok(query) => query,
-                Err(fault) => return Err(fault.message),
-            };
-            client.subscribe(source_subscription(source), query).await?;
+        if let Some(declaration) = client.session() {
+            for source in declaration.sources.iter().filter(|source| source.kind == SourceKind::Resident) {
+                client.subscribe(source_subscription(&source.id), misa_proto::Query::new(source.query())).await?;
+            }
         }
         let info = client.session();
         Ok(Remote { client, view: Default::default(), info, blobs, dirty: false, restore_streams: false, requests: Default::default() })
@@ -1419,12 +1417,14 @@ pub fn prompt_field(view: &Node) -> Option<&Field> {
 }
 
 /// A session this binary can drive with no network, for tests.
+#[cfg(test)]
 pub struct Local {
     pub runtime: std::sync::Arc<misa_session::Runtime>,
     pub seen: u64,
     pub info: Option<SessionInfo>,
 }
 
+#[cfg(test)]
 impl Local {
     pub fn new(runtime: std::sync::Arc<misa_session::Runtime>) -> Local {
         let info = Some(runtime.info());
@@ -1432,6 +1432,7 @@ impl Local {
     }
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl Session for Local {
     async fn next(&mut self) -> Result<Option<Node>, String> {

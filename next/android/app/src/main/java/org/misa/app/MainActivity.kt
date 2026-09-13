@@ -72,7 +72,7 @@ class MainActivity : ComponentActivity() {
                 val upload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::attach) }
                 val download = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream"), model::saveDownload)
                 LaunchedEffect(state.download) { state.download?.let { download.launch(it.name) } }
-                CompositionLocalProvider(LocalImages provides ImageFiles(state.images, state.imageErrors, model::image, state.connected)) {
+                CompositionLocalProvider(LocalImages provides ImageFiles(state.images, state.imageErrors, model::image, state.connected), LocalStreams provides StreamDisplay(model.streams, model::containsNode)) {
                     Misa(
                         state = state,
                         expanded = expanded,

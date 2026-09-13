@@ -2,7 +2,7 @@
 //!
 //! A phone cannot run the desktop workspace, and it should not have to: a
 //! frontend is a client, and everything a client needs is already a Rust
-//! library. This crate is a thin JNI seam over [`misa_net::iroh`] and
+//! library. This crate is a thin JNI seam over [`misa_transport::iroh`] and
 //! [`misa_proto`] — the same transport, the same pairing, the same intent
 //! vocabulary the terminal, browser, and pixel frontends use. The Kotlin side
 //! owns the appearance (a `Compose` tree instead of cells or HTML) and nothing
@@ -25,6 +25,7 @@
 //! parses it with the platform's own `org.json` — no code generation, no
 //! reflection, and no second definition of anything.
 
+mod delivery;
 mod files;
 mod snapshot;
 
@@ -276,14 +277,14 @@ async fn session(
             Default::default()
         }
     };
-    if let Some(tree) = view.rendered() {
+    if let Some(tree) = view.canonical() {
         emit(
             &vm,
             &listener,
             serde_json::json!({"kind":"view", "view":tree}),
         );
     }
-    let endpoint = match misa_net::iroh::bind(Some(identity), !parsed.node.contains('@')).await {
+    let endpoint = match misa_transport::iroh::bind(Some(identity), !parsed.node.contains('@')).await {
         Ok(endpoint) => endpoint,
         Err(message) => {
             emit(
@@ -294,7 +295,7 @@ async fn session(
             return;
         }
     };
-    let target = match misa_net::iroh::address_of(&parsed.node) {
+    let target = match misa_transport::iroh::address_of(&parsed.node) {
         Ok(target) => target,
         Err(message) => {
             emit(
@@ -313,7 +314,7 @@ async fn session(
             &listener,
             state("pairing", "showing the daemon a pairing code".into()),
         );
-        match misa_net::iroh::Client::pair(&endpoint, target.clone(), code, "the phone").await {
+        match misa_transport::iroh::Client::pair(&endpoint, target.clone(), code, "the phone").await {
             Ok(message) => {
                 emit(
                     &vm,
@@ -334,7 +335,7 @@ async fn session(
 
     let info = ClientInfo::new("misa-android", env!("CARGO_PKG_VERSION"));
     let mut client =
-        match misa_net::iroh::Client::connect(&endpoint, target.clone(), info, &parsed.session)
+        match misa_transport::iroh::Client::connect(&endpoint, target.clone(), info, &parsed.session)
             .await
         {
             Ok(client) => client,
@@ -378,7 +379,7 @@ async fn session(
         state("connected", format!("attached to {}", parsed.session)),
     );
 
-    let blobs = misa_net::blob::Store::new(endpoint.clone(), target);
+    let blobs = misa_transport::blob::Store::new(endpoint.clone(), target);
     let mut transfers = tokio::task::JoinSet::new();
     emit(
         &vm,
@@ -390,20 +391,20 @@ async fn session(
         tokio::select! {
             message = client.next() => match message {
                 Ok(Some(message @ (SessionMsg::View { .. } | SessionMsg::Changes { .. } | SessionMsg::Streams { .. } | SessionMsg::Event { event: SessionEvent::Stream { .. }, .. }))) => {
-                    let canonical = matches!(&message, SessionMsg::View { .. } | SessionMsg::Changes { .. });
-                    let mode = if matches!(&message, SessionMsg::Changes { .. }) { "changes" } else { "snapshot" };
-                    match view.receive(&message) {
-                        Ok(changed) => {
-                            if canonical {
-                                if let Err(error) = snapshot::save(&files, &snapshot_name, &view) {
-                                    emit(&vm, &listener, serde_json::json!({"kind":"notice", "level":"error", "text":error}));
-                                }
+                    let result = delivery::receive(&mut view, &message, |view| {
+                        if let Err(error) = snapshot::save(&files, &snapshot_name, view) {
+                            emit(&vm, &listener, serde_json::json!({"kind":"notice", "level":"error", "text":error}));
+                        }
+                    });
+                    match result {
+                        Ok(Some(event)) => {
+                            if matches!(&message, SessionMsg::View { .. } | SessionMsg::Changes { .. }) {
+                                let mode = if matches!(&message, SessionMsg::Changes { .. }) { "changes" } else { "snapshot" };
                                 emit(&vm, &listener, serde_json::json!({"kind":"sync", "mode":mode}));
                             }
-                            if changed && let Some(tree) = view.rendered() {
-                                emit(&vm, &listener, serde_json::json!({"kind":"view", "view":tree}));
-                            }
+                            emit(&vm, &listener, event);
                         }
+                        Ok(None) => {},
                         Err(error) => {
                             emit(&vm, &listener, serde_json::json!({"kind":"notice", "level":"warn", "text":error}));
                             if let Err(error) = client.subscribe(SubId(1), view_query()).await {
@@ -506,7 +507,7 @@ fn level_word(level: Level) -> &'static str {
 }
 
 async fn fetch(
-    blobs: Arc<misa_net::blob::Store>,
+    blobs: Arc<misa_transport::blob::Store>,
     files: Arc<files::Files>,
     hash: String,
     name: Option<String>,

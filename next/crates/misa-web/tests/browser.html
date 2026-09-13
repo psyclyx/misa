@@ -161,6 +161,13 @@
             !doc.querySelector('[data-stream="answer"]'),
             "settled stream is removed",
           );
+          client.streams([{ id: "msg.7.text", role: "assistant", text: "done" }]);
+          const settling = doc.querySelector('[data-stream="msg.7.text"]');
+          assert(!settling.hidden, "unsettled stream is visible");
+          client.snapshot(region + '<p id="msg.7">done</p>');
+          assert(settling.hidden, "canonical owner hides its overlay before End arrives");
+          client.streamUpdate({ update: "end", id: "msg.7.text" });
+          client.snapshot(region);
           draft = doc.querySelector("textarea");
           assert(draft.value === "unsent", "snapshot preserves unsent draft");
           assert(

@@ -145,7 +145,10 @@
     }
     var activeStreams = new Map();
     function restoreStreams() {
-      activeStreams.forEach(function (held) {
+      activeStreams.forEach(function (held, id) {
+        var boundary = id.lastIndexOf(".");
+        var owner = boundary < 0 ? id : id.slice(0, boundary);
+        held.node.hidden = !!doc.getElementById(owner);
         if (!main.contains(held.node))
           (doc.getElementById("transcript") || main).appendChild(held.node);
       });
@@ -165,6 +168,7 @@
           text: text,
           bytes: new TextEncoder().encode(current.text).length,
         });
+        restoreStreams();
       } else if (update.update === "append") {
         var held = activeStreams.get(update.id);
         if (!held || held.bytes !== update.offset)

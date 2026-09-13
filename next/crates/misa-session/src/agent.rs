@@ -59,6 +59,7 @@ pub fn registry() -> Registry {
         .on_fn("intent/interrupt", 0, "agent.interrupt", on_interrupt)
         .on_fn("intent/cancel", 0, "agent.cancel", on_cancel)
         .on_fn("intent/command", 0, "agent.command", on_command)
+        .on_fn("clients/changed", 0, "agent.clients", on_clients_changed)
         .on_fn("intent/action", 0, "agent.action", on_action)
         .on_fn("intent/queue.take", 0, "agent.queue.take", on_queue_take)
         .on_fn("intent/queue.clear", 0, "agent.queue.clear", on_queue_clear)
@@ -231,7 +232,7 @@ fn on_interrupt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     tx.set("session.queue", Value::list(queue))?;
     // A completed answer already being journalled must settle once. Its log reply
     // drains the priority prompt; cancelling it here would append a second answer.
-    if status == "recording" { return Ok(()); }
+    if matches!(status.as_str(), "recording" | "tools") { return Ok(()); }
     let pending = tx.get("session.pending").is_some();
     on_cancel(tx, event)?;
     if !pending { tx.dispatch(Event::new("queue/next")); }
@@ -300,6 +301,14 @@ fn on_queue_next(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     };
     let text = head.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
     tx.delete("session.queue[0]")?;
+    // These requests interrupted the previous active turn, not the priority turn
+    // that is now starting. Keep their order, but consume their cancellation marks.
+    if head.get("interrupt").and_then(Value::as_bool).unwrap_or(false) {
+        for index in 0..queue_len(tx) {
+            let path = format!("session.queue[{index}].interrupt");
+            if tx.get(&path).is_some() { tx.delete(&path)?; }
+        }
+    }
     begin_turn(tx, &text, head.get("attachments").cloned().unwrap_or_else(|| Value::list([])))
 }
 
@@ -507,29 +516,7 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                 .with("provider", Value::str(&provider)));
             notice(tx, Level::Info, format!("asking `{provider}` for its models…"))?;
         }
-        "status" => panel(
-            tx,
-            "status",
-            "Session",
-            "",
-            vec![
-                ("provider", tx.text("session.provider")),
-                ("model", tx.text("session.model")),
-                ("effort", tx.text("session.effort")),
-                ("turns", tx.int("session.turn").to_string()),
-                ("queued", queue_len(tx).to_string()),
-                ("attachments", current_attachments(tx).as_list().map(<[Value]>::len).unwrap_or(0).to_string()),
-                (
-                    "credentials",
-                    tx.get("session.credentials")
-                        .and_then(Value::as_list)
-                        .map(|slots| slots.len().to_string())
-                        .unwrap_or_else(|| "unknown".into()),
-                ),
-            ],
-            Vec::new(),
-            vec![("panel.close".into(), "Close".into())],
-        )?,
+        "status" => open_status(tx)?,
         "usage" => {
             open_usage(tx, None)?;
             if tx.get("session.usage_request").is_some() {
@@ -1436,6 +1423,11 @@ fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     Ok(())
 }
 
+fn priority_interrupt(tx: &Tx<'_>) -> bool {
+    tx.get("session.queue").and_then(Value::as_list).and_then(|queue| queue.first())
+        .and_then(|head| head.get("interrupt")).and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     if tx.text("session.status") != "tools" {
         return Ok(());
@@ -1452,6 +1444,15 @@ fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
         let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
         if running.iter().any(|id| id.as_str() == Some(&call_id)) { continue; }
         running.push(Value::str(&call_id));
+        if priority_interrupt(tx) {
+            // Reserve this call until its journal acknowledgment, just like a running
+            // effect, so another tools event cannot append the cancellation twice.
+            tx.fx(log_effect(tx, "tool_result", Value::map([
+                ("call", Value::str(&call_id)), ("ok", Value::Bool(false)),
+                ("text", Value::str("cancelled before starting")),
+            ])));
+            continue;
+        }
         tx.fx(Effect::new("kernel.tool.run")
             .with("id", Value::str(&call_id))
             .with("call_id", Value::str(&call_id))
@@ -1460,8 +1461,9 @@ fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     }
     tx.set("session.running_tools", Value::list(running))?;
     if calls.iter().all(|call| matches!(call.get("status").and_then(Value::as_str), Some("ok" | "error"))) {
-        tx.set("session.status", Value::str("thinking"))?;
-        tx.dispatch(Event::new("agent/step"));
+        let interrupted = priority_interrupt(tx);
+        tx.set("session.status", Value::str(if interrupted { "idle" } else { "thinking" }))?;
+        tx.dispatch(Event::new(if interrupted { "queue/next" } else { "agent/step" }));
     }
     Ok(())
 }
@@ -1715,4 +1717,45 @@ impl FieldSummary {
     fn fields(fields: Vec<Field>) -> misa_proto::view::Kind {
         misa_proto::view::Kind::Fields { fields }
     }
+}
+
+fn open_status(tx: &mut Tx<'_>) -> Result<(), Fault> {
+    let clients = tx.get("session.clients").cloned().unwrap_or(Value::Null);
+    status_panel(tx, &clients)
+}
+
+fn status_panel(tx: &mut Tx<'_>, clients: &Value) -> Result<(), Fault> {
+    panel(
+            tx,
+            "status",
+            "Session",
+            "",
+            vec![
+                ("clients", clients.as_list().unwrap_or(&[]).iter().map(|client| {
+                    format!("{} {}", client.get("name").and_then(Value::as_str).unwrap_or("client"), client.get("version").and_then(Value::as_str).unwrap_or(""))
+                }).collect::<Vec<_>>().join("\n")),
+                ("provider", tx.text("session.provider")),
+                ("model", tx.text("session.model")),
+                ("effort", tx.text("session.effort")),
+                ("turns", tx.int("session.turn").to_string()),
+                ("queued", queue_len(tx).to_string()),
+                ("attachments", current_attachments(tx).as_list().map(<[Value]>::len).unwrap_or(0).to_string()),
+                (
+                    "credentials",
+                    tx.get("session.credentials")
+                        .and_then(Value::as_list)
+                        .map(|slots| slots.len().to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+            ],
+            Vec::new(),
+            vec![("panel.close".into(), "Close".into())],
+        )
+}
+
+fn on_clients_changed(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let clients = event.get("clients").cloned().unwrap_or_else(|| Value::list(vec![]));
+    tx.set("session.clients", clients.clone())?;
+    if tx.text("panel.id") == "status" { status_panel(tx, &clients)?; }
+    Ok(())
 }

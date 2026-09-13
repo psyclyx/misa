@@ -28,6 +28,8 @@ use misa_render::{Line, Style, Theme};
 /// One thing to draw.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
+    /// A retained local scene, positioned without rebuilding its paint operations.
+    Group { x:f32, y:f32, ops:std::sync::Arc<Vec<Op>> },
     Image { x: f32, y: f32, width: f32, height: f32, image: std::sync::Arc<image::RgbaImage> },
     /// A run of text at a baseline position.
     Text { x: f32, y: f32, size: f32, style: Style, text: String },
@@ -156,29 +158,7 @@ pub mod paint {
         let mut fill = SkPaint::default();
         fill.set_anti_alias(true);
 
-        for op in &scene.ops {
-            match op {
-                Op::Image { x, y, width, height, image } => {
-                    let info = skia_safe::ImageInfo::new((image.width() as i32, image.height() as i32), skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul, None);
-                    let data = skia_safe::Data::new_copy(image.as_raw());
-                    if let Some(bitmap) = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4) {
-                        canvas.draw_image_rect(bitmap, None, Rect::from_xywh(*x, *y, *width, *height), &fill);
-                    }
-                }
-                Op::Rect { x, y, width, height, style } => {
-                    fill.set_style(PaintStyle::Fill);
-                    fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xff9a_a2ad)));
-                    canvas.draw_rect(Rect::from_xywh(*x, *y, *width, *height), &fill);
-                }
-                Op::Text { x, y, size, style, text } => {
-                    let font = Font::from_typeface(typeface.clone(), *size);
-                    fill.set_style(PaintStyle::Fill);
-                    fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xffe9_ebee)));
-                    // The scene positions a baseline; a line's y is its top.
-                    canvas.draw_str(text, (*x, *y + size * 0.85), &font, &fill);
-                }
-            }
-        }
+        draw_ops(canvas,&scene.ops,&typeface,&mut fill);
 
         let pixmap = surface.peek_pixels().ok_or("no pixels")?;
         let bytes = pixmap.bytes().ok_or("no pixel bytes")?;
@@ -188,6 +168,33 @@ pub mod paint {
             rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }
         image::RgbaImage::from_raw(width as u32, height as u32, rgba).ok_or_else(|| "no image".to_string())
+    }
+
+    fn draw_ops(canvas:&Canvas,ops:&[Op],typeface:&skia_safe::Typeface,fill:&mut SkPaint) {
+        for op in ops {
+            match op {
+                Op::Group {x,y,ops}=>{canvas.save();canvas.translate((*x,*y));draw_ops(canvas,ops,typeface,fill);canvas.restore();}
+                Op::Image { x, y, width, height, image } => {
+                    let info = skia_safe::ImageInfo::new((image.width() as i32, image.height() as i32), skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul, None);
+                    let data = skia_safe::Data::new_copy(image.as_raw());
+                    if let Some(bitmap) = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4) {
+                        canvas.draw_image_rect(bitmap, None, Rect::from_xywh(*x, *y, *width, *height), fill);
+                    }
+                }
+                Op::Rect { x, y, width, height, style } => {
+                    fill.set_style(PaintStyle::Fill);
+                    fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xff9a_a2ad)));
+                    canvas.draw_rect(Rect::from_xywh(*x, *y, *width, *height), fill);
+                }
+                Op::Text { x, y, size, style, text } => {
+                    let font = Font::from_typeface(typeface.clone(), *size);
+                    fill.set_style(PaintStyle::Fill);
+                    fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xffe9_ebee)));
+                    // The scene positions a baseline; a line's y is its top.
+                    canvas.draw_str(text, (*x, *y + size * 0.85), &font, fill);
+                }
+            }
+        }
     }
 
     /// A scene as PNG bytes.
@@ -239,6 +246,7 @@ mod tests {
                     assert!(*x >= 0.0 && *y >= 0.0);
                     assert!(!text.is_empty(), "an empty run was emitted");
                 }
+                Op::Group { .. } => {},
                 Op::Image { width, height, .. } | Op::Rect { width, height, .. } => assert!(*width > 0.0 && *height > 0.0),
             }
         }

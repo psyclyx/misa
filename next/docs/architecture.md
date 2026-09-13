@@ -13,16 +13,17 @@ to live somewhere, and it is neither a fact nor a drawing.
 
 ## 1. The five layers, and the direction of dependency
 
-| Layer              | Crates                                                                        | Owns                                                                                              | May not                                            |
-| ------------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| **Wire**           | `misa-proto`                                                                  | the vocabulary: view nodes, intents, subscriptions, framing                                       | decide anything; perform IO                        |
-| **Value and loop** | `misa-value`, `misa-reframe`                                                  | immutable state, patches, the event/effect/subscription machinery                                 | know what an agent is                              |
-| **Kernel**         | `misa-kernel`                                                                 | durable facts, the attempt ledger, capability (provider, tool, log)                               | know what a turn is; know what anything looks like |
-| **Session**        | `misa-session`                                                                | the agent loop, tools, the view tree, dialog composition                                          | draw; decide colour, size, or layout               |
-| **Client**         | `misa-render`, `misa-client`, `misa-tui`, `misa-web`, `misa-skia`, `misa-cli` | theme, layout, wrapping, focus, interaction state, and the client-side machinery a surface reuses | own agent policy; invent agent state               |
+| Layer              | Crates                                                         | Owns                                                                                              | May not                                            |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| **Wire**           | `misa-proto`                                                   | the vocabulary: view nodes, intents, subscriptions, framing                                       | decide anything; perform IO                        |
+| **Value and loop** | `misa-value`, `misa-reframe`                                   | immutable state, patches, the event/effect/subscription machinery                                 | know what an agent is                              |
+| **Kernel**         | `misa-kernel`                                                  | durable facts, the attempt ledger, capability (provider, tool, log)                               | know what a turn is; know what anything looks like |
+| **Session**        | `misa-session`                                                 | the agent loop, tools, the view tree, dialog composition                                          | draw; decide colour, size, or layout               |
+| **Client**         | `misa-render`, `misa-kit`, `misa-tui`, `misa-web`, `misa-skia` | theme, layout, wrapping, focus, interaction state, and the client-side machinery a surface reuses | own agent policy; invent agent state               |
 
-Dependencies point one way: wire ← value ← loop ← kernel ← session ← client. A
-crate never imports the one above it.
+The daemon composes kernel and session. Frontends consume protocol types, transport and rendering
+helpers; they do not depend on the daemon's concrete session or kernel. The protocol reaches a
+session through an injected trait.
 
 Three seams sit beside that line, and each exists because the alternative would drag a
 layer somewhere it does not belong:
@@ -30,17 +31,17 @@ layer somewhere it does not belong:
 - **The protocol** is _both ends_ of one state machine: a session's end, which answers a
   connection, and a client's end, which attaches, subscribes and applies what comes back.
   Neither end has policy. The session's end reaches the session through a trait rather
-  than a concrete `Runtime`, so a client build links no session and no kernel — not for
-  tidiness: the phone links this crate, and it links `misa-session` and `misa-kernel`
-  today to learn one query name.
+  than a concrete `Runtime`. Query and source names belong to `misa-proto`; a frontend
+  does not import agent policy to name a subscription.
 - **The transport** is bytes: QUIC, the blob connection, the accept loop, and the tasks
-  that pump one into the other. It is the only thing here that spawns.
+  that pump one into the other. Networking tasks belong to this seam.
 - **The kit** is what the frontends share and the protocol does not own: the picker, the
   editor, the selection, and a client's own memory. It carries no IO, because a browser
   and a phone have their own storage and neither of them has a `$HOME`.
 
-`misa-net` holds the protocol's two ends and the transport in one crate today, and `misa-client` is
-the kit under a name that should mean the protocol's client end; `plan.md` phase 4 is the slice.
+`misa-protocol` owns both state machines, `misa-transport` owns their IO drivers, and `misa-kit`
+owns reusable client state. The crate rename is complete. Normal dependency graphs for all four clients contain neither
+session nor kernel; final packaged verification is tracked in `plan.md`.
 
 `misa-plugin` is the fourth seam: it implements the loop's own `Handler` and
 `Subscription` traits over a wasm component, and depends on the loop, the wire, and the value
@@ -114,11 +115,10 @@ versus round trip**:
 `Intent` is a round trip, and `Copy` is neither — it is what only the client can do,
 because only the client knows what was selected.
 
-A client's memory of itself is a file, and it is presentation state by construction:
-`misa-client::prefs` writes a theme, the nodes somebody opened, an unsent draft, and the
-counts a picker ranks by. A session is never told, a corrupt document is the defaults rather
-than an error, and losing all of it is a client that opens dark with an empty drawer. The
-prompt history is deliberately not there: what somebody typed is not a taste.
+A client's memory is presentation state. `misa-kit::prefs` encodes theme, opened nodes, unsent
+draft and picker ranking behind an injected storage capability. The terminal supplies filesystem
+storage; the browser keeps its state in page storage. Android persists its sync cursor and canonical
+tree independently of live stream delivery. A session never receives these local preferences.
 
 A panel is where the line is easiest to get wrong, so it is drawn explicitly. The session
 owns the _question_: that a credential is being asked for, what the field is called, that it
@@ -172,68 +172,50 @@ subscriptions, and a client with unusual needs builds its own tree from those.
 
 ### Why the client's own loop is small
 
-A client runs a `misa-reframe` loop over `db.ui` — a few handlers (`ui/toggle`,
-`ui/input`, `ui/theme`) and a couple of queries. It could have been a plain struct.
-It is a loop because the _client's_ state genuinely has the same shape (presentation
-state, derived render model, local events), and because making that explicit is what
-stops presentation state from leaking back into the session "just this once".
+Each surface owns focus, input drafts, selection, disclosure state and its rendering cache. A plain
+struct, browser event handlers and a terminal event loop are all valid implementations. They send
+intents only when a person submits a prompt or activates a session-advertised action.
 
 ---
 
 ## 4. Transport: iroh, and why the protocol is not the transport
 
-`misa_net::Session` is a state machine over messages: it takes a `ClientMsg` and
-produces `SessionMsg`s, with no socket in sight. `misa_net::iroh` is the byte
-source and sink. `misa-net::tests::the_state_machine_drives_over_channels_with_no_network`
-drives the whole thing over two channels.
-
-That split is why the interesting protocol cases are testable at all: a message
-before `hello`, a refused protocol version, a client that never attaches, a
-subscription whose query does not exist, a faulted intent, a repeated event.
-
-Two update kinds, and the asymmetry is deliberate:
-
-- **Subscriptions** are durable. Re-read when the session's revision changes, and
-  only a value that actually changed is sent. A client that reconnects
-  re-subscribes and converges. There is no replay protocol because there is nothing
-  to replay: the current value _is_ the state.
-- **Events** are ephemeral, numbered, and lossy. A streamed token delta, a notice,
-  a status line. A client that falls behind drops them and converges on the next
-  subscription value. `Session::events` drops an already-delivered seq, so a
-  redelivery cannot be applied twice.
-
-Consequences worth naming, because they are the design's cost:
-
-- a client's tree is its own. The canonical view is the whole session, a change to it is
-  addressed by node id, and a client applies what it holds — so a client that renders only
-  the tail renders the tail, and nothing tells the session a count.
-- a control frame is capped at 8 MiB (`misa_proto::MAX_CONTROL_FRAME`), which bounds a
-  _message_. Carrying a value of any size is the transport's job — bound the chunk, not the
-  value. `Kind::Image` carries a content hash rather than bytes for the same reason it
-  always did: the bytes travel on a connection of their own (`misa/blob/0`,
-  `misa-net::blob`) rather than through a frame sized for tokens.
+`misa-protocol` implements attach, subscriptions, synchronization and intent routing over traits.
+`misa-transport` supplies iroh connections, framing, blobs and the task that owns each client
+connection. Local input can cancel its wait for an incoming message without cancelling a partially
+read QUIC frame: the connection actor owns that read and delivers complete messages over a bounded
+channel. Protocol tests use a fake session; real-endpoint tests exercise the transport.
 
 ### What a change sends
 
-The session's view is a value at a version, and a client's copy of it is its own. Three rules make
-that work, and none of them is an optimisation:
+- **The canonical view is the whole session.** Its version is an epoch and revision. A subscription
+  with `since` receives retained revisions when available, otherwise the current canonical view.
+  Restart changes the epoch. No render class, graphics capability or history-window count changes
+  this tree.
+- **A revision is one unit.** `Insert`, `Remove` and `Replace` operations carry stable node IDs and
+  self-contained changed subtrees. The session produces them from database patch ownership rather
+  than rebuilding and diffing the document. Tests fold operations and compare with a fresh rebuild.
+  A revision gap or invalid operation requires a canonical resync; it is not silently ignored.
+- **In-flight content is separate.** A stream has a current value and UTF-8 byte-offset appends.
+  Token appends make no canonical database patch or view operation. Settled content enters the
+  canonical tree when the log acknowledges it, and the corresponding stream then ends.
+- **Slow readers recover.** Revision history and outbound queues are bounded. A client beyond
+  retention receives a snapshot and current streams. Sync uses a consistent event watermark so
+  queued events already represented by that recovery state are not applied twice.
+- **Control answers are directed.** File offers and intent faults belong to the requesting
+  connection. They use a reliable reply path rather than the lossy stream-event broadcast. The
+  internal recipient token is not an argument a user supplies and is not exposed to clients.
 
-- **The canonical view is the whole session.** It is what a client with nothing gets, what a client
-  that has fallen too far behind gets, and what a session builds when it starts or resumes. Nothing
-  in it depends on who asked, so one tree serves every client.
-- **A change is addressed by node id.** A revision's changes go out as one unit with the version, and
-  a client applies them to the tree it holds: append this node, set this state, append these spans.
-  Applying the ops of revisions R+1…N to the tree at R yields the tree at N, so a client converges by
-  applying what it is given, and an op naming something a client has dropped is a no-op for it.
-- **In-flight content is a stream, not a tree.** The body of a message still being streamed is in
-  neither the tree nor the log: it arrives as a current value and then as appends. A body enters the
-  tree when it enters the log, which is where "canonical" stops being ambiguous.
+Session protocol version 2 frames large values in bounded chunks rather than imposing the former
+8 MiB whole-message limit. Blobs remain on `/misa/blob/0`: a transcript carries a hash and media
+metadata, while the dedicated blob transport validates the returned content. QUIC supplies
+transport liveness; there is no application Ping/Pong or per-client acknowledgement protocol.
 
-Eviction and staleness follow from the first rule rather than needing machinery of their own: the
-session keeps a change chain back to the oldest client it is still serving, a connection's own
-bounded queue is what a slow client makes it hold, and a full queue means that client's next read is
-the canonical view. That is also the whole reason there is no ACK: the canonical view is the
-reconciliation point, and a client whose copy disagrees with it takes it.
+The browser translates operations into changed HTML subtrees and stream appends into named SSE
+events. New or lagged SSE subscribers get canonical HTML plus separate current streams. Pixels
+retain indexed semantic nodes and shared paint groups; their evidence measures layout work rather
+than claiming that the remaining raster repaint is constant cost. Android updates indexed canonical nodes and persists canonical changes independently of streams.
+Terminal retained presentation remains in the final client gate.
 
 ### Reserved: the kernel protocol
 
@@ -298,14 +280,10 @@ over a real component, so the answer to "does this seam hold?" is a test rather 
 
 A plugin presents by returning a tree, and the **session places it in the document** — under a role
 it builds from the plugin's id (`plugin.<id>`), with the ids of that subtree prefixed so nothing a
-plugin writes can collide with a node the session wrote. That is not the same thing as a
-subscription, and the difference is the whole reason it works this way: a subscription is a _pure
-function of the database_, which is what makes the loop's memo sound, and a plugin's view is a
-function of the database _and_ of what one client can draw. A tree built in a query slot would be
-one memo shared between clients that should get different answers; a tree built per client in each
-frontend would be presentation policy written five times. So it is built once per client class per
-revision, by the layer that owns the document, and every frontend draws it with no frontend code at
-all.
+plugin writes can collide with a node the session wrote. A plugin section declares its database
+inputs and is rebuilt when those inputs change. Its view
+contains semantics, not a client's drawing capabilities. The section is shared by every client;
+local expansion, wrapping and appearance are never arguments to the plugin's view.
 
 Three consequences worth naming, because all three are what make it safe rather than merely
 possible:
@@ -339,73 +317,39 @@ possible:
 
 ## 6. What is built, and what is not
 
-Built, with tests, per crate: `misa-value` (21), `misa-proto` (41), `misa-reframe` (24),
-`misa-render` (46), `misa-kernel` (96), `misa-session` (88), `misa-net` (29),
-`misa-plugin` (16, and thirteen more behind `--features guest-fixture`), `misa-client` (61),
-`misa-tui` (27), `misa-web` (20), `misa-daemon` (4), `misa-skia` (5), and one more behind
-`misa-skia --features paint`. That is 478 tests and no skips: `cargo test --workspace` is the
-gate, and these numbers are read back from it rather than remembered.
+The semantic view, canonical operation chain, independent streams, kernel-backed usage panels,
+device-flow cancellation, directed file offers and cancellation-safe connection actor are built.
+Browser tests cover escaped subtree rendering, bounded SSE recovery and DOM identity. Pixel tests
+cover editable forms, tables, meters, images, selection and retained scene groups; native Xvfb tests
+exercise window input and clipboard. The terminal combines interactive and print modes, has local
+memory through injected storage, and stages pasted clipboard images through the blob capability.
 
-The largest thing stated in this document that is _not_ built is the view's change protocol: today a
-revision re-sends whole subscription values (`Session::refresh` compares what it last sent against
-what it holds), a streamed body is in the tree as well as in an event, and a session still asks a
-client how much history to send. The op stream, the content stream and the incremental view that
-makes producing ops O(change) are `plan.md` phases 2 and 3, and the crate slice in §1 is phase 4.
+`cargo test --workspace` is the ordinary gate. Guest fixtures, native display checks, packaged
+artifact checks and Android emulator installation add separate gates. Historical workspace totals
+are intentionally omitted: the final combined run is still pending. Component evidence lives in
+commit messages, `incremental-evidence.md` and `pixel-retained-evidence.md`.
 
-Three of those crates exist because of what a _client_ needs and not because of what a
-session does: `misa-client` is the picker, the editor, and the selection, `misa-render` is how a
-tree becomes text and a fact becomes words, and `misa-kernel` is where every capability lives —
-the log and the ledger on disk, HTTP, credentials, blobs, providers, tools, and search. The
-kernel is the largest of them, which is the shape the architecture predicts: facts and capability
-are what cannot be policy.
+1. **Files and cancellation.** Terminal `/save [number] <local path>`, browser downloads and pixel
+   destination dialogs request `attachment.save`, receive a kernel-confirmed offer, and keep the
+   fetched bytes. Android reconnect, blob and save scenarios are also verified on Android 35. Destinations stay
+   client-local. The kernel's named cancellation capability stops
+   the session-owned device flow; dismissing its panel alone does not stop polling. Final installation against the packaged Android ABI remains pending.
+2. **Remaining client integration.** Terminal retained output/keyboard finishing is active work.
+   Android separates incremental canonical state from live text and persists only canonical changes. The pixel command picker is
+   still a parity gap; the native window, input and disclosure toggle are built.
+3. **Artifact verification.** Per-artifact derivations, an artifact-derived shell, offline Android
+   dependencies and a daemon module exist. Final clean artifact builds, combined checks and the
+   exact APK's emulator installation must still be recorded before this gate is complete.
 
-The end-to-end claim that is actually tested: a prompt recorded, a scripted provider
-streaming into a placeholder node, a tool call returned, executed, recorded, and the
-loop continued — with the _view_ the client receives asserted as text
-(`misa-session::tests::a_tool_call_round_trips_and_the_turn_finishes`) and the
-transport's incremental behaviour asserted over channels.
+Present limitations are explicit:
 
-Three of those claims are also checked by hand, between two processes, because that is the
-only way to know the pieces meet: `misa-daemon --no-relay` beside `misa` reaches a session
-over a real endpoint (a ticket, a QUIC stream, a rendered transcript); `misa-web` attached to
-the same daemon takes a file from a browser's form, puts it in the daemon's store over
-`/misa/blob/0`, shows the transcript's `<img src="/blob/…">`, and serves those bytes back with
-`cache-control: immutable`; and a name that is not a content hash is refused before the store
-is asked. The client binds with a relay only when the ticket has no direct address, because a
-daemon on a machine with no route out is otherwise unreachable by the clients shipped beside
-it.
-
-Not built, in the order they matter. `docs/parity.md` is the full matrix; these are the
-items with no code at all, plus the two that are structural.
-
-1. **Saving on the remaining surfaces.** Terminal `/save [number] <local path>` and browser
-   Save attachment actions request a kernel-confirmed file offer and keep the received bytes.
-   The protocol routes each answer only to the requesting connection; the destination stays
-   client-local. Android and pixel clients still need their own destination pickers.
-2. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
-   is a second consumer of the scene and needs nothing from a session.
-3. **The same memory for the browser and the phone.** `misa-client::prefs` is the terminal's
-   today: a surface that renders server-side has to decide whose state a page's draft is,
-   which is a question about browsers rather than about this architecture.
-
-Five things are honest limitations rather than planned work:
-
-- **`misa-skia`'s text flow is the linear renderer's.** The scene maps roles to
-  appearance and is tested, but it wraps to a column count and stacks runs. A pixel
-  frontend that wants proportional type or a non-linear layout needs its own layout;
-  needs its own layout. The raster is behind a `paint` feature today only because Skia is not
-  yet an input the build provides; `plan.md` phase 7 builds the pixel frontend with the Skia it
-  needs, unconditionally, because a pixel frontend that cannot paint is not a frontend.
-- **A window does not exist in any frontend.** `misa-skia` renders a PNG. The
-  scene is the part worth getting right first.
-- **A session still tells a client how much history to send, and still reads what a client can
-  draw.** The window argument on the view query is the last place a client hands a session a
-  count, and `graphics` and `native_details` are the last things a session reads about a
-  surface. `plan.md` phases 1 and 2 delete them — the first with the class a view is memoised
-  by, the second when the transport can carry a value of any size.
-- **Device authorization is session-scoped.** Any attached client can use the panel's Cancel
-  authorization action. The kernel stops the named flow owned by that session and reports its
-  outcome; dismissing a panel alone keeps the flow running.
+- Pixel text remains monospaced. Rich controls and retained paint groups are built, while hit/text
+  metadata collection and whole-window raster repaint remain costs of each frame.
+- Device authorization is session-scoped: an attached client may activate the advertised Cancel
+  action for that session's flow.
+- The reserved kernel protocol is not implemented; shipped sessions use the in-process kernel
+  capability trait. Session creation/listing/closing, subagent inheritance and conversation-fork UX
+  remain separate product decisions.
 
 ---
 
@@ -422,10 +366,10 @@ already made.
    enforce.
 2. **How far a session should go for a second client.** Reachable by more than one at once is
    settled — it is built, and
-   `misa-net::server::tests::two_clients_on_one_session_converge_on_the_same_transcript` holds
+   `misa-transport::server::tests::two_clients_on_one_session_converge_on_the_same_transcript` holds
    it. What is not decided is what a _client_ should do when it sees that somebody else is
-   driving: today two clients share a transcript and either may prompt, and a "somebody else is
-   here" indicator is not written.
+   driving: two clients share a transcript and either may prompt. `/status` reports attached
+   client metadata; richer collaboration behavior remains a product decision.
 3. **How a session is addressed when it outlives its daemon.** A ticket is
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
@@ -433,7 +377,8 @@ already made.
 4. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
    is open and lets a plugin invent an affordance without a protocol change. It also
    means a client cannot tell a valid action from a typo before sending it. The
-   session advertises its queries; it could advertise its actions.
+   session advertises actions on view nodes and validates the selected target; the open question is
+   whether the extensible action payload should have additional static typing.
 
 ---
 

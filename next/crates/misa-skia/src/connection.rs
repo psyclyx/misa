@@ -8,7 +8,7 @@ use winit::event_loop::EventLoopProxy;
 
 #[derive(Clone, Debug)]
 pub enum Update {
-    View(Node),
+    Presentation(SessionMsg),
     Info(misa_proto::wire::SessionInfo),
     Image {
         hash: String,
@@ -32,14 +32,14 @@ async fn run(
     mut outgoing: tokio::sync::mpsc::Receiver<Command>,
 ) -> Result<(), String> {
     let (ticket, code) = misa_proto::Pairing::given(ticket).map_err(|error| error.to_string())?;
-    let endpoint = misa_net::iroh::bind_for(&ticket.node).await?;
-    let address = misa_net::iroh::address_of(&ticket.node)?;
+    let endpoint = misa_transport::iroh::bind_for(&ticket.node).await?;
+    let address = misa_transport::iroh::address_of(&ticket.node)?;
     if let Some(code) = code {
-        misa_net::iroh::Client::pair(&endpoint, address.clone(), &code, "the pixel frontend")
+        misa_transport::iroh::Client::pair(&endpoint, address.clone(), &code, "the pixel frontend")
             .await?;
     }
-    let blobs = misa_net::blob::Store::new(endpoint.clone(), address.clone());
-    let mut client = misa_net::iroh::Client::connect(
+    let blobs = misa_transport::blob::Store::new(endpoint.clone(), address.clone());
+    let mut client = misa_transport::iroh::Client::connect(
         &endpoint,
         address,
         misa_proto::ClientInfo::new("misa-skia", env!("CARGO_PKG_VERSION")),
@@ -75,9 +75,9 @@ async fn run(
             message=client.next()=> {
                 let Some(message)=message? else {return Err("The session disconnected".into());};
                 match current.receive(&message) {
-                    Ok(true)=>if let Some(view)=current.rendered() {
-                        let _=proxy.send_event(Update::View(view.clone()));
-                    for hash in images(&view) {
+                    Ok(true)=>{
+                        let _=proxy.send_event(Update::Presentation(message.clone()));
+                    for hash in message_images(&message) {
                         if !fetched.insert(hash.clone()) {continue;}
                         match blobs.get(&hash).await {
                             Ok(Some(blob))=>match image::load_from_memory(&blob.bytes) {
@@ -115,6 +115,21 @@ async fn run(
                 }
             }
         }
+    }
+}
+fn message_images(message: &SessionMsg) -> Vec<String> {
+    match message {
+        SessionMsg::View { view, .. } => images(view),
+        SessionMsg::Changes { changes, .. } => changes
+            .iter()
+            .flat_map(|change| &change.ops)
+            .flat_map(|op| match op {
+                misa_proto::sync::ViewOp::Insert { node, .. }
+                | misa_proto::sync::ViewOp::Replace { node, .. } => images(node),
+                _ => vec![],
+            })
+            .collect(),
+        _ => vec![],
     }
 }
 fn images(node: &Node) -> Vec<String> {

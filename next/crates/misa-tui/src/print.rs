@@ -1,6 +1,6 @@
 //! Pipeline mode, with injected input, output and session for deterministic tests.
 use crate::Session;
-use misa_client::intent::{Parsed, parse};
+use misa_kit::intent::{Parsed, parse};
 use misa_proto::wire::Intent;
 use std::io::Write;
 

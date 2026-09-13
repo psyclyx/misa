@@ -307,24 +307,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // who reads one over a shoulder can use it, and a session is not a public thing. `--open`
     // is what a person means when they say "just let me in", and it says so out loud.
     let admission = Arc::new(if options.open {
-        misa_net::admission::Admission::open()
+        misa_transport::admission::Admission::open()
     } else {
         let store = match &options.data_dir {
-            Some(dir) => misa_net::admission::Paired::at(dir.join("paired"))?,
+            Some(dir) => misa_transport::admission::Paired::at(dir.join("paired"))?,
             // A daemon with no data directory keeps nothing, which is what a temporary daemon
             // is: pairing works while it runs and is gone when it stops.
-            None => misa_net::admission::Paired::in_memory(),
+            None => misa_transport::admission::Paired::in_memory(),
         };
-        let mut admission = misa_net::admission::Admission::paired(store);
+        let mut admission = misa_transport::admission::Admission::paired(store);
         for peer in options.allow.clone() {
             admission = admission.also(peer);
         }
         admission
     });
 
-    let endpoint = misa_net::iroh::bind(None, options.relay).await?;
+    let endpoint = misa_transport::iroh::bind(None, options.relay).await?;
 
-    let sessions = misa_net::iroh::Sessions::new();
+    let sessions = misa_transport::iroh::Sessions::new();
     let contribution = plugins(&options.plugins)?;
     let runtime = Runtime::start_with(
         options.session.clone(),
@@ -342,7 +342,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // exists as soon as it is bound, and a daemon that says nothing until it has found a
     // relay is a daemon that looks broken on a machine with no route to one — which is
     // exactly the machine somebody runs it on first.
-    println!("{}", misa_net::iroh::ticket(&endpoint, &options.session));
+    println!("{}", misa_transport::iroh::ticket(&endpoint, &options.session));
     if options.data_dir.is_some() {
         eprintln!("data in {}", options.data_dir.as_ref().expect("just checked").display());
     }
@@ -356,7 +356,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // The node string a ticket carries, not the endpoint object: what an invitation and a
     // command line both need is something a client can be told, and the transport type stays
     // inside the transport.
-    let node = misa_net::iroh::node_of(&endpoint);
+    let node = misa_transport::iroh::node_of(&endpoint);
     // A daemon that admits anybody should say so out loud, and a daemon that admits only paired
     // keys should say how many and how to add one. Either way it is one line, and it names the
     // command that changes it.
@@ -375,7 +375,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // and it must not be on the path to answering a client on this one. A machine with no
     // route out never becomes online, so a daemon that waited first would print a ticket and
     // then ignore every peer that used it — on exactly the machine somebody tries first.
-    let router = misa_net::server::serve(endpoint.clone(), sessions, Arc::new(blobs::Store(blobs)), admission.clone());
+    let router = misa_transport::server::serve(endpoint.clone(), sessions, Arc::new(blobs::Store(blobs)), admission.clone());
     let online = endpoint.clone();
     tokio::spawn(async move {
         online.online().await;
@@ -507,12 +507,12 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
 /// Both, because both are real: a phone reads the square, and a terminal on another machine
 /// gets the line. What is encoded is one string — the ticket and the code — so scanning and
 /// typing carry exactly the same information, and the client needs nothing else to connect.
-fn show_invitation(admission: &misa_net::admission::Admission, node: &str, session: &str) {
+fn show_invitation(admission: &misa_transport::admission::Admission, node: &str, session: &str) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0);
-    let invitation = admission.invite(misa_net::admission::INVITATION_TTL_MS, now);
+    let invitation = admission.invite(misa_transport::admission::INVITATION_TTL_MS, now);
     let pairing = misa_proto::Pairing::new(
         misa_proto::Ticket { node: node.to_string(), session: session.to_string() },
         invitation.code(),
@@ -546,7 +546,7 @@ fn qr(text: &str) -> Result<String, String> {
 }
 
 /// The daemon's console: one line, one decision.
-async fn console(admission: Arc<misa_net::admission::Admission>, node: String, session: String) {
+async fn console(admission: Arc<misa_transport::admission::Admission>, node: String, session: String) {
     use tokio::io::AsyncBufReadExt as _;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {

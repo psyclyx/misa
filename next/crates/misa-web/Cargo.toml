@@ -10,11 +10,9 @@ rust-version.workspace = true
 axum.workspace = true
 futures.workspace = true
 serde_json.workspace = true
-misa-kernel.workspace = true
-misa-net.workspace = true
+misa-transport.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
-misa-session.workspace = true
 misa-value.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -22,4 +20,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+misa-session.workspace = true
+misa-kernel.workspace = true
 misa-reframe.workspace = true

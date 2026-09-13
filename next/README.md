@@ -31,7 +31,7 @@ the previous system is already built.
 ```
 
 The browser never speaks the protocol: `misa-web` is the client, and the browser
-gets a document and one stream of replacements.
+gets a document, changed HTML subtrees and separate stream updates over SSE.
 
 ## Crates
 
@@ -43,7 +43,9 @@ gets a document and one stream of replacements.
 | `misa-render`                       | text measurement, a role-addressed theme, tree → styled lines       |
 | `misa-kernel`                       | facts and capability: the log, the attempt ledger, providers, tools |
 | `misa-session`                      | the agent loop, the view tree, the intent vocabulary                |
-| `misa-net`                          | the protocol state machine, and iroh under it                       |
+| `misa-protocol`                     | both protocol state machines over injected session traits           |
+| `misa-transport`                    | iroh, blob transfer, admission and connection drivers               |
+| `misa-kit`                          | editor, picker, selection and client memory with injected storage   |
 | `misa-plugin`                       | the plugin host: a wasm component as handlers and subscriptions     |
 | `misa-tui`, `misa-web`, `misa-skia` | terminal, browser server, and pixel frontends                       |
 
@@ -85,17 +87,35 @@ Save a received attachment in the terminal with `/save ./photo.png`, or choose a
 by its transcript order with `/save 2 ./photo.png`. The command keeps the destination on the
 client and refuses to overwrite an existing file. The browser's **Save attachment** button
 uses the browser's download location. Both paths ask the session for the attachment it offered,
-then fetch the kernel-confirmed bytes.
+then fetch the kernel-confirmed bytes. The pixel window offers a local destination dialog for
+the same advertised action. Android blob/save and reconnect scenarios are verified on Android 35; final installation against
+the packaged ABI remains pending.
+
+Paste text or a desktop clipboard image with Ctrl-V in the terminal. Images become PNG blobs and
+remain staged until an explicit prompt send succeeds; Ctrl-Alt-V discards staged attachments.
+Alt-Enter inserts a newline, and Ctrl-R searches submission history.
 
 A device login panel offers **Cancel authorization** to stop polling immediately. Dismissing
 the panel alone leaves the authorization running.
 
-The daemon ships a scripted provider, so a session runs end to end with no network,
-no account, and no spend. That is the provider every test uses.
+The daemon ships a scripted provider, so the basic agent loop runs without a provider account or
+spend. Provider-specific tests use controlled fixtures; real-endpoint tests exercise transport.
 
 The `misa` binary selects the interactive terminal when stdin and stdout are terminals,
 and plain output for pipes. `--print` (or `-p`) forces plain output. `misa-tui` remains an alias.
 Skia painting is unconditional; the shell supplies its pinned archive, libraries, and fonts.
+Open a native window, or request a headless PNG explicitly:
+
+```sh
+cargo run -p misa-skia -- --ticket misa:<endpoint id>:demo
+cargo run -p misa-skia -- --view view.json --out frame.png
+cargo run -p misa-skia -- --view view.json --window --out frame.png
+```
+
+The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
+clipboard copy. Ctrl-P opens the declared command picker: type to filter, use arrows to select,
+and press Enter to insert the command into the prompt for editing. Escape closes it. Stable owner
+scenes are retained across updates. The last command saves a snapshot after each window redraw for UI tests.
 
 Build artifacts from the repository root:
 
@@ -113,7 +133,9 @@ nix-build next -A packages.misa-android.installCheck
 The guest is installed at `lib/misa/policy-guest.wasm`; the debug-signed APK is at
 `share/misa/misa-debug.apk`. The Android install check boots a temporary emulator,
 installs that exact APK, and launches its activity; it requires KVM. The checks artifact
-runs the Rust workspace, the packaged guest fixture, and browser DOM tests.
+runs the Rust workspace, the packaged guest fixture, browser DOM tests, and native Xvfb window
+and clipboard checks. These commands describe the available gates; final artifact builds and
+installation of the final APK are still pending in `docs/plan.md`.
 
 Both shell entry points derive build inputs from these artifacts. The Android native
 libraries use the same pinned Rust version as the desktop builds, with NDK 29 and
@@ -169,7 +191,7 @@ declares the state roots it asked for (`Ownership::Plugin`) so its patches have 
 land — a plugin that names a root the session already owns is refused at startup rather than
 failing inside somebody's transaction later.
 
-A plugin presents, too: the tree `view(role, db, window)` returns is placed in the document under a
+A plugin presents, too: the tree `view(role, db)` returns is placed in the document under a
 role built from the plugin's id (`plugin.<id>`), with the ids of that subtree prefixed so nothing a
 plugin writes can collide with a node the session wrote — so every frontend draws it with no
 frontend code at all. Why it is _placed_ rather than merged, and what a plugin may name, are in

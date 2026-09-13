@@ -13,11 +13,10 @@ image.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 crossterm.workspace = true
-misa-client = { path = "../misa-client" }
-misa-net.workspace = true
+misa-kit = { path = "../misa-kit" }
+misa-transport.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
-misa-session.workspace = true
 misa-value.workspace = true
 tokio.workspace = true
 
@@ -30,4 +29,5 @@ name = "misa-tui"
 path = "src/alias.rs"
 
 [dev-dependencies]
+misa-session.workspace = true
 misa-kernel.workspace = true

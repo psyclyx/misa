@@ -4,7 +4,12 @@ set -euo pipefail
 : "${ANDROID_HOME:?SDK path is required}"
 android_check_dir=$(mktemp -d)
 android_emulator_pid=
+android_daemon_pid=
 cleanup() {
+  if [[ -n "$android_daemon_pid" ]]; then
+    kill "$android_daemon_pid" 2>/dev/null || true
+    wait "$android_daemon_pid" 2>/dev/null || true
+  fi
   if [[ -n "$android_emulator_pid" ]]; then
     kill "$android_emulator_pid" 2>/dev/null || true
     wait "$android_emulator_pid" 2>/dev/null || true
@@ -13,6 +18,23 @@ cleanup() {
   rm -rf "$android_check_dir"
 }
 trap cleanup EXIT
+if [[ -z "${MISA_TICKET:-}" ]]; then
+  : "${MISA_DAEMON:?Packaged daemon path is required}"
+  MISA_CREDENTIALS="$android_check_dir/credentials.json" "$MISA_DAEMON" --open --no-relay \
+    --session android-check >"$android_check_dir/daemon.log" 2>&1 &
+  android_daemon_pid=$!
+  for _attempt in $(seq 1 30); do
+    MISA_TICKET=$(head -n1 "$android_check_dir/daemon.log")
+    if [[ "$MISA_TICKET" == misa:* ]]; then break; fi
+    if ! kill -0 "$android_daemon_pid" 2>/dev/null; then
+      cat "$android_check_dir/daemon.log"
+      exit 1
+    fi
+    sleep 1
+  done
+  [[ "$MISA_TICKET" == misa:* ]]
+  MISA_TICKET=${MISA_TICKET/127.0.0.1/10.0.2.2}
+fi
 export ANDROID_AVD_HOME="$android_check_dir/avd"
 export ANDROID_USER_HOME="$android_check_dir/android"
 mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME"
@@ -40,12 +62,10 @@ adb -P 5038 -s "$android_serial" shell am start -W -n org.misa.app/.MainActivity
 adb -P 5038 -s "$android_serial" shell pidof org.misa.app
 printf 'APK installed and MainActivity launched successfully\n'
 
-# Supply an open daemon ticket reachable from the emulator (host is 10.0.2.2).
-if [[ -n "${MISA_TICKET:-}" ]]; then
-  : "${MISA_TEST_APK:?Instrumentation APK path is required}"
-  adb -P 5038 -s "$android_serial" install -r "$MISA_TEST_APK"
-  adb -P 5038 -s "$android_serial" shell am instrument -w -r -e ticket "$MISA_TICKET" \
-    org.misa.app.test/org.misa.app.ClientInstrumentation | tee "$android_check_dir/tests.log"
-  grep -F 'INSTRUMENTATION_CODE: -1' "$android_check_dir/tests.log"
-  grep -F 'PASS' "$android_check_dir/tests.log"
-fi
+# The primary APK and its instrumentation APK were signed together.
+: "${MISA_TEST_APK:?Instrumentation APK path is required}"
+adb -P 5038 -s "$android_serial" install -r "$MISA_TEST_APK"
+adb -P 5038 -s "$android_serial" shell am instrument -w -r -e ticket "$MISA_TICKET" \
+  org.misa.app.test/org.misa.app.ClientInstrumentation | tee "$android_check_dir/tests.log"
+grep -F 'INSTRUMENTATION_CODE: -1' "$android_check_dir/tests.log"
+grep -F 'PASS' "$android_check_dir/tests.log"
