@@ -5,6 +5,13 @@
   fontconfig,
   dejavu_fonts,
   makeFontsConf,
+  lib,
+  libX11,
+  libXcursor,
+  libXi,
+  libXrandr,
+  libxkbcommon,
+  wayland,
 }:
 let
   # The archive is the exact Skia build paired with skia-safe in Cargo.lock. A
@@ -13,13 +20,22 @@ let
     url = "https://github.com/rust-skia/skia-binaries/releases/download/0.93.1/skia-binaries-319323662b1685a112f5-x86_64-unknown-linux-gnu-jpegd-jpege-pdf-textlayout.tar.gz";
     sha256 = "0dyzzwzm5x7z1yszqy6v541q16iha7p8qajhdqlgpwpm4sbk2z88";
   };
+  windowLibraries = [
+    libX11
+    libXcursor
+    libXi
+    libXrandr
+    libxkbcommon
+    wayland
+  ];
 in
 {
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [
     freetype
     fontconfig
-  ];
+  ]
+  ++ windowLibraries;
   preCheck = ''
     export XDG_CACHE_HOME="$TMPDIR/font-cache"
     mkdir -p "$XDG_CACHE_HOME"
@@ -28,6 +44,7 @@ in
     SKIA_BINARIES_URL = "file://${binaries}";
     FONTCONFIG_FILE = makeFontsConf { fontDirectories = [ dejavu_fonts ]; };
     FONTCONFIG_PATH = "${fontconfig.out}/etc/fonts";
+    LD_LIBRARY_PATH = lib.makeLibraryPath windowLibraries;
   };
   inherit binaries dejavu_fonts;
 }
