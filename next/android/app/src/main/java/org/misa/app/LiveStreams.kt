@@ -5,7 +5,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class LiveText(val id: String, val role: String, val text: String)
+data class LiveText(val id: String, val role: String, val text: String, val bytes: Int)
 class LiveStreams {
     val values = mutableStateMapOf<String, LiveText>()
     fun reset(streams: JSONArray = JSONArray()) {
@@ -14,7 +14,8 @@ class LiveStreams {
     }
     private fun current(stream: JSONObject) {
         val id = stream.getString("id")
-        values[id] = LiveText(id, stream.getString("role"), stream.getString("text"))
+        val text = stream.getString("text")
+        values[id] = LiveText(id, stream.getString("role"), text, text.toByteArray(Charsets.UTF_8).size)
     }
     fun apply(update: JSONObject) {
         val id = update.optString("id")
@@ -22,8 +23,9 @@ class LiveStreams {
             "current" -> current(update.getJSONObject("stream"))
             "append" -> {
                 val previous = values.getValue(id)
-                check(previous.text.toByteArray(Charsets.UTF_8).size == update.getInt("offset"))
-                values[id] = previous.copy(text = previous.text + update.getString("text"))
+                check(previous.bytes == update.getInt("offset"))
+                val suffix = update.getString("text")
+                values[id] = previous.copy(text = previous.text + suffix, bytes = previous.bytes + suffix.toByteArray(Charsets.UTF_8).size)
             }
             "end" -> values.remove(id)
         }

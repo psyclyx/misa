@@ -52,6 +52,13 @@ let
       rust.rustcTarget = "x86_64-linux-android";
     };
   };
+  # Only the JNI crate's normal path dependencies enter an Android build.
+  nativeCrates = [
+    "misa-proto"
+    "misa-protocol"
+    "misa-transport"
+    "misa-value"
+  ];
   native = pkgs.lib.mapAttrs (
     abi: target:
     let
@@ -89,12 +96,13 @@ let
             path == toString ../.
             || builtins.elem relative [
               "Cargo.toml"
-              "Cargo.lock"
               "crates"
               "android"
               "android/native"
             ]
-            || pkgs.lib.hasPrefix "crates/" relative
+            || pkgs.lib.any (
+              crate: relative == "crates/${crate}" || pkgs.lib.hasPrefix "crates/${crate}/" relative
+            ) nativeCrates
             || pkgs.lib.hasPrefix "android/native/" relative
           );
       };
@@ -112,6 +120,7 @@ let
       '';
       passthru = {
         inherit abi;
+        sourceCrates = nativeCrates;
         rustVersion = cross.rustc.version;
       };
     }

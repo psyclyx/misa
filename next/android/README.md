@@ -6,7 +6,7 @@ other client takes.
 
 It is a frontend and not a second implementation. The Kotlin side owns the
 surface — a `Compose` tree instead of cells, HTML, or pixels — and the protocol
-is the shared Rust client (`misa-transport`, `misa-proto`, `misa-kit`), reached
+is the shared Rust client (`misa-transport`, `misa-proto`), reached
 through a small JNI seam in `native/`. One connection per session, one view
 tree, one intent vocabulary.
 
@@ -102,3 +102,12 @@ The native incremental test sends the same 101 stream messages against histories
 of 1 and 1,000 nodes: both produce 8,676 serialized UTF-8 JSON bytes and zero
 snapshot writes. Android checks unchanged-node identity, ancestor updates, and
 UTF-8 stream offsets. These are deterministic counts, not timing measurements.
+
+The native source closure contains the JNI crate, the four normal path
+dependencies (`misa-proto`, `misa-protocol`, `misa-transport`, `misa-value`), and
+the workspace manifest needed for inherited package metadata. It uses the
+native lockfile; unrelated frontend source and the root lockfile are excluded.
+
+Live text retains its UTF-8 byte count, so checking an append offset examines
+only the new suffix. Appending still copies the current immutable string for
+Compose, so that part of the work depends on live text length.

@@ -97,7 +97,9 @@ class ClientInstrumentation : Instrumentation() {
         val streams = LiveStreams()
         streams.apply(JSONObject("""{"update":"current","stream":{"id":"live.text","role":"message.assistant","text":"é"}}"""))
         streams.apply(JSONObject("""{"update":"append","id":"live.text","offset":2,"text":"!"}"""))
-        check(streams.values.getValue("live.text").text == "é!")
+        check(streams.values.getValue("live.text").text == "é!" && streams.values.getValue("live.text").bytes == 3)
+        streams.apply(JSONObject("""{"update":"append","id":"live.text","offset":3,"text":"🙂"}"""))
+        check(streams.values.getValue("live.text").bytes == 7)
         check(runCatching { streams.apply(JSONObject("""{"update":"append","id":"live.text","offset":1,"text":"bad"}""")) }.isFailure)
         check(large.root === canonical && large.touched == 2)
     }
