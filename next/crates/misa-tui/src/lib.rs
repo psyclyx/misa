@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use misa_client::picker::{Accept, Effect as PickerEffect, Picker};
-use misa_client::{editor as ed, intent as line};
+use misa_client::{editor as ed, intent as line, select};
 use misa_proto::view::{Choice, Field, Kind, Node};
 use misa_proto::wire::{Capabilities, Command, Intent, SessionInfo, Source, SourceKind};
 use misa_render::{Line, Theme};
@@ -107,6 +107,8 @@ pub enum KeyOut {
     Intent(Intent),
     /// The picker needs candidates a session has and this client does not.
     Complete { source: String, prefix: String },
+    /// Text to put on the terminal's clipboard: a reader's selection, copied.
+    Copy(String),
     /// Leave.
     Quit,
 }
@@ -121,6 +123,9 @@ pub struct Screen {
     pending_command: Option<String>,
     pub opened: BTreeSet<String>,
     pub notice: Option<String>,
+    /// The reader's selection, when one is open. It is over the rendered body, so
+    /// moving it needs the view — which is why `selection_key` takes one.
+    pub selection: Option<select::Selection>,
     pub commands: Vec<Command>,
     pub sources: Vec<Source>,
     pub scroll: usize,
@@ -140,6 +145,7 @@ impl Screen {
             pending_command: None,
             opened: BTreeSet::new(),
             notice: None,
+            selection: None,
             commands: Vec::new(),
             sources: Vec::new(),
             scroll: 0,
@@ -213,6 +219,95 @@ impl Screen {
         {
             picker.set_items(items, truncated);
         }
+    }
+
+    /// The rendered body a selection moves over. Nothing here reaches a session.
+    fn body(&self, view: &Node) -> select::Body {
+        let resolved = self.resolve(view);
+        select::Body::of(&misa_render::render(&resolved, &self.theme, self.width as usize))
+    }
+
+    /// A key that concerns the reader's selection, if it concerns one at all.
+    ///
+    /// `None` means "not about the selection", and the caller falls through to
+    /// [`Screen::key`]. It takes the view because a selection is over the *rendered*
+    /// body, and only a caller holding the tree can compute that — which is the price
+    /// of byte offsets meaning something.
+    pub fn selection_key(&mut self, view: &Node, key: &Key) -> Option<KeyOut> {
+        if self.selection.is_some() {
+            return Some(self.selecting(view, key));
+        }
+        // `v` and `y` belong to a reader, but only where a vim reader expects them: in
+        // normal mode, so typing into the composer is never stolen.
+        if self.editor.mode() != ed::Mode::Normal {
+            return None;
+        }
+        match key {
+            Key::Char('v') => {
+                self.begin_selection(view);
+                Some(KeyOut::Local)
+            }
+            Key::Char('y') => Some(self.copy_body(view)),
+            _ => None,
+        }
+    }
+
+    /// Start a selection at the bottom, which is where somebody following the tail is
+    /// already looking.
+    fn begin_selection(&mut self, view: &Node) {
+        let body = self.body(view);
+        let row = body.len().saturating_sub(1);
+        self.selection = Some(select::Selection::caret(select::Spot::new(row, 0)));
+        self.notice = Some("copying — y takes it, esc stops".to_string());
+    }
+
+    /// Copy the whole body, for a reader who did not bother to select anything.
+    fn copy_body(&mut self, view: &Node) -> KeyOut {
+        let body = self.body(view);
+        let mut everything = select::Selection::caret(select::Spot::new(0, 0));
+        everything.document_end(&body);
+        let text = everything.text(&body);
+        self.notice = Some(format!("copied {} bytes", text.len()));
+        KeyOut::Copy(text)
+    }
+
+    fn selecting(&mut self, view: &Node, key: &Key) -> KeyOut {
+        let body = self.body(view);
+        let Some(mut selection) = self.selection.take() else {
+            return KeyOut::Local;
+        };
+        match key {
+            Key::Escape => {
+                self.notice = None;
+                return KeyOut::Local;
+            }
+            Key::Char('y') | Key::Submit => {
+                let text = selection.text(&body);
+                self.notice = Some(format!("copied {} bytes", text.len()));
+                return KeyOut::Copy(text);
+            }
+            // `o` drops the anchor where the caret is; `v` cycles what the range means.
+            Key::Char('o') => selection.restart(),
+            Key::Char('v') => selection.set_kind(selection.kind().next()),
+            Key::Char('a') => selection.select_node(&body),
+            Key::Char('w') => selection.word_right(&body),
+            Key::Char('b') => selection.word_left(&body),
+            Key::Char('n') => selection.node_forward(&body),
+            Key::Char('p') => selection.node_back(&body),
+            Key::Motion(ed::Motion::Left) => selection.left(&body),
+            Key::Motion(ed::Motion::Right) => selection.right(&body),
+            Key::Motion(ed::Motion::Up) => selection.up(&body),
+            Key::Motion(ed::Motion::Down) => selection.down(&body),
+            Key::Motion(ed::Motion::LineStart) => selection.line_start(&body),
+            Key::Motion(ed::Motion::LineEnd) => selection.line_end(&body),
+            Key::Motion(ed::Motion::WordNext) => selection.word_right(&body),
+            Key::Motion(ed::Motion::WordPrevious) => selection.word_left(&body),
+            Key::Motion(ed::Motion::First) => selection.document_start(&body),
+            Key::Motion(ed::Motion::Last) => selection.document_end(&body),
+            _ => {}
+        }
+        self.selection = Some(selection);
+        KeyOut::Local
     }
 
     pub fn key(&mut self, key: Key) -> KeyOut {
@@ -513,22 +608,31 @@ pub enum Key {
 /// Draw a screen: the transcript, the picker when one is open, and the input line.
 pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
     let resolved = screen.resolve(view);
-    let mut body = misa_render::render(&resolved, &screen.theme, screen.width as usize);
+    let rendered = misa_render::render(&resolved, &screen.theme, screen.width as usize);
+    // The body is what a selection moves over, so it is kept whole and the window is
+    // taken from it afterwards: a row's index must not depend on where the viewport is.
+    let body = select::Body::of(&rendered);
     let chrome = if screen.picker.is_some() { 9 } else { 3 };
     let room = (screen.height as usize).saturating_sub(chrome);
 
     // Scrolling is presentation, so the client does it and nobody is told. Following
     // is the default and scrolling away stops it, which is what lets somebody read
     // while a model is still writing.
-    if screen.follow {
-        // Nothing: the tail is what matters and it is taken below.
-    }
     let start = if screen.follow {
-        body.len().saturating_sub(room)
+        rendered.len().saturating_sub(room)
     } else {
-        screen.scroll.min(body.len().saturating_sub(1))
+        screen.scroll.min(rendered.len().saturating_sub(1))
     };
-    let mut lines: Vec<Line> = body.drain(..).skip(start).take(room).collect();
+    let mut lines: Vec<Line> = rendered.into_iter().skip(start).take(room).collect();
+
+    // A selection is painted from byte offsets this client holds itself.
+    if let Some(selection) = &screen.selection {
+        for (offset, line) in lines.iter_mut().enumerate() {
+            if let Some((from, to)) = selection.on_row(&body, start + offset) {
+                select_highlight(line, from, to, &screen.theme);
+            }
+        }
+    }
 
     if let Some(picker) = &screen.picker {
         lines.extend(picker_lines(screen, picker));
@@ -606,6 +710,41 @@ fn input_line(screen: &Screen) -> Line {
     Line { indent: 0, spans, node: None }
 }
 
+/// Re-style the byte range a selection covers on one line.
+///
+/// The offsets are into [`Line::text`], which starts with the indent, so the indent comes
+/// off first. A range that lands mid-character is cut back rather than slicing a `str`
+/// where nobody can see.
+fn select_highlight(line: &mut Line, from: usize, to: usize, theme: &Theme) {
+    let indent = line.indent as usize;
+    let (from, to) = (from.saturating_sub(indent), to.saturating_sub(indent));
+    if to <= from {
+        return;
+    }
+    let selected = theme.role("selection");
+    let mut spans: Vec<(misa_render::Style, String)> = Vec::new();
+    let mut cursor = 0usize;
+    for (style, text) in line.spans.drain(..) {
+        let start = cursor;
+        let end = cursor + text.len();
+        let overlap_start = start.max(from.min(end));
+        let overlap_end = end.min(to.max(start));
+        if overlap_start >= overlap_end {
+            spans.push((style, text));
+        } else {
+            if overlap_start > start {
+                spans.push((style, text[..overlap_start - start].to_string()));
+            }
+            spans.push((selected, text[overlap_start - start..overlap_end - start].to_string()));
+            if overlap_end < end {
+                spans.push((style, text[overlap_end - start..].to_string()));
+            }
+        }
+        cursor = end;
+    }
+    line.spans = spans;
+}
+
 /// What a frontend needs from a transport, so this binary can be tested and the
 /// transport can be swapped.
 #[async_trait::async_trait]
@@ -627,35 +766,55 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     }
     let mut stdout = std::io::stdout();
     crossterm::terminal::enable_raw_mode().map_err(|err| err.to_string())?;
-    let result = loop {
+    let result = 'session: loop {
         let Some(view) = session.next().await? else {
             break Ok(());
         };
-        if let Err(error) = write(&mut stdout, &draw(&screen, &view)) {
-            break Err(error);
-        }
-        if !event::poll(Duration::from_millis(1)).map_err(|err| err.to_string())? {
-            continue;
-        }
-        let event = event::read().map_err(|err| err.to_string())?;
-        let crossterm::event::Event::Key(key) = event else {
-            continue;
-        };
-        let Some(interpreted) = translate(key.code, key.modifiers) else {
-            continue;
-        };
-        match screen.key(interpreted) {
-            KeyOut::Local => {}
-            KeyOut::Quit => break Ok(()),
-            KeyOut::Intent(intent) => {
-                if let Err(error) = session.send(intent).await {
-                    screen.notice = Some(error);
+        let mut painted = draw(&screen, &view);
+        loop {
+            if let Err(error) = write(&mut stdout, &painted) {
+                break 'session Err(error);
+            }
+            if !event::poll(Duration::from_millis(1)).map_err(|err| err.to_string())? {
+                // Nothing to handle, so hand the wait back to the session. A client that
+                // redrew here would be a client spinning on its own poll.
+                break;
+            }
+            let event = event::read().map_err(|err| err.to_string())?;
+            let crossterm::event::Event::Key(key) = event else {
+                continue;
+            };
+            let Some(interpreted) = translate(key.code, key.modifiers) else {
+                continue;
+            };
+            // The selection gets the key first: it is a mode over the view, and while one is
+            // open every key that moves it belongs to the reader rather than the composer.
+            let out = match screen.selection_key(&view, &interpreted) {
+                Some(out) => out,
+                None => screen.key(interpreted),
+            };
+            match out {
+                KeyOut::Local => {}
+                KeyOut::Quit => break 'session Ok(()),
+                KeyOut::Intent(intent) => {
+                    if let Err(error) = session.send(intent).await {
+                        screen.notice = Some(error);
+                    }
+                }
+                KeyOut::Complete { source, prefix } => match session.complete(&source, &prefix).await {
+                    Ok((items, truncated)) => screen.candidates(&source, items, truncated),
+                    Err(error) => screen.notice = Some(error),
+                },
+                KeyOut::Copy(text) => {
+                    if let Err(error) = copy_to_clipboard(&mut stdout, &text) {
+                        screen.notice = Some(error);
+                    }
                 }
             }
-            KeyOut::Complete { source, prefix } => match session.complete(&source, &prefix).await {
-                Ok((items, truncated)) => screen.candidates(&source, items, truncated),
-                Err(error) => screen.notice = Some(error),
-            },
+            // What a client decided for itself is painted here rather than waited for,
+            // because nothing on the other side of the connection knows it happened: a
+            // selection moving is not something a session could send a view for.
+            painted = draw(&screen, &view);
         }
     };
     crossterm::terminal::disable_raw_mode().map_err(|err| err.to_string())?;
@@ -704,6 +863,21 @@ fn write(stdout: &mut std::io::Stdout, lines: &[Line]) -> Result<(), String> {
         }
         write!(stdout, "{}{}\r\n", " ".repeat(line.indent as usize), out).map_err(|err| err.to_string())?;
     }
+    stdout.flush().map_err(|err| err.to_string())
+}
+/// Put text on the terminal's clipboard, by asking the terminal to put it there.
+///
+/// OSC 52 is the only clipboard a program with no window can reach, and that is the
+/// whole reason this is client-side: the text does not leave the machine, so there is
+/// nothing to ask a session for and no capability to request. Whether anything lands
+/// is the terminal's business — a multiplexer may drop it and a terminal may refuse it
+/// — and that is not an error this program can see, so it does not invent one.
+fn copy_to_clipboard(stdout: &mut std::io::Stdout, text: &str) -> Result<(), String> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+
+    let payload = base64::engine::general_purpose::STANDARD.encode(text);
+    write!(stdout, "\u{1b}]52;c;{payload}\u{7}").map_err(|err| err.to_string())?;
     stdout.flush().map_err(|err| err.to_string())
 }
 
@@ -1169,5 +1343,80 @@ mod tests {
         assert!(text.contains("Commands"), "{text}");
         assert!(text.contains("partial"), "a partial list was not reported: {text}");
         assert!(text.contains("/model"), "{text}");
+    }
+
+    #[test]
+    fn copying_is_the_clients_and_needs_no_session() {
+        let mut screen = screen();
+        screen.editor.set_mode(ed::Mode::Normal);
+        match screen.selection_key(&view(), &Key::Char('y')) {
+            Some(KeyOut::Copy(text)) => {
+                assert!(text.contains("hello"), "{text}");
+                assert!(text.contains("echo (collapsed)"), "{text}");
+            }
+            other => panic!("expected a copy, got {other:?}"),
+        }
+        assert!(screen.notice.as_deref().expect("a notice").contains("copied"));
+    }
+
+    #[test]
+    fn a_selection_covers_the_rendered_rows_it_was_dragged_over() {
+        let mut screen = screen();
+        screen.editor.set_mode(ed::Mode::Normal);
+        let view = view();
+        // `v` anchors at the bottom, which is where somebody following the tail is
+        // looking; the first motion is what says how far back the range goes.
+        assert_eq!(screen.selection_key(&view, &Key::Char('v')), Some(KeyOut::Local));
+        assert!(screen.selection.is_some(), "v opened no selection");
+        screen.selection_key(&view, &Key::Motion(ed::Motion::First));
+        match screen.selection_key(&view, &Key::Char('y')) {
+            Some(KeyOut::Copy(text)) => {
+                assert!(text.contains("hello"), "{text}");
+                assert!(!text.contains("echo (collapsed)"), "the range covered more than it had: {text}");
+            }
+            other => panic!("expected a copy, got {other:?}"),
+        }
+        assert!(screen.selection.is_none(), "the selection outlived the copy");
+    }
+
+    #[test]
+    fn a_selection_ends_on_escape_and_leaves_the_composer_alone() {
+        let mut screen = screen();
+        screen.editor.set_mode(ed::Mode::Normal);
+        let view = view();
+        screen.selection_key(&view, &Key::Char('v'));
+        assert_eq!(screen.selection_key(&view, &Key::Escape), Some(KeyOut::Local));
+        assert!(screen.selection.is_none());
+        assert!(screen.notice.is_none(), "the notice outlived the selection");
+        assert_eq!(screen.editor.text(), "", "escape reached the composer");
+    }
+
+    #[test]
+    fn a_reader_who_is_typing_never_loses_a_key_to_a_selection() {
+        let mut screen = screen();
+        let view = view();
+        // In insert mode `y` is a letter, and nothing about a reader's selection may
+        // take it: that is the whole reason the selection is asked second.
+        assert_eq!(screen.selection_key(&view, &Key::Char('y')), None, "insert mode lost a keystroke");
+        assert_eq!(screen.key(Key::Char('y')), KeyOut::Local);
+        assert_eq!(screen.editor.text(), "y");
+    }
+
+    #[test]
+    fn a_selection_is_painted_from_offsets_the_client_holds() {
+        let mut screen = screen();
+        screen.editor.set_mode(ed::Mode::Normal);
+        let view = view();
+        screen.selection_key(&view, &Key::Char('v'));
+        screen.selection_key(&view, &Key::Motion(ed::Motion::First));
+        let selected = screen.theme.role("selection");
+        let lines = draw(&screen, &view);
+        let painted = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|(style, _)| *style == selected)
+            .map(|(_, text)| text.clone());
+        assert_eq!(painted.as_deref(), Some("hello"), "the wrong bytes were highlighted");
+        assert!(text_of(&screen, &view).contains("hello"), "the highlight ate the text");
     }
 }

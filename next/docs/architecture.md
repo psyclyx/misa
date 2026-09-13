@@ -80,12 +80,13 @@ system's own migration plan (Slice 6, "split the agent loop") said the same thin
 The distinction that survives is not "client versus server" but **local decision
 versus round trip**:
 
-- local, always allowed: scroll, select, expand, collapse, theme, focus, wrap;
+- local, always allowed: scroll, select, copy, expand, collapse, theme, focus, wrap;
 - round trip: submit, resolve an action the session offered, run a declared
   command, cancel.
 
-`misa-tui`'s `Screen::key` returns `Option<Intent>`, which is that line made
-mechanical: `None` is a local decision, `Some` is a round trip.
+`misa-tui`'s `KeyOut` is that line made mechanical: `Local` is a local decision,
+`Intent` is a round trip, and `Copy` is neither — it is what only the client can do,
+because only the client knows what was selected.
 
 ---
 
@@ -232,17 +233,17 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
 `misa-render` (43), `misa-kernel` (88), `misa-session` (66), `misa-net` (27),
-`misa-client` (35), `misa-tui` (16), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 383 tests and no skips:
+`misa-client` (55), `misa-tui` (21), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
+and one more behind `misa-skia --features paint`. That is 408 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
-session does: `misa-client` is the picker and the editor, `misa-render` is how a tree becomes
-text and a fact becomes words, and `misa-kernel` is where every capability lives — the log
-and the ledger on disk, HTTP, credentials, blobs, providers, tools, and search. The kernel is
-the largest of them, which is the shape the architecture predicts: facts and capability are
-what cannot be policy.
+session does: `misa-client` is the picker, the editor, and the selection, `misa-render` is how a
+tree becomes text and a fact becomes words, and `misa-kernel` is where every capability lives —
+the log and the ledger on disk, HTTP, credentials, blobs, providers, tools, and search. The
+kernel is the largest of them, which is the shape the architecture predicts: facts and capability
+are what cannot be policy.
 
 The end-to-end claim that is actually tested: a prompt recorded, a scripted provider
 streaming into a placeholder node, a tool call returned, executed, recorded, and the
@@ -268,17 +269,17 @@ items with no code at all, plus the two that are structural.
 2. **Durable state for the _client_.** A theme, the nodes somebody opened, a draft, and the
    picker's frecency are presentation state and belong client-side. None of it is persisted,
    which is why a restart forgets where somebody was.
-3. **Selection, structural navigation, and copy** in `misa-client`: the largest purely
-   client-side piece, and it needs nothing from a session.
-4. **A diff role, in the session.** A diff is a kind of code and deserves its own role and
+3. **A diff role, in the session.** A diff is a kind of code and deserves its own role and
    view-builder branch so a frontend can lay it out as one. (Markdown structure is done:
    `misa-session::markdown` parses headings, lists, quotes, rules, and inline runs once, for
-   every frontend, and `Kind::Heading`, `Kind::Quote`, and `Kind::Rule` carry the structure.)
-5. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
+   every frontend, and `Kind::Heading`, `Kind::Quote`, and `Kind::Rule` carry the structure.
+   Selection and copy are done too: `misa-client::select` holds a selection over the
+   rendered rows, and `misa-tui` turns one into clipboard text without asking anything.)
+4. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards.
-6. **Reconnect**, and a test with two clients on one session. Both are small and the
+5. **Reconnect**, and a test with two clients on one session. Both are small and the
    protocol was designed for both.
-7. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
+6. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
 
 Two things are honest limitations rather than planned work:
