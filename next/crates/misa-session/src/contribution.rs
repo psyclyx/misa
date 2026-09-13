@@ -66,21 +66,19 @@ impl Handler for Confined {
                 ));
             }
         }
+        misa_value::apply(tx.db(), tx.patches())
+            .map_err(|error| Fault::new("patch", error.to_string()))?;
         let conversation = tx.text("session.conversation");
         // Collected before anything is queued: an effect is a mutable borrow and the patches are
         // being read. Every patch is in a declared root by now, so this list is the whole of what
         // the composition wrote.
-        let recorded = tx.patches()[before..]
-            .iter()
-            .map(|(path, op)| (path.to_string(), op.to_value()))
-            .collect::<Vec<_>>();
-        for (path, patch) in recorded {
-            tx.fx(
-                Effect::new("kernel.log.append")
-                    .with("conversation", Value::str(&conversation))
-                    .with("kind", Value::str(PATCH_KIND))
-                    .with("data", Value::map([("path", Value::str(&path)), ("patch", patch)])),
-            );
+        let recorded = tx.take_patches_from(before).into_iter().map(|(path, op)| {
+            Value::map([("path", Value::str(path.to_string())), ("patch", op.to_value())])
+        }).collect::<Vec<_>>();
+        if !recorded.is_empty() {
+            let data = if recorded.len() == 1 { recorded[0].clone() } else { Value::map([("patches", Value::list(recorded))]) };
+            tx.fx(Effect::new("kernel.log.append").with("conversation", Value::str(&conversation))
+                .with("kind", Value::str(PATCH_KIND)).with("data", data));
         }
         Ok(())
     }
@@ -256,6 +254,9 @@ impl Contribution {
             fields.insert(name.clone(), value.clone());
         }
         state = Value::Map(Arc::new(fields));
+        let defaults = Value::Map(Arc::new(self.roots.iter().cloned().collect()));
+        state = misa_value::apply_one(&state, &Path::parse("session.plugin_defaults").unwrap(), &Op::Set(defaults))
+            .expect("plugin defaults belong to session metadata");
         // The affordances a composition declared are state, because that is the only thing a
         // handler can read: `agent::on_action` consults this list to tell an action it does not
         // know from one somebody else is handling.

@@ -2422,6 +2422,7 @@ name = "misa-session"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "getrandom 0.4.3",
  "misa-kernel",
  "misa-proto",
  "misa-reframe",

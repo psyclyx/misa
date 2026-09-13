@@ -81,35 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = Arc::new(endpoint);
     let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client
-        .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY).arg(misa_value::Value::Int(40)))
+        .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY))
         .await?;
 
-    let mut current: Option<Node> = None;
+    let mut current = misa_proto::sync::ClientView::default();
     loop {
-        match client.next().await? {
-            Some(SessionMsg::View { view, .. }) => {
-                current = Some(view.clone());
-                let view = current.as_ref().expect("just set");
-                write_frame(view, columns, rows, &out)?;
+        let Some(message) = client.next().await? else { return Ok(()) };
+        match current.receive(&message) {
+            Ok(true) => if let Some(view) = current.rendered() {
+                write_frame(&view, columns, rows, &out)?;
                 println!("wrote {out}");
-                if every_ms.is_none() {
-                    return Ok(());
-                }
-            }
-            Some(SessionMsg::Event { event, .. }) => {
-                // The ephemeral path: a streamed delta lands in the tree this client
-                // already holds, rather than being re-read from a subscription.
-                if let misa_proto::SessionEvent::TextDelta { node, text } = event
-                    && let Some(view) = current.as_mut()
-                    && let Some(target) = find_mut(view, &node)
-                    && let misa_proto::view::Kind::Text { spans } = &mut target.kind
-                {
-                    spans.push(misa_proto::view::Span::plain(text));
-                }
-            }
-            Some(SessionMsg::Fault { fault, .. }) => eprintln!("[{}] {}", fault.code, fault.message),
-            Some(_) => {}
-            None => return Ok(()),
+                if every_ms.is_none() { return Ok(()); }
+            },
+            Err(_) => client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?,
+            Ok(false) => if let SessionMsg::Fault { fault, .. } = message { eprintln!("[{}] {}", fault.code, fault.message); },
         }
         if let Some(every) = every_ms {
             // A frame is a snapshot: the loop waits for the next change rather than
@@ -126,11 +111,4 @@ fn write_frame(view: &Node, columns: u32, rows: u32, out: &str) -> Result<(), Bo
     let png = misa_skia::paint::png(&scene, misa_render::Color::Rgb(20, 22, 26))?;
     std::fs::write(out, png)?;
     Ok(())
-}
-
-fn find_mut<'a>(node: &'a mut Node, id: &str) -> Option<&'a mut Node> {
-    if node.id == id {
-        return Some(node);
-    }
-    node.children.iter_mut().find_map(|child| find_mut(child, id))
 }

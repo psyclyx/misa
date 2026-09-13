@@ -235,7 +235,7 @@ fn a_query_is_a_subscription_the_loop_can_read() {
 fn a_view_is_built_the_way_any_other_tree_is() {
     let plugin = loaded();
     let db = Value::Null;
-    let tree = plugin.view(&db, 40).expect("a tree");
+    let tree = plugin.view(&db).expect("a tree");
     assert_eq!(tree.id, "guest");
     assert_eq!(tree.role, "guest.panel");
     assert_eq!(tree.children.len(), 1);
@@ -275,8 +275,7 @@ async fn a_plugin_presents_a_section_a_session_places() {
     assert_eq!(root.actions[0].id, "refresh");
     assert_eq!(root.actions[0].label.as_deref(), Some("Refresh"));
 
-    // And what the plugin said about the client it was drawing for is in the document, because the
-    // session handed it the database and the requested history window.
+    // The plugin receives the complete semantic database independently of the client.
     let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
     assert!(text.contains("drawn for"), "{text}");
     assert!(text.contains("semantic"), "semantic plugin view: {text}");
@@ -298,6 +297,8 @@ async fn an_action_from_a_plugins_tree_reaches_the_plugin() {
         fields: Vec::new(),
     });
     assert!(faults.is_empty(), "{faults:?}");
+
+    wait_for_guest(&runtime, "acted").await;
 
     let state = match runtime.read(&Query::new("policy.guest.state")).expect("an answer") {
         Reading::Data(value) => value,
@@ -374,9 +375,10 @@ fn contribution(plugin: &Arc<Plugin>) -> misa_session::Contribution {
     }
     let presenting = plugin.clone();
     contribution = contribution.with_section(misa_session::views::Section {
+        inputs: vec![misa_value::Path::root()],
         plugin: plugin.descriptor().id.clone(),
-        build: Arc::new(move |db, window| {
-            presenting.view(db, window).map_err(|fault| fault.message)
+        build: Arc::new(move |db| {
+            presenting.view(db).map_err(|fault| fault.message)
         }),
     });
     for root in plugin.roots() {
@@ -425,6 +427,8 @@ async fn a_session_runs_what_a_plugin_declared() {
     let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
     assert!(faults.is_empty(), "{faults:?}");
 
+    wait_for_guest(&runtime, "turns").await;
+
     // The plugin's patch landed in the root the composition made for it. It is read back the way
     // a client would: through the plugin's own query, which answers with the state it was handed.
     let state = match runtime
@@ -446,4 +450,14 @@ async fn a_session_runs_what_a_plugin_declared() {
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0].kind, "note");
     assert_eq!(entries[0].data.as_str(), Some("seen a prompt"));
+}
+
+async fn wait_for_guest(runtime: &Runtime, key: &str) {
+    for _ in 0..500 {
+        if let Reading::Data(state) = runtime.read(&Query::new("policy.guest.state")).unwrap() {
+            if state.get("guest").and_then(|guest| guest.get(key)).is_some() { return; }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("durable plugin patch {key} was not acknowledged");
 }

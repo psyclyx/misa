@@ -192,7 +192,7 @@ interface policy-api {
     /// of every node in it, and routes an action from it back to this plugin. A plugin decides the
     /// structure beneath its root, and every node in that structure needs an id — a client
     /// remembers which nodes it opened by id.
-    view: func(db: string, window: u32) -> result<view-tree, fault>;
+    view: func(db: string) -> result<view-tree, fault>;
 }
 
 world policy {

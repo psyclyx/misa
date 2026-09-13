@@ -485,9 +485,10 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         // which is why no frontend has to know anything about a plugin.
         let presenting = plugin.clone();
         contribution = contribution.with_section(misa_session::views::Section {
+            inputs: vec![misa_value::Path::root()],
             plugin: descriptor.id.clone(),
-            build: Arc::new(move |db, window| {
-                presenting.view(db, window).map_err(|fault| fault.message)
+            build: Arc::new(move |db| {
+                presenting.view(db).map_err(|fault| fault.message)
             }),
         });
         for root in &descriptor.roots {
