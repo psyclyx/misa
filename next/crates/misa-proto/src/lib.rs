@@ -42,6 +42,7 @@ pub mod blob;
 pub mod chunk;
 pub mod frame;
 pub mod view;
+pub mod sync;
 pub mod wire;
 
 pub use blob::{BlobMsg, BlobReply, MAX_BLOB_BYTES, MAX_BLOB_FRAME};

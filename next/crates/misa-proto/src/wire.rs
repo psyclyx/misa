@@ -119,11 +119,10 @@ pub enum ClientMsg {
     /// starts listening, and because one connection shape then serves both "what is
     /// here" and "this one".
     Attach { session: String },
-    Subscribe { id: SubId, query: Query },
+    Subscribe { id: SubId, query: Query, since: Option<crate::sync::Version> },
     Unsubscribe { id: SubId },
     /// An intent, correlated by `id` so a session can acknowledge it.
     Intent { id: u64, intent: Intent },
-    Ping { nonce: u64 },
 }
 
 impl ClientMsg {
@@ -136,7 +135,6 @@ impl ClientMsg {
             ClientMsg::Subscribe { .. } => "subscribe",
             ClientMsg::Unsubscribe { .. } => "unsubscribe",
             ClientMsg::Intent { .. } => "intent",
-            ClientMsg::Ping { .. } => "ping",
         }
     }
 }
@@ -412,7 +410,7 @@ pub enum SessionEvent {
     DownloadReady { id: u64, download: Download },
     /// Append text to a node that already exists in the client's view. The client
     /// appends; it does not re-render from this.
-    TextDelta { node: NodeId, text: String },
+    Stream { update: crate::sync::StreamUpdate },
     /// A line for the client's own place to put such things, not for the view.
     Notice { level: Level, text: String },
     /// What the session is doing right now.
@@ -451,7 +449,9 @@ pub enum SessionMsg {
     /// Separate from `Value` because a client draws a view and reads data, and a
     /// protocol that blurred the two would let a view decay into a bag of values
     /// that every frontend then has to interpret.
-    View { id: SubId, rev: u64, view: crate::view::Node },
+    View { id: SubId, version: crate::sync::Version, view: crate::view::Node },
+    Changes { id: SubId, changes: Vec<crate::sync::Change> },
+    Streams { streams: Vec<crate::sync::Stream> },
     /// Candidates for an [`Intent::Complete`], correlated by that intent's id.
     ///
     /// `truncated` is not decoration: a client filtering locally needs to know that
@@ -475,7 +475,6 @@ pub enum SessionMsg {
         id: Option<u64>,
         fault: Fault,
     },
-    Pong { nonce: u64 },
 }
 
 /// A refusal or a contained failure, as a client hears about it.
@@ -648,13 +647,13 @@ mod tests {
                 version: crate::PROTOCOL_VERSION,
                 client: ClientInfo::new("misa-tui", "0.1.0"),
             },
-            ClientMsg::Subscribe { id: SubId(1), query: Query::new("session.view") },
+            ClientMsg::Subscribe { since: None, id: SubId(1), query: Query::new("session.view") },
             ClientMsg::Unsubscribe { id: SubId(1) },
             ClientMsg::Intent {
                 id: 7,
                 intent: Intent::Prompt { text: "hello".into(), attachments: Vec::new() },
             },
-            ClientMsg::Ping { nonce: 3 },
+            ClientMsg::Unsubscribe { id: SubId(3) },
             ClientMsg::Attach { session: "demo".into() },
         ];
         for message in messages {
@@ -682,11 +681,10 @@ mod tests {
             SessionMsg::QueryFault { id: SubId(2), fault: Fault::unsupported("no such query") },
             SessionMsg::Event {
                 seq: 9,
-                event: SessionEvent::TextDelta { node: "m1".into(), text: "…".into() },
+                event: SessionEvent::Stream { update: crate::sync::StreamUpdate::Append { id: "m1".into(), offset: 0, text: "…".into() } },
             },
             SessionMsg::Ack { id: 7 },
             SessionMsg::Fault { id: Some(7), fault: Fault::new("refused", "no") },
-            SessionMsg::Pong { nonce: 3 },
         ];
         for message in messages {
             assert_eq!(round_trip_cbor(&message), message);
