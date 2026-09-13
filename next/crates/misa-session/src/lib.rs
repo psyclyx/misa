@@ -72,6 +72,7 @@ pub enum Reading {
 /// One ephemeral event, numbered so a client can tell a repeat from a rerun.
 #[derive(Clone, Debug)]
 pub struct Emission {
+    pub recipient: Option<u64>,
     pub seq: u64,
     pub event: SessionEvent,
 }
@@ -342,6 +343,18 @@ impl Runtime {
                 }
                 // A file read where the daemon is, which is the only place a path means
                 // anything. `/attach <path>` is the whole of this.
+                "kernel.blob.describe" => {
+                    let _ = self.to_kernel.send(Request::BlobDescribe { id: fields::text(effect, "id"), hash: fields::text(effect, "hash") });
+                }
+                "wire.download" => {
+                    if let (Ok(recipient), Ok(id), Ok(download)) = (
+                        fields::text(effect, "recipient").parse::<u64>(), fields::text(effect, "id").parse::<u64>(),
+                        wire::parse::<misa_proto::wire::Download>(&fields::value(effect, "download")),
+                    ) {
+                        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+                        let _ = self.events.send(Emission { seq, recipient: Some(recipient), event: SessionEvent::DownloadReady { id, download } });
+                    }
+                }
                 "kernel.blob.file" => {
                     let _ = self.to_kernel.send(Request::BlobFile {
                         id: fields::text(effect, "id"),
@@ -405,7 +418,7 @@ impl Runtime {
 
     fn emit(&self, event: SessionEvent) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.events.send(Emission { seq, event });
+        let _ = self.events.send(Emission { seq, event, recipient: None });
     }
 
     /// Push a line to the clients without touching the transcript.
@@ -419,6 +432,22 @@ impl Runtime {
     /// event does this ask for? A client cannot reach past this method, which is why
     /// it cannot invent agent state.
     pub fn intent(&self, intent: Intent) -> Vec<Fault> {
+        self.intent_from(intent, None)
+    }
+
+    pub fn intent_from(&self, intent: Intent, context: Option<misa_proto::wire::RequestContext>) -> Vec<Fault> {
+        if let Intent::Action { node, action, .. } = &intent {
+            if action == "attachment.save" {
+                let Some(context) = context else { return vec![Fault::unsupported("Saving requires a requesting client")]; };
+                let tree = match self.view() { Ok(tree) => tree, Err(fault) => return vec![fault] };
+                let Some(target) = misa_proto::view::find(&tree, node).filter(|target| target.actions.iter().any(|action| action.id == "attachment.save")) else {
+                    return vec![Fault::unsupported("This node does not offer an attachment to save")];
+                };
+                let misa_proto::view::Kind::Image { blob, .. } = &target.kind else { return vec![Fault::unsupported("This node is not an attachment")]; };
+                return self.dispatch(Event::new("intent/attachment.save")
+                    .with("hash", Value::str(&blob.hash)).with("recipient", Value::str(context.recipient.to_string())).with("id", Value::str(context.id.to_string())));
+            }
+        }
         let event = match intent {
             // A client may name attachments it has already put in the store. The hashes
             // travel as facts; whether the bytes are there is the store's answer, checked
@@ -543,6 +572,8 @@ impl Interpreter for AcceptedEffects {
             | "kernel.log.list"
             | "kernel.log.load"
             | "kernel.usage"
+            | "kernel.blob.describe"
+            | "wire.download"
             | "kernel.blob.file"
             | "kernel.attempt.started"
             | "kernel.attempt.settled"

@@ -65,6 +65,27 @@ impl Query {
     }
 }
 
+/// Internal request routing context. Supplied by the connection, never decoded from an intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestContext {
+    pub recipient: u64,
+    pub id: u64,
+}
+impl RequestContext {
+    pub fn connection() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A kernel-confirmed file offer. The destination is deliberately the client's own state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Download {
+    pub blob: Option<crate::view::BlobRef>,
+    pub name: String,
+    pub error: String,
+}
+
 /// Who is connecting. Logged, and useful when several clients attach at once.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientInfo {
@@ -388,6 +409,7 @@ impl Level {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
+    DownloadReady { id: u64, download: Download },
     /// Append text to a node that already exists in the client's view. The client
     /// appends; it does not re-render from this.
     TextDelta { node: NodeId, text: String },
@@ -407,6 +429,7 @@ pub enum SessionEvent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "msg", rename_all = "snake_case")]
 pub enum SessionMsg {
+    Download { id: u64, download: Download },
     Welcome { version: u16, session: SessionInfo },
     /// The answer to a [`ClientMsg::Pair`].
     ///

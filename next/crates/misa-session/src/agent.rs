@@ -65,6 +65,8 @@ pub fn registry() -> Registry {
         .on_fn("kernel/log.loaded", 0, "agent.loaded", on_loaded)
         .on_fn("kernel/credential", 0, "agent.credential", on_credential)
         .on_fn("kernel/credential.prompt", 0, "agent.credential.prompt", on_credential_prompt)
+        .on_fn("intent/attachment.save", 0, "agent.attachment.save", on_attachment_save)
+        .on_fn("kernel/blob.described", 0, "agent.blob.described", on_blob_described)
         .on_fn("kernel/blob", 0, "agent.blob", on_blob)
         .on_fn("kernel/process.finished", 0, "agent.process.finished", on_process_finished)
         .on_fn("queue/next", 0, "agent.queue.next", on_queue_next)
@@ -94,6 +96,7 @@ pub fn event_for(event: KernelEvent) -> Event {
         KernelEvent::ProviderThinking { id, text } => {
             Event::new("kernel/provider.thinking").with("id", Value::str(id)).with("text", Value::str(text))
         }
+        KernelEvent::BlobDescribed { id, download } => Event::new("kernel/blob.described").with("id", Value::str(id)).with("download", session_event(&download)),
         KernelEvent::Usage { id, provider, facts } => Event::new("kernel/usage")
             .with("id", Value::str(id))
             .with("provider", Value::str(provider))
@@ -792,6 +795,7 @@ fn panel(
 pub const ACTIONS: &[&str] = &[
     "composer.submit",
     "credential.cancel",
+    "attachment.save",
     "panel.close",
     "panel.submit",
     "queue.take",
@@ -841,6 +845,7 @@ fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             tx.dispatch(Event::new("intent/queue.clear"));
             Ok(())
         }
+        "attachment.save" => Err(Fault::handler("Saving requires the validated requesting client")),
         "credential.cancel" => {
             if let Some(request) = tx.get("session.oauth_request").and_then(Value::as_str) {
                 tx.fx(Effect::new("kernel.credential").with_value(Value::map([
@@ -914,6 +919,32 @@ fn on_conversations(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let count = headers.as_list().map(<[Value]>::len).unwrap_or(0);
     tx.set("conversations", headers)?;
     notice(tx, Level::Info, format!("{count} conversations"))?;
+    Ok(())
+}
+
+fn on_attachment_save(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let recipient = fields::event_text(event, "recipient");
+    let request = fields::event_text(event, "id");
+    let id = format!("download:{recipient}:{request}");
+    let mut pending = tx.get("session.downloads").and_then(Value::as_map).cloned().unwrap_or_default();
+    pending.insert(id.clone(), Value::map([("recipient", Value::str(recipient)), ("id", Value::str(request))]));
+    tx.set("session.downloads", Value::Map(std::sync::Arc::new(pending)))?;
+    tx.fx(Effect::new("kernel.blob.describe")
+        .with_value(Value::map([("id", Value::str(id)), ("hash", fields::event_value(event, "hash"))])));
+    Ok(())
+}
+fn on_blob_described(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let id = fields::event_text(event, "id");
+    let mut pending = tx.get("session.downloads").and_then(Value::as_map).cloned().unwrap_or_default();
+    let Some(context) = pending.remove(&id) else {
+        return Ok(());
+    };
+    tx.set("session.downloads", Value::Map(std::sync::Arc::new(pending)))?;
+    tx.fx(Effect::new("wire.download").with_value(Value::map([
+        ("recipient", context.get("recipient").cloned().unwrap_or(Value::Null)),
+        ("id", context.get("id").cloned().unwrap_or(Value::Null)),
+        ("download", fields::event_value(event, "download")),
+    ])));
     Ok(())
 }
 
@@ -1703,7 +1734,7 @@ fn notice_effect(level: Level, text: impl Into<String>) -> Effect {
 }
 
 /// A session event, on its way into an effect's data.
-fn session_event(event: &SessionEvent) -> Value {
+fn session_event(event: &impl serde::Serialize) -> Value {
     let mut bytes = Vec::new();
     if ciborium::ser::into_writer(event, &mut bytes).is_err() {
         return Value::Null;

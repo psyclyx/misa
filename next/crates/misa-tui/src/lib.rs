@@ -21,6 +21,7 @@
 //! items to hold — see [`misa_client::picker`].
 
 pub mod print;
+pub mod save;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -118,6 +119,8 @@ pub struct PanelInput {
 /// What a keypress caused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOut {
+    /// Choose a local destination, then request the attachment the session offered.
+    Save(save::Request),
     /// The client handled it alone.
     Local,
     /// Something to ask a session.
@@ -241,6 +244,7 @@ impl Screen {
     /// without asking anything.
     pub fn declare(&mut self, info: &SessionInfo) {
         self.commands = info.commands.clone();
+        self.commands.push(Command::new("save", "Save attachment", "/save [number] <local path>"));
         self.sources = info.sources.clone();
     }
 
@@ -626,6 +630,12 @@ impl Screen {
     /// Enter: submit what is there, or open the picker a declaration asks for.
     fn submit(&mut self) -> KeyOut {
         let text = self.editor.text().to_string();
+        if let Some(parsed) = save::parse(&text) {
+            return match parsed {
+                Ok(request) => { self.editor.submit(); self.save(); KeyOut::Save(request) }
+                Err(error) => { self.notice = Some(error); KeyOut::Local }
+            };
+        }
         match line::parse(&text, &self.commands) {
             line::Parsed::Empty => KeyOut::Local,
             line::Parsed::Needs { command, argument, source, .. } => {
@@ -919,7 +929,8 @@ pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
     // The body is what a selection moves over, so it is kept whole and the window is
     // taken from it afterwards: a row's index must not depend on where the viewport is.
     let body = select::Body::of(&rendered);
-    let chrome = if screen.picker.is_some() { 9 } else { 3 };
+    let attachment_count = save::attachments(view).len();
+    let chrome = (if screen.picker.is_some() { 9 } else { 3 }) + usize::from(attachment_count > 0);
     let room = (screen.height as usize).saturating_sub(chrome);
 
     // Scrolling is presentation, so the client does it and nobody is told. Following
@@ -943,6 +954,9 @@ pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
 
     if let Some(picker) = &screen.picker {
         lines.extend(picker_lines(screen, picker));
+    }
+    if attachment_count > 0 {
+        lines.push(Line { node: None, indent: 0, spans: vec![(screen.theme.role("notice"), format!("{attachment_count} attachments · /save [1–{attachment_count}] <local path> · latest by default"))] });
     }
     if let Some(notice) = &screen.notice {
         lines.push(Line {
@@ -1059,6 +1073,9 @@ pub trait Session: Send {
     /// The next view, if one changed.
     async fn next(&mut self) -> Result<Option<Node>, String>;
     async fn send(&mut self, intent: Intent) -> Result<(), String>;
+    async fn save_attachment(&mut self, _node: &str, _destination: &str) -> Result<(), String> {
+        Err("This client has no blob connection".into())
+    }
     /// Candidates a session holds, for a source this client asked about.
     async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String>;
     fn info(&self) -> Option<SessionInfo>;
@@ -1104,6 +1121,14 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
                 },
             };
             match out {
+                KeyOut::Save(request) => {
+                    screen.notice = Some(match save::target(&view, &request) {
+                        Ok(node) => match session.save_attachment(node, &request.destination).await {
+                            Ok(()) => format!("Saved {}", request.destination), Err(error) => error,
+                        },
+                        Err(error) => error,
+                    });
+                }
                 KeyOut::Local => {}
                 KeyOut::Quit => break 'session Ok(()),
                 KeyOut::Intent(intent) => {
@@ -1233,6 +1258,8 @@ pub fn sgr(style: &misa_render::Style) -> String {
 
 /// A session reached over iroh.
 pub struct Remote {
+    blobs: std::sync::Arc<misa_net::blob::Store>,
+    inbox: std::collections::VecDeque<misa_proto::SessionMsg>,
     client: misa_net::iroh::Client,
     view: Option<Node>,
     info: Option<SessionInfo>,
@@ -1248,6 +1275,7 @@ impl Remote {
             misa_net::iroh::Client::pair(&endpoint, address.clone(), code, "the tui").await?;
         }
         let info = misa_proto::ClientInfo::new("misa-tui", env!("CARGO_PKG_VERSION"));
+        let blobs = misa_net::blob::Store::new(endpoint.clone(), address.clone());
         let mut client = misa_net::iroh::Client::connect(&endpoint, address, info, &ticket.session).await?;
         client
             .subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY))
@@ -1268,7 +1296,7 @@ impl Remote {
             client.subscribe(source_subscription(source), query).await?;
         }
         let info = client.session().cloned();
-        Ok(Remote { client, view: None, info })
+        Ok(Remote { client, view: None, info, blobs, inbox: std::collections::VecDeque::new() })
     }
 }
 
@@ -1282,7 +1310,8 @@ fn source_subscription(source: &str) -> misa_proto::SubId {
 impl Session for Remote {
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
-            match self.client.next().await? {
+            let message = match self.inbox.pop_front() { Some(message) => Some(message), None => self.client.next().await? };
+            match message {
                 Some(misa_proto::SessionMsg::Welcome { session, .. }) => {
                     self.info = Some(session);
                 }
@@ -1313,6 +1342,25 @@ impl Session for Remote {
 
     async fn send(&mut self, intent: Intent) -> Result<(), String> {
         self.client.intent(next_intent_id(), intent).await
+    }
+
+    async fn save_attachment(&mut self, node: &str, destination: &str) -> Result<(), String> {
+        let id = next_intent_id();
+        self.client.intent(id, Intent::Action { node: node.into(), action: "attachment.save".into(), args: misa_value::Value::Null, fields: vec![] }).await?;
+        let download = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match self.client.next().await? {
+                    Some(misa_proto::SessionMsg::Download { id: reply, download }) if reply == id => return Ok(download),
+                    Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => return Err(fault.message),
+                    Some(message) => self.inbox.push_back(message),
+                    None => return Err("The session disconnected before the save request finished".into()),
+                }
+            }
+        }).await.map_err(|_| "The session did not answer the save request")??;
+        let reference = download.blob.ok_or(download.error)?;
+        let blob = self.blobs.get(&reference.hash).await?.ok_or("This attachment is no longer available")?;
+        if blob.hash != reference.hash || blob.bytes.len() as u64 != reference.len { return Err("The attachment bytes do not match the offered file".into()); }
+        save::write_new(destination, &blob.bytes)
     }
 
     async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String> {
@@ -1584,7 +1632,8 @@ mod tests {
         let mut screen = screen();
         assert_eq!(screen.key(Key::Char('/')), KeyOut::Local);
         let picker = screen.picker.as_ref().expect("a picker");
-        assert_eq!(picker.items().len(), 3);
+        assert_eq!(picker.items().len(), 4);
+        assert!(picker.items().iter().any(|item| item.value == "/save"));
         assert!(picker.items().iter().any(|item| item.value == "/model"));
     }
 

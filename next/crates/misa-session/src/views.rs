@@ -719,6 +719,7 @@ fn attachment_node(attachment: &Value, position: usize) -> Node {
     let blob = BlobRef { hash: hash.to_string(), len, media: (!media.is_empty()).then_some(media.to_string()) };
     let mut node = image_node(blob, &alt, 0, 0);
     node.id = format!("attachment.{position}");
+    node.actions.push(Action { id: "attachment.save".into(), on: ActionOn::Click, label: Some("Save attachment".into()), args: Value::Null });
     node
 }
 
