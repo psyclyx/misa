@@ -43,8 +43,6 @@ use misa_kernel::{CredentialAction, Kernel, KernelEvent, Request};
 
 pub use contribution::Contribution;
 
-/// Who may attach, as configuration rather than code.
-pub mod admission;
 /// What a composition adds to the loop: handlers, subscriptions, and their state.
 pub mod contribution;
 pub mod agent;

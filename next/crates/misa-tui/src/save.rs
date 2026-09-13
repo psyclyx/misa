@@ -112,7 +112,7 @@ mod transport_tests {
             endpoint.clone(),
             sessions,
             blobs,
-            std::sync::Arc::new(misa_session::admission::Admission::open()),
+            std::sync::Arc::new(misa_net::admission::Admission::open()),
         );
         let ticket = misa_net::iroh::ticket(&endpoint, "save").to_string();
         let mut client = crate::Remote::attach(&ticket).await.unwrap();

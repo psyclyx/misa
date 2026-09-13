@@ -307,15 +307,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // who reads one over a shoulder can use it, and a session is not a public thing. `--open`
     // is what a person means when they say "just let me in", and it says so out loud.
     let admission = Arc::new(if options.open {
-        misa_session::admission::Admission::open()
+        misa_net::admission::Admission::open()
     } else {
         let store = match &options.data_dir {
-            Some(dir) => misa_session::admission::Paired::at(dir.join("paired"))?,
+            Some(dir) => misa_net::admission::Paired::at(dir.join("paired"))?,
             // A daemon with no data directory keeps nothing, which is what a temporary daemon
             // is: pairing works while it runs and is gone when it stops.
-            None => misa_session::admission::Paired::in_memory(),
+            None => misa_net::admission::Paired::in_memory(),
         };
-        let mut admission = misa_session::admission::Admission::paired(store);
+        let mut admission = misa_net::admission::Admission::paired(store);
         for peer in options.allow.clone() {
             admission = admission.also(peer);
         }
@@ -506,12 +506,12 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
 /// Both, because both are real: a phone reads the square, and a terminal on another machine
 /// gets the line. What is encoded is one string — the ticket and the code — so scanning and
 /// typing carry exactly the same information, and the client needs nothing else to connect.
-fn show_invitation(admission: &misa_session::admission::Admission, node: &str, session: &str) {
+fn show_invitation(admission: &misa_net::admission::Admission, node: &str, session: &str) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0);
-    let invitation = admission.invite(misa_session::admission::INVITATION_TTL_MS, now);
+    let invitation = admission.invite(misa_net::admission::INVITATION_TTL_MS, now);
     let pairing = misa_proto::Pairing::new(
         misa_proto::Ticket { node: node.to_string(), session: session.to_string() },
         invitation.code(),
@@ -545,7 +545,7 @@ fn qr(text: &str) -> Result<String, String> {
 }
 
 /// The daemon's console: one line, one decision.
-async fn console(admission: Arc<misa_session::admission::Admission>, node: String, session: String) {
+async fn console(admission: Arc<misa_net::admission::Admission>, node: String, session: String) {
     use tokio::io::AsyncBufReadExt as _;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {

@@ -24,6 +24,8 @@
 //!
 //! Nothing in this layer decides anything about the conversation. It is a wire.
 
+/// Deployment admission and pairing, shared by session and blob connections.
+pub mod admission;
 /// Bulk content by hash, on a connection of its own.
 pub mod blob;
 pub mod iroh;

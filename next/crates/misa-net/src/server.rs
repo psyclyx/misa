@@ -25,7 +25,7 @@ use ::iroh::Endpoint;
 use ::iroh::EndpointAddr;
 use misa_kernel::Blobs;
 use misa_proto::{ALPN_BLOB, ALPN_SESSION};
-use misa_session::admission::Admission;
+use crate::admission::Admission;
 
 use crate::iroh::{self, Sessions};
 use crate::blob;
