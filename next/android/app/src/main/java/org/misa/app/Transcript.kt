@@ -210,11 +210,6 @@ private fun Form(node: Node, shape: Shape.Fields, onAction: (String, Action, Lis
                     )
                 // A row rather than an input: a panel's facts are read, and a text field
                 // anybody could type into would be an edit nothing can save.
-                "read_only" ->
-                    Column {
-                        Text(field.label, style = MaterialTheme.typography.labelMedium)
-                        Text(field.value, style = MaterialTheme.typography.bodyMedium)
-                    }
                 // A row rather than an input: a panel's facts are read, and a text field
                 // anybody could type into would be an edit nothing can save.
                 "read_only" ->

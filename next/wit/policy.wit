@@ -36,12 +36,18 @@ interface types {
     /// Explicit, so nothing is inferred from the shape of the value. Merging and
     /// appending are separate op kinds because they are the two operations that are
     /// not replacement.
+    ///
+    /// A value is a *string* holding json, which is what everything else here carries
+    /// a json payload as: this boundary is a protocol of its own, and one type that
+    /// says "json" is easier to keep honest than a hand-written mirror of `Value`.
+    /// (`set(value)` here was the first thing `wasm-tools` refused: `value` is a
+    /// payload *type* in WIT, not a placeholder, so the file had never been parsed.)
     variant op {
-        set(value),       // json
-        merge(value),     // json
+        set(string),
+        merge(string),
         delete,
-        append(value),    // json
-        append-all(value),// json
+        append(string),
+        append-all(string),
     }
 
     /// One patch entry. A path is `a.b[0].c`; an empty path is the root, and a root
@@ -58,7 +64,26 @@ interface types {
         data: option<string>,  // json
     }
 
-    /// A view node: a role, a kind, and children.
+    /// A view: a tree, as a flat list in document order.
+    ///
+    /// Named `view-tree` rather than `view` because a type and a function share one
+    /// namespace in an interface, and the function is the one that has to keep the
+    /// name the loop already uses.
+    ///
+    /// A tree cannot be a *record* that contains itself — the component model has no
+    /// value recursion, which is the second thing `wasm-tools` refused about this
+    /// file. The flat shape is the better one regardless: a plugin's depth is bounded
+    /// by a number the host checks (`misa_proto::view::MAX_DEPTH`) rather than by
+    /// whatever its allocator allowed, and the host's conversion to `view::Node` is
+    /// one pass over the list rather than a recursion over a hostile tree.
+    record view-tree {
+        /// Every node, parents before children, in document order.
+        nodes: list<node>,
+        /// The index of the root, which is what a client draws.
+        root: u32,
+    }
+
+    /// One node: a role, a kind, and a place in the list.
     ///
     /// `role` is an open, dotted, lowercase name — the one part of the vocabulary a
     /// plugin extends, because a plugin that adds a tool needs to name the thing it
@@ -68,7 +93,8 @@ interface types {
         role: string,
         kind: string,
         data: option<string>,   // json: the kind's own fields
-        children: list<node>,
+        /// The index of this node's parent in the same list; `none` for the root.
+        parent: option<u32>,
         actions: list<action>,
         state: option<string>,
     }
@@ -87,7 +113,10 @@ interface types {
     }
 
     /// A query: a name and its arguments.
-    record query {
+    ///
+    /// `query-request` for the same reason `view-tree` is spelled out: `query` is the
+    /// name of the function that answers one.
+    record query-request {
         id: string,
         args: list<string>,     // json
     }
@@ -95,7 +124,7 @@ interface types {
 
 /// What every policy plugin exports.
 interface policy-api {
-    use types.{action, effect, event, fault, node, op, patch, query};
+    use types.{action, effect, event, fault, node, op, patch, query-request, view-tree};
 
     /// Called once, at install. What this plugin contributes and what it needs.
     ///
@@ -134,7 +163,7 @@ interface policy-api {
     /// `previous` is the value this plugin produced last time, if the host still
     /// holds it. It is a hint and may be absent, so a computation must produce the
     /// same result without it.
-    query: func(query: query, inputs: list<string>, db: string, previous: option<string>) -> result<string, fault>;
+    query: func(request: query-request, inputs: list<string>, db: string, previous: option<string>) -> result<string, fault>;
 
     /// Build a view for a client with the given capabilities.
     ///
@@ -142,7 +171,7 @@ interface policy-api {
     /// disclosure widget — and they are the *only* thing about a client a plugin
     /// learns. It never learns a size, a font, or a colour, because it has none of
     /// those to ask about.
-    view: func(role: string, capabilities: string, db: string, window: u32) -> result<node, fault>;
+    view: func(role: string, capabilities: string, db: string, window: u32) -> result<view-tree, fault>;
 }
 
 world policy {

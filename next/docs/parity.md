@@ -173,7 +173,9 @@ still offers the same commands, because what it needed was the declaration.
 ## Order I would do the rest in
 
 1. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
-   them.
+   them — though the shell now has the toolchain, `wit/guest/` builds into a component that
+   the reference runtime runs, and the design file parses for the first time (see the comments
+   in it for what that check found).
 
 2. **Cancelling a device flow a client started.** The kernel starts one and reports twice,
    and nothing a client can send stops it: a `login` that somebody thought better of polls

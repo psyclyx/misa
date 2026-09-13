@@ -1,0 +1,27 @@
+# A policy plugin, as a guest sees it: the smallest thing that implements `../policy.wit`.
+#
+# It is here to be the proof that the design file is a document something can be *built*
+# from — every type in it is used, and a change to it that does not parse fails this build —
+# and to be the thing the host's own tests will load once the host exists.
+#
+# Standalone, with its own lock file, rather than a workspace member: it is built for a
+# different target, nothing in the rewrite depends on it, and `cargo test --workspace` must
+# not grow a wasm build. The two commands from `next/` are in the README.
+[workspace]
+
+[package]
+name = "policy-guest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The guest side of the component model: it reads the world, emits the canonical ABI, and
+# embeds the `component-type` custom section that `wasm-tools component new` needs.
+wit-bindgen = "0.62"
+
+[profile.release]
+opt-level = "s"

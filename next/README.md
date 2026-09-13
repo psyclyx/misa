@@ -49,13 +49,29 @@ client, linked through a small JNI seam, with its own [`README`](android/README.
 draws the same view tree and declares the `mobile` render class, so a session knows the
 surface is narrow and that a disclosure has somewhere to live.
 
+## The shell
+
+```sh
+cd next && nix-shell              # inside next/ — bare, because ./shell.nix is the whole shell
+nix-shell next -A shell           # or from the repository root, next to the root's own shell
+```
+
+Entering `next/` with direnv loads it too, after `direnv allow` once: `next/.envrc` is new,
+and direnv blocks a new `.envrc` until somebody has read it. Inside `next/` that shell is
+what is on the path — the rewrite's toolchain, and not the Zig system's from the root.
+
+One shell, from the pin in `../npins`: the `rustc` and `cargo` this repository is built with
+(tooling from a profile is a different toolchain with a different std), `clippy`, `rustfmt`,
+`rust-analyzer`, `cargo-nextest`, and — for the plugin host — `wasm-tools`, `wasmtime`,
+`wasm-component-ld`, `wabt`, and `lld`. The repository root's shell has the same toolchain
+plus the Zig system's, so `cargo` is this repository's rustc wherever you are standing.
+
 ## Build and test
 
 ```sh
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # prints a ticket
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
-                                                   # (a client can start the same flow: `/login openai-codex`)
                                                    # (a client can start the same flow: `/login openai-codex`)
 cargo run -p misa-tui -- misa:<endpoint id>:demo
 cargo run -p misa-web -- --ticket misa:<endpoint id>:demo --listen 127.0.0.1:8080
@@ -74,6 +90,36 @@ cargo test -p misa-skia --features paint
 
 The scene — the mapping from a view tree and a theme to positioned runs — is built
 and tested without either, which is the interesting half.
+
+## Plugins
+
+A policy plugin is a wasm component: `wit/policy.wit` is the world, and `wit/guest/` is the
+smallest thing that implements it. The toolchain builds it in two commands, from this
+directory:
+
+```sh
+cargo build --manifest-path wit/guest/Cargo.toml --target wasm32-unknown-unknown --release
+wasm-tools component new wit/guest/target/wasm32-unknown-unknown/release/policy_guest.wasm \
+  -o /tmp/policy.component.wasm
+```
+
+The first produces a core module; the second is what makes it a _component_, from the
+`component-type` section `wit-bindgen` embeds. To see what came out, and to call it:
+
+```sh
+wasm-tools validate --features component-model /tmp/policy.component.wasm
+wasm-tools component wit /tmp/policy.component.wasm      # the world it implements
+wasmtime run --invoke 'describe()' /tmp/policy.component.wasm
+```
+
+`wasm32-unknown-unknown` and not `wasm32-wasip2`: this shell's rustc has std for the first
+and not the second, and a plugin imports no WASI — it exports handlers and answers queries,
+and `wit-bindgen` + `wasm-tools` do the rest. `wasm-component-ld` is in the shell because
+that is what would link a `wasip2` component directly, if the target ever arrives.
+
+The host is not written yet; when it is, `wasmtime::component::bindgen!` over the same
+`policy.wit` will validate the design file on every build, which is the check that would have
+caught the two things it got wrong before anything parsed it (see the comments in the file).
 
 ## Conventions
 

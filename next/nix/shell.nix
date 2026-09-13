@@ -1,43 +1,29 @@
+# The shell `next/` is worked on in: the Rust toolchain the rewrite is built with, and the wasm
+# tools the plugin host needs. Bare `nix-shell` in this directory, or `nix-shell next -A shell`
+# from the repository root. `../../shell.nix` beside it is the file that decides which nixpkgs
+# these come from.
+#
+# The toolchain itself is in `nix/rust-toolchain.nix` at the repository root, shared with the
+# root shell — one answer to "which rustc", for both halves of this repository.
 {
+  pkgs,
   mkShell,
-  rustc,
-  cargo,
-  clippy,
-  rustfmt,
-  rust-analyzer,
-  pkg-config,
-  # Skia's raster path links these. The scene needs neither, which is why `misa-skia`
-  # has a `paint` feature: `cargo test --workspace` must not need a graphics stack.
-  freetype,
-  fontconfig,
-  # A frontend with no typeface draws nothing, so the test that renders a PNG needs
-  # one available.
-  dejavu_fonts,
-  # For the wasm plugin host when it lands.
-  wasm-tools,
-  cargo-nextest,
   treefmt,
   nixfmt,
+  prettier,
 }:
-mkShell {
-  packages = [
-    rustc
-    cargo
-    clippy
-    rustfmt
-    rust-analyzer
-    pkg-config
-    freetype
-    fontconfig
-    dejavu_fonts
-    wasm-tools
-    cargo-nextest
-    treefmt
-    nixfmt
-  ];
-
-  # So `skia-bindings` finds the two libraries it links against without a
-  # hand-written `-L`.
-  PKG_CONFIG_PATH = "${freetype.dev}/lib/pkgconfig:${fontconfig.dev}/lib/pkgconfig";
-  FONTCONFIG_FILE = "${fontconfig.out}/etc/fonts/fonts.conf";
-}
+let
+  rust = import ../../nix/rust-toolchain.nix { inherit pkgs; };
+in
+mkShell (
+  {
+    packages = rust.packages ++ [
+      # The pre-commit hook is treefmt over this tree, and a hook that is not on the path is a
+      # commit that fails for a reason that has nothing to do with the change.
+      treefmt
+      nixfmt
+      prettier
+    ];
+  }
+  // rust.env
+)

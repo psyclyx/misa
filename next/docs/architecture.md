@@ -279,7 +279,14 @@ Not built, in the order they matter. `docs/parity.md` is the full matrix; these 
 items with no code at all, plus the two that are structural.
 
 1. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
-   them. This is the item with the least code and the most design already written down.
+   them. This is the item with the least code and the most design already written down, and the
+   ground under it is now real: the shell carries the toolchain (`wasm-tools`, `wasmtime`,
+   `lld`, and a rustc with std for `wasm32-unknown-unknown`), `wit/guest/` is a plugin that
+   builds and runs under the reference runtime, and the design file parses — which is how two
+   mistakes in it were found: `set(value)` used `value` as if it were a type, and a view
+   tree written as a record that contains itself. A value is now a json `string`, and a tree
+   is a flat `list<node>` with parent indices, which is the better shape anyway: the host
+   bounds the depth rather than the guest's allocator bounding it.
 2. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards. A device flow a client started cannot be
    cancelled either, and both are the same shape of work: an intent a session asks the kernel
@@ -333,7 +340,15 @@ already made.
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
    protocol in §4.
-5. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
+5. **How a plugin fixture is built for the gate.** `wit/guest/` is built by hand today, with
+   two commands in the README, because it is a component for another target and `cargo test
+--workspace` must not grow a wasm build. A test that loads a component needs one of three
+   things: a `build.rs` that shells out to cargo (which means a nested cargo build inside a
+   build script), a fixture written as WAT and assembled with the `wasm-tools` library (which
+   means writing the canonical ABI by hand), or a committed `.wasm`. None of them is
+   obviously right, and the first test that needs a plugin is when it has to be decided.
+
+6. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
    is open and lets a plugin invent an affordance without a protocol change. It also
    means a client cannot tell a valid action from a typo before sending it. The
    session advertises its queries; it could advertise its actions.

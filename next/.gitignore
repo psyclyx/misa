@@ -1,3 +1,7 @@
 /target
 /result
 *.png
+
+# The plugin fixture is a crate of its own, for another target, with a target directory of
+# its own. Everything else here is built by the workspace.
+/wit/guest/target
