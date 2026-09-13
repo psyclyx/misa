@@ -81,7 +81,34 @@ mod tests {
                 .into_raw(),
             vec![255, 0, 0, 255, 0, 255, 0, 255]
         );
+        if std::env::var_os("MISA_WAYLAND_CLIPBOARD_TEST").is_some() {
+            assert!(std::env::var_os("DISPLAY").is_none());
+            let png = std::process::Command::new("wl-paste")
+                .args(["--type", "image/png"])
+                .output()
+                .unwrap();
+            assert!(
+                png.status.success(),
+                "{}",
+                String::from_utf8_lossy(&png.stderr)
+            );
+            assert_eq!(
+                image::load_from_memory(&png.stdout)
+                    .unwrap()
+                    .into_rgba8()
+                    .into_raw(),
+                vec![255, 0, 0, 255, 0, 255, 0, 255]
+            );
+        }
         owner.set_text("clipboard text").unwrap();
         assert!(matches!(Desktop.read().unwrap(),Contents::Text(text) if text=="clipboard text"));
+        if std::env::var_os("MISA_WAYLAND_CLIPBOARD_TEST").is_some() {
+            let text = std::process::Command::new("wl-paste")
+                .args(["--no-newline", "--type", "text"])
+                .output()
+                .unwrap();
+            assert!(text.status.success());
+            assert_eq!(text.stdout, b"clipboard text");
+        }
     }
 }

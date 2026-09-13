@@ -95,6 +95,10 @@ Paste text or a desktop clipboard image with Ctrl-V in the terminal. Images beco
 remain staged until an explicit prompt send succeeds; Ctrl-Alt-V discards staged attachments.
 Alt-Enter inserts a newline, and Ctrl-R searches submission history.
 
+Desktop clipboard support includes native Wayland on compositors exposing a data-control
+protocol (tested with headless Sway, with `DISPLAY` unset), and X11/XWayland fallback.
+Pure Wayland compositors without data-control require XWayland for clipboard access.
+
 A device login panel offers **Cancel authorization** to stop polling immediately. Dismissing
 the panel alone leaves the authorization running.
 

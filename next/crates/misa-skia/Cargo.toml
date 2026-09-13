@@ -18,5 +18,5 @@ skia-safe.workspace = true
 tokio.workspace = true
 winit = "0.30.13"
 softbuffer = "0.4.8"
-arboard = { version = "3.6", default-features = false }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 misa-kit = { path = "../misa-kit" }

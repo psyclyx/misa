@@ -8,6 +8,8 @@
   xorg-server,
   xdotool,
   xclip,
+  sway,
+  wl-clipboard,
 }:
 let
   skia = callPackage ../skia.nix { };
@@ -21,6 +23,8 @@ in
     xorg-server
     xdotool
     xclip
+    sway
+    wl-clipboard
   ];
   inherit (skia) buildInputs preCheck;
   env = skia.env // {
@@ -36,6 +40,7 @@ in
     bash crates/misa-web/tests/browser.sh
     bash crates/misa-skia/tests/window.sh target/${stdenv.hostPlatform.rust.rustcTarget}/release/misa-skia
     bash crates/misa-tui/tests/clipboard.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
+    bash crates/misa-tui/tests/clipboard-wayland.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
   '';
   installPhase = ''
     mkdir -p "$out"
