@@ -1640,7 +1640,10 @@ name = "misa-client"
 version = "0.1.0"
 dependencies = [
  "misa-proto",
+ "misa-render",
  "misa-value",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -24,38 +24,35 @@ tree, one intent vocabulary.
 
 ## Build
 
-The native library is built by the Android NDK through an explicit script, and
-Gradle runs it as part of `preBuild`, so one command is the whole build:
+From the repository root:
 
 ```sh
-export ANDROID_HOME=/path/to/android-sdk
-export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865
-./gradlew :app:assembleDebug                 # x86_64, for an emulator
-./gradlew :app:assembleDebug -PmisaAbis=arm64-v8a   # a real phone
+nix-build next -A packages.misa-android
 ```
 
-### On NixOS
+The output is `result/share/misa/misa-debug.apk`, debug-signed and containing
+`x86_64`, `arm64-v8a`, and `armeabi-v7a` native libraries. Each library is its own
+cross derivation with Rust 1.97.1 and NDK 29.0.14206865. The APK uses Gradle 9.3.1,
+build tools 37.0.0, and the pinned SDK platforms 33–37. Dependencies are fetched
+from `gradle.lock`; Gradle assembles with networking disabled.
 
-The `aapt2` AGP downloads is a generic Linux executable and will not start on a
-distribution whose loader is not where it expects. The SDK beside it already has
-one that runs, and AGP has an option to prefer it:
+To build only a native library:
 
 ```sh
-./gradlew :app:assembleDebug \
-  -Pandroid.aapt2FromMavenOverride="$ANDROID_HOME/build-tools/37.0.0/aapt2"
+nix-build next -A packages.misa-android.native.x86_64
 ```
 
-### The Rust side alone
+To verify installation and launch in a temporary x86_64 emulator (requires KVM):
 
 ```sh
-cd native
-ANDROID_NDK_HOME=$ANDROID_NDK_HOME ./build.sh x86_64-linux-android
+nix-build next -A packages.misa-android.installCheck -o result-android-check
+result-android-check/bin/misa-android-check
 ```
 
-`build.sh` needs an Android `rust-std`. When the toolchain does not have one it
-builds `core`/`std` from `rust-src` with `-Z build-std`, and finds a `rust-src`
-beside a Nix `rustc` or under `~/.rustup`. `ANDROID_RUST_SOURCE` overrides the
-search.
+When Gradle dependencies change, regenerate `gradle.lock` with the pinned
+`gradle2nix`, running `:app:assembleDebug` and `:app:testDebugUnitTest`. Gradle
+consumes the native libraries supplied by Nix; it does not discover compilers
+or build Rust as a hidden `preBuild` task.
 
 ## Run
 
@@ -63,7 +60,7 @@ The daemon shows a code; scan it, or paste the `misa-pair:` line:
 
 ```sh
 misa-daemon --session demo            # prints a ticket and a QR
-./gradlew :app:installDebug           # then attach with the camera
+adb install -r result/share/misa/misa-debug.apk # then attach with the camera
 ```
 
 An emulator on this machine can reach a daemon on this machine at its loopback
@@ -81,7 +78,6 @@ address, which is what `misa-daemon` prints when it binds without a relay.
 - the session's own actions, including a panel's fields;
 - notices, status, and cancel.
 
-Not yet: fetching images over the blob connection (`graphics` is off, so the
-session sends words where a picture would be, exactly as it does for the
-terminal), and keeping the last session across a restart. Both are additive and
-neither needs a protocol change.
+Not yet: fetching images over the blob connection, and keeping the last session
+across a restart. The session emits semantic image nodes; the phone currently
+renders their alternative text.
