@@ -81,17 +81,55 @@ impl Remote {
                 let reference = match download.blob.clone() { Some(reference) => reference, None => return Some(SessionReply::Notice(download.error.clone())) };
                 let blobs = self.blobs.clone();
                 self.requests.transfers.spawn(async move {
-                    let result = tokio::time::timeout(TIMEOUT, async {
-                        let blob = blobs.get(&reference.hash).await?.ok_or("This attachment is no longer available")?;
+                    let result = async {
+                        let blob = tokio::time::timeout(TIMEOUT, blobs.get(&reference.hash)).await
+                            .map_err(|_| "The attachment download timed out".to_string())??.ok_or("This attachment is no longer available")?;
                         if blob.hash != reference.hash || blob.bytes.len() as u64 != reference.len { return Err("The attachment bytes do not match the offered file".to_string()); }
                         let path = destination.clone();
                         tokio::task::spawn_blocking(move || crate::save::write_new(&path, &blob.bytes)).await.map_err(|error| error.to_string())?
-                    }).await.map_err(|_| "The attachment download timed out".to_string()).and_then(|result| result);
+                    }.await;
                     SessionReply::Notice(match result { Ok(()) => format!("Saved {destination}"), Err(error) => error })
                 });
                 None
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Session, Presentation};
+    struct NoBlobs;
+    impl misa_transport::blob::BlobStore for NoBlobs {
+        fn get(&self, _: &str) -> Option<Vec<u8>> { None }
+        fn media(&self, _: &str) -> Option<String> { None }
+        fn has(&self, _: &str) -> bool { false }
+        fn store(&self, _: Vec<u8>, _: Option<&str>) -> Result<misa_proto::view::BlobRef, String> { Err("unused".into()) }
+    }
+    async fn reply(client: &mut Remote) -> SessionReply {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop { if let Some(Presentation::Reply(reply)) = client.next_presentation().await.unwrap() { return reply; } }
+        }).await.expect("reply stalled")
+    }
+    #[tokio::test]
+    async fn rejected_drafts_and_late_correlated_faults_leave_the_connection_usable() {
+        let kernel = std::sync::Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("done")));
+        let runtime = misa_session::Runtime::start("requests", "Requests", None, kernel, "scripted", "test", misa_value::Value::Null);
+        let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
+        let sessions = misa_transport::iroh::Sessions::new(); sessions.insert(runtime);
+        let router = misa_transport::server::serve(endpoint.clone(), sessions, std::sync::Arc::new(NoBlobs), std::sync::Arc::new(misa_transport::admission::Admission::open()));
+        let ticket = misa_transport::iroh::ticket(&endpoint, "requests").to_string();
+        let mut client = Remote::attach(&ticket).await.unwrap();
+        assert!(client.request(SessionRequest::Intent(Intent::Interrupt { text: " ".into(), attachments: vec![] })).await.is_none());
+        assert!(matches!(reply(&mut client).await, SessionReply::Sent { draft: Some((text, refs)), result: Err(_) } if text == " " && refs.is_empty()));
+        assert!(client.request(SessionRequest::Intent(Intent::Action { node: "missing".into(), action: "missing".into(), args: misa_value::Value::Null, fields: vec![] })).await.is_none());
+        // Force expiration before reading the already-in-flight correlated fault.
+        assert!(matches!(client.requests.expire(), SessionReply::Sent { result: Err(_), .. }));
+        assert!(matches!(reply(&mut client).await, SessionReply::Notice(_)));
+        assert!(client.request(SessionRequest::Intent(Intent::Prompt { text: "still connected".into(), attachments: vec![] })).await.is_none());
+        assert!(matches!(reply(&mut client).await, SessionReply::Sent { draft: Some((text, _)), result: Ok(()) } if text == "still connected"));
+        router.shutdown().await.unwrap(); endpoint.close().await;
     }
 }

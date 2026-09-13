@@ -8,9 +8,9 @@ use misa_render::Line;
 use crate::Screen;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Work { pub formatted_nodes: usize, pub appended_bytes: usize, pub copied_rows: usize }
+pub struct Work { pub formatted_nodes: usize, pub appended_bytes: usize, pub copied_rows: usize, pub index_steps: usize }
 struct Owner { lines: Vec<Line>, members: Vec<String>, depth: usize, level: usize, branch: bool }
-struct Live { stream: Stream, lines: Vec<Line>, column: usize }
+struct Live { stream: Stream, lines: Vec<Line>, column: usize, last_nonblank: usize }
 #[derive(Clone)]
 enum Segment { Owner(String), Live(String) }
 /// Prefix sums support viewport lookup and stream growth in logarithmic work.
@@ -22,9 +22,11 @@ impl Rows {
         for (i, &len) in lengths.iter().enumerate() { rows.change(i, 0, len); }
         rows
     }
-    fn change(&mut self, index: usize, old: usize, new: usize) {
+    fn change(&mut self, index: usize, old: usize, new: usize) -> usize {
         let mut i = index + 1;
-        while i < self.sums.len() { self.sums[i] = self.sums[i] - old + new; i += i & i.wrapping_neg(); }
+        let mut steps = 0;
+        while i < self.sums.len() { self.sums[i] = self.sums[i] - old + new; i += i & i.wrapping_neg(); steps += 1; }
+        steps
     }
     fn prefix(&self, mut end: usize) -> usize {
         let mut sum = 0;
@@ -32,10 +34,15 @@ impl Rows {
         sum
     }
     fn total(&self) -> usize { self.prefix(self.sums.len().saturating_sub(1)) }
-    fn locate(&self, row: usize) -> (usize, usize) {
-        let (mut lo, mut hi) = (0, self.sums.len().saturating_sub(1));
-        while lo < hi { let mid = (lo + hi) / 2; if self.prefix(mid + 1) <= row { lo = mid + 1; } else { hi = mid; } }
-        (lo, row.saturating_sub(self.prefix(lo)))
+    fn locate(&self, row: usize) -> (usize, usize, usize) {
+        let (mut index, mut sum, mut steps) = (0, 0, 0);
+        let mut bit = self.sums.len().next_power_of_two() / 2;
+        while bit > 0 {
+            let next = index + bit;
+            if next < self.sums.len() && sum + self.sums[next] <= row { index = next; sum += self.sums[next]; }
+            bit /= 2; steps += 1;
+        }
+        (index, row.saturating_sub(sum), steps)
     }
 }
 pub struct Retained {
@@ -47,6 +54,7 @@ pub struct Retained {
     segments: Vec<Segment>,
     live_positions: HashMap<String, usize>,
     rows: Rows,
+    lengths: Vec<usize>,
     attachments: usize,
     panel: Option<String>,
     selection_body: Option<crate::select::Body>,
@@ -59,7 +67,7 @@ impl Retained {
     pub fn new(view: Node, screen: &Screen) -> Self {
         let tree = IndexedTree::new(view);
         let view = tree.snapshot();
-        let mut out = Self { tree, owners: HashMap::new(), membership: HashMap::new(), order: vec![], live: HashMap::new(), segments: vec![], live_positions: HashMap::new(), rows: Rows::default(), attachments: 0, panel: None, selection_body: None, width: screen.width, theme: screen.theme.name.clone(), opened: screen.prefs.opened.clone(), work: Work::default() };
+        let mut out = Self { tree, owners: HashMap::new(), membership: HashMap::new(), order: vec![], live: HashMap::new(), segments: vec![], live_positions: HashMap::new(), rows: Rows::default(), lengths: vec![], attachments: 0, panel: None, selection_body: None, width: screen.width, theme: screen.theme.name.clone(), opened: screen.prefs.opened.clone(), work: Work::default() };
         out.order = out.build(view, 0, 0, screen);
         out.reindex();
         out
@@ -82,12 +90,15 @@ impl Retained {
     pub fn has_turn(&self) -> bool { self.tree.contains("turn") }
     pub fn selection_key(&mut self, screen: &mut Screen, key: &crate::Key) -> Option<crate::KeyOut> {
         if !screen.reading_key(key) { return None; }
+        // A key can extend the selection into text that arrived since its last
+        // movement. Passive stream repaint reuses the prior selection body.
+        self.selection_body = None;
         self.cache_selection();
         screen.selection_in(self.selection_body.as_ref().unwrap(), key)
     }
     fn cache_selection(&mut self) {
         if self.selection_body.is_none() {
-            let all: Vec<_> = self.segments.iter().flat_map(|segment| self.lines(segment).iter().cloned()).collect();
+            let all: Vec<_> = self.segments.iter().enumerate().flat_map(|(i, segment)| self.lines(segment)[..self.lengths[i]].iter().cloned()).collect();
             self.selection_body = Some(crate::select::Body::of(&all));
         }
     }
@@ -166,12 +177,19 @@ impl Retained {
             if i == insert { for id in &streams { self.live_positions.insert(id.clone(), self.segments.len()); self.segments.push(Segment::Live(id.clone())); } }
             if let Some(id) = self.order.get(i) && !self.owners[id].lines.is_empty() { self.segments.push(Segment::Owner(id.clone())); }
         }
-        self.rows = Rows::new(&self.segments.iter().map(|segment| self.lines(segment).len()).collect::<Vec<_>>());
+        self.lengths = self.segments.iter().map(|segment| self.lines(segment).len()).collect();
+        for index in (0..self.segments.len()).rev() {
+            let rows = self.lines(&self.segments[index]);
+            let trimmed = rows.iter().rposition(|line| !line.is_blank()).map_or(0, |at| at + 1);
+            self.lengths[index] = trimmed;
+            if trimmed > 0 { break; }
+        }
+        self.rows = Rows::new(&self.lengths);
     }
     fn lines(&self, segment: &Segment) -> &[Line] { match segment { Segment::Owner(id) => &self.owners[id].lines, Segment::Live(id) => &self.live[id].lines } }
     fn current(&mut self, stream: Stream, screen: &Screen) {
         let id = stream.id.clone();
-        let mut live = Live { stream: Stream { text: String::new(), ..stream.clone() }, lines: vec![], column: 0 };
+        let mut live = Live { stream: Stream { text: String::new(), ..stream.clone() }, lines: vec![], column: 0, last_nonblank: 0 };
         live.append(&stream.text, screen);
         self.live.insert(id, live);
     }
@@ -186,10 +204,13 @@ impl Retained {
                 StreamUpdate::Append { id, offset, text } => {
                     let live = self.live.get_mut(id).ok_or("missing stream")?;
                     if live.stream.text.len() != *offset { return Err("stream offset gap".into()); }
-                    let old = live.lines.len();
                     live.append(text, screen);
                     self.work.appended_bytes += text.len();
-                    if let Some(&index) = self.live_positions.get(id) { self.rows.change(index, old, live.lines.len()); }
+                    if let Some(&index) = self.live_positions.get(id) {
+                        let new = if self.rows.total() == self.rows.prefix(index + 1) { live.last_nonblank } else { live.lines.len() };
+                        self.work.index_steps += self.rows.change(index, self.lengths[index], new);
+                        self.lengths[index] = new;
+                    }
                 }
             },
             _ => {}
@@ -207,6 +228,7 @@ impl Retained {
         }
         self.selection_body = None;
     }
+    #[cfg(test)]
     pub fn draw(&mut self, screen: &Screen) -> Vec<Line> {
         self.frame(screen, None).lines
     }
@@ -215,10 +237,11 @@ impl Retained {
         let room = (screen.height as usize).saturating_sub(chrome.lines.len());
         let total = self.rows.total();
         let start = if screen.follow { total.saturating_sub(room) } else { screen.scroll.min(total.saturating_sub(1)) };
-        let (mut segment, mut offset) = self.rows.locate(start);
+        let (mut segment, mut offset, steps) = self.rows.locate(start);
+        self.work.index_steps += steps;
         let mut lines = vec![];
         while lines.len() < room && segment < self.segments.len() {
-            let rows = self.lines(&self.segments[segment]);
+            let rows = &self.lines(&self.segments[segment])[..self.lengths[segment]];
             let take = (room - lines.len()).min(rows.len().saturating_sub(offset));
             lines.extend_from_slice(&rows[offset..offset + take]);
             segment += 1; offset = 0;
@@ -227,7 +250,7 @@ impl Retained {
         if let Some(selection) = &screen.selection {
             // Selection is explicit local work. It uses cached rows, never tree formatting.
             if self.selection_body.is_none() {
-                let all: Vec<_> = self.segments.iter().flat_map(|segment| self.lines(segment).iter().cloned()).collect();
+                let all: Vec<_> = self.segments.iter().enumerate().flat_map(|(i, segment)| self.lines(segment)[..self.lengths[i]].iter().cloned()).collect();
                 self.selection_body = Some(crate::select::Body::of(&all));
             }
             for (i, line) in lines.iter_mut().enumerate() { if let Some((from, to)) = selection.on_row(self.selection_body.as_ref().unwrap(), start + i) { crate::select_highlight(line, from, to, &screen.theme); } }
@@ -247,7 +270,7 @@ impl Live {
                 self.lines.push(Line { indent: 0, node: Some(self.stream.id.clone()), spans: vec![(style, String::new())] }); self.column = 0;
             }
             if character == '\n' { self.lines.push(Line { indent: 0, node: Some(self.stream.id.clone()), spans: vec![(style, String::new())] }); self.column = 0; }
-            else { self.lines.last_mut().unwrap().spans[0].1.push(character); self.column += cells; }
+            else { self.lines.last_mut().unwrap().spans[0].1.push(character); self.column += cells; if !character.is_whitespace() { self.last_nonblank = self.lines.len(); } }
         }
         self.stream.text.push_str(text);
     }
@@ -291,6 +314,7 @@ mod tests {
     #[test]
     fn append_formatting_and_viewport_copy_work_do_not_grow_with_history() {
         let mut results = vec![];
+        let mut baselines = vec![];
         for history in [100, 1000] {
             for _ in 0..6 {
                 let screen = Screen::new(40, 16);
@@ -298,18 +322,75 @@ mod tests {
                 retained.current(Stream { id: "msg9999.body".into(), role: "assistant".into(), text: "current ".into() }, &screen);
                 retained.reindex(); retained.work = Work::default();
                 let mut offset = "current ".len();
+                let mut baseline_visits = 0;
+                let mut baseline_output = String::new();
                 for text in ["one ", "two ", "界🙂", "\n", "final"] {
                     retained.receive(&SessionMsg::Event { seq: 1, event: SessionEvent::Stream { update: StreamUpdate::Append { id: "msg9999.body".into(), offset, text: text.into() } } }, &screen).unwrap();
                     offset += text.len();
                     let rendered = retained.draw(&screen);
                     assert!(rendered.iter().any(|line| line.node.as_deref() == Some("msg9999.body")));
+                    // The previous full-tree presentation path remains callable as
+                    // a baseline. Count its actual recursive resolve visits.
+                    let legacy = retained.interaction();
+                    crate::RESOLVE_VISITS.with(|visits| visits.set(0));
+                    baseline_output.push_str(&misa_render::to_plain(&crate::draw(&screen, &legacy)));
+                    baseline_visits += crate::RESOLVE_VISITS.with(|visits| visits.get());
                 }
                 assert_eq!(retained.live["msg9999.body"].stream.text, "current one two 界🙂\nfinal");
                 assert_eq!(retained.work.formatted_nodes, 0);
                 assert_eq!(retained.work.appended_bytes, 21);
                 results.push(retained.work);
+                baselines.push((baseline_visits, baseline_output));
             }
         }
-        assert!(results.iter().all(|work| work == &results[0]), "{results:?}");
+        assert!(results.iter().all(|work| (work.formatted_nodes, work.appended_bytes, work.copied_rows) == (results[0].formatted_nodes, results[0].appended_bytes, results[0].copied_rows)), "{results:?}");
+        assert!(results.iter().all(|work| work.index_steps <= 5 * 24));
+        assert!(baselines[..6].iter().all(|run| run == &baselines[0]));
+        assert!(baselines[6..].iter().all(|run| run == &baselines[6]));
+        eprintln!("baseline actual resolve visits: 100-history {}, 1000-history {}; one output per size across six runs", baselines[0].0, baselines[6].0);
+        eprintln!("100/1000 history, six runs each: {results:?}");
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::{Key, KeyOut};
+    use misa_proto::view::Span;
+    #[test]
+    fn live_selection_copies_the_displayed_character_wrapped_row() {
+        let mut screen = Screen::new(10, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(Stream { id: "msg1.body".into(), role: "assistant".into(), text: "hello world".into() }, &screen); retained.reindex();
+        assert_eq!(retained.live["msg1.body"].lines.iter().map(Line::text).collect::<Vec<_>>(), ["hello worl", "d"]);
+        screen.key(Key::Escape);
+        assert_eq!(retained.selection_key(&mut screen, &Key::Char('v')), Some(KeyOut::Local));
+        retained.selection_key(&mut screen, &Key::Motion(crate::ed::Motion::LineEnd));
+        assert_eq!(retained.selection_key(&mut screen, &Key::Char('y')), Some(KeyOut::Copy("d".into())));
+    }
+    #[test]
+    fn full_viewport_reserves_staged_attachment_and_multiline_editor_rows() {
+        let mut root = Node::section("session").id("session");
+        for i in 0..100 { root.children.push(Node::text("text", [Span::plain("history")]).id(format!("n{i}"))); }
+        let mut screen = Screen::new(30, 12); screen.editor.set_text("first\nsecond");
+        let mut retained = Retained::new(root, &screen);
+        let frame = retained.frame(&screen, Some("1 clipboard attachments · 1 uploading"));
+        assert_eq!(frame.lines.len(), 12);
+        assert!(frame.lines.iter().all(|line| !line.text().contains('\n') && misa_render::width(&line.text()) <= 30));
+        assert_eq!(frame.cursor_row, 11); assert_eq!(frame.cursor_column, 8);
+    }
+    #[test]
+    fn folded_content_edits_and_trailing_blanks_match_the_settled_renderer() {
+        let mut screen = Screen::new(40, 40);
+        let folded = Node::new("call", Kind::Collapsible { summary: vec![Span::plain("summary")] }).id("call")
+            .child(Node::new("quote", Kind::Quote).id("quote").child(Node::text("text", [Span::plain("before")]).id("body")));
+        let root = Node::section("session").id("session").child(folded).child(Node::text("text", [Span::plain("")]).id("blank"));
+        let mut retained = Retained::new(root, &screen);
+        retained.op(&ViewOp::Replace { id: "body".into(), node: Node::text("text", [Span::plain("after")]).id("body") }, &screen).unwrap(); retained.reindex();
+        screen.prefs.open_all(); retained.local(&screen);
+        let expected = misa_render::render(&screen.resolve(&retained.tree.snapshot()), &screen.theme, 40);
+        let frame = retained.frame(&screen, None);
+        assert_eq!(&frame.lines[..expected.len()], expected.as_slice());
+        assert_eq!(frame.lines.len(), expected.len() + crate::chrome::frame(&screen, 0, None).lines.len());
     }
 }

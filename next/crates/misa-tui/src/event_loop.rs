@@ -31,15 +31,23 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     let _terminal = Terminal;
     crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen,
         event::EnableBracketedPaste).map_err(|error| error.to_string())?;
-    let (sender, receiver) = mpsc::unbounded_channel();
+    let (sender, receiver) = mpsc::channel(64);
     let stop = Arc::new(AtomicBool::new(false));
     let reading = stop.clone();
     let thread = std::thread::spawn(move || {
         while !reading.load(Ordering::Relaxed) {
-            match event::poll(Duration::from_millis(50)) {
+            let mut pending = match event::poll(Duration::from_millis(50)) {
                 Ok(false) => continue,
-                Ok(true) => if sender.send(event::read().map_err(|error| error.to_string())).is_err() { break; },
-                Err(error) => { let _ = sender.send(Err(error.to_string())); break; }
+                Ok(true) => event::read().map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            loop {
+                if reading.load(Ordering::Relaxed) { return; }
+                match sender.try_send(pending) {
+                    Ok(()) => break,
+                    Err(mpsc::error::TrySendError::Full(event)) => { pending = event; std::thread::sleep(Duration::from_millis(5)); }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
             }
         }
     });
@@ -50,11 +58,11 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
 }
 
 async fn drive(session: &mut dyn Session, screen: &mut Screen,
-    events: mpsc::UnboundedReceiver<Result<Event, String>>, writer: &mut impl Write) -> Result<(), String> {
+    events: mpsc::Receiver<Result<Event, String>>, writer: &mut impl Write) -> Result<(), String> {
     drive_with_clipboard(session, screen, events, writer, &mut crate::clipboard::Desktop).await
 }
 async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
-    mut events: mpsc::UnboundedReceiver<Result<Event, String>>, writer: &mut impl Write,
+    mut events: mpsc::Receiver<Result<Event, String>>, writer: &mut impl Write,
     clipboard: &mut dyn crate::clipboard::Source) -> Result<(), String> {
     let mut retained = crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen);
     let mut pending = Vec::<misa_proto::view::BlobRef>::new();
@@ -245,10 +253,10 @@ mod tests {
     async fn an_idle_session_still_accepts_paste_resize_and_quit() {
         let mut session = Idle { first: true };
         let mut screen = Screen::new(80, 24);
-        let (sender, receiver) = mpsc::unbounded_channel();
-        sender.send(Ok(Event::Paste("two\nlines".into()))).unwrap();
-        sender.send(Ok(Event::Resize(100, 30))).unwrap();
-        sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
+        let (sender, receiver) = mpsc::channel(64);
+        sender.try_send(Ok(Event::Paste("two\nlines".into()))).unwrap();
+        sender.try_send(Ok(Event::Resize(100, 30))).unwrap();
+        sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
         let mut output = Vec::new();
         tokio::time::timeout(Duration::from_secs(1), drive(&mut session, &mut screen, receiver, &mut output))
             .await.expect("idle session blocked local input").unwrap();
@@ -280,13 +288,13 @@ mod tests {
             .arg(misa_proto::wire::Arg::new("model", "Model").required().from("models"))];
         screen.sources = vec![misa_proto::wire::Source::resident("models", "Models")];
         screen.editor.set_text("/model");
-        let (sender, receiver) = mpsc::unbounded_channel();
-        sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Tab, event::KeyModifiers::NONE)))).unwrap();
+        let (sender, receiver) = mpsc::channel(64);
+        sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Tab, event::KeyModifiers::NONE)))).unwrap();
         let input = async move {
             started.notified().await;
-            sender.send(Ok(Event::Paste("still editing".into()))).unwrap();
-            sender.send(Ok(Event::Resize(100, 30))).unwrap();
-            sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
+            sender.try_send(Ok(Event::Paste("still editing".into()))).unwrap();
+            sender.try_send(Ok(Event::Resize(100, 30))).unwrap();
+            sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
         };
         let mut output = Vec::new();
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -301,8 +309,8 @@ mod tests {
     async fn startup_does_not_wait_for_a_snapshot_before_quit() {
         let mut session = Waiting { started: Default::default() };
         let mut screen = Screen::new(80, 24);
-        let (sender, receiver) = mpsc::unbounded_channel();
-        sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
+        let (sender, receiver) = mpsc::channel(64);
+        sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
         tokio::time::timeout(Duration::from_secs(1), drive(&mut session, &mut screen, receiver, &mut Vec::new()))
             .await.expect("startup blocked quit").unwrap();
     }
@@ -358,19 +366,19 @@ mod clipboard_tests {
         let mut session = UploadSession { fail: true, uploads: 0, sent: vec![], frame: frame.clone(), receipts };
         let mut writer = FrameWriter { bytes: vec![], frame, changed };
         let mut screen = Screen::new(80, 24); screen.editor.set_text("a picture");
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(64);
         let script = async move {
-            sender.send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL)).unwrap();
+            sender.try_send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL)).unwrap();
             acknowledged(&mut received, &mut frames).await;
-            sender.send(key(event::KeyCode::Enter, event::KeyModifiers::NONE)).unwrap();
+            sender.try_send(key(event::KeyCode::Enter, event::KeyModifiers::NONE)).unwrap();
             acknowledged(&mut received, &mut frames).await;
-            sender.send(key(event::KeyCode::Enter, event::KeyModifiers::NONE)).unwrap();
+            sender.try_send(key(event::KeyCode::Enter, event::KeyModifiers::NONE)).unwrap();
             acknowledged(&mut received, &mut frames).await;
-            sender.send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL)).unwrap();
+            sender.try_send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL)).unwrap();
             acknowledged(&mut received, &mut frames).await;
-            sender.send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL | event::KeyModifiers::ALT)).unwrap();
-            sender.send(key(event::KeyCode::Enter, event::KeyModifiers::NONE)).unwrap();
-            sender.send(key(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)).unwrap();
+            sender.try_send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL | event::KeyModifiers::ALT)).unwrap();
+            sender.try_send(key(event::KeyCode::Enter, event::KeyModifiers::NONE)).unwrap();
+            sender.try_send(key(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)).unwrap();
         };
         tokio::time::timeout(Duration::from_secs(2), async {
             let mut clipboard = ImageClipboard; let (result, ()) = tokio::join!(drive_with_clipboard(&mut session, &mut screen, receiver, &mut writer, &mut clipboard), script); result.unwrap();
@@ -388,17 +396,65 @@ mod clipboard_tests {
         let mut session = UploadSession { fail: false, uploads: 0, sent: vec![], frame: frame.clone(), receipts };
         let mut writer = FrameWriter { bytes: vec![], frame, changed };
         let mut screen = Screen::new(80, 24);
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(64);
         let script = async move {
-            sender.send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL)).unwrap();
+            sender.try_send(key(event::KeyCode::Char('v'), event::KeyModifiers::CONTROL)).unwrap();
             acknowledged(&mut received, &mut frames).await;
-            sender.send(key(event::KeyCode::Enter, event::KeyModifiers::ALT)).unwrap();
+            sender.try_send(key(event::KeyCode::Enter, event::KeyModifiers::ALT)).unwrap();
             acknowledged(&mut received, &mut frames).await;
-            sender.send(key(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)).unwrap();
+            sender.try_send(key(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)).unwrap();
         };
         tokio::time::timeout(Duration::from_secs(2), async {
             let mut clipboard = ImageClipboard; let (result, ()) = tokio::join!(drive_with_clipboard(&mut session, &mut screen, receiver, &mut writer, &mut clipboard), script); result.unwrap();
         }).await.unwrap();
         assert!(matches!(&session.sent[..], [Intent::Interrupt { text, attachments }] if text.is_empty() && attachments.len() == 1));
+    }
+}
+
+#[cfg(test)]
+mod save_liveness_test {
+    use super::*;
+    use misa_proto::{Intent, Node, SessionInfo};
+    use misa_proto::view::{Action, ActionOn, Choice};
+    struct Saving { first: bool, started: Arc<tokio::sync::Notify> }
+    #[async_trait::async_trait]
+    impl Session for Saving {
+        async fn next(&mut self) -> Result<Option<Node>, String> {
+            if self.first { self.first = false; return Ok(Some(Node::section("session").id("session").child(Node::section("attachment").id("file").action(Action { id: "attachment.save".into(), on: ActionOn::Click, label: None, args: misa_value::Value::Null })))); }
+            std::future::pending().await
+        }
+        async fn send(&mut self, _: Intent) -> Result<(), String> { Ok(()) }
+        async fn save_attachment(&mut self, node: &str, _: &str) -> Result<(), String> { assert_eq!(node, "file"); self.started.notify_one(); std::future::pending().await }
+        async fn complete(&mut self, _: &str, _: &str) -> Result<(Vec<Choice>, bool), String> { Ok((vec![], false)) }
+        fn info(&self) -> Option<SessionInfo> { None }
+    }
+    struct Observed { bytes: Vec<u8>, ready: Arc<tokio::sync::Notify> }
+    impl Write for Observed {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.bytes.extend_from_slice(bytes); Ok(bytes.len()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if String::from_utf8_lossy(&self.bytes).contains("1 attachments") { self.ready.notify_one(); }
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn waiting_for_a_save_keeps_edit_resize_and_quit_live() {
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut session = Saving { first: true, started: started.clone() };
+        let mut screen = Screen::new(80, 24); screen.editor.set_text("/save /tmp/unused-save-test");
+        let mut writer = Observed { bytes: vec![], ready: ready.clone() };
+        let (sender, receiver) = mpsc::channel(64);
+        let input = async move {
+            ready.notified().await;
+            sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Enter, event::KeyModifiers::NONE)))).unwrap();
+            started.notified().await;
+            sender.try_send(Ok(Event::Paste("still editing".into()))).unwrap();
+            sender.try_send(Ok(Event::Resize(90, 30))).unwrap();
+            sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let (result, ()) = tokio::join!(drive(&mut session, &mut screen, receiver, &mut writer), input); result.unwrap();
+        }).await.expect("save wait blocked keyboard");
+        assert_eq!(screen.editor.text(), "still editing"); assert_eq!((screen.width, screen.height), (90, 30));
     }
 }

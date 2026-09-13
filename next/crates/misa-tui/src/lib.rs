@@ -30,6 +30,9 @@ pub mod clipboard;
 pub mod storage;
 pub mod save;
 
+#[cfg(test)]
+thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -875,6 +878,8 @@ impl Screen {
     /// they closed does the opposite. Expansion belongs to the client;
     /// this is why a theme change or a re-render never loses somebody's place.
     pub fn resolve(&self, node: &Node) -> Node {
+        #[cfg(test)]
+        RESOLVE_VISITS.with(|visits| visits.set(visits.get() + 1));
         let mut node = node.clone();
         node.children = node.children.iter().map(|child| self.resolve(child)).collect();
         // What is being typed into a panel is drawn in the panel's field. The session sent an
