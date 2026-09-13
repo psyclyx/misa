@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run from next/ in the artifact shell.
 set -euo pipefail
+unset WAYLAND_DISPLAY WAYLAND_SOCKET
 export DISPLAY=:${MISA_CLIPBOARD_DISPLAY:-194}
 clipboard_log=$(mktemp)
 Xvfb "$DISPLAY" -screen 0 1024x768x24 >"$clipboard_log" 2>&1 &

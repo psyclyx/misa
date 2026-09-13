@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run from next/ in the artifact shell with a built pixel executable.
 set -euo pipefail
+unset WAYLAND_DISPLAY WAYLAND_SOCKET
 binary=${1:-${CARGO_TARGET_DIR:-target}/debug/misa-skia}
 work=$(mktemp -d)
 export DISPLAY=:${MISA_TEST_DISPLAY:-193}
