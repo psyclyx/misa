@@ -53,7 +53,7 @@ object Intents {
                         .put("id", field.id)
                         .put("label", field.label)
                         .put("value", field.value)
-                        .put("kind", JSONObject().put("shape", "text")),
+                        .put("kind", JSONObject().put("shape", "inline")),
                 )
             }
             body.put("fields", list)

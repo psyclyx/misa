@@ -481,13 +481,13 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
                 format!("`{}` declares an affordance it may not have: {}", descriptor.id, fault.message)
             })?;
         }
-        // What it presents. The session builds it per client class and places it in the document,
+        // What it presents. The session builds it from session data and places it in the document,
         // which is why no frontend has to know anything about a plugin.
         let presenting = plugin.clone();
         contribution = contribution.with_section(misa_session::views::Section {
             plugin: descriptor.id.clone(),
-            build: Arc::new(move |capabilities, db, window| {
-                presenting.view(capabilities, db, window).map_err(|fault| fault.message)
+            build: Arc::new(move |db, window| {
+                presenting.view(db, window).map_err(|fault| fault.message)
             }),
         });
         for root in &descriptor.roots {

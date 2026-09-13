@@ -33,7 +33,7 @@ use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jlong, JNI_FALSE, JNI_TRUE};
 use jni::{JNIEnv, JavaVM};
 
-use misa_proto::wire::{Capabilities, ClientInfo, Intent, Level, SessionEvent, SessionMsg};
+use misa_proto::wire::{ClientInfo, Intent, Level, SessionEvent, SessionMsg};
 use misa_proto::{Pairing, Query, SubId};
 
 /// What a Kotlin caller asks the connection's owner to do.
@@ -61,7 +61,7 @@ fn next_handle() -> i64 {
 
 /// Where the session's views live in this connection.
 fn view_query() -> Query {
-    Query::new(misa_session::views::VIEW_QUERY)
+    Query::new(misa_proto::VIEW_QUERY)
 }
 
 /// Deliver one event to the Kotlin listener as a JSON string.
@@ -215,7 +215,7 @@ async fn session(
         }
     }
 
-    let info = ClientInfo::new("misa-android", env!("CARGO_PKG_VERSION"), Capabilities::mobile(48, 80));
+    let info = ClientInfo::new("misa-android", env!("CARGO_PKG_VERSION"));
     let mut client = match misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await {
         Ok(client) => client,
         Err(message) => {

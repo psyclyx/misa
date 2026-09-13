@@ -24,6 +24,8 @@ data class Field(
     val value: String,
     val hint: String?,
     val shape: String,
+    val readOnly: Boolean = false,
+    val secret: Boolean = false,
     val options: List<Choice>,
     val selected: String?,
 )
@@ -65,13 +67,13 @@ sealed interface Shape {
 
     data class Fields(val fields: List<Field>) : Shape
 
-    data class Collapsible(val summary: List<Span>, val open: Boolean) : Shape
+    data class Collapsible(val summary: List<Span>) : Shape
 
     data class Picture(val alt: String) : Shape
 
     data class Status(val text: String) : Shape
 
-    data class Meter(val meterLabel: String, val value: Double, val max: Double, val text: String) : Shape
+    data class Meter(val meterLabel: String, val value: Double, val max: Double) : Shape
 
     data class Fact(val value: Any?) : Shape
 
@@ -133,7 +135,6 @@ object Wire {
             "collapsible" ->
                 Shape.Collapsible(
                     summary = kind.optJSONArray("summary")?.mapObjects(::parseSpan) ?: emptyList(),
-                    open = kind.optBoolean("open", false),
                 )
             "image" -> Shape.Picture(kind.optString("alt", ""))
             "status" -> Shape.Status(kind.optString("text", ""))
@@ -142,7 +143,6 @@ object Wire {
                     meterLabel = kind.optString("label", ""),
                     value = kind.optDouble("value", 0.0),
                     max = kind.optDouble("max", 100.0),
-                    text = kind.optString("text", ""),
                 )
             "fact" -> Shape.Fact(if (kind.has("value")) kind.get("value") else null)
             else -> Shape.Unknown(shape)
@@ -163,7 +163,9 @@ object Wire {
             label = json.optString("label", ""),
             value = json.optString("value", ""),
             hint = json.optStringOrNull("hint"),
-            shape = kind.optString("shape", "text"),
+            shape = kind.optString("shape", "inline"),
+            readOnly = json.optBoolean("read_only", false),
+            secret = json.optBoolean("secret", false),
             options = kind.optJSONArray("options")?.mapObjects(::parseChoice) ?: emptyList(),
             selected = kind.optStringOrNull("selected"),
         )

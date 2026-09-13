@@ -444,7 +444,7 @@ async fn converse(
                 let revision = runtime.watch_rev();
                 let events = runtime.subscribe_events();
                 let mut state = Session::new(runtime);
-                // The connection's own hello is the session's hello too: the capabilities a
+                // The connection's own hello is the session's hello too: the identity a
                 // client declared are what its views are built for, and they are not sent
                 // twice.
                 if let Some(client) = client.clone() {

@@ -44,7 +44,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tokio_stream::StreamExt as _;
 use misa_proto::view::{ActionOn, BlobRef, FieldKind, Kind, Node, Span, SpanKind, State as NodeState};
-use misa_proto::wire::{Capabilities, Intent, SessionInfo};
+use misa_proto::wire::{Intent, SessionInfo};
 use misa_proto::{SubId, Query};
 use misa_session::Runtime;
 use tokio::sync::broadcast;
@@ -265,15 +265,24 @@ fn render_node(node: &Node, out: &mut String) {
             for field in fields {
                 out.push_str(&format!("<dt>{}</dt><dd>", escape(&field.label)));
                 match &field.kind {
-                    FieldKind::Multiline => out.push_str(&format!(
+                    _ if field.read_only => {
+                        if field.secret {
+                            out.push_str("••••");
+                        } else if matches!(field.kind, FieldKind::Block) {
+                            out.push_str(&format!("<pre>{}</pre>", escape(&field.value)));
+                        } else {
+                            out.push_str(&escape(&field.value));
+                        }
+                    },
+                    _ if field.secret => out.push_str(&format!(
+                        "<input type=\"password\" name=\"{}\" value=\"\">",
+                        escape(&field.id)
+                    )),
+                    FieldKind::Block => out.push_str(&format!(
                         "<textarea name=\"{name}\" rows=\"3\" aria-label=\"{label}\" list=\"misa-commands\">{value}</textarea>",
                         name = escape(&field.id),
                         label = escape(&field.label),
                         value = escape(&field.value)
-                    )),
-                    FieldKind::Secret => out.push_str(&format!(
-                        "<input type=\"password\" name=\"{}\" value=\"\">",
-                        escape(&field.id)
                     )),
                     FieldKind::Bool => out.push_str(&format!(
                         "<input type=\"checkbox\" name=\"{}\"{}>",
@@ -292,14 +301,11 @@ fn render_node(node: &Node, out: &mut String) {
                         }
                         out.push_str("</select>");
                     }
-                    FieldKind::Text => out.push_str(&format!(
+                    FieldKind::Inline => out.push_str(&format!(
                         "<input type=\"text\" name=\"{}\" value=\"{}\">",
                         escape(&field.id),
                         escape(&field.value)
                     )),
-                    // A row is something to read, and the value is the whole of it: an input
-                    // here would be an edit that nothing could save.
-                    FieldKind::ReadOnly => out.push_str(&escape(&field.value)),
                 }
                 if let Some(hint) = &field.hint {
                     out.push_str(&format!("<small>{}</small>", escape(hint)));
@@ -308,11 +314,11 @@ fn render_node(node: &Node, out: &mut String) {
             }
             out.push_str("</dl>");
         }
-        Kind::Collapsible { summary, open } => {
+        Kind::Collapsible { summary } => {
             // `<details>` is why this node exists as a node: a short form and a long
             // form are a thing HTML already has a word for.
             if let Some(index) = out.find('>') {
-                let element = if *open { "<details open" } else { "<details" };
+                let element = "<details";
                 let rest = out[index + 1..].to_string();
                 let head = out[..index].to_string();
                 let head = head
@@ -330,16 +336,12 @@ fn render_node(node: &Node, out: &mut String) {
             out.push_str("</summary>");
         }
         Kind::Image { blob, alt, .. } => {
-            // A client that can draw shows the image; a client that cannot would not
-            // have been sent this node at all. The alt text is for everyone else.
+            // The browser renders the shared image node and keeps its alternative text.
             out.push_str(&format!(
                 "<img src=\"/blob/{hash}\" alt=\"{alt}\">",
                 hash = escape(&blob.hash),
                 alt = escape(alt)
             ));
-        }
-        Kind::Status { text } | Kind::Meter { text, .. } if false => {
-            let _ = text;
         }
         Kind::Status { text } => out.push_str(&escape(text)),
         // A fact is written by the client's own formatter, and marked up so a
@@ -350,14 +352,14 @@ fn render_node(node: &Node, out: &mut String) {
             escape(&value.to_string()),
             escape(&misa_render::fact::format(&node.role, value))
         )),
-        Kind::Meter { label, value, max, text } => {
+        Kind::Meter { label, value, max } => {
             out.push_str(&format!(
                 "<meter min=\"0\" max=\"{max}\" value=\"{value}\" aria-label=\"{label}\"></meter>\
 <span class=\"value\">{text}</span>",
                 max = max,
                 value = value,
                 label = escape(label),
-                text = escape(text)
+                text = format!("{value}/{max}")
             ));
         }
     }
@@ -506,7 +508,6 @@ pub fn escape(text: &str) -> String {
 /// The client server: one runtime, one HTML region, and a stream of replacements.
 pub struct App {
     runtime: Arc<Runtime>,
-    capabilities: Capabilities,
     /// The last rendered region, so a browser that connects mid-turn is sent a
     /// document rather than waiting for the next change.
     ///
@@ -528,7 +529,6 @@ impl App {
         let (updates, _) = broadcast::channel(64);
         let app = Arc::new(App {
             runtime,
-            capabilities: Capabilities::browser(),
             latest: Arc::new(std::sync::Mutex::new(Arc::new(String::new()))),
             updates,
             blobs: None,
@@ -546,7 +546,6 @@ impl App {
     pub fn with_blobs(self: &Arc<App>, blobs: Arc<Source>) -> Arc<App> {
         Arc::new(App {
             runtime: self.runtime.clone(),
-            capabilities: self.capabilities.clone(),
             latest: self.latest.clone(),
             updates: self.updates.clone(),
             blobs: Some(blobs),
@@ -574,7 +573,7 @@ impl App {
     }
 
     fn render(&self) {
-        let html = match self.runtime.view(&self.capabilities) {
+        let html = match self.runtime.view() {
             Ok(view) => render_main(&view),
             Err(fault) => format!("<p class=\"n-notice.error\">{}</p>", escape(&fault.message)),
         };
@@ -738,7 +737,7 @@ fn upload_fault(message: &str) -> Response {
 }
 
 async fn page(State(app): State<Arc<App>>) -> Html<String> {
-    let view = app.runtime.view(&app.capabilities).ok();
+    let view = app.runtime.view().ok();
     let lead = lead(&app.pending.lock().expect("the pending list is never poisoned"));
     match view {
         Some(view) => Html(document_with(&app.runtime.info(), &render_main(&view), &lead)),
@@ -823,7 +822,9 @@ fn intent_from_form(form: &HashMap<String, String>) -> Intent {
             label: key.clone(),
             value: value.clone(),
             hint: None,
-            kind: FieldKind::Text,
+            read_only: false,
+            secret: false,
+            kind: FieldKind::Inline,
         })
         .collect::<Vec<_>>();
     Intent::Action {
@@ -874,9 +875,9 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     // The address the session is reached at serves that session's blobs too: a ticket names one
     // node, so a client that can reach a session can fetch what its views point at.
     let blobs = Arc::new(Source::Remote(misa_net::blob::Store::new(endpoint.clone(), target.clone())));
-    let info = misa_proto::ClientInfo::new("misa-web", env!("CARGO_PKG_VERSION"), Capabilities::browser());
+    let info = misa_proto::ClientInfo::new("misa-web", env!("CARGO_PKG_VERSION"));
     let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
-    client.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)).await?;
+    client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?;
 
     let (updates, _) = broadcast::channel(64);
     let latest = Arc::new(std::sync::Mutex::new(Arc::new(String::new())));
@@ -1085,7 +1086,9 @@ mod tests {
                     label: "Message".into(),
                     value: String::new(),
                     hint: None,
-                    kind: FieldKind::Multiline,
+                    read_only: false,
+                    secret: false,
+                    kind: FieldKind::Block,
                 }],
             },
         )
@@ -1110,7 +1113,7 @@ mod tests {
             .child(
                 Node::new(
                     "tool.call",
-                    Kind::Collapsible { summary: vec![Span::plain("echo")], open: false },
+                    Kind::Collapsible { summary: vec![Span::plain("echo")] },
                 )
                 .id("call.1")
                 .child(Node::new(
@@ -1270,6 +1273,33 @@ mod tests {
     }
 
     #[test]
+    fn secret_policy_masks_every_field_shape() {
+        for kind in [FieldKind::Inline, FieldKind::Block, FieldKind::Bool,
+            FieldKind::Choice { options: vec![], selected: Some("private".into()) }] {
+            for read_only in [false, true] {
+                let node = Node::new("secret", Kind::Fields { fields: vec![Field {
+                    id: "value".into(), label: "Secret".into(), value: "private".into(), hint: None,
+                    kind: kind.clone(), read_only, secret: true,
+                }] });
+                let html = render_main(&node);
+                assert!(!html.contains("private"), "{html}");
+                assert!(html.contains(if read_only { "••••" } else { "type=\"password\"" }), "{html}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_only_block_keeps_its_shape_without_offering_an_edit() {
+        let node = Node::new("report", Kind::Fields { fields: vec![Field {
+            id: "body".into(), label: "Report".into(), value: "one\ntwo".into(), hint: None,
+            kind: FieldKind::Block, read_only: true, secret: false,
+        }] });
+        let html = render_main(&node);
+        assert!(html.contains("<pre>one\ntwo</pre>"), "{html}");
+        assert!(!html.contains("textarea"), "{html}");
+    }
+
+    #[test]
     fn a_panel_is_a_report_whose_buttons_work_without_the_script() {
         // The shape a session opens for `/login`: a row that is a fact, a field somebody types
         // into, and a dismiss. A row is not a text box, and each button posts on its own —
@@ -1286,7 +1316,9 @@ mod tests {
                             label: "code".into(),
                             value: "AAAA-BBBB".into(),
                             hint: None,
-                            kind: FieldKind::ReadOnly,
+                            read_only: true,
+                            secret: false,
+                            kind: FieldKind::Inline,
                         }],
                     },
                 )

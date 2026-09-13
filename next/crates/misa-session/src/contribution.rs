@@ -157,7 +157,7 @@ impl Contribution {
 
     /// Contribute a part of the document.
     ///
-    /// Built once per client class per revision, and built *by* the session, so a plugin's
+    /// Built once per revision, and built *by* the session, so a plugin's
     /// presentation reaches every frontend without one line of frontend code.
     pub fn with_section(mut self, section: crate::views::Section) -> Contribution {
         self.sections.push(section);

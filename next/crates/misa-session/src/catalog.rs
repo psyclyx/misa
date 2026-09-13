@@ -160,14 +160,14 @@ pub fn cost_micros(model_id: &str, input_tokens: i64, output_tokens: i64) -> i64
 /// The sources a session declares.
 pub fn sources() -> Vec<Source> {
     vec![
-        Source::resident("models", "Models"),
-        Source::resident("effort", "Reasoning effort"),
-        Source::resident("commands", "Commands"),
+        Source::resident(misa_proto::completion::MODELS, "Models"),
+        Source::resident(misa_proto::completion::EFFORT, "Reasoning effort"),
+        Source::resident(misa_proto::completion::COMMANDS, "Commands"),
         // The services this daemon knows by name, so `/login <Tab>` offers them instead of
         // asking somebody to remember an id.
-        Source::resident("providers", "Providers"),
+        Source::resident(misa_proto::completion::PROVIDERS, "Providers"),
         Source::on_demand(
-            "conversations",
+            misa_proto::completion::CONVERSATIONS,
             "Conversations",
             "searched by the session, because a log outgrows what a client should hold",
         ),

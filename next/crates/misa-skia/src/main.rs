@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use misa_proto::view::Node;
-use misa_proto::wire::Capabilities;
 use misa_proto::{Query, SessionMsg, SubId};
 
 fn usage() -> String {
@@ -76,13 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let message = misa_net::iroh::Client::pair(&endpoint, target.clone(), code, "the pixel frontend").await?;
         eprintln!("[paired] {message}");
     }
-    let info = misa_proto::ClientInfo::new("misa-skia", env!("CARGO_PKG_VERSION"), Capabilities::skia(columns, rows));
+    let info = misa_proto::ClientInfo::new("misa-skia", env!("CARGO_PKG_VERSION"));
     // `Arc` because a reconnect needs the endpoint again; there is exactly one here and
     // the client takes it by reference.
     let endpoint = Arc::new(endpoint);
     let mut client = misa_net::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
     client
-        .subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY).arg(misa_value::Value::Int(40)))
+        .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY).arg(misa_value::Value::Int(40)))
         .await?;
 
     let mut current: Option<Node> = None;

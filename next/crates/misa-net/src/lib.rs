@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use misa_proto::chunk::{self as frame, Decoder};
 use misa_proto::wire::{
-    Capabilities, ClientInfo, ClientMsg, Level, Query, SessionEvent, SessionMsg, SubId,
+    ClientInfo, ClientMsg, Level, Query, SessionEvent, SessionMsg, SubId,
 };
 use misa_proto::{Fault, PROTOCOL_VERSION};
 use misa_session::Reading;
@@ -104,8 +104,7 @@ impl Session {
                 }]
             }
             ClientMsg::Subscribe { id, query } => {
-                let capabilities = self.capabilities();
-                match self.runtime.read(&query, &capabilities) {
+                match self.runtime.read(&query) {
                     Ok(reading) => {
                         let revision = self.runtime.rev();
                         let message = answer(id, revision, reading.clone());
@@ -168,10 +167,9 @@ impl Session {
     /// added elsewhere in the database.
     pub fn refresh(&mut self) -> Vec<SessionMsg> {
         let revision = self.runtime.rev();
-        let capabilities = self.capabilities();
         let mut out = Vec::new();
         for (id, subscription) in self.subscriptions.iter_mut() {
-            match self.runtime.read(&subscription.query, &capabilities) {
+            match self.runtime.read(&subscription.query) {
                 Ok(reading) => {
                     let changed = match (&subscription.current, &reading) {
                         (Some(previous), now) => !same(previous, now),
@@ -208,12 +206,6 @@ impl Session {
             out.push(SessionMsg::Event { seq: emission.seq, event: emission.event.clone() });
         }
         out
-    }
-    fn capabilities(&self) -> Capabilities {
-        self.client
-            .as_ref()
-            .map(|client| client.capabilities.clone())
-            .unwrap_or_else(Capabilities::plain)
     }
 }
 
@@ -329,7 +321,6 @@ mod tests {
     use misa_kernel::{LocalKernel, Provider, ScriptedProvider, Turn};
     use misa_proto::wire::Intent;
     use misa_value::Value;
-    use misa_session::views;
     use std::time::Duration;
 
     fn runtime() -> Arc<Runtime> {
@@ -348,10 +339,10 @@ mod tests {
         )
     }
 
-    fn hello(name: &str, capabilities: Capabilities) -> ClientMsg {
+    fn hello(name: &str) -> ClientMsg {
         ClientMsg::Hello {
             version: PROTOCOL_VERSION,
-            client: ClientInfo::new(name, "0.1.0", capabilities),
+            client: ClientInfo::new(name, "0.1.0"),
         }
     }
 
@@ -374,7 +365,7 @@ mod tests {
         let mut session = Session::new(runtime());
         let replies = session.handle(ClientMsg::Hello {
             version: PROTOCOL_VERSION + 1,
-            client: ClientInfo::new("x", "0", Capabilities::plain()),
+            client: ClientInfo::new("x", "0"),
         });
         match &replies[0] {
             SessionMsg::Fault { fault, .. } => assert_eq!(fault.code, "protocol"),
@@ -385,19 +376,38 @@ mod tests {
     #[tokio::test]
     async fn a_subscription_is_answered_with_a_view_and_repeated_only_when_it_changes() {
         let mut session = Session::new(runtime());
-        assert!(matches!(session.handle(hello("tui", Capabilities::tui(100, 30)))[0], SessionMsg::Welcome { .. }));
+        assert!(matches!(session.handle(hello("tui"))[0], SessionMsg::Welcome { .. }));
         let replies = session.handle(ClientMsg::Subscribe {
             id: SubId(1),
-            query: Query::new(views::VIEW_QUERY),
+            query: Query::new(misa_proto::VIEW_QUERY),
         });
         assert!(view_of(&replies).is_some());
         assert!(session.refresh().is_empty(), "an unchanged view was re-sent");
     }
 
     #[tokio::test]
+    async fn two_attached_clients_receive_byte_identical_trees() {
+        let runtime = runtime();
+        let mut first = Session::new(runtime.clone());
+        let mut second = Session::new(runtime.clone());
+        first.handle(hello("terminal"));
+        second.handle(hello("browser"));
+        let subscribe = || ClientMsg::Subscribe { id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) };
+        let a = first.handle(subscribe());
+        let b = second.handle(subscribe());
+        assert_eq!(frame::encode(view_of(&a).expect("first tree")).unwrap(),
+                   frame::encode(view_of(&b).expect("second tree")).unwrap());
+        runtime.intent(misa_proto::Intent::Command { name: "status".into(), args: misa_value::Value::Null });
+        let a = first.refresh();
+        let b = second.refresh();
+        assert_eq!(frame::encode(view_of(&a).expect("updated first tree")).unwrap(),
+                   frame::encode(view_of(&b).expect("updated second tree")).unwrap());
+    }
+
+    #[tokio::test]
     async fn a_data_subscription_is_answered_with_data() {
         let mut session = Session::new(runtime());
-        session.handle(hello("cli", Capabilities::plain()));
+        session.handle(hello("cli"));
         let replies = session.handle(ClientMsg::Subscribe {
             id: SubId(2),
             query: Query::new("session.status"),
@@ -413,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn a_query_that_cannot_be_answered_keeps_its_subscription() {
         let mut session = Session::new(runtime());
-        session.handle(hello("cli", Capabilities::plain()));
+        session.handle(hello("cli"));
         let replies = session.handle(ClientMsg::Subscribe {
             id: SubId(3),
             query: Query::new("no.such.query"),
@@ -429,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn an_intent_is_acknowledged_and_an_impossible_one_is_faulted() {
         let mut session = Session::new(runtime());
-        session.handle(hello("tui", Capabilities::tui(80, 24)));
+        session.handle(hello("tui"));
         assert!(matches!(
             session.handle(ClientMsg::Intent { id: 1, intent: Intent::Prompt { text: "hi".into(), attachments: vec![] } })[0],
             SessionMsg::Ack { id: 1 }
@@ -454,7 +464,7 @@ mod tests {
         let mut session = Session::new(runtime());
         let replies = session.handle(ClientMsg::Subscribe {
             id: SubId(1),
-            query: Query::new(views::VIEW_QUERY),
+            query: Query::new(misa_proto::VIEW_QUERY),
         });
         assert!(view_of(&replies).is_none());
         assert!(matches!(replies[0], SessionMsg::Fault { .. }));
@@ -464,8 +474,8 @@ mod tests {
     async fn a_prompt_moves_the_view_and_the_transport_reports_only_that() {
         let runtime = runtime();
         let mut session = Session::new(runtime.clone());
-        session.handle(hello("tui", Capabilities::tui(80, 24)));
-        session.handle(ClientMsg::Subscribe { id: SubId(1), query: Query::new(views::VIEW_QUERY) });
+        session.handle(hello("tui"));
+        session.handle(ClientMsg::Subscribe { id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) });
         session.refresh();
 
         runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
@@ -501,7 +511,7 @@ mod tests {
     async fn frames_are_reassembled_from_whatever_arrived() {
         let mut session = Session::new(runtime());
         let mut decoder = Decoder::new();
-        let frame = frame::encode(&hello("tui", Capabilities::tui(80, 24))).unwrap();
+        let frame = frame::encode(&hello("tui")).unwrap();
         for (index, byte) in frame.iter().enumerate() {
             assert!(split_frames(&mut decoder, &[*byte]).is_empty() || index == frame.len() - 1);
         }
@@ -522,10 +532,10 @@ mod tests {
             runtime.subscribe_events(),
         ));
 
-        client_tx.send(hello("web", Capabilities::browser())).unwrap();
+        client_tx.send(hello("web")).unwrap();
         assert!(matches!(client_rx.recv().await.unwrap(), SessionMsg::Welcome { .. }));
         client_tx
-            .send(ClientMsg::Subscribe { id: SubId(1), query: Query::new(views::VIEW_QUERY) })
+            .send(ClientMsg::Subscribe { id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) })
             .unwrap();
         let first = client_rx.recv().await.unwrap();
         assert!(view_of(std::slice::from_ref(&first)).is_some());
