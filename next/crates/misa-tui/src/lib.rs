@@ -22,6 +22,7 @@
 
 pub mod print;
 pub mod output;
+mod event_loop;
 pub mod storage;
 pub mod save;
 
@@ -1085,80 +1086,7 @@ pub trait Session: Send {
 
 /// The interactive loop.
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
-    use crossterm::event;
-    let mut screen = Screen::durable();
-    if let Some(info) = session.info() {
-        screen.declare(&info);
-    }
-    let mut stdout = std::io::stdout();
-    let mut output = output::Output::default();
-    crossterm::terminal::enable_raw_mode().map_err(|err| err.to_string())?;
-    let result = 'session: loop {
-        let Some(view) = session.next().await? else {
-            break Ok(());
-        };
-        let mut painted = draw(&screen, &view);
-        loop {
-            if let Err(error) = output.paint(&mut stdout, &painted) {
-                break 'session Err(error.to_string());
-            }
-            if !event::poll(Duration::from_millis(1)).map_err(|err| err.to_string())? {
-                // Nothing to handle, so hand the wait back to the session. A client that
-                // redrew here would be a client spinning on its own poll.
-                break;
-            }
-            let event = event::read().map_err(|err| err.to_string())?;
-            let crossterm::event::Event::Key(key) = event else {
-                continue;
-            };
-            let Some(interpreted) = translate(key.code, key.modifiers) else {
-                continue;
-            };
-            // The selection gets the key first: it is a mode over the view, and while one is
-            // open every key that moves it belongs to the reader rather than the composer.
-            let out = match screen.selection_key(&view, &interpreted) {
-                Some(out) => out,
-                None => match screen.panel_key(&view, &interpreted) {
-                    Some(out) => out,
-                    None => screen.key(interpreted),
-                },
-            };
-            match out {
-                KeyOut::Save(request) => {
-                    screen.notice = Some(match save::target(&view, &request) {
-                        Ok(node) => match session.save_attachment(node, &request.destination).await {
-                            Ok(()) => format!("Saved {}", request.destination), Err(error) => error,
-                        },
-                        Err(error) => error,
-                    });
-                }
-                KeyOut::Local => {}
-                KeyOut::Quit => break 'session Ok(()),
-                KeyOut::Intent(intent) => {
-                    if let Err(error) = session.send(intent).await {
-                        screen.notice = Some(error);
-                    }
-                }
-                KeyOut::Complete { source, prefix } => match session.complete(&source, &prefix).await {
-                    Ok((items, truncated)) => screen.candidates(&source, items, truncated),
-                    Err(error) => screen.notice = Some(error),
-                },
-                KeyOut::Copy(text) => {
-                    if let Err(error) = copy_to_clipboard(&mut stdout, &text) {
-                        screen.notice = Some(error);
-                    }
-                }
-            }
-            // What a client decided for itself is painted here rather than waited for,
-            // because nothing on the other side of the connection knows it happened: a
-            // selection moving is not something a session could send a view for.
-            painted = draw(&screen, &view);
-        }
-    };
-    crossterm::terminal::disable_raw_mode().map_err(|err| err.to_string())?;
-    // The draft is the one thing that could not be written while somebody was typing it.
-    screen.save();
-    result
+    event_loop::run(session).await
 }
 
 fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<Key> {
@@ -1190,23 +1118,6 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
     })
 }
 
-/// Put text on the terminal's clipboard, by asking the terminal to put it there.
-///
-/// OSC 52 is the only clipboard a program with no window can reach, and that is the
-/// whole reason this is client-side: the text does not leave the machine, so there is
-/// nothing to ask a session for and no capability to request. Whether anything lands
-/// is the terminal's business — a multiplexer may drop it and a terminal may refuse it
-/// — and that is not an error this program can see, so it does not invent one.
-fn copy_to_clipboard(stdout: &mut std::io::Stdout, text: &str) -> Result<(), String> {
-    use base64::Engine as _;
-    use std::io::Write as _;
-
-    let payload = base64::engine::general_purpose::STANDARD.encode(text);
-    write!(stdout, "\u{1b}]52;c;{payload}\u{7}").map_err(|err| err.to_string())?;
-    stdout.flush().map_err(|err| err.to_string())
-}
-
-/// A style as an ANSI sequence. The one place a colour becomes bytes.
 pub fn sgr(style: &misa_render::Style) -> String {
     use misa_render::Color;
     let mut codes: Vec<String> = Vec::new();
