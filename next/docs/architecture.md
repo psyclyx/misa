@@ -25,6 +25,12 @@ Dependencies point one way: wire ← value ← loop ← kernel ← session ← c
 crate never imports the one above it. `misa-net` is the transport seam and depends
 on the session and the wire, and nothing depends on it except the frontends.
 
+A second seam, beside the transport: `misa-plugin` implements the loop's own `Handler` and
+`Subscription` traits over a wasm component, and depends on the loop, the wire, and the value
+types — nothing above them. It is where a plugin stops being a boundary and becomes something
+the loop runs, and it is a crate of its own because the runtime it needs (`wasmtime`) is the
+largest dependency in this workspace and has nothing to do with a session.
+
 One frontend is not a crate here: `android/` is a Kotlin app over the shared Rust
 client, linked through a JNI seam, and it is a client for the same reason the others
 are — it draws a tree it did not build and decides nothing about the agent. It
@@ -235,11 +241,15 @@ Dropped, with the reason:
 
 ### Where the wasm plugins go
 
-They are not built, and the seam is named: a plugin is a wasm component that
-exports handlers and subscriptions over the same _data_ vocabulary the loop
-already uses — events, patches, effects, and view nodes — because that is exactly
-what `misa-reframe` already passes across a boundary. The intended shape is
-recorded in `wit/policy.wit`, and the reasoning is in §7.
+A plugin is a wasm component that exports handlers and subscriptions over the same _data_
+vocabulary the loop already uses — events, patches, effects, and view nodes — because that is
+exactly what `misa-reframe` already passes across a boundary. `wit/policy.wit` is the contract,
+`wit/guest/` is the smallest thing that implements it, and `misa-plugin` is the host: it loads a
+component, holds what it declares against the composition that would run it, and turns those
+declarations into the loop's own `Handler`s and `Subscription`s. Its tests run the whole path
+over a real component, so the answer to "does this seam hold?" is a test rather than a diagram.
+
+What is left is the session's half — see item 1 of §6.
 
 ---
 
@@ -247,10 +257,10 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
 `misa-render` (46), `misa-kernel` (91), `misa-session` (76), `misa-net` (29),
-`misa-client` (61), `misa-tui` (27), `misa-web` (19), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 439 tests and no skips:
-`cargo test --workspace` is the gate, and these numbers are read back from it rather than
-remembered.
+`misa-plugin` (12, and eight more behind `--features guest-fixture`), `misa-client` (61),
+`misa-tui` (27), `misa-web` (19), `misa-daemon` (3), `misa-skia` (5), and one more behind
+`misa-skia --features paint`. That is 452 tests and no skips: `cargo test --workspace` is the
+gate, and these numbers are read back from it rather than remembered.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
 session does: `misa-client` is the picker, the editor, and the selection, `misa-render` is how a
@@ -278,15 +288,21 @@ it.
 Not built, in the order they matter. `docs/parity.md` is the full matrix; these are the
 items with no code at all, plus the two that are structural.
 
-1. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
-   them. This is the item with the least code and the most design already written down, and the
-   ground under it is now real: the shell carries the toolchain (`wasm-tools`, `wasmtime`,
-   `lld`, and a rustc with std for `wasm32-unknown-unknown`), `wit/guest/` is a plugin that
-   builds and runs under the reference runtime, and the design file parses — which is how two
-   mistakes in it were found: `set(value)` used `value` as if it were a type, and a view
-   tree written as a record that contains itself. A value is now a json `string`, and a tree
-   is a flat `list<node>` with parent indices, which is the better shape anyway: the host
-   bounds the depth rather than the guest's allocator bounding it.
+1. **The wasm plugin host.**1. **Wiring a plugin into a session.** The host is built and tested against a `Loop`
+   (`misa-plugin`): a component declares, the composition checks those declarations, and its
+   handlers and subscriptions run. What a session adds is not code but three decisions:
+   - **Where a plugin's view goes.** `view(role, capabilities, db, window)` returns a tree,
+     and nothing says whether it replaces part of the session's document, is added as a
+     section, or is a query a client subscribes to. The last is the smallest step and the one
+     that keeps the session's tree its own.
+   - **How a plugin's state root is declared.** `views::MANIFEST` is a `const`, and a plugin's
+     patch is refused if the path's parent does not exist, so a plugin may only write state
+     the shipped composition declared. Either a composition builds the manifest, or a plugin
+     is limited to `session.*` and `messages` — and a plugin that wants to remember something
+     of its own needs the first.
+   - **Which plugins a daemon loads.** A path on the command line, a directory scanned at
+     startup, or a field in a composition: the previous system had extensions declared in its
+     configuration, and this one has no configuration file yet.
 2. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards. A device flow a client started cannot be
    cancelled either, and both are the same shape of work: an intent a session asks the kernel
@@ -340,15 +356,7 @@ already made.
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
    protocol in §4.
-5. **How a plugin fixture is built for the gate.** `wit/guest/` is built by hand today, with
-   two commands in the README, because it is a component for another target and `cargo test
---workspace` must not grow a wasm build. A test that loads a component needs one of three
-   things: a `build.rs` that shells out to cargo (which means a nested cargo build inside a
-   build script), a fixture written as WAT and assembled with the `wasm-tools` library (which
-   means writing the canonical ABI by hand), or a committed `.wasm`. None of them is
-   obviously right, and the first test that needs a plugin is when it has to be decided.
-
-6. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
+5. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
    is open and lets a plugin invent an affordance without a protocol change. It also
    means a client cannot tell a valid action from a typo before sending it. The
    session advertises its queries; it could advertise its actions.

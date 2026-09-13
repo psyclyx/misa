@@ -26,9 +26,14 @@ impl Guest for Shell {
         Descriptor {
             id: "policy.guest".to_string(),
             version: "0.1.0".to_string(),
-            events: vec!["intent/prompt".to_string()],
+            // Two kinds: the one it handles, and one it declares so that it is *called* for
+            // it and can refuse. A plugin is only ever asked about what it declared, which is
+            // what makes the second kind the only way to reach the fault path.
+            events: vec!["intent/prompt".to_string(), "intent/cancel".to_string()],
             queries: vec!["policy.guest.turns".to_string()],
-            effects: vec!["wire.event".to_string()],
+            // An effect the session's interpreter accepts, and whose data is json: wire.event
+            // is the one kind a plugin may not ask for, and the host refuses it at install.
+            effects: vec!["kernel.log.append".to_string()],
         }
     }
 
@@ -52,8 +57,11 @@ impl Guest for Shell {
                 op: Op::Set(format!("{{\"seen\":{}}}", db.len())),
             }],
             vec![Effect {
-                kind: "wire.event".to_string(),
-                data: None,
+                kind: "kernel.log.append".to_string(),
+                data: Some(
+                    "{\"conversation\":\"guest\",\"kind\":\"note\",\"data\":\"seen a prompt\"}"
+                        .to_string(),
+                ),
             }],
         ))
     }

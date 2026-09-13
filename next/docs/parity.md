@@ -9,7 +9,8 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the gate: 439 tests, no skips. Counts per crate are in
+`cargo test --workspace` is the gate: 452 tests, and eight more behind
+`misa-plugin --features guest-fixture`, with no skips. Counts per crate are in
 `docs/architecture.md`.
 
 ## The mechanisms everything else is built on
@@ -172,10 +173,9 @@ still offers the same commands, because what it needed was the declaration.
 
 ## Order I would do the rest in
 
-1. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
-   them — though the shell now has the toolchain, `wit/guest/` builds into a component that
-   the reference runtime runs, and the design file parses for the first time (see the comments
-   in it for what that check found).
+1. **Wiring a plugin into a session.** The host is built (`misa-plugin`, tested over a real
+   component) and a session does not load one yet: three decisions are missing, and they are in
+   `docs/architecture.md` §6 item 1.
 
 2. **Cancelling a device flow a client started.** The kernel starts one and reports twice,
    and nothing a client can send stops it: a `login` that somebody thought better of polls

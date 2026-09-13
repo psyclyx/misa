@@ -25,6 +25,11 @@ crossterm = "0.29"
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 iroh = "1.2"
+# The plugin host: a component is the one thing here that needs a runtime of its own.
+wasmtime = { version = "48", features = ["component-model"] }
+# The fixture test's encoder — what `wasm-tools component new` is under the hood, so that no
+# test needs a binary of its own.
+wit-component = "0.259"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 skia-safe = { version = "0.93", features = ["textlayout"] }

@@ -42,6 +42,7 @@ gets a document and one stream of replacements.
 | `misa-kernel`                                   | facts and capability: the log, the attempt ledger, providers, tools |
 | `misa-session`                                  | the agent loop, the view tree, the intent vocabulary                |
 | `misa-net`                                      | the protocol state machine, and iroh under it                       |
+| `misa-plugin`                                   | the plugin host: a wasm component as handlers and subscriptions     |
 | `misa-tui`, `misa-web`, `misa-skia`, `misa-cli` | the four frontends                                                  |
 
 `android/` is the fifth frontend and is not a crate: a Kotlin app over the shared Rust
@@ -116,10 +117,24 @@ wasmtime run --invoke 'describe()' /tmp/policy.component.wasm
 and not the second, and a plugin imports no WASI — it exports handlers and answers queries,
 and `wit-bindgen` + `wasm-tools` do the rest. `wasm-component-ld` is in the shell because
 that is what would link a `wasip2` component directly, if the target ever arrives.
+The host is `misa-plugin`: it compiles a component, asks it what it is, checks those declarations
+against the composition that would run it, and turns its handlers and queries into the loop's
+own `Handler`s and `Subscription`s. Its tests are where the two halves meet:
 
-The host is not written yet; when it is, `wasmtime::component::bindgen!` over the same
-`policy.wit` will validate the design file on every build, which is the check that would have
-caught the two things it got wrong before anything parsed it (see the comments in the file).
+```sh
+cargo test -p misa-plugin                          # the conversions and the refusals, no component
+cargo test -p misa-plugin --features guest-fixture # the whole path, over a real component
+```
+
+The second builds `wit/guest` for `wasm32-unknown-unknown` (needs the shell) and encodes it in
+process, so no test needs a `.wasm` in the repository. `MISA_PLUGIN_FIXTURE=/path/to/component`
+skips the build and uses one somebody already made, which is what to do when the question is
+"is the host wrong, or is the guest?".
+
+What is not wired yet: a _session_ does not load plugins. The host is proven against a
+`misa_reframe::Loop`, and the two things a session adds are decisions rather than code — where a
+plugin's view goes in the document, and how a plugin's own state root gets declared, because the
+manifest is a `const`. Both are written down in `docs/architecture.md` §7.
 
 ## Conventions
 

@@ -318,6 +318,22 @@ pub trait Handler: Send + Sync {
     fn handle(&self, tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault>;
 }
 
+/// A handler behind an Arc is a handler.
+///
+/// A composition builds handlers somewhere else and hands them over: a plugin's handlers are
+/// shared with the plugin that owns the instance, so a list of them is a list of
+/// Arc&lt;dyn Handler&gt; before it is a Registry. Without this, registering one would mean
+/// unwrapping it and giving up the sharing.
+impl<H: Handler + ?Sized> Handler for Arc<H> {
+    fn id(&self) -> &str {
+        (**self).id()
+    }
+
+    fn handle(&self, tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+        (**self).handle(tx, event)
+    }
+}
+
 /// A closure handler. Most handlers are small enough to write inline.
 pub struct FnHandler<F> {
     id: String,
@@ -828,6 +844,27 @@ mod tests {
         assert_eq!(loop_.db().get("count").and_then(Value::as_i64), Some(1));
         assert_eq!(loop_.db().get("log").and_then(Value::as_list).map(<[Value]>::len), Some(1));
         assert_eq!(outcome.rev, 1);
+    }
+
+    #[test]
+    fn a_handler_behind_an_arc_is_a_handler() {
+        // A composition builds its handlers somewhere else and hands them over — a plugin's
+        // handlers are shared with the plugin that owns the instance — so \`Arc<dyn Handler>\`
+        // has to be registrable as it is, and its id has to be the id a diagnostic names.
+        let shared: Arc<dyn Handler> = Arc::new(FnHandler::new("shared", |tx: &mut Tx<'_>, _: &Event| {
+            tx.push("log", Value::str("shared"))?;
+            Ok(())
+        }));
+        let registry = Registry::new().on("tick", 0, shared);
+        let mut loop_ = Loop::new(Arc::new(registry), Arc::new(OnlyAnnounce), base());
+        let outcome = loop_.dispatch(Event::new("tick"));
+        assert!(outcome.committed(), "{:?}", outcome.faults);
+        assert_eq!(loop_.db().get("log").and_then(Value::as_list).map(<[Value]>::len), Some(1));
+        assert!(
+            outcome.handled.iter().any(|handled| handled == "tick"),
+            "{:?}",
+            outcome.handled
+        );
     }
 
     #[test]

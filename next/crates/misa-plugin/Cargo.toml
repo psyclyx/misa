@@ -1,0 +1,26 @@
+[package]
+name = "misa-plugin"
+description = "The wasm plugin host: a component as handlers the loop can run"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-proto.workspace = true
+misa-reframe.workspace = true
+misa-value.workspace = true
+serde_json.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+# The fixture test encodes `wit/guest`'s module into a component in process, which is the
+# same thing `wasm-tools component new` does — so the test needs no binary of its own.
+wit-component.workspace = true
+
+[features]
+# The integration test that needs a *component*: it builds `wit/guest` for
+# `wasm32-unknown-unknown`, which needs a rustc with that target — the shell has one, and a
+# plain `cargo test --workspace` must not start a nested cargo build. This is the same
+# bargain `misa-skia`'s `paint` feature makes.
+guest-fixture = []
