@@ -179,19 +179,13 @@ pub enum Kind {
     /// Named values: a tool call's arguments, a result's summary, a dialog.
     Fields { fields: Vec<Field> },
     /// A node with a short form and a long form.
-    Collapsible {
-        summary: Vec<Span>,
-        /// The session's suggestion, which a client may override or remember
-        /// against `id`. It is a default, not a decision the client must obey.
-        #[serde(default)]
-        open: bool,
-    },
+    Collapsible { summary: Vec<Span> },
     /// An image, by content hash. A client that cannot draw it shows `alt`.
     Image { blob: BlobRef, alt: String, width: u32, height: u32 },
     /// A one-line state statement.
     Status { text: String },
     /// A bounded progress statement, for a budget or a queue depth.
-    Meter { label: String, value: f64, max: f64, text: String },
+    Meter { label: String, value: f64, max: f64 },
     /// A typed scalar, for a client to render its own way.
     ///
     /// The one place the tree carries a value rather than words, and it exists
@@ -279,6 +273,12 @@ pub struct Field {
     /// What kind of input this is. Nested for the same reason a node's shape is: a
     /// flattened enum shares the field's own keys, and `Field.label` is one of them.
     pub kind: FieldKind,
+    /// A value to read rather than edit, independent of its shape.
+    #[serde(default)]
+    pub read_only: bool,
+    /// A value clients must mask rather than echo, independent of its shape.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -286,18 +286,9 @@ pub struct Field {
 pub enum FieldKind {
     /// A single line of text.
     #[default]
-    Text,
-    /// A value that is shown and not typed into.
-    ///
-    /// The difference matters on a surface that has an input for every field: a panel's rows
-    /// are facts — a code, an address, a total — and a client that drew them as text boxes
-    /// would be offering an edit nobody can save.
-    ReadOnly,
-    /// Several lines.
-    Multiline,
-    /// A value that must not be echoed. A client renders its own affordance; the
-    /// value is never sent back in a view.
-    Secret,
+    Inline,
+    /// Several lines of text.
+    Block,
     Bool,
     /// One of a fixed set. The session owns the options; the client owns the
     /// widget.
@@ -513,9 +504,8 @@ fn validate_at(
                 check_text(text, path)?;
             }
         }
-        Kind::Meter { label, value, max, text } => {
+        Kind::Meter { label, value, max } => {
             check_text(label, path)?;
-            check_text(text, path)?;
             if !value.is_finite() || !max.is_finite() || *max <= 0.0 {
                 return Err(fault(path, "has a meter with a non-finite or empty bound"));
             }
@@ -606,7 +596,7 @@ mod tests {
             .child(
                 Node::new(
                     "message.assistant",
-                    Kind::Collapsible { summary: vec![Span::plain("thinking")], open: false },
+                    Kind::Collapsible { summary: vec![Span::plain("thinking")] },
                 )
                 .id("m2")
                 .state(State::Streaming)
@@ -689,7 +679,9 @@ mod tests {
             label: "Name".into(),
             value: String::new(),
             hint: None,
-            kind: FieldKind::Text,
+            read_only: false,
+            secret: false,
+            kind: FieldKind::Inline,
         }] });
         assert!(validate(&bad).is_err());
     }
@@ -772,6 +764,8 @@ mod tests {
                         label: "Model".into(),
                         value: "gpt".into(),
                         hint: Some("which one".into()),
+                        read_only: false,
+                        secret: false,
                         kind: FieldKind::Choice { options: vec![Choice {
                             value: "gpt".into(),
                             label: "GPT".into(),
@@ -780,7 +774,7 @@ mod tests {
                     }],
                 },
             ),
-            Node::new("a.collapsible", Kind::Collapsible { summary: vec![Span::plain("thinking")], open: true }),
+            Node::new("a.collapsible", Kind::Collapsible { summary: vec![Span::plain("thinking")] }),
             Node::new(
                 "a.image",
                 Kind::Image {
@@ -791,7 +785,7 @@ mod tests {
                 },
             ),
             Node::new("a.status", Kind::Status { text: "idle".into() }),
-            Node::new("a.meter", Kind::Meter { label: "Budget".into(), value: 0.5, max: 1.0, text: "half".into() }),
+            Node::new("a.meter", Kind::Meter { label: "Budget".into(), value: 0.5, max: 1.0 }),
             Node::new("a.fact", Kind::Fact { value: Value::Int(1) }),
             Node::new("a.heading", Kind::Heading { level: 2, spans: vec![Span::plain("A heading")] }),
             Node::new("a.quote", Kind::Quote).child(Node::text("a.quote.text", [Span::plain("quoted")])),
@@ -822,7 +816,6 @@ mod tests {
             label: "Spend".into(),
             value: 1.25,
             max: 10.0,
-            text: "1.25 of 10".into(),
         })
         .label("this turn");
         let mut bytes = Vec::new();

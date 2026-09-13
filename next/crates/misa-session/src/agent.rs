@@ -1723,7 +1723,9 @@ pub fn composer() -> Node {
             label: "Message".into(),
             value: String::new(),
             hint: Some("enter to send".into()),
-            kind: FieldKind::Multiline,
+            read_only: false,
+            secret: false,
+            kind: FieldKind::Block,
         }]),
     )
     .id("composer")

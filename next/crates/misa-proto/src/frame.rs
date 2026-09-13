@@ -137,12 +137,12 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{ClientMsg, Capabilities, ClientInfo, Query, SubId};
+    use crate::wire::{ClientMsg, ClientInfo, Query, SubId};
 
     fn hello() -> ClientMsg {
         ClientMsg::Hello {
             version: crate::PROTOCOL_VERSION,
-            client: ClientInfo::new("test", "0.1.0", Capabilities::plain()),
+            client: ClientInfo::new("test", "0.1.0"),
         }
     }
 

@@ -1,4 +1,4 @@
-//! The pixel frontend: the semantic tree as a scene, and (optionally) as a raster.
+//! The pixel frontend: the semantic tree as a scene, and as a raster.
 //!
 //! # What is shared and what is not
 //!
@@ -11,7 +11,7 @@
 //! rectangles, and that mapping is the interesting part: it is where a role becomes
 //! a colour and a weight, where a rail becomes a bar, and where a code block becomes
 //! a raised panel. It is testable with no window and no GPU, which is why the scene
-//! is not behind the `paint` feature and the raster is.
+//! and the raster are both built and tested by default.
 //!
 //! # Known limitation, stated rather than implied
 //!
@@ -116,8 +116,8 @@ fn rail(line: &Line, theme: &Theme, scene: &mut Scene, layout: Layout, y: f32) {
     });
 }
 
-/// The scene as a PNG, when a Skia that can be linked is available.
-#[cfg(feature = "paint")]
+/// The scene as a PNG.
+
 pub mod paint {
     use super::{Op, Scene};
     use misa_render::Color;
@@ -290,7 +290,6 @@ mod tests {
         )));
     }
 
-    #[cfg(feature = "paint")]
     #[test]
     fn a_scene_paints_to_a_png() {
         let scene = scene_of(&Theme::dark());

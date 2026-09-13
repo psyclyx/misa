@@ -27,7 +27,7 @@ use std::sync::Arc;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use misa_proto::frame::Decoder;
+use misa_proto::chunk::Decoder;
 use misa_proto::wire::{ClientInfo, ClientMsg, Query, SessionMsg, SubId};
 use misa_proto::{ALPN_BLOB, ALPN_SESSION, Fault, PROTOCOL_VERSION, Ticket};
 use misa_session::Runtime;
@@ -444,7 +444,7 @@ async fn converse(
                 let revision = runtime.watch_rev();
                 let events = runtime.subscribe_events();
                 let mut state = Session::new(runtime);
-                // The connection's own hello is the session's hello too: the capabilities a
+                // The connection's own hello is the session's hello too: the identity a
                 // client declared are what its views are built for, and they are not sent
                 // twice.
                 if let Some(client) = client.clone() {
@@ -623,7 +623,7 @@ impl Client {
             let mut answered = None;
             while let Some(frame) = decoder.next() {
                 let payload = frame.map_err(|err| err.to_string())?;
-                let message: SessionMsg = misa_proto::frame::decode(&payload).map_err(|err| err.to_string())?;
+                let message: SessionMsg = misa_proto::chunk::decode(&payload).map_err(|err| err.to_string())?;
                 if let SessionMsg::Paired { ok, message, .. } = message {
                     answered = Some((ok, message));
                 }
@@ -734,7 +734,7 @@ impl Client {
         loop {
             if let Some(frame) = self.decoder.next() {
                 let payload = frame.map_err(|err| err.to_string())?;
-                let message: SessionMsg = misa_proto::frame::decode(&payload).map_err(|err| err.to_string())?;
+                let message: SessionMsg = misa_proto::chunk::decode(&payload).map_err(|err| err.to_string())?;
                 // The endpoint's greeting names no session; the session's own does. Only the
                 // latter is what a client means by "the session I am attached to".
                 if let SessionMsg::Welcome { session, .. } = &message
@@ -774,7 +774,7 @@ fn backoff(attempt: u32) -> std::time::Duration {
 }
 
 fn encode_client(message: &ClientMsg) -> Result<Vec<u8>, String> {
-    misa_proto::frame::encode(message).map_err(|err| err.to_string())
+    misa_proto::chunk::encode(message).map_err(|err| err.to_string())
 }
 
 /// A command intent, the one place a client names something outside its four

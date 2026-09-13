@@ -185,19 +185,14 @@ interface policy-api {
     /// same result without it.
     query: func(request: query-request, inputs: list<string>, db: string, previous: option<string>) -> result<string, fault>;
 
-    /// Build a view for a client with the given capabilities.
-    ///
-    /// The capabilities are what a client says it can draw — its render class, whether it has a
-    /// native disclosure widget, its size — and they are the *only* thing about a client a plugin
-    /// learns. It never learns a font, a colour, or a coordinate, because there is no type in
-    /// this world that can express one.
+    /// Build a semantic view from the session database. Every client receives the same tree.
     ///
     /// There is no role argument, and the plugin decides nothing about *where* its tree goes: the
     /// session places what it returns under a role of its own (`plugin.<id>`), mints the identity
     /// of every node in it, and routes an action from it back to this plugin. A plugin decides the
     /// structure beneath its root, and every node in that structure needs an id — a client
     /// remembers which nodes it opened by id.
-    view: func(capabilities: string, db: string, window: u32) -> result<view-tree, fault>;
+    view: func(db: string, window: u32) -> result<view-tree, fault>;
 }
 
 world policy {

@@ -1,23 +1,63 @@
-//! Attach to a session and drive the terminal frontend.
-//!
-//! ```sh
-//! misa-tui misa:<endpoint id>:<session>
-//! ```
-//!
-//! A ticket is all it takes, because a session is addressed rather than configured:
-//! the same client reaches a session on this machine or on another one, and nothing
-//! about how it draws changes.
-
-use misa_tui::{Remote, run};
+use misa_tui::{Remote, Session, run};
+use std::io::{BufRead, IsTerminal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut arguments = std::env::args().skip(1);
-    let Some(ticket) = arguments.next() else {
-        eprintln!("usage: misa-tui misa:<endpoint id>:<session>");
-        return Ok(());
-    };
-    let mut remote = Remote::attach(&ticket).await?;
-    run(&mut remote).await?;
+    let mut force_print = false;
+    let mut positional = Vec::new();
+    for argument in std::env::args().skip(1) {
+        match argument.as_str() {
+            "--print" | "-p" => force_print = true,
+            "--help" | "-h" => {
+                println!("usage: misa [--print|-p] misa:<endpoint id>:<session> [prompt]");
+                return Ok(());
+            }
+            _ => positional.push(argument),
+        }
+    }
+    if positional.is_empty() || positional.len() > 2 {
+        return Err("usage: misa [--print|-p] misa:<endpoint id>:<session> [prompt]".into());
+    }
+    let mut remote = Remote::attach(&positional[0]).await?;
+    if misa_tui::print::interactive(
+        force_print,
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    ) {
+        if let Some(prompt) = positional.get(1) {
+            remote
+                .send(misa_proto::wire::Intent::Prompt {
+                    text: prompt.clone(),
+                    attachments: Vec::new(),
+                })
+                .await?;
+        }
+        run(&mut remote).await?;
+    } else {
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let prompt = positional.get(1).cloned();
+        std::thread::spawn(move || {
+            if let Some(prompt) = prompt {
+                if sender.blocking_send(Ok(prompt)).is_err() {
+                    return;
+                }
+            }
+            for line in std::io::stdin().lock().lines() {
+                if sender
+                    .blocking_send(line.map_err(|error| error.to_string()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        misa_tui::print::run(
+            &mut remote,
+            receiver,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )
+        .await?;
+    }
     Ok(())
 }

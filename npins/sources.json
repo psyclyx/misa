@@ -1,5 +1,18 @@
 {
   "pins": {
+    "gradle2nix": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "tadfisher",
+        "repo": "gradle2nix"
+      },
+      "branch": "v2",
+      "submodules": false,
+      "revision": "30cfe5889188524223364ee7919d94e83d6ee44a",
+      "url": "https://github.com/tadfisher/gradle2nix/archive/30cfe5889188524223364ee7919d94e83d6ee44a.tar.gz",
+      "hash": "sha256-mnPaPH9k6Mbr7O0KzBBdkiDDS88oB5NiFHVSFkCzswU="
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",

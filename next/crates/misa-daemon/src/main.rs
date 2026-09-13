@@ -481,13 +481,13 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
                 format!("`{}` declares an affordance it may not have: {}", descriptor.id, fault.message)
             })?;
         }
-        // What it presents. The session builds it per client class and places it in the document,
+        // What it presents. The session builds it from session data and places it in the document,
         // which is why no frontend has to know anything about a plugin.
         let presenting = plugin.clone();
         contribution = contribution.with_section(misa_session::views::Section {
             plugin: descriptor.id.clone(),
-            build: Arc::new(move |capabilities, db, window| {
-                presenting.view(capabilities, db, window).map_err(|fault| fault.message)
+            build: Arc::new(move |db, window| {
+                presenting.view(db, window).map_err(|fault| fault.message)
             }),
         });
         for root in &descriptor.roots {
@@ -614,7 +614,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_plugin_is_a_path_given_once_or_more() {
         // Repeatable because it is a list, and a path because what a daemon runs is a decision
         // somebody makes where the daemon is.
@@ -625,6 +624,7 @@ mod tests {
         assert!(none.plugins.is_empty(), "a daemon with no plugins runs none");
     }
 
+    #[test]
     fn login_names_a_provider_and_a_key_is_never_an_argument() {
         // The command line has no way to carry a secret: it names what to authorize, and the
         // value comes from a device flow — or, for a service with a key, from a client's login

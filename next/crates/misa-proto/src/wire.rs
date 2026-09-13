@@ -1,4 +1,4 @@
-//! Messages, capabilities, and subscriptions.
+//! Messages and subscriptions.
 //!
 //! # Shape of a connection
 //!
@@ -65,167 +65,16 @@ impl Query {
     }
 }
 
-/// What kind of frontend is attached.
-///
-/// Open, not closed: a new frontend should not need a protocol change to introduce
-/// itself, and a session that does not recognise a class can treat it as the least
-/// capable client. It is a newtype rather than an enum specifically so an unknown
-/// value survives a round trip instead of being coerced to a default.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RenderClass(pub String);
-
-impl RenderClass {
-    pub const TUI: &'static str = "tui";
-    pub const WEB: &'static str = "web";
-    pub const SKIA: &'static str = "skia";
-    pub const PLAIN: &'static str = "plain";
-    /// A phone: a graphical surface with a native disclosure idiom and a narrow column,
-    /// which is why the session is told both the room it can draw and that a collapsible
-    /// has somewhere to live.
-    pub const MOBILE: &'static str = "mobile";
-
-    pub fn new(name: impl Into<String>) -> Self {
-        RenderClass(name.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn is(&self, name: &str) -> bool {
-        self.0 == name
-    }
-
-    /// One of the shipped classes.
-    pub fn is_known(&self) -> bool {
-        matches!(self.0.as_str(), Self::TUI | Self::WEB | Self::SKIA | Self::PLAIN | Self::MOBILE)
-    }
-}
-
-impl std::fmt::Display for RenderClass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// What a client can do. A session reads this to decide what it is worth emitting.
-///
-/// This is the mechanism behind "all three clients look fairly similar": they
-/// consume the same tree, and the differences come from here rather than from a
-/// session keeping a per-frontend variant of every view.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Capabilities {
-    pub class: RenderClass,
-    /// The viewport, in the client's own units. Zero means "no width to speak of",
-    /// as a browser before layout is.
-    #[serde(default)]
-    pub cols: u32,
-    #[serde(default)]
-    pub rows: u32,
-    /// Can draw an image. A session with no graphics-capable client elides
-    /// [`crate::view::Kind::Image`] nodes rather than sending references nobody
-    /// will fetch.
-    #[serde(default)]
-    pub graphics: bool,
-    /// Can make a link followable. Otherwise a link renders as its text.
-    #[serde(default)]
-    pub links: bool,
-    /// Has a native disclosure widget for [`crate::view::Kind::Collapsible`],
-    /// as the browser's `<details>` is.
-    #[serde(default)]
-    pub native_details: bool,
-    /// Can render characters outside a terminal's basic repertoire.
-    #[serde(default)]
-    pub unicode: bool,
-}
-
-impl Capabilities {
-    pub fn plain() -> Self {
-        Capabilities {
-            class: RenderClass::new(RenderClass::PLAIN),
-            cols: 80,
-            rows: 24,
-            graphics: false,
-            links: false,
-            native_details: false,
-            unicode: false,
-        }
-    }
-
-    pub fn tui(cols: u32, rows: u32) -> Self {
-        Capabilities {
-            class: RenderClass::new(RenderClass::TUI),
-            cols,
-            rows,
-            graphics: false,
-            links: true,
-            native_details: false,
-            unicode: true,
-        }
-    }
-
-    pub fn browser() -> Self {
-        Capabilities {
-            class: RenderClass::new(RenderClass::WEB),
-            cols: 0,
-            rows: 0,
-            graphics: true,
-            links: true,
-            native_details: true,
-            unicode: true,
-        }
-    }
-
-    pub fn skia(width: u32, height: u32) -> Self {
-        Capabilities {
-            class: RenderClass::new(RenderClass::SKIA),
-            cols: width,
-            rows: height,
-            graphics: true,
-            links: true,
-            native_details: true,
-            unicode: true,
-        }
-    }
-
-    /// A phone: a narrow, graphical surface with a native disclosure idiom.
-    ///
-    /// The class is its own rather than `skia` because the two answer different
-    /// questions — a pixel window is wide and a phone is not — and `graphics` is
-    /// false until the frontend can fetch a blob and decode it, so an image is
-    /// words rather than a reference nobody draws. That is the same bargain the
-    /// terminal client makes, and it is made here, once.
-    pub fn mobile(cols: u32, rows: u32) -> Self {
-        Capabilities {
-            class: RenderClass::new(RenderClass::MOBILE),
-            cols,
-            rows,
-            graphics: false,
-            links: true,
-            native_details: true,
-            unicode: true,
-        }
-    }
-    /// Whether the viewport is narrow enough that a session should prefer the
-    /// short form of a node. A hint, not an instruction: the session still emits
-    /// both forms and the client still decides.
-    pub fn is_narrow(&self) -> bool {
-        self.cols > 0 && self.cols < 60
-    }
-}
-
 /// Who is connecting. Logged, and useful when several clients attach at once.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientInfo {
     pub name: String,
     pub version: String,
-    pub capabilities: Capabilities,
 }
 
 impl ClientInfo {
-    pub fn new(name: impl Into<String>, version: impl Into<String>, capabilities: Capabilities) -> Self {
-        ClientInfo { name: name.into(), version: version.into(), capabilities }
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        ClientInfo { name: name.into(), version: version.into() }
     }
 }
 
@@ -774,7 +623,7 @@ mod tests {
             ClientMsg::Pair { code: "K7QX-3M2P".into(), label: "a phone".into() },
             ClientMsg::Hello {
                 version: crate::PROTOCOL_VERSION,
-                client: ClientInfo::new("misa-tui", "0.1.0", Capabilities::tui(100, 30)),
+                client: ClientInfo::new("misa-tui", "0.1.0"),
             },
             ClientMsg::Subscribe { id: SubId(1), query: Query::new("session.view") },
             ClientMsg::Unsubscribe { id: SubId(1) },
@@ -832,6 +681,8 @@ mod tests {
                 label: "Model".into(),
                 value: "claude".into(),
                 hint: None,
+                read_only: false,
+                secret: false,
                 kind: FieldKind::Choice { options: Vec::new(), selected: Some("claude".into()) },
             }],
         };
@@ -848,29 +699,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_phone_is_a_class_of_its_own_and_says_what_it_can_draw() {
-        // A frontend is not a variant of another one: the phone is narrow where a
-        // pixel window is wide, and it has a native disclosure widget. The session
-        // reads these to decide what is worth emitting, so they have to be here.
-        let mobile = Capabilities::mobile(48, 80);
-        assert!(mobile.class.is(RenderClass::MOBILE));
-        assert!(mobile.class.is_known(), "the shipped classes must know their own");
-        assert!(mobile.is_narrow(), "a phone that is not narrow is a tablet");
-        assert!(!mobile.graphics, "a picture is words until the frontend can fetch one");
-        assert!(mobile.native_details);
-    }
 
-    #[test]
-    fn an_unknown_render_class_survives_a_round_trip() {
-        let class = RenderClass::new("hologram");
-        assert!(!class.is_known());
-        assert_eq!(round_trip_cbor(&class), class);
-        let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&Capabilities::plain().class, &mut bytes).unwrap();
-        let plain: RenderClass = ciborium::de::from_reader(&bytes[..]).unwrap();
-        assert!(plain.is(RenderClass::PLAIN));
-    }
 
     #[test]
     fn a_query_key_distinguishes_its_arguments() {

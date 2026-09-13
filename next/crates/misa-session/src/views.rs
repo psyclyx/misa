@@ -12,8 +12,7 @@
 //! ordering by screen position, no "show this collapsed because the viewport is
 //! short". A node may say that it has a short form and a long form
 //! ([`Kind::Collapsible`]); whether the long form is showing belongs to the client,
-//! which is why `open` here is a *default* derived from what the client says it can
-//! draw, not a decision.
+//! remembered against its stable id.
 //!
 //! # Stable ids
 //!
@@ -25,14 +24,13 @@
 use std::sync::Arc;
 
 use misa_proto::view::{Action, ActionOn, BlobRef, Field, FieldKind, Kind, Node, Span, State};
-use misa_proto::wire::{Capabilities, Level};
+use misa_proto::wire::Level;
 use misa_reframe::{Inputs, Query, Registry, Subscription, read_query};
 use misa_value::Value;
 
 use crate::agent;
 
-/// The query a client subscribes to in order to draw a session.
-pub const VIEW_QUERY: &str = "session.view";
+use misa_proto::VIEW_QUERY;
 
 /// How many messages a view shows unless a client asks for a different window.
 ///
@@ -116,18 +114,14 @@ pub fn subscriptions(registry: Registry) -> Registry {
 
 /// A part of the document a composition contributes: a plugin's tree, built where it goes.
 ///
-/// This is not a subscription, and the difference is the whole reason it exists. A subscription is
-/// a pure function of the database — that is what makes the loop's memo sound — and a plugin's view
-/// is a function of the database *and* of what one client can draw. So it is built here, once per
-/// client class per revision, by the layer that owns the document, for every frontend at once: the
-/// alternative is a plugin's presentation re-implemented in each of them.
+/// The contribution is built from session data; every client receives the same subtree.
 #[derive(Clone)]
 pub struct Section {
     /// The plugin's id, which is also the role its tree is placed under (plugin.<id>).
     pub plugin: String,
     /// Build it. A failure is a sentence in the document and not a broken tree: a plugin that
     /// cannot present itself must not be able to stop a session from answering.
-    pub build: Arc<dyn Fn(&Capabilities, &Value, usize) -> Result<Node, String> + Send + Sync>,
+    pub build: Arc<dyn Fn(&Value, usize) -> Result<Node, String> + Send + Sync>,
 }
 
 impl std::fmt::Debug for Section {
@@ -141,15 +135,15 @@ impl std::fmt::Debug for Section {
 /// The sections are what compositions contributed, placed after the transcript: a plugin's
 /// furniture sits under the conversation it is about, and above the panel, the notices, and the
 /// composer, which are about *now*. The composer is last because it is always last.
-pub fn document(db: &Value, capabilities: &Capabilities, window: usize, sections: &[Section]) -> Node {
+pub fn document(db: &Value, window: usize, sections: &[Section]) -> Node {
     let session = db.get("session");
     let mut root = Node::section("session").id("session");
     root.label = Some(title(session));
 
     root.children.push(header(db, session));
-    root.children.push(transcript(db, capabilities, window));
+    root.children.push(transcript(db, window));
     for section in sections {
-        root.children.push(section_node(section, db, capabilities, window));
+        root.children.push(section_node(section, db, window));
     }
     if let Some(panel) = panel(db) {
         root.children.push(panel);
@@ -222,7 +216,6 @@ fn header(db: &Value, session: Option<&Value>) -> Node {
                 label: "context".into(),
                 value: used as f64,
                 max: model.context_window as f64,
-                text: format!("{used}/{}k", model.context_window / 1_000),
             },
         ));
     }
@@ -235,7 +228,7 @@ fn input_tokens(row: &Value) -> i64 {
     row.get("input_tokens").and_then(Value::as_i64).unwrap_or(0)
 }
 
-fn transcript(db: &Value, capabilities: &Capabilities, window: usize) -> Node {
+fn transcript(db: &Value, window: usize) -> Node {
     let empty;
     let messages = match db.get("messages").and_then(Value::as_list) {
         Some(messages) => messages,
@@ -254,10 +247,22 @@ fn transcript(db: &Value, capabilities: &Capabilities, window: usize) -> Node {
             Kind::Status { text: format!("{start} earlier messages") },
         ));
     }
+    let mut group: Option<Node> = None;
     for message in messages.iter().skip(start) {
-        if let Some(child) = message_node(message, capabilities) {
-            node.children.push(child);
+        let Some(child) = message_node(message) else { continue };
+        if text_at(message, "role") == "user" || group.is_none() {
+            if let Some(previous) = group.take() {
+                node.children.push(finish_group(previous));
+            }
+            let id = format!("group.{}", message.get("seq").and_then(Value::as_i64).unwrap_or(0));
+            group = Some(Node::section("message.group").id(&id).child(
+                Node::text("message.group.header", [Span::plain("Conversation turn")]).id(format!("{id}.header")),
+            ));
         }
+        group.as_mut().expect("a message has a group").children.push(child);
+    }
+    if let Some(group) = group {
+        node.children.push(finish_group(group));
     }
     if node.children.is_empty() {
         node.children.push(Node::new(
@@ -268,7 +273,15 @@ fn transcript(db: &Value, capabilities: &Capabilities, window: usize) -> Node {
     node
 }
 
-fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
+/// A run's boundary and count are semantic facts; surfaces choose their decoration.
+fn finish_group(mut group: Node) -> Node {
+    let count = group.children.len().saturating_sub(1);
+    group.children.push(Node::new("message.group.footer", Kind::Fact { value: Value::Int(count as i64) })
+        .id(format!("{}.footer", group.id)).label("messages"));
+    group
+}
+
+fn message_node(message: &Value) -> Option<Node> {
     let seq = message.get("seq").and_then(Value::as_i64).unwrap_or(0);
     let role = text_at(message, "role");
     let id = format!("msg.{seq}");
@@ -289,7 +302,7 @@ fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
             node.state = state;
             node.children.extend(body("message.user", &id, text_at(message, "text")));
             for (position, attachment) in message_attachments(message).into_iter().enumerate() {
-                node.children.push(attachment_node(&attachment, position, capabilities));
+                node.children.push(attachment_node(&attachment, position));
             }
             Some(node)
         }
@@ -318,7 +331,7 @@ fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
                                 Span::strong("thinking".to_string()),
                                 Span::plain(format!(" · {}", preview(&thinking))),
                             ],
-                            open: false,
+
                         },
                     )
                     .id(format!("{id}.thinking"))
@@ -329,7 +342,7 @@ fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
             // client can grow an answer in place.
             node.children.extend(body("message.assistant", &id, text_at(message, "text")));
             for (position, call) in calls(message).into_iter().enumerate() {
-                node.children.push(call_node(&call, position, capabilities));
+                node.children.push(call_node(&call, position));
             }
             Some(node)
         }
@@ -340,9 +353,8 @@ fn message_node(message: &Value, capabilities: &Capabilities) -> Option<Node> {
 /// One tool call: what it was asked to do, and what came back.
 ///
 /// A collapsible, because a tool result is usually long and usually not what the
-/// reader came for. `open` is a default chosen from what the client can draw, and a
-/// client that has already decided is free to ignore it.
-fn call_node(call: &Value, position: usize, capabilities: &Capabilities) -> Node {
+/// reader came for. Clients remember their own expansion against the node id.
+fn call_node(call: &Value, position: usize) -> Node {
     let name = text_at(call, "name");
     let id = call
         .get("id")
@@ -354,7 +366,7 @@ fn call_node(call: &Value, position: usize, capabilities: &Capabilities) -> Node
         "tool.call",
         Kind::Collapsible {
             summary: vec![Span::strong(name.to_string()), Span::plain(" ")],
-            open: !capabilities.native_details,
+
         },
     )
     .id(&id)
@@ -374,7 +386,9 @@ fn call_node(call: &Value, position: usize, capabilities: &Capabilities) -> Node
                 label: "Arguments".into(),
                 value: clip(&format!("{}", call.get("args").cloned().unwrap_or(Value::Null)), 512),
                 hint: None,
-                kind: FieldKind::Text,
+                read_only: false,
+                secret: false,
+                kind: FieldKind::Inline,
             }],
         },
     ));
@@ -427,11 +441,11 @@ fn is_unified_diff(text: &str) -> bool {
 ///
 /// The wrapper is the session's, so a theme can style a plugin's whole contribution by its role
 /// (plugin.<id>) and so a client can find it without knowing anything about the plugin.
-fn section_node(section: &Section, db: &Value, capabilities: &Capabilities, window: usize) -> Node {
+fn section_node(section: &Section, db: &Value, window: usize) -> Node {
     let role = format!("plugin.{}", section.plugin);
     let mut wrapper = Node::section(&role).id(&role);
     wrapper.label = Some(section.plugin.clone());
-    wrapper.children.push(match (section.build)(capabilities, db, window) {
+    wrapper.children.push(match (section.build)(db, window) {
         Ok(tree) => namespaced(&role, tree),
         // A fault is data, and here it is a sentence in place of a tree. A session that answered
         // with nothing would be a session whose view a plugin can break.
@@ -466,7 +480,7 @@ fn namespaced(prefix: &str, mut node: Node) -> Node {
 ///
 /// Two things about the shape matter to a client:
 ///
-/// - a row is a `FieldKind::ReadOnly` field, so a surface that gives every field an input
+/// - a row is a read-only field, so a surface that gives every field an input
 ///   does not offer an edit that could never be saved;
 /// - the action that submits the form travels on the fields node, and every other action is
 ///   a button on the panel itself, because those are the two pairings clients already read.
@@ -519,7 +533,9 @@ fn panel(db: &Value) -> Option<Node> {
                             label: text_at(row, "label").to_string(),
                             value: text_at(row, "value").to_string(),
                             hint: None,
-                            kind: FieldKind::ReadOnly,
+                            read_only: true,
+                            secret: false,
+                            kind: FieldKind::Inline,
                         }],
                     },
                 )
@@ -542,10 +558,9 @@ fn panel(db: &Value) -> Option<Node> {
             label: text_at(field, "label").to_string(),
             value: String::new(),
             hint: None,
-            kind: match field.get("secret").and_then(Value::as_bool).unwrap_or(false) {
-                true => FieldKind::Secret,
-                false => FieldKind::Text,
-            },
+            kind: FieldKind::Inline,
+            read_only: false,
+            secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
         })
         .collect();
     if !fields.is_empty() {
@@ -673,14 +688,9 @@ fn preview(text: &str) -> String {
     }
 }
 
-/// The image reference a session would emit if it had one. Kept here so the
-/// capability path is exercised and so a frontend's image handling has a shape to
-/// build against.
-pub fn image_node(blob: BlobRef, alt: &str, width: u32, height: u32, capabilities: &Capabilities) -> Option<Node> {
-    if !capabilities.graphics {
-        return Some(Node::text("image.placeholder", [Span::plain(format!("[image: {alt}]"))]));
-    }
-    Some(Node::new("image", Kind::Image { blob, alt: alt.to_string(), width, height }))
+/// An image reference and its alternative text, independent of the client.
+pub fn image_node(blob: BlobRef, alt: &str, width: u32, height: u32) -> Node {
+    Node::new("image", Kind::Image { blob, alt: alt.to_string(), width, height })
 }
 
 /// The attachments a message carries, in the order they were attached.
@@ -690,16 +700,12 @@ fn message_attachments(message: &Value) -> Vec<Value> {
 
 /// One attachment of a message.
 ///
-/// A client that can draw is sent the image; one that cannot is sent a sentence naming what
-/// the attachment is. That decision is made here, once, from the client's own capabilities,
-/// because every frontend deciding it for itself would be as many places for a picture to
-/// become a dangling reference. The bytes are never in the tree — only the hash is — so a
-/// transcript stays small however large the picture is.
+/// The bytes stay in the blob store; clients choose how to render the reference and alt.
 ///
 /// The dimensions are zero, which says "unknown": nothing in the store records them, and a
 /// client that wants them can read them from the bytes it fetches. A client that lays out
 /// before the fetch can reserve whatever room it likes.
-fn attachment_node(attachment: &Value, position: usize, capabilities: &Capabilities) -> Node {
+fn attachment_node(attachment: &Value, position: usize) -> Node {
     let hash = text_at(attachment, "hash");
     let media = text_at(attachment, "media");
     let len = attachment.get("len").and_then(Value::as_i64).unwrap_or(0).max(0) as u64;
@@ -711,7 +717,7 @@ fn attachment_node(attachment: &Value, position: usize, capabilities: &Capabilit
         format!("{name} — {what} ({len} bytes)")
     };
     let blob = BlobRef { hash: hash.to_string(), len, media: (!media.is_empty()).then_some(media.to_string()) };
-    let mut node = image_node(blob, &alt, 0, 0, capabilities).expect("an attachment is always something to draw");
+    let mut node = image_node(blob, &alt, 0, 0);
     node.id = format!("attachment.{position}");
     node
 }
@@ -820,28 +826,32 @@ mod tests {
 
     #[test]
     fn a_tree_is_built_and_valid() {
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         misa_proto::view::validate(&node).expect("the shipped view is valid");
         assert_eq!(node.role, "session");
     }
 
     #[test]
     fn the_transcript_holds_the_messages_in_order_with_stable_ids() {
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         let transcript = find(&node, "transcript").expect("a transcript");
-        let ids: Vec<Option<&str>> = transcript.children.iter().map(|child| Some(child.id.as_str())).collect();
+        let group = &transcript.children[0];
+        assert_eq!(group.role, "message.group");
+        assert_eq!(group.children.first().unwrap().role, "message.group.header");
+        assert_eq!(group.children.last().unwrap().role, "message.group.footer");
+        let ids: Vec<Option<&str>> = group.children.iter().filter(|child| child.id.starts_with("msg.")).map(|child| Some(child.id.as_str())).collect();
         assert_eq!(ids, vec![Some("msg.1"), Some("msg.2")]);
     }
 
     #[test]
     fn a_streamed_delta_has_a_node_to_append_to() {
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         assert!(find(&node, "msg.2.text").is_some(), "the first text node must carry the delta id");
     }
 
     #[test]
     fn a_fenced_block_becomes_a_code_node_rather_than_prose() {
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         let message = find(&node, "msg.2").expect("the assistant message");
         let code = message
             .children
@@ -859,7 +869,7 @@ mod tests {
 
     #[test]
     fn a_tool_call_carries_its_arguments_and_its_result() {
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         let call = find(&node, "call.call.1").expect("the tool call");
         assert_eq!(call.state, Some(State::Done));
         assert_eq!(call.label.as_deref(), Some("echo"));
@@ -893,7 +903,7 @@ mod tests {
                 ])]),
             ),
         ]);
-        let node = document(&state, &Capabilities::plain(), 40, &[]);
+        let node = document(&state, 40, &[]);
         let result = find(&node, "call.call.1.result").expect("the result");
         assert_eq!(result.role, "tool.result.diff");
         match &result.kind {
@@ -914,41 +924,35 @@ mod tests {
     }
 
     #[test]
-    fn a_client_with_no_disclosure_widget_is_handed_an_open_node() {
-        let plain = document(&state(), &Capabilities::plain(), 40, &[]);
-        let rich = document(&state(), &Capabilities::browser(), 40, &[]);
-        let open = |node: &Node| match &find(node, "call.call.1").expect("call").kind {
-            Kind::Collapsible { open, .. } => *open,
-            _ => unreachable!(),
-        };
-        assert!(open(&plain), "a client with no disclosure widget got a closed node");
-        assert!(!open(&rich));
+    fn tool_details_are_semantic() {
+        let tree = document(&state(), 40, &[]);
+        assert!(matches!(&find(&tree, "call.call.1").unwrap().kind, Kind::Collapsible { summary } if !summary.is_empty()));
     }
 
     #[test]
     fn the_window_is_what_the_caller_asked_for() {
-        let node = document(&state(), &Capabilities::plain(), 1, &[]);
+        let node = document(&state(), 1, &[]);
         let transcript = find(&node, "transcript").expect("a transcript");
         assert!(transcript.children.iter().any(|child| child.role == "transcript.earlier"));
-        assert_eq!(transcript.children.iter().filter(|child| child.id.starts_with("msg.")).count(), 1);
+        assert_eq!(transcript.children.iter().flat_map(|group| &group.children).filter(|child| child.id.starts_with("msg.")).count(), 1);
     }
 
     #[test]
     fn an_empty_transcript_says_so_instead_of_being_empty() {
-        let node = document(&initial_state("demo", "p", "m", 0), &Capabilities::plain(), 40, &[]);
+        let node = document(&initial_state("demo", "p", "m", 0), 40, &[]);
         assert!(find(&node, "transcript").expect("a transcript").children[0].role == "transcript.empty");
         misa_proto::view::validate(&node).unwrap();
     }
 
     #[test]
     fn there_is_no_cancel_action_when_nothing_is_running() {
-        let idle = document(&initial_state("demo", "p", "m", 0), &Capabilities::plain(), 40, &[]);
+        let idle = document(&initial_state("demo", "p", "m", 0), 40, &[]);
         assert!(find(&idle, "turn").is_none());
     }
 
     #[test]
     fn the_composer_offers_exactly_one_action_and_the_session_owns_its_meaning() {
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         let composer = find(&node, "composer").expect("a composer");
         assert_eq!(composer.actions.len(), 1);
         assert_eq!(composer.actions[0].id, "composer.submit");
@@ -977,13 +981,10 @@ mod tests {
     }
 
     #[test]
-    fn an_image_degrades_for_a_client_that_cannot_draw_one() {
+    fn an_image_always_carries_its_hash_and_alt() {
         let blob = BlobRef { hash: "a".repeat(64), len: 4, media: Some("image/png".into()) };
-        let plain = image_node(blob.clone(), "a chart", 10, 10, &Capabilities::plain()).expect("a node");
-        assert_eq!(plain.role, "image.placeholder");
-        let skia = image_node(blob, "a chart", 10, 10, &Capabilities::skia(800, 600)).expect("a node");
-        assert_eq!(skia.role, "image");
-        assert!(matches!(skia.kind, Kind::Image { .. }));
+        let node = image_node(blob.clone(), "a chart", 10, 10);
+        assert!(matches!(node.kind, Kind::Image { blob: actual, alt, .. } if actual == blob && alt == "a chart"));
     }
 
     /// Every node the session writes, by id.
@@ -1000,7 +1001,7 @@ mod tests {
         // which is collision-free only while no node the session writes is in that namespace. The
         // collision is not a theoretical one: a duplicate id refuses the whole tree a client is
         // sent, so one plugin's mistake would freeze every client's view.
-        let node = document(&state(), &Capabilities::plain(), 40, &[]);
+        let node = document(&state(), 40, &[]);
         let mut ids = Vec::new();
         ids_of(&node, &mut ids);
         assert!(ids.contains(&"composer".to_string()), "the walk found the session's own nodes");

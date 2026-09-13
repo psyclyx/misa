@@ -21,7 +21,7 @@ use std::sync::Arc;
 use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
 use misa_plugin::{Descriptor, PLUGIN_PRIORITY, Plugin, PluginFault};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Query, Registry};
-use misa_proto::wire::{Capabilities, Intent};
+use misa_proto::wire::Intent;
 use misa_session::{Reading, Runtime};
 use misa_value::Value;
 
@@ -235,7 +235,7 @@ fn a_query_is_a_subscription_the_loop_can_read() {
 fn a_view_is_built_the_way_any_other_tree_is() {
     let plugin = loaded();
     let db = Value::Null;
-    let tree = plugin.view(&Capabilities::plain(), &db, 40).expect("a tree");
+    let tree = plugin.view(&db, 40).expect("a tree");
     assert_eq!(tree.id, "guest");
     assert_eq!(tree.role, "guest.panel");
     assert_eq!(tree.children.len(), 1);
@@ -276,10 +276,10 @@ async fn a_plugin_presents_a_section_a_session_places() {
     assert_eq!(root.actions[0].label.as_deref(), Some("Refresh"));
 
     // And what the plugin said about the client it was drawing for is in the document, because the
-    // session handed it the client's capabilities and the window it was asked for.
+    // session handed it the database and the requested history window.
     let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
     assert!(text.contains("drawn for"), "{text}");
-    assert!(text.contains("'class':'plain'"), "the capabilities the client declared: {text}");
+    assert!(text.contains("semantic"), "semantic plugin view: {text}");
 }
 
 #[tokio::test]
@@ -299,7 +299,7 @@ async fn an_action_from_a_plugins_tree_reaches_the_plugin() {
     });
     assert!(faults.is_empty(), "{faults:?}");
 
-    let state = match runtime.read(&Query::new("policy.guest.state"), &Capabilities::plain()).expect("an answer") {
+    let state = match runtime.read(&Query::new("policy.guest.state")).expect("an answer") {
         Reading::Data(value) => value,
         Reading::View(_) => panic!("a plugin's query answered with a view"),
     };
@@ -375,8 +375,8 @@ fn contribution(plugin: &Arc<Plugin>) -> misa_session::Contribution {
     let presenting = plugin.clone();
     contribution = contribution.with_section(misa_session::views::Section {
         plugin: plugin.descriptor().id.clone(),
-        build: Arc::new(move |capabilities, db, window| {
-            presenting.view(capabilities, db, window).map_err(|fault| fault.message)
+        build: Arc::new(move |db, window| {
+            presenting.view(db, window).map_err(|fault| fault.message)
         }),
     });
     for root in plugin.roots() {
@@ -404,7 +404,7 @@ fn session(contribution: misa_session::Contribution) -> (Arc<Runtime>, Arc<Local
 
 /// The view a client would draw.
 fn view(runtime: &Runtime) -> misa_proto::view::Node {
-    match runtime.read(&Query::new(misa_session::views::VIEW_QUERY), &Capabilities::plain()).expect("a view") {
+    match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).expect("a view") {
         Reading::View(node) => node,
         Reading::Data(_) => panic!("the view query answered with data"),
     }
@@ -428,7 +428,7 @@ async fn a_session_runs_what_a_plugin_declared() {
     // The plugin's patch landed in the root the composition made for it. It is read back the way
     // a client would: through the plugin's own query, which answers with the state it was handed.
     let state = match runtime
-        .read(&Query::new("policy.guest.state"), &Capabilities::plain())
+        .read(&Query::new("policy.guest.state"))
         .expect("an answer from the plugin")
     {
         Reading::Data(value) => value,

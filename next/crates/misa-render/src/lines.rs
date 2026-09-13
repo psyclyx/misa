@@ -228,7 +228,8 @@ impl<'a> Renderer<'a> {
                         Some(&node.id),
                     ));
                     let budget = self.budget(indent + 2);
-                    for line in wrap_spans(&[Span::plain(&field.value)], budget) {
+                    let value = if field.secret { "••••" } else { &field.value };
+                    for line in wrap_spans(&[Span::plain(value)], budget) {
                         out.push(Line {
                             indent: indent + 2,
                             spans: line.iter().map(|span| (style, span.text.clone())).collect(),
@@ -238,7 +239,7 @@ impl<'a> Renderer<'a> {
                 }
                 self.state_mark(node, indent, out);
             }
-            Kind::Collapsible { summary, open } => {
+            Kind::Collapsible { summary } => {
                 let budget = self.budget(indent);
                 for line in wrap_spans(summary, budget) {
                     out.push(Line {
@@ -250,11 +251,7 @@ impl<'a> Renderer<'a> {
                         node: Some(node.id.clone()),
                     });
                 }
-                // The client decides whether the body is showing; a client that
-                // always shows it passes a tree it has already expanded. The
-                // renderer honours what it was given, which is why `open` only
-                // affects the marker here.
-                let _ = open;
+                // Interactive clients resolve their own expansion before rendering.
                 for child in &node.children {
                     self.node(child, depth + 1, out);
                 }
@@ -281,7 +278,7 @@ impl<'a> Renderer<'a> {
             Kind::Status { text } => {
                 out.push(Line::simple(indent, style, text.clone(), Some(&node.id)));
             }
-            Kind::Meter { label, value, max, text } => {
+            Kind::Meter { label, value, max } => {
                 let budget = self.budget(indent);
                 let bar_width = 10usize.min(budget.saturating_sub(width(label) + 4).max(1));
                 let ratio = if *max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
@@ -290,7 +287,7 @@ impl<'a> Renderer<'a> {
                 out.push(Line::simple(
                     indent,
                     style,
-                    format!("{label} {bar} {text}"),
+                    format!("{label} {bar} {value}/{max}"),
                     Some(&node.id),
                 ));
             }
@@ -601,8 +598,8 @@ mod tests {
             "dialog",
             Kind::Fields {
                 fields: vec![
-                    Field { id: "a".into(), label: "Model".into(), value: "claude".into(), hint: None, kind: FieldKind::Text },
-                    Field { id: "b".into(), label: "Reasoning effort".into(), value: "high".into(), hint: None, kind: FieldKind::Choice { options: vec![], selected: None } },
+                    Field { id: "a".into(), label: "Model".into(), value: "claude".into(), hint: None, read_only: false, secret: false, kind: FieldKind::Inline },
+                    Field { id: "b".into(), label: "Reasoning effort".into(), value: "high".into(), hint: None, read_only: false, secret: false, kind: FieldKind::Choice { options: vec![], selected: None } },
                 ],
             },
         );
@@ -613,14 +610,28 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_block_preserves_lines_and_secret_policy_masks_any_shape() {
+        let mut field = Field { id: "body".into(), label: "Report".into(), value: "one\ntwo".into(),
+            hint: None, kind: FieldKind::Block, read_only: true, secret: false };
+        let draw = |field: Field| render(&Node::new("report", Kind::Fields { fields: vec![field] }), &theme(), 80)
+            .iter().map(Line::text).collect::<Vec<_>>().join("\n");
+        let text = draw(field.clone());
+        assert_eq!(text.lines().skip(1).map(str::trim).collect::<Vec<_>>(), vec!["one", "two"]);
+        field.secret = true;
+        let text = draw(field);
+        assert!(!text.contains("one"), "{text}");
+        assert!(text.contains("••••"), "{text}");
+    }
+
+    #[test]
     fn a_meter_shows_a_bounded_bar() {
         let node = Node::new(
             "value.meter",
-            Kind::Meter { label: "budget".into(), value: 2.0, max: 4.0, text: "$2 / $4".into() },
+            Kind::Meter { label: "budget".into(), value: 2.0, max: 4.0 },
         );
         let line = &render(&node, &theme(), 80)[0];
         assert!(line.text().contains("[#####-----]"), "{}", line.text());
-        assert!(line.text().ends_with("$2 / $4"));
+        assert!(line.text().ends_with("2/4"));
     }
 
     #[test]
@@ -641,7 +652,7 @@ mod tests {
     fn a_collapsible_renders_its_summary_and_its_children() {
         let node = Node::new(
             "message.assistant",
-            Kind::Collapsible { summary: vec![Span::plain("thinking…")], open: false },
+            Kind::Collapsible { summary: vec![Span::plain("thinking…")] },
         )
         .id("m1")
         .child(Node::text("message.thinking", [Span::plain("because")]));

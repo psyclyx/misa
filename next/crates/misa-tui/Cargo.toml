@@ -1,4 +1,5 @@
 [package]
+default-run = "misa"
 name = "misa-tui"
 description = "The terminal frontend: a renderer, an editor, a picker, and a key loop"
 version.workspace = true
@@ -17,3 +18,11 @@ misa-render.workspace = true
 misa-session.workspace = true
 misa-value.workspace = true
 tokio.workspace = true
+
+[[bin]]
+name = "misa"
+path = "src/main.rs"
+
+[[bin]]
+name = "misa-tui"
+path = "src/alias.rs"
