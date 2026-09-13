@@ -464,7 +464,13 @@ mod tests {
             if node.actions.iter().any(|action| action.id == "attachment.save") { return Some(node.id.clone()); }
             node.children.iter().find_map(target)
         }
-        let node = target(&runtime.view().unwrap()).unwrap();
+        let mut revision = runtime.watch_rev();
+        let node = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(node) = target(&runtime.view().unwrap()) { break node; }
+                revision.changed().await.unwrap();
+            }
+        }).await.expect("attachment was not durably recorded");
         let mut owner = Session::new(runtime.clone());
         let mut other = Session::new(runtime.clone());
         owner.handle(hello("owner")); other.handle(hello("other"));

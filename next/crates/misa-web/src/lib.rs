@@ -990,6 +990,7 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
                         Err(_) => { let _ = client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await; },
                         Ok(false) => {},
                     },
+
                     Ok(None) | Err(_) => return,
                 },
                 request = download_requests.recv() => if let Some(request) = request {
@@ -1172,12 +1173,18 @@ mod tests {
         let stored = blobs.put(PNG, Some("image/png")).unwrap();
         let runtime = Runtime::start("save", "Save", None, kernel, "scripted", "test", misa_value::Value::Null);
         runtime.intent(misa_proto::wire::Intent::Prompt { text: "save it".into(), attachments: vec![stored.clone()] });
-        let tree = runtime.view().unwrap();
         fn target(node: &Node) -> Option<String> {
             if node.actions.iter().any(|action| action.id == "attachment.save") { return Some(node.id.clone()); }
             node.children.iter().find_map(target)
         }
-        let node = target(&tree).unwrap();
+        let mut revision = runtime.watch_rev();
+        let (tree, node) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let tree = runtime.view().unwrap();
+                if let Some(node) = target(&tree) { break (tree, node); }
+                revision.changed().await.unwrap();
+            }
+        }).await.expect("attachment was not durably recorded");
         let html = render_main(&tree);
         assert!(html.contains("action=\"/download\""));
         assert!(html.contains("Save attachment"));

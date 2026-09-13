@@ -2392,6 +2392,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-protocol"
+version = "0.1.0"
+dependencies = [
+ "misa-proto",
+ "misa-value",
+ "tokio",
+]
+
+[[package]]
 name = "misa-reframe"
 version = "0.1.0"
 dependencies = [

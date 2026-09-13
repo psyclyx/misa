@@ -1218,6 +1218,7 @@ impl Session for Remote {
                 misa_proto::SessionMsg::Welcome { session, .. } => self.info = Some(session),
                 misa_proto::SessionMsg::Fault { fault, .. } => return Err(fault.message),
                 _ => {}
+
             }
         }
     }
