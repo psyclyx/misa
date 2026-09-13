@@ -1,5 +1,6 @@
 {
   callPackage,
+  stdenv,
   misa-guest,
   wasm-tools,
   lld,
@@ -33,8 +34,8 @@ in
   ];
   postCheck = ''
     bash crates/misa-web/tests/browser.sh
-    bash crates/misa-skia/tests/window.sh target/release/misa-skia
-    bash crates/misa-tui/tests/clipboard.sh --release --offline
+    bash crates/misa-skia/tests/window.sh target/${stdenv.hostPlatform.rust.rustcTarget}/release/misa-skia
+    bash crates/misa-tui/tests/clipboard.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
   '';
   installPhase = ''
     mkdir -p "$out"
