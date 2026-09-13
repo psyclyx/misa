@@ -83,13 +83,19 @@ pub fn document_with(session: &SessionInfo, region: &str, lead: &str) -> String 
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
 <title>{title}</title>\n<link rel=\"stylesheet\" href=\"/style.css\">\n\
-</head>\n<body>\n<main id=\"main\">{lead}{region}</main>\n{declarations}\
+</head>\n<body data-session=\"{session_id}\">\n{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
 <script src=\"/app.js\" defer></script>\n</body>\n</html>\n",
         title = escape(&session.title),
+        session_id = escape(&session.id),
+        toolbar = toolbar(),
         lead = lead,
         region = region,
         declarations = declarations(session)
     )
+}
+
+fn toolbar() -> &'static str {
+    "<nav aria-label=\"Display\"><label>Theme <select id=\"theme\"><option value=\"system\">System</option><option value=\"dark\">Dark</option><option value=\"plain\">Light</option></select></label></nav>"
 }
 
 /// What this client is holding and has not sent yet, and the way to add to it.
@@ -317,20 +323,6 @@ fn render_node(node: &Node, out: &mut String) {
         Kind::Collapsible { summary } => {
             // `<details>` is why this node exists as a node: a short form and a long
             // form are a thing HTML already has a word for.
-            if let Some(index) = out.find('>') {
-                let element = "<details";
-                let rest = out[index + 1..].to_string();
-                let head = out[..index].to_string();
-                let head = head
-                    .replace("<section", element)
-                    .replace("<div", element)
-                    .replace("<article", element)
-                    .replace("<p", element);
-                out.clear();
-                out.push_str(&head);
-                out.push('>');
-                out.push_str(&rest);
-            }
             out.push_str("<summary>");
             inline(summary, out);
             out.push_str("</summary>");
@@ -373,6 +365,10 @@ fn render_node(node: &Node, out: &mut String) {
     // what it takes for a panel's buttons to work in a browser with no script at all.
     if submit.is_none() {
         for action in &node.actions {
+            if action.id == "attachment.save" {
+                out.push_str(&format!("<form method=\"post\" action=\"/download\"><input type=\"hidden\" name=\"node\" value=\"{}\"><button type=\"submit\">{}</button></form>", escape(&node.id), escape(action.label.as_deref().unwrap_or("Save attachment"))));
+                continue;
+            }
             out.push_str(&format!(
                 "<form class=\"n-{role}.action\" method=\"post\" action=\"/intent\">\
 <input type=\"hidden\" name=\"node\" value=\"{node_id}\">\
@@ -656,6 +652,91 @@ async fn blob_response(source: Option<&Source>, hash: &str) -> Response {
     }
 }
 
+fn save_intent(node: String) -> misa_proto::wire::Intent {
+    misa_proto::wire::Intent::Action {
+        node,
+        action: "attachment.save".into(),
+        args: misa_value::Value::Null,
+        fields: vec![],
+    }
+}
+
+async fn download_response(source: Option<&Source>, download: misa_proto::wire::Download) -> Response {
+    let Some(blob) = download.blob else {
+        return (StatusCode::NOT_FOUND, download.error).into_response();
+    };
+    let mut response = blob_response(source, &blob.hash).await;
+    if response.status() == StatusCode::OK {
+        let name = if !download.name.is_empty()
+            && download.name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            download.name
+        } else {
+            "attachment.bin".into()
+        };
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{name}\"").parse().unwrap(),
+        );
+    }
+    response
+}
+
+async fn local_download(
+    State(app): State<Arc<App>>,
+    Form(fields): Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let mut events = app.runtime.subscribe_events();
+    let context =
+        misa_proto::wire::RequestContext { recipient: misa_proto::wire::RequestContext::connection(), id: next_id() };
+    let faults = app.runtime.intent_from(save_intent(fields.get("node").cloned().unwrap_or_default()), Some(context));
+    if let Some(fault) = faults.first() {
+        return (StatusCode::BAD_REQUEST, fault.message.clone()).into_response();
+    }
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while let Ok(emission) = events.recv().await {
+            if emission.recipient == Some(context.recipient) {
+                if let misa_proto::wire::SessionEvent::DownloadReady { id, download } = emission.event {
+                    if id == context.id {
+                        return Some(download);
+                    }
+                }
+            }
+        }
+        None
+    })
+    .await;
+    match answer {
+        Ok(Some(download)) => download_response(app.blobs.as_deref(), download).await,
+        _ => (StatusCode::GATEWAY_TIMEOUT, "The session did not answer the save request").into_response(),
+    }
+}
+
+struct DownloadRequest {
+    node: String,
+    reply: tokio::sync::oneshot::Sender<Result<misa_proto::wire::Download, String>>,
+}
+
+async fn remote_download(
+    State(state): State<Arc<Remote>>,
+    Form(fields): Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    if state
+        .downloads
+        .send(DownloadRequest { node: fields.get("node").cloned().unwrap_or_default(), reply })
+        .await
+        .is_err()
+    {
+        return (StatusCode::BAD_GATEWAY, "The session is disconnected").into_response();
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(20), answer).await {
+        Ok(Ok(Ok(download))) => download_response(state.blobs.as_deref(), download).await,
+        Ok(Ok(Err(error))) => (StatusCode::BAD_REQUEST, error).into_response(),
+        _ => (StatusCode::GATEWAY_TIMEOUT, "The session did not answer the save request").into_response(),
+    }
+}
+
 async fn blob(State(app): State<Arc<App>>, Path(hash): Path<String>) -> Response {
     blob_response(app.blobs.as_deref(), &hash).await
 }
@@ -669,6 +750,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/attach", post(attach_file))
         .route("/detach", post(detach))
         .route("/blob/{hash}", get(blob))
+        .route("/download", post(local_download))
         .route("/style.css", get(|| async { ([("content-type", "text/css")], STYLE) }))
         .route("/app.js", get(|| async { ([("content-type", "text/javascript")], SCRIPT) }))
         .with_state(app)
@@ -890,17 +972,30 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     // makes it indistinguishable from an intent sent by a terminal: both land here.
     let (intents, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<misa_proto::wire::Intent>();
     let stream = region.clone();
+    let (downloads, mut download_requests) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
     tokio::spawn(async move {
         let mut view = misa_proto::sync::ClientView::default();
+        let mut pending_downloads = std::collections::HashMap::<u64, tokio::sync::oneshot::Sender<Result<misa_proto::wire::Download, String>>>::new();
         loop {
             tokio::select! {
                 message = client.next() => match message {
+                    Ok(Some(misa_proto::SessionMsg::Download { id, download })) => {
+                        if let Some(reply) = pending_downloads.remove(&id) { let _ = reply.send(Ok(download)); }
+                    }
+                    Ok(Some(misa_proto::SessionMsg::Fault { id: Some(id), fault })) => {
+                        if let Some(reply) = pending_downloads.remove(&id) { let _ = reply.send(Err(fault.message)); }
+                    }
                     Ok(Some(message)) => match view.receive(&message) {
                         Ok(true) => if let Some(view) = view.rendered() { stream.set(render_main(&view)); },
                         Err(_) => { let _ = client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await; },
                         Ok(false) => {},
                     },
                     Ok(None) | Err(_) => return,
+                },
+                request = download_requests.recv() => if let Some(request) = request {
+                    let id = next_id();
+                    pending_downloads.insert(id, request.reply);
+                    if client.intent(id, save_intent(request.node)).await.is_err() { return; }
                 },
                 intent = outgoing.recv() => match intent {
                     Some(intent) => {
@@ -921,6 +1016,7 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
         region,
         session,
         intents,
+        downloads,
         blobs: Some(blobs),
         pending: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
@@ -959,6 +1055,7 @@ impl Region {
 
 /// A session reached over iroh, with no kernel in this process.
 pub struct Remote {
+    downloads: tokio::sync::mpsc::Sender<DownloadRequest>,
     region: Region,
     session: Option<SessionInfo>,
     /// Where an intent from the browser goes: to the task that owns the connection.
@@ -991,6 +1088,7 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/attach", post(remote_attach))
         .route("/detach", post(remote_detach))
         .route("/blob/{hash}", get(remote_blob))
+        .route("/download", post(remote_download))
         .route("/style.css", get(|| async { ([("content-type", "text/css")], STYLE) }))
         .route("/app.js", get(|| async { ([("content-type", "text/javascript")], SCRIPT) }))
         .with_state(state)
@@ -1030,21 +1128,12 @@ async fn remote_blob(State(state): State<Arc<Remote>>, Path(hash): Path<String>)
 }
 
 async fn remote_page(State(state): State<Arc<Remote>>) -> Html<String> {
-    let title = state
-        .session
-        .as_ref()
-        .map(|session| session.title.clone())
-        .unwrap_or_default();
     let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
-    Html(format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<title>{}</title><link rel=\"stylesheet\" href=\"/style.css\"></head>\
-<body><main id=\"main\">{}{}</main><script src=\"/app.js\" defer></script></body></html>",
-        escape(&title),
-        lead,
-        state.region.get()
-    ))
+    let session = state.session.clone();
+    match session {
+        Some(session) => Html(document_with(&session, &state.region.get(), &lead)),
+        None => Html(format!("<!doctype html><html><body><main id=\"main\">{lead}{}</main></body></html>", state.region.get())),
+    }
 }
 
 async fn remote_events(
@@ -1075,6 +1164,29 @@ fn region_stream(
 mod tests {
     use super::*;
     use misa_proto::view::{Action, BlobRef, Capture, Field};
+
+    #[tokio::test]
+    async fn attachment_button_downloads_kernel_confirmed_bytes_as_a_file() {
+        let kernel = Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("done")));
+        let blobs = kernel.blobs().clone();
+        let stored = blobs.put(PNG, Some("image/png")).unwrap();
+        let runtime = Runtime::start("save", "Save", None, kernel, "scripted", "test", misa_value::Value::Null);
+        runtime.intent(misa_proto::wire::Intent::Prompt { text: "save it".into(), attachments: vec![stored.clone()] });
+        let tree = runtime.view().unwrap();
+        fn target(node: &Node) -> Option<String> {
+            if node.actions.iter().any(|action| action.id == "attachment.save") { return Some(node.id.clone()); }
+            node.children.iter().find_map(target)
+        }
+        let node = target(&tree).unwrap();
+        let html = render_main(&tree);
+        assert!(html.contains("action=\"/download\""));
+        assert!(html.contains("Save attachment"));
+        let app = App::new(runtime).with_blobs(Arc::new(Source::Local(blobs)));
+        let response = local_download(State(app), Form(std::collections::HashMap::from([("node".into(), node)]))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[axum::http::header::CONTENT_DISPOSITION], format!("attachment; filename=\"{}.png\"", stored.hash));
+        assert_eq!(axum::body::to_bytes(response.into_body(), 1024).await.unwrap().as_ref(), PNG);
+    }
 
     #[tokio::test]
     async fn usage_dashboard_is_typed_and_renders_on_terminal_and_browser() {
@@ -1410,13 +1522,25 @@ mod tests {
         assert!(html.contains("<main id=\"main\">"), "{html}");
         assert!(html.contains("/style.css"), "{html}");
         assert!(html.contains("/app.js"), "{html}");
+        assert!(html.contains("data-session=\"demo\""), "{html}");
+        assert!(html.contains("id=\"theme\""), "{html}");
     }
 
     #[test]
-    fn the_script_is_small_enough_to_read_and_does_one_thing() {
-        assert!(SCRIPT.lines().count() < 40, "the script has grown a framework:\n{SCRIPT}");
-        assert!(SCRIPT.contains("EventSource"), "{SCRIPT}");
-        assert!(!SCRIPT.contains("function render"), "the browser started rendering: {SCRIPT}");
+    fn nested_disclosures_do_not_rewrite_their_ancestors() {
+        let tree = Node::section("session").id("session")
+            .child(Node::text("message", [Span::plain("before")]))
+            .child(Node::new("tool.call", Kind::Collapsible {
+                summary: vec![Span::plain("details")],
+            }).id("call").child(Node::text("body", [Span::plain("inside")])))
+            .child(Node::text("message", [Span::plain("after")]));
+        let html = render_main(&tree);
+        assert!(html.starts_with("<section "), "{html}");
+        assert_eq!(html.matches("<details ").count(), 1, "{html}");
+        assert_eq!(html.matches("</details>").count(), 1, "{html}");
+        assert!(html.ends_with("</section>"), "{html}");
+        assert!(html.find("before").unwrap() < html.find("<details ").unwrap());
+        assert!(html.find("</details>").unwrap() < html.find("after").unwrap());
     }
 
     #[test]

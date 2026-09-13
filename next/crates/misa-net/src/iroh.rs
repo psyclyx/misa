@@ -31,7 +31,7 @@ use misa_proto::chunk::Decoder;
 use misa_proto::wire::{ClientInfo, ClientMsg, Query, SessionMsg, SubId};
 use misa_proto::{ALPN_BLOB, ALPN_SESSION, Fault, PROTOCOL_VERSION, Ticket};
 use misa_session::Runtime;
-use misa_session::admission::Admission;
+use crate::admission::Admission;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

@@ -1,11 +1,13 @@
 let
   npins = import ./npins;
 
-  mkPackages = pkgs: {
-    misa = pkgs.callPackage ./nix/packages/misa.nix { };
-  };
-
-  overlay = final: _prev: mkPackages final;
+  nextOverlay = (import ./next { }).overlay;
+  overlay =
+    final: prev:
+    nextOverlay final prev
+    // {
+      misa-legacy = final.callPackage ./nix/packages/misa.nix { };
+    };
 in
 {
   nixpkgs ? npins.nixpkgs,
@@ -13,7 +15,7 @@ in
 }:
 let
   finalPkgs = pkgs.extend overlay;
-  packages = mkPackages finalPkgs;
+  packages = overlay finalPkgs pkgs;
   misaLib = import ./nix/lib.nix { pkgs = finalPkgs; };
   nixosModule = import ./nix/modules/nixos.nix;
   darwinModule = import ./nix/modules/darwin.nix;
@@ -21,6 +23,7 @@ let
 in
 {
   inherit packages overlay;
+  pkgs = finalPkgs;
   default = packages.misa;
   shell = finalPkgs.callPackage ./nix/shell.nix { };
   lib = misaLib;
@@ -28,6 +31,7 @@ in
 
   nixosModules = {
     misa = nixosModule;
+    misa-daemon = import ./next/nix/daemon-module.nix;
     default = nixosModule;
   };
   darwinModules = {

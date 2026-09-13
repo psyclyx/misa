@@ -17,12 +17,28 @@ pub async fn run(
 ) -> Result<(), String> {
     let mut printed = String::new();
     let mut ready = false;
+    let mut latest = None;
     let mut staged: Option<String> = None;
     let mut pending: Option<std::collections::BTreeSet<String>> = None;
     let mut settled = std::collections::BTreeSet::new();
     loop {
         if ready && pending.is_none() {
             if let Some(line) = staged.take() {
+                if let Some(request) = crate::save::parse(&line) {
+                    let result = match request {
+                        Ok(request) => match latest.as_ref().ok_or("No view received yet").and_then(|view| crate::save::target(view, &request).map_err(|_| "No matching attachment")) {
+                            Ok(node) => session.save_attachment(node, &request.destination).await.map(|_| request.destination),
+                            Err(error) => Err(error.into()),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    match result {
+                        Ok(path) => writeln!(errors, "Saved {path}"),
+                        Err(error) => writeln!(errors, "[not saved] {error}"),
+                    }.map_err(|error| error.to_string())?;
+                    continue;
+                }
+
                 let commands = session.info().map(|info| info.commands).unwrap_or_default();
                 let intent = match parse(&line, &commands) {
                     Parsed::Prompt(text) => Intent::Prompt {
@@ -55,6 +71,7 @@ pub async fn run(
                     output.write_all(suffix.as_bytes()).and_then(|_| output.flush()).map_err(|error| error.to_string())?;
                     printed = text;
                 }
+                latest = Some(view.clone());
                 if pending.as_ref().is_some_and(|before| settled.difference(before).next().is_some()) && !working(&view) {
                     pending = None;
                 }

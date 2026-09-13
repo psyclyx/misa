@@ -215,6 +215,8 @@ These are forks that change later work, so they are answered first.
 - [ ] A client that keeps what it receives: fetch a blob and write it where a person can find it, and
       cancel a device flow a client started. Both are an intent a session asks the kernel for and an
       answer that is a file or a stop (`architecture.md` §6 item 1).
+      Device cancellation and directed save replies are built; terminal file export and browser
+      downloads are verified end to end. Android and pixel destination selection use the same reply.
 - [ ] Android: fetch blobs over `/misa/blob/0` so a picture is a picture; the cursor and the tree are
       data the app persists, so a background check is "attach with `since`".
 - [ ] Browser: apply ops to the DOM instead of re-rendering the transcript per revision; its own

@@ -1,6 +1,23 @@
-# The same shell as `./shell.nix`, exposed under the name the root's `.envrc` reads
-# (`use nix -A shell`), so that entering `next/` with direnv loads the rewrite's toolchain
-# rather than only the repository's.
+let
+  pins = import ../npins;
+  mkPackages =
+    lib: pkgs:
+    lib.packagesFromDirectoryRecursive {
+      inherit (pkgs) callPackage;
+      directory = ./nix/packages;
+    };
+  overlay = final: prev: mkPackages prev.lib final;
+in
 {
-  shell = import ./shell.nix;
+  nixpkgs ? pins.nixpkgs,
+  pkgs ? import nixpkgs { },
+}:
+let
+  finalPkgs = pkgs.extend overlay;
+in
+rec {
+  inherit overlay;
+  packages = mkPackages pkgs.lib finalPkgs;
+  default = packages.misa;
+  shell = finalPkgs.callPackage ./nix/shell.nix { };
 }

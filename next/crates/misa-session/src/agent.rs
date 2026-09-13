@@ -66,6 +66,8 @@ pub fn registry() -> Registry {
         .on_fn("kernel/log.appended", 0, "agent.appended", on_appended)
         .on_fn("kernel/credential", 0, "agent.credential", on_credential)
         .on_fn("kernel/credential.prompt", 0, "agent.credential.prompt", on_credential_prompt)
+        .on_fn("intent/attachment.save", 0, "agent.attachment.save", on_attachment_save)
+        .on_fn("kernel/blob.described", 0, "agent.blob.described", on_blob_described)
         .on_fn("kernel/blob", 0, "agent.blob", on_blob)
         .on_fn("kernel/process.finished", 0, "agent.process.finished", on_process_finished)
         .on_fn("queue/next", 0, "agent.queue.next", on_queue_next)
@@ -93,6 +95,7 @@ pub fn event_for(event: KernelEvent) -> Event {
         KernelEvent::ProviderThinking { id, text } => {
             Event::new("kernel/provider.thinking").with("id", Value::str(id)).with("text", Value::str(text))
         }
+        KernelEvent::BlobDescribed { id, download } => Event::new("kernel/blob.described").with("id", Value::str(id)).with("download", session_event(&download)),
         KernelEvent::Usage { id, provider, facts } => Event::new("kernel/usage")
             .with("id", Value::str(id))
             .with("provider", Value::str(provider))
@@ -518,8 +521,20 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             // back as a panel. That is the difference between a subscription being usable
             // from this session and it being usable only from the daemon's own command line.
             if misa_kernel::presets::oauth(&slot).is_some() {
+                if let Some(previous) = tx.get("session.oauth_request").and_then(Value::as_str) {
+                    tx.fx(Effect::new("kernel.credential").with_value(Value::map([
+                        ("id", Value::str(previous)), ("action", Value::str("cancel_oauth")), ("request", Value::str(previous)),
+                    ])));
+                }
+                let sequence = tx.int("session.oauth_sequence") + 1;
+                let request = format!("oauth:{}:{sequence}", tx.text("session.id"));
+                tx.set("session.oauth_sequence", Value::Int(sequence))?;
+                tx.set("session.oauth_request", Value::str(&request))?;
+                panel(tx, "authorize", &format!("Authorize `{slot}`"), "Requesting a device code", vec![], vec![],
+                    vec![("credential.cancel".into(), "Cancel authorization".into())])?;
+
                 tx.fx(Effect::new("kernel.credential").with_value(Value::map([
-                    ("id", Value::str("login")),
+                    ("id", Value::str(&request)),
                     ("action", Value::str("oauth")),
                     ("provider", Value::str(&slot)),
                 ])));
@@ -778,6 +793,8 @@ fn panel(
 /// answer, and pinned by a test that every one of them is handled below.
 pub const ACTIONS: &[&str] = &[
     "composer.submit",
+    "credential.cancel",
+    "attachment.save",
     "panel.close",
     "panel.submit",
     "queue.take",
@@ -825,6 +842,19 @@ fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         }
         "queue.clear" => {
             tx.dispatch(Event::new("intent/queue.clear"));
+            Ok(())
+        }
+        "attachment.save" => Err(Fault::handler("Saving requires the validated requesting client")),
+        "credential.cancel" => {
+            if let Some(request) = tx.get("session.oauth_request").and_then(Value::as_str) {
+                tx.fx(Effect::new("kernel.credential").with_value(Value::map([
+                    ("id", Value::str(request)), ("action", Value::str("cancel_oauth")), ("request", Value::str(request)),
+                ])));
+                if tx.text("panel.id") == "authorize" {
+                    tx.set("panel.text", Value::str("Cancelling authorization"))?;
+                    tx.set("panel.actions", Value::list([]))?;
+                }
+            }
             Ok(())
         }
         "panel.close" => {
@@ -891,6 +921,32 @@ fn on_conversations(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     Ok(())
 }
 
+fn on_attachment_save(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let recipient = fields::event_text(event, "recipient");
+    let request = fields::event_text(event, "id");
+    let id = format!("download:{recipient}:{request}");
+    let mut pending = tx.get("session.downloads").and_then(Value::as_map).cloned().unwrap_or_default();
+    pending.insert(id.clone(), Value::map([("recipient", Value::str(recipient)), ("id", Value::str(request))]));
+    tx.set("session.downloads", Value::Map(std::sync::Arc::new(pending)))?;
+    tx.fx(Effect::new("kernel.blob.describe")
+        .with_value(Value::map([("id", Value::str(id)), ("hash", fields::event_value(event, "hash"))])));
+    Ok(())
+}
+fn on_blob_described(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let id = fields::event_text(event, "id");
+    let mut pending = tx.get("session.downloads").and_then(Value::as_map).cloned().unwrap_or_default();
+    let Some(context) = pending.remove(&id) else {
+        return Ok(());
+    };
+    tx.set("session.downloads", Value::Map(std::sync::Arc::new(pending)))?;
+    tx.fx(Effect::new("wire.download").with_value(Value::map([
+        ("recipient", context.get("recipient").cloned().unwrap_or(Value::Null)),
+        ("id", context.get("id").cloned().unwrap_or(Value::Null)),
+        ("download", fields::event_value(event, "download")),
+    ])));
+    Ok(())
+}
+
 /// Somebody has to finish an authorization in a browser, so they are shown how.
 ///
 /// A panel rather than a notice, because a code and an address are things a person copies
@@ -901,6 +957,8 @@ fn on_conversations(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 /// It is replaced by the outcome: the same `kernel.credential` event that follows closes it,
 /// so an approved code never sits on a screen looking like something still to do.
 fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if tx.text("session.oauth_request") != fields::event_text(event, "id") { return Ok(()); }
+
     let provider = fields::event_text(event, "provider");
     let url = fields::event_text(event, "url");
     let code = fields::event_text(event, "code");
@@ -912,7 +970,7 @@ fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
          approved, and the token it gets back is stored by the daemon.",
         vec![("code", code), ("address", url)],
         Vec::new(),
-        vec![("panel.close".into(), "Dismiss".into())],
+        vec![("credential.cancel".into(), "Cancel authorization".into()), ("panel.close".into(), "Dismiss".into())],
     )
 }
 
@@ -1095,6 +1153,11 @@ fn replay_patches(tx: &mut Tx<'_>, entries: &[Value]) -> (usize, usize) {
 
 /// What a credential change did.
 fn on_credential(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let id = fields::event_text(event, "id");
+    let oauth = id.starts_with("oauth:");
+    if oauth && tx.text("session.oauth_request") != id { return Ok(()); }
+    if oauth { tx.delete("session.oauth_request")?; }
+
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let message = fields::event_text(event, "message");
     if !message.is_empty() {
@@ -1106,7 +1169,7 @@ fn on_credential(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     // formality: an authorization can finish long after somebody dismissed the panel, and a
     // delete of a *child* of a root that is not there fails the whole transaction — which is
     // how a report whose panel had already gone became a fault and no notice at all.
-    tx.delete("panel")?;
+    if !oauth || tx.text("panel.id") == "authorize" { tx.delete("panel")?; }
     Ok(())
 }
 
@@ -1576,7 +1639,7 @@ fn notice_effect(level: Level, text: impl Into<String>) -> Effect {
 }
 
 /// A session event, on its way into an effect's data.
-fn session_event(event: &SessionEvent) -> Value {
+fn session_event(event: &impl serde::Serialize) -> Value {
     let mut bytes = Vec::new();
     if ciborium::ser::into_writer(event, &mut bytes).is_err() {
         return Value::Null;

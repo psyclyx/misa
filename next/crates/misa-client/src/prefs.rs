@@ -30,11 +30,17 @@
 //! journalled where it belongs, and which nobody agreed to keep twice.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::picker::Frecency;
+
+/// A frontend supplies where its memory lives: a file, browser storage, or app data.
+/// The kit neither chooses a path nor performs filesystem or environment access.
+pub trait Storage {
+    fn read(&self) -> Result<Option<String>, String>;
+    fn write(&self, text: &str) -> Result<(), String>;
+}
 
 /// A client's memory between runs.
 ///
@@ -59,58 +65,28 @@ pub struct Prefs {
 }
 
 impl Prefs {
-    /// The document a client reads and writes unless it was told otherwise.
-    ///
-    /// The state directory, because this is state and not configuration: nobody edits it, and
-    /// losing it costs nothing. `MISA_PREFS` points it elsewhere, which is what a test and a
-    /// person running two clients side by side both want.
-    pub fn default_path() -> PathBuf {
-        if let Ok(explicit) = std::env::var("MISA_PREFS")
-            && !explicit.is_empty()
-        {
-            return PathBuf::from(explicit);
-        }
-        let state = std::env::var("XDG_STATE_HOME")
+    /// Read through the frontend's storage capability. Missing or corrupt preferences
+    /// are defaults; they never prevent a client from attaching.
+    pub fn load(storage: &dyn Storage) -> Prefs {
+        storage
+            .read()
             .ok()
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|home| PathBuf::from(home).join(".local/state")))
-            .unwrap_or_else(|| PathBuf::from("."));
-        state.join("misa/client.json")
+            .flatten()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
     }
 
-    /// What a client knew last time, or nothing at all.
-    ///
-    /// Never fails: a missing file, a file somebody edited by hand into nonsense, and a file
-    /// from a version that wrote a different shape are all "nothing remembered", which is a
-    /// state the client already handles because it is where every client starts.
-    pub fn load(path: &Path) -> Prefs {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Prefs::default();
-        };
-        serde_json::from_str(&text).unwrap_or_default()
-    }
-
-    /// Write what this client knows.
-    ///
-    /// Through a temporary file and a rename, so a client that is killed while writing leaves
-    /// one of the two documents whole rather than half of the new one — a preferences file is
-    /// not worth a lock, and it is worth not being corrupt.
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|err| format!("could not make {}: {err}", parent.display()))?;
-        }
-        let text = serde_json::to_string_pretty(self).map_err(|err| err.to_string())?;
-        let temporary = path.with_extension("writing");
-        std::fs::write(&temporary, text).map_err(|err| format!("could not write {}: {err}", temporary.display()))?;
-        std::fs::rename(&temporary, path).map_err(|err| format!("could not write {}: {err}", path.display()))
+    /// Encode the shared memory shape and let the frontend persist it.
+    pub fn save(&self, storage: &dyn Storage) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
+        storage.write(&text)
     }
 
     /// Whether a node is one somebody opened.
     pub fn is_open(&self, id: &str) -> bool {
-        self.opened.iter().any(|opened| opened == id || opened == "*")
+        self.opened
+            .iter()
+            .any(|opened| opened == id || opened == "*")
     }
 
     /// Whether anything is open, which is what a key that means "all of them" asks.
@@ -165,74 +141,58 @@ impl Prefs {
 mod tests {
     use super::*;
 
-    fn path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("misa-prefs-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("nested/client.json")
+    #[derive(Default)]
+    struct Memory(std::cell::RefCell<Option<String>>);
+    impl Storage for Memory {
+        fn read(&self) -> Result<Option<String>, String> {
+            Ok(self.0.borrow().clone())
+        }
+        fn write(&self, text: &str) -> Result<(), String> {
+            *self.0.borrow_mut() = Some(text.to_owned());
+            Ok(())
+        }
     }
 
     #[test]
-    fn what_a_client_remembers_is_what_it_reads_back() {
-        let path = path("round-trip");
+    fn the_shared_memory_shape_round_trips_through_injected_storage() {
+        let storage = Memory::default();
         let mut prefs = Prefs::default();
         prefs.theme = "plain".into();
         prefs.draft = "half a question".into();
         prefs.toggle("call.1");
         prefs.remembered("scripted-1");
-        prefs.remembered("scripted-1");
-        prefs.remembered("/model");
-        prefs.save(&path).expect("a save");
-
-        let read = Prefs::load(&path);
-        assert_eq!(read.theme, "plain");
-        assert_eq!(read.draft, "half a question");
-        assert!(read.is_open("call.1"));
-        assert!(!read.is_open("call.2"));
-        // The counts arrive in the shape a picker wants them, which is the whole point of
-        // remembering them.
-        assert_eq!(read.frecency().score("scripted-1"), 2);
-        assert!(read.frecency().score("scripted-1") > read.frecency().score("/model"));
-        let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
+        prefs.save(&storage).unwrap();
+        assert_eq!(Prefs::load(&storage), prefs);
+        assert_eq!(Prefs::load(&storage).frecency().score("scripted-1"), 1);
     }
 
     #[test]
-    fn nothing_remembered_is_a_default_and_not_a_failure() {
-        // A missing file, and a file somebody edited into nonsense: both are "nothing
-        // remembered", because the client already knows how to start there.
-        let missing = path("missing");
-        assert_eq!(Prefs::load(&missing), Prefs::default());
-        assert_eq!(Prefs::load(Path::new("/nonexistent/directory/client.json")), Prefs::default());
-
-        let broken = path("broken");
-        std::fs::create_dir_all(broken.parent().expect("a parent")).expect("a directory");
-        std::fs::write(&broken, "{ this is not json").expect("a write");
-        assert_eq!(Prefs::load(&broken), Prefs::default());
-        let _ = std::fs::remove_dir_all(broken.parent().expect("a parent"));
+    fn missing_corrupt_and_older_documents_have_defaults() {
+        let storage = Memory::default();
+        assert_eq!(Prefs::load(&storage), Prefs::default());
+        storage.write("not json").unwrap();
+        assert_eq!(Prefs::load(&storage), Prefs::default());
+        storage.write(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(Prefs::load(&storage).theme, "dark");
+        assert_eq!(Prefs::load(&storage).draft, "");
     }
 
     #[test]
-    fn a_document_that_does_not_mention_a_field_still_reads() {
-        // The shape has to survive a version that knew less (or more): a field this one wants
-        // and cannot find is a default, which is why every field carries `serde(default)`.
-        let path = path("older");
-        std::fs::create_dir_all(path.parent().expect("a parent")).expect("a directory");
-        std::fs::write(&path, r#"{"theme": "dark"}"#).expect("a write");
-        let prefs = Prefs::load(&path);
-        assert_eq!(prefs.theme, "dark");
-        assert_eq!(prefs.draft, "");
-        assert!(prefs.opened.is_empty());
-        let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
-    }
-
-    #[test]
-    fn a_save_that_cannot_be_made_says_why() {
-        // The one failure worth telling somebody about: a state directory that is not writable.
-        // The path is a file, so the directory above it cannot be created.
-        let path = path("unwritable");
-        std::fs::create_dir_all(&path).expect("a directory where a file should be");
-        let error = Prefs::default().save(&path).unwrap_err();
-        assert!(error.contains("could not"), "{error}");
-        let _ = std::fs::remove_dir_all(&path);
+    fn read_failure_defaults_but_save_failure_is_reported() {
+        struct Unavailable;
+        impl Storage for Unavailable {
+            fn read(&self) -> Result<Option<String>, String> {
+                Err("unavailable".into())
+            }
+            fn write(&self, _: &str) -> Result<(), String> {
+                Err("unavailable".into())
+            }
+        }
+        assert_eq!(Prefs::load(&Unavailable), Prefs::default());
+        assert_eq!(
+            Prefs::default().save(&Unavailable),
+            Err("unavailable".into())
+        );
     }
 
     #[test]

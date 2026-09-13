@@ -19,13 +19,13 @@ the previous system is already built.
         │  sessions: the agent loop · tools · the view tree                    │
         │  an iroh endpoint, one ALPN per role                                 │
         └───────────────────────────────┬─────────────────────────────────────┘
-                                        │  /misa/session/1
+                                        │  /misa/session/2
         ┌───────────────────────────────┴─────────────────────────────────────┐
         │  a client: subscribes, sends intents, owns the surface               │
         └───┬───────────────┬────────────────┬────────────────────────────────┘
             │               │                │
-        misa-tui        misa-web         misa-skia          misa-cli / "misa"
-        (cells)      (a server that      (pixels)            (plain text)
+        misa            misa-web         misa-skia
+        (cells/text) (a server that      (pixels)
                       serves HTML to
                       a browser)
 ```
@@ -35,19 +35,19 @@ gets a document and one stream of replacements.
 
 ## Crates
 
-| Crate                                           | What it is                                                          |
-| ----------------------------------------------- | ------------------------------------------------------------------- |
-| `misa-value`                                    | immutable, structurally shared values and explicit patches          |
-| `misa-reframe`                                  | the loop: events, coeffects, effects, subscriptions, transactions   |
-| `misa-proto`                                    | the wire: view nodes, intents, subscriptions, framing. No IO        |
-| `misa-render`                                   | text measurement, a role-addressed theme, tree → styled lines       |
-| `misa-kernel`                                   | facts and capability: the log, the attempt ledger, providers, tools |
-| `misa-session`                                  | the agent loop, the view tree, the intent vocabulary                |
-| `misa-net`                                      | the protocol state machine, and iroh under it                       |
-| `misa-plugin`                                   | the plugin host: a wasm component as handlers and subscriptions     |
-| `misa-tui`, `misa-web`, `misa-skia`, `misa-cli` | the four frontends                                                  |
+| Crate                               | What it is                                                          |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `misa-value`                        | immutable, structurally shared values and explicit patches          |
+| `misa-reframe`                      | the loop: events, coeffects, effects, subscriptions, transactions   |
+| `misa-proto`                        | the wire: view nodes, intents, subscriptions, framing. No IO        |
+| `misa-render`                       | text measurement, a role-addressed theme, tree → styled lines       |
+| `misa-kernel`                       | facts and capability: the log, the attempt ledger, providers, tools |
+| `misa-session`                      | the agent loop, the view tree, the intent vocabulary                |
+| `misa-net`                          | the protocol state machine, and iroh under it                       |
+| `misa-plugin`                       | the plugin host: a wasm component as handlers and subscriptions     |
+| `misa-tui`, `misa-web`, `misa-skia` | terminal, browser server, and pixel frontends                       |
 
-`android/` is the fifth frontend and is not a crate: a Kotlin app over the shared Rust
+`android/` is the fourth frontend and is not a crate: a Kotlin app over the shared Rust
 client, linked through a small JNI seam, with its own [`README`](android/README.md). It
 draws the same view tree the other frontends draw.
 
@@ -76,26 +76,53 @@ cargo run -p misa-daemon               # prints a ticket
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
 cargo run -p misa-daemon -- --plugin /tmp/policy.component.wasm   # a policy plugin, in wasm
                                                    # (a client can start the same flow: `/login openai-codex`)
-cargo run -p misa-tui -- misa:<endpoint id>:demo
+cargo run -p misa-tui --bin misa -- misa:<endpoint id>:demo
 cargo run -p misa-web -- --ticket misa:<endpoint id>:demo --listen 127.0.0.1:8080
-cargo run -p misa-cli -- misa:<endpoint id>:demo "say something"
+cargo run -p misa-tui --bin misa -- --print misa:<endpoint id>:demo "say something"
 ```
+
+Save a received attachment in the terminal with `/save ./photo.png`, or choose an attachment
+by its transcript order with `/save 2 ./photo.png`. The command keeps the destination on the
+client and refuses to overwrite an existing file. The browser's **Save attachment** button
+uses the browser's download location. Both paths ask the session for the attachment it offered,
+then fetch the kernel-confirmed bytes.
+
+A device login panel offers **Cancel authorization** to stop polling immediately. Dismissing
+the panel alone leaves the authorization running.
 
 The daemon ships a scripted provider, so a session runs end to end with no network,
 no account, and no spend. That is the provider every test uses.
 
-`misa-skia`'s raster is behind a feature, because painting needs a Skia that can be linked, which
-needs `freetype` and `fontconfig`. That feature is temporary: it exists because Skia is not yet an
-input the build provides, and `docs/plan.md` phase 7 builds the pixel frontend with the Skia it
-needs, unconditionally — a pixel frontend that cannot paint is not a frontend. Until then the raster
-is tested behind the feature:
+The `misa` binary selects the interactive terminal when stdin and stdout are terminals,
+and plain output for pipes. `--print` (or `-p`) forces plain output. `misa-tui` remains an alias.
+Skia painting is unconditional; the shell supplies its pinned archive, libraries, and fonts.
+
+Build artifacts from the repository root:
 
 ```sh
-cargo test -p misa-skia --features paint
+nix-build next -A packages.misa-daemon
+nix-build next -A packages.misa
+nix-build next -A packages.misa-web
+nix-build next -A packages.misa-skia
+nix-build next -A packages.misa-guest
+nix-build next -A packages.misa-android
+nix-build next -A packages.checks
+nix-build next -A packages.misa-android.installCheck
 ```
 
-The scene — the mapping from a view tree and a theme to positioned runs — is built
-and tested without either, which is the interesting half.
+The guest is installed at `lib/misa/policy-guest.wasm`; the debug-signed APK is at
+`share/misa/misa-debug.apk`. The Android install check boots a temporary emulator,
+installs that exact APK, and launches its activity; it requires KVM. The checks artifact
+runs the Rust workspace, the packaged guest fixture, and browser DOM tests.
+
+Both shell entry points derive build inputs from these artifacts. The Android native
+libraries use the same pinned Rust version as the desktop builds, with NDK 29 and
+16 KiB page alignment. Gradle dependencies are recorded in `android/gradle.lock`.
+
+The repository root also exposes these packages and the previous Zig package as
+`misa-legacy`. Its existing modules retain their Zig configuration. The separate
+`nixosModules.misa-daemon` module runs the Rust daemon with a private state directory;
+configure it through `services.misa`.
 
 ## Plugins
 

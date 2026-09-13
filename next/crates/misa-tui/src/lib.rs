@@ -21,6 +21,10 @@
 //! items to hold — see [`misa_client::picker`].
 
 pub mod print;
+pub mod output;
+mod event_loop;
+pub mod storage;
+pub mod save;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -118,6 +122,8 @@ pub struct PanelInput {
 /// What a keypress caused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOut {
+    /// Choose a local destination, then request the attachment the session offered.
+    Save(save::Request),
     /// The client handled it alone.
     Local,
     /// Something to ask a session.
@@ -198,8 +204,8 @@ impl Screen {
     /// a client that wrote to somebody's home during a test would be a client whose tests
     /// depend on the order they ran in.
     pub fn durable() -> Screen {
-        let path = Prefs::default_path();
-        Screen::remembering(Prefs::load(&path), path)
+        let path = storage::File::default_path();
+        Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path)
     }
 
     /// A screen remembering a document somebody else decided where to keep.
@@ -228,7 +234,7 @@ impl Screen {
             return;
         };
         self.prefs.draft = self.editor.text().to_string();
-        if let Err(error) = self.prefs.save(&path) {
+        if let Err(error) = self.prefs.save(&storage::File::at(path)) {
             self.notice = Some(error);
         }
     }
@@ -241,6 +247,7 @@ impl Screen {
     /// without asking anything.
     pub fn declare(&mut self, info: &SessionInfo) {
         self.commands = info.commands.clone();
+        self.commands.push(Command::new("save", "Save attachment", "/save [number] <local path>"));
         self.sources = info.sources.clone();
     }
 
@@ -626,6 +633,12 @@ impl Screen {
     /// Enter: submit what is there, or open the picker a declaration asks for.
     fn submit(&mut self) -> KeyOut {
         let text = self.editor.text().to_string();
+        if let Some(parsed) = save::parse(&text) {
+            return match parsed {
+                Ok(request) => { self.editor.submit(); self.save(); KeyOut::Save(request) }
+                Err(error) => { self.notice = Some(error); KeyOut::Local }
+            };
+        }
         match line::parse(&text, &self.commands) {
             line::Parsed::Empty => KeyOut::Local,
             line::Parsed::Needs { command, argument, source, .. } => {
@@ -919,7 +932,8 @@ pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
     // The body is what a selection moves over, so it is kept whole and the window is
     // taken from it afterwards: a row's index must not depend on where the viewport is.
     let body = select::Body::of(&rendered);
-    let chrome = if screen.picker.is_some() { 9 } else { 3 };
+    let attachment_count = save::attachments(view).len();
+    let chrome = (if screen.picker.is_some() { 9 } else { 3 }) + usize::from(attachment_count > 0);
     let room = (screen.height as usize).saturating_sub(chrome);
 
     // Scrolling is presentation, so the client does it and nobody is told. Following
@@ -943,6 +957,9 @@ pub fn draw(screen: &Screen, view: &Node) -> Vec<Line> {
 
     if let Some(picker) = &screen.picker {
         lines.extend(picker_lines(screen, picker));
+    }
+    if attachment_count > 0 {
+        lines.push(Line { node: None, indent: 0, spans: vec![(screen.theme.role("notice"), format!("{attachment_count} attachments · /save [1–{attachment_count}] <local path> · latest by default"))] });
     }
     if let Some(notice) = &screen.notice {
         lines.push(Line {
@@ -1059,6 +1076,9 @@ pub trait Session: Send {
     /// The next view, if one changed.
     async fn next(&mut self) -> Result<Option<Node>, String>;
     async fn send(&mut self, intent: Intent) -> Result<(), String>;
+    async fn save_attachment(&mut self, _node: &str, _destination: &str) -> Result<(), String> {
+        Err("This client has no blob connection".into())
+    }
     /// Candidates a session holds, for a source this client asked about.
     async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String>;
     fn info(&self) -> Option<SessionInfo>;
@@ -1066,71 +1086,7 @@ pub trait Session: Send {
 
 /// The interactive loop.
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
-    use crossterm::event;
-    let mut screen = Screen::durable();
-    if let Some(info) = session.info() {
-        screen.declare(&info);
-    }
-    let mut stdout = std::io::stdout();
-    crossterm::terminal::enable_raw_mode().map_err(|err| err.to_string())?;
-    let result = 'session: loop {
-        let Some(view) = session.next().await? else {
-            break Ok(());
-        };
-        let mut painted = draw(&screen, &view);
-        loop {
-            if let Err(error) = write(&mut stdout, &painted) {
-                break 'session Err(error);
-            }
-            if !event::poll(Duration::from_millis(1)).map_err(|err| err.to_string())? {
-                // Nothing to handle, so hand the wait back to the session. A client that
-                // redrew here would be a client spinning on its own poll.
-                break;
-            }
-            let event = event::read().map_err(|err| err.to_string())?;
-            let crossterm::event::Event::Key(key) = event else {
-                continue;
-            };
-            let Some(interpreted) = translate(key.code, key.modifiers) else {
-                continue;
-            };
-            // The selection gets the key first: it is a mode over the view, and while one is
-            // open every key that moves it belongs to the reader rather than the composer.
-            let out = match screen.selection_key(&view, &interpreted) {
-                Some(out) => out,
-                None => match screen.panel_key(&view, &interpreted) {
-                    Some(out) => out,
-                    None => screen.key(interpreted),
-                },
-            };
-            match out {
-                KeyOut::Local => {}
-                KeyOut::Quit => break 'session Ok(()),
-                KeyOut::Intent(intent) => {
-                    if let Err(error) = session.send(intent).await {
-                        screen.notice = Some(error);
-                    }
-                }
-                KeyOut::Complete { source, prefix } => match session.complete(&source, &prefix).await {
-                    Ok((items, truncated)) => screen.candidates(&source, items, truncated),
-                    Err(error) => screen.notice = Some(error),
-                },
-                KeyOut::Copy(text) => {
-                    if let Err(error) = copy_to_clipboard(&mut stdout, &text) {
-                        screen.notice = Some(error);
-                    }
-                }
-            }
-            // What a client decided for itself is painted here rather than waited for,
-            // because nothing on the other side of the connection knows it happened: a
-            // selection moving is not something a session could send a view for.
-            painted = draw(&screen, &view);
-        }
-    };
-    crossterm::terminal::disable_raw_mode().map_err(|err| err.to_string())?;
-    // The draft is the one thing that could not be written while somebody was typing it.
-    screen.save();
-    result
+    event_loop::run(session).await
 }
 
 fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<Key> {
@@ -1162,40 +1118,6 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
     })
 }
 
-fn write(stdout: &mut std::io::Stdout, lines: &[Line]) -> Result<(), String> {
-    use crossterm::{cursor, execute, terminal};
-    use std::io::Write as _;
-
-    execute!(stdout, terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))
-        .map_err(|err| err.to_string())?;
-    for line in lines {
-        let mut out = String::new();
-        for (style, text) in &line.spans {
-            out.push_str(&sgr(style));
-            out.push_str(text);
-            out.push_str("\u{1b}[0m");
-        }
-        write!(stdout, "{}{}\r\n", " ".repeat(line.indent as usize), out).map_err(|err| err.to_string())?;
-    }
-    stdout.flush().map_err(|err| err.to_string())
-}
-/// Put text on the terminal's clipboard, by asking the terminal to put it there.
-///
-/// OSC 52 is the only clipboard a program with no window can reach, and that is the
-/// whole reason this is client-side: the text does not leave the machine, so there is
-/// nothing to ask a session for and no capability to request. Whether anything lands
-/// is the terminal's business — a multiplexer may drop it and a terminal may refuse it
-/// — and that is not an error this program can see, so it does not invent one.
-fn copy_to_clipboard(stdout: &mut std::io::Stdout, text: &str) -> Result<(), String> {
-    use base64::Engine as _;
-    use std::io::Write as _;
-
-    let payload = base64::engine::general_purpose::STANDARD.encode(text);
-    write!(stdout, "\u{1b}]52;c;{payload}\u{7}").map_err(|err| err.to_string())?;
-    stdout.flush().map_err(|err| err.to_string())
-}
-
-/// A style as an ANSI sequence. The one place a colour becomes bytes.
 pub fn sgr(style: &misa_render::Style) -> String {
     use misa_render::Color;
     let mut codes: Vec<String> = Vec::new();
@@ -1233,6 +1155,8 @@ pub fn sgr(style: &misa_render::Style) -> String {
 
 /// A session reached over iroh.
 pub struct Remote {
+    blobs: std::sync::Arc<misa_net::blob::Store>,
+    inbox: std::collections::VecDeque<misa_proto::SessionMsg>,
     client: misa_net::iroh::Client,
     view: misa_proto::sync::ClientView,
     info: Option<SessionInfo>,
@@ -1248,6 +1172,7 @@ impl Remote {
             misa_net::iroh::Client::pair(&endpoint, address.clone(), code, "the tui").await?;
         }
         let info = misa_proto::ClientInfo::new("misa-tui", env!("CARGO_PKG_VERSION"));
+        let blobs = misa_net::blob::Store::new(endpoint.clone(), address.clone());
         let mut client = misa_net::iroh::Client::connect(&endpoint, address, info, &ticket.session).await?;
         client
             .subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY))
@@ -1268,7 +1193,7 @@ impl Remote {
             client.subscribe(source_subscription(source), query).await?;
         }
         let info = client.session().cloned();
-        Ok(Remote { client, view: Default::default(), info })
+        Ok(Remote { client, view: Default::default(), info, blobs, inbox: std::collections::VecDeque::new() })
     }
 }
 
@@ -1282,7 +1207,8 @@ fn source_subscription(source: &str) -> misa_proto::SubId {
 impl Session for Remote {
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
-            let Some(message) = self.client.next().await? else { return Ok(None) };
+            let message = match self.inbox.pop_front() { Some(message) => Some(message), None => self.client.next().await? };
+            let Some(message) = message else { return Ok(None) };
             match self.view.receive(&message) {
                 Ok(true) => if let Some(view) = self.view.rendered() { return Ok(Some(view)); },
                 Err(_) => { self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?; }
@@ -1298,6 +1224,25 @@ impl Session for Remote {
 
     async fn send(&mut self, intent: Intent) -> Result<(), String> {
         self.client.intent(next_intent_id(), intent).await
+    }
+
+    async fn save_attachment(&mut self, node: &str, destination: &str) -> Result<(), String> {
+        let id = next_intent_id();
+        self.client.intent(id, Intent::Action { node: node.into(), action: "attachment.save".into(), args: misa_value::Value::Null, fields: vec![] }).await?;
+        let download = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match self.client.next().await? {
+                    Some(misa_proto::SessionMsg::Download { id: reply, download }) if reply == id => return Ok(download),
+                    Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => return Err(fault.message),
+                    Some(message) => self.inbox.push_back(message),
+                    None => return Err("The session disconnected before the save request finished".into()),
+                }
+            }
+        }).await.map_err(|_| "The session did not answer the save request")??;
+        let reference = download.blob.ok_or(download.error)?;
+        let blob = self.blobs.get(&reference.hash).await?.ok_or("This attachment is no longer available")?;
+        if blob.hash != reference.hash || blob.bytes.len() as u64 != reference.len { return Err("The attachment bytes do not match the offered file".into()); }
+        save::write_new(destination, &blob.bytes)
     }
 
     async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String> {
@@ -1564,7 +1509,8 @@ mod tests {
         let mut screen = screen();
         assert_eq!(screen.key(Key::Char('/')), KeyOut::Local);
         let picker = screen.picker.as_ref().expect("a picker");
-        assert_eq!(picker.items().len(), 3);
+        assert_eq!(picker.items().len(), 4);
+        assert!(picker.items().iter().any(|item| item.value == "/save"));
         assert!(picker.items().iter().any(|item| item.value == "/model"));
     }
 
@@ -1681,7 +1627,7 @@ mod tests {
         type_text(&mut first, "half a question");
         first.save();
 
-        let second = Screen::remembering(Prefs::load(&path), path.clone());
+        let second = Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path.clone());
         // The theme somebody chose is the one they are drawn with next time.
         assert_eq!(second.theme.name, "plain");
         assert_eq!(second.editor.text(), "half a question");
@@ -1698,7 +1644,7 @@ mod tests {
         assert!(matches!(screen.key(Key::Submit), KeyOut::Intent(_)));
         assert!(screen.editor.is_empty());
         // The line went out, so the memory of it goes out with it.
-        let next = Screen::remembering(Prefs::load(&path), path.clone());
+        let next = Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path.clone());
         assert_eq!(next.editor.text(), "");
         let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
     }
@@ -1725,7 +1671,7 @@ mod tests {
         first.key(Key::Motion(ed::Motion::Down));
         assert!(matches!(first.key(Key::Submit), KeyOut::Intent(_)));
 
-        let mut second = Screen::remembering(Prefs::load(&path), path.clone());
+        let mut second = Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path.clone());
         second.declare(&declaration());
         second.editor.set_text("/model");
         second.key(Key::Submit);

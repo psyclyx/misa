@@ -142,9 +142,12 @@ pub mod paint {
         let canvas: &Canvas = surface.canvas();
         canvas.clear(skia_safe::Color::from(skia_color(background, 0xff14_161a)));
 
-        let typeface = FontMgr::default()
-            .legacy_make_typeface(None, FontStyle::default())
-            .ok_or("no typeface available; install a font machine or a font file")?;
+        let fonts = FontMgr::default();
+        let typeface = fonts.match_family_style("monospace", FontStyle::default())
+            .or_else(|| fonts.family_names().find_map(|family| {
+                fonts.match_family_style(family, FontStyle::default())
+            }))
+            .ok_or("no typeface available; install a font")?;
         let mut fill = SkPaint::default();
         fill.set_anti_alias(true);
 
@@ -165,7 +168,6 @@ pub mod paint {
             }
         }
 
-        let image = surface.image_snapshot();
         let pixmap = surface.peek_pixels().ok_or("no pixels")?;
         let bytes = pixmap.bytes().ok_or("no pixel bytes")?;
         let mut rgba = Vec::with_capacity((width * height * 4) as usize);

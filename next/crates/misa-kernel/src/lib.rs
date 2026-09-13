@@ -81,6 +81,8 @@ fn base64(bytes: &[u8]) -> String {
 /// the kind, and this is what an accepted kind is translated into.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// Confirm an existing blob and offer it as a file, without a daemon filesystem path.
+    BlobDescribe { id: String, hash: String },
     Usage {
         id: String,
         provider: String,
@@ -185,6 +187,8 @@ pub enum CredentialAction {
     /// with how it ended. A session that waited would stop answering clients until somebody
     /// typed a code into a website.
     OAuth { provider: String },
+    /// Stop the named device authorization owned by this reporting session.
+    CancelOAuth { request: String },
 }
 
 /// What the kernel reports back. Each one becomes an event in the session's loop.
@@ -193,6 +197,7 @@ pub enum CredentialAction {
 /// answer asked for one, and this is the answer arriving as a fact.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelEvent {
+    BlobDescribed { id: String, download: misa_proto::wire::Download },
     Usage {
         id: String,
         provider: String,
@@ -306,6 +311,7 @@ impl KernelEvent {
             KernelEvent::ProviderDelta { .. } => "provider.delta",
             KernelEvent::ProviderThinking { .. } => "provider.thinking",
             KernelEvent::ProviderFinished { .. } => "provider.finished",
+            KernelEvent::BlobDescribed { .. } => "blob.described",
             KernelEvent::Usage { .. } => "usage",
             KernelEvent::Models { .. } => "models",
             KernelEvent::ToolFinished { .. } => "tool.finished",
@@ -443,6 +449,13 @@ impl SearchKind {
     }
 }
 
+struct ActiveAuthorization {
+    id: String,
+    owner: mpsc::UnboundedSender<KernelEvent>,
+    cancel: tokio::sync::oneshot::Sender<()>,
+    token: Arc<()>,
+}
+
 /// The kernel, with every capability it was composed with.
 pub struct Daemon {
     store: Arc<dyn Store>,
@@ -458,6 +471,7 @@ pub struct Daemon {
     /// point a service at an address of its own, which is what makes a flow that talks to
     /// a service on the internet testable at all.
     flows: Vec<(String, oauth::Flow)>,
+    authorizations: Arc<std::sync::Mutex<Vec<ActiveAuthorization>>>,
     /// Where a tool that keeps running after it answers reports what happened.
     events: mpsc::UnboundedSender<KernelEvent>,
     /// The other end of `events`, handed to the session exactly once.
@@ -485,6 +499,7 @@ impl Daemon {
             tools: tools::shipped(&shell, &events),
             events,
             listener: std::sync::Mutex::new(Some(listener)),
+            authorizations: Arc::new(std::sync::Mutex::new(Vec::new())),
             shell,
         }
     }
@@ -511,6 +526,7 @@ impl Daemon {
             tools: tools::shipped(&shell, &events),
             events,
             listener: std::sync::Mutex::new(Some(listener)),
+            authorizations: Arc::new(std::sync::Mutex::new(Vec::new())),
             shell,
         })
     }
@@ -535,6 +551,7 @@ impl Daemon {
             tools,
             events,
             listener: std::sync::Mutex::new(Some(listener)),
+            authorizations: Arc::new(std::sync::Mutex::new(Vec::new())),
             shell: composition.shell,
         }
     }
@@ -706,8 +723,14 @@ impl Daemon {
         let asked = id.clone();
         let named = provider.clone();
         let waiting = provider.clone();
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let token = Arc::new(());
+        let authorizations = self.authorizations.clone();
+        authorizations.lock().unwrap().push(ActiveAuthorization {
+            id: id.clone(), owner: out.clone(), cancel, token: token.clone(),
+        });
         tokio::spawn(async move {
-            let token = oauth::login(
+            let login = oauth::login(
                 &flow,
                 move |prompt| {
                     let _ = reports.send(KernelEvent::CredentialPrompt {
@@ -718,9 +741,14 @@ impl Daemon {
                     });
                 },
                 || out.is_closed(),
-            )
-            .await;
-            match token {
+            );
+            let result = tokio::select! {
+                biased;
+                _ = cancelled => Err("Authorization cancelled".to_string()),
+                result = login => result,
+            };
+            authorizations.lock().unwrap().retain(|active| !Arc::ptr_eq(&active.token, &token));
+            match result {
                 Ok(token) => {
                     let account = token.account.clone();
                     let stored = credentials.set_oauth(
@@ -1060,6 +1088,15 @@ impl Kernel for Daemon {
                 // which is what lets a client — any client — start an authorization and be told
                 // where to go, instead of a person having to run a daemon subcommand with a
                 // terminal of its own.
+                CredentialAction::CancelOAuth { request } => {
+                    let mut active = self.authorizations.lock().unwrap();
+                    if let Some(index) = active.iter().position(|flow| flow.id == request && flow.owner.same_channel(out)) {
+                        let flow = active.remove(index);
+                        let _ = flow.cancel.send(());
+                    } else {
+                        report_credential(&self.credentials, request, false, "Authorization already finished".into(), out);
+                    }
+                }
                 CredentialAction::OAuth { provider } => self.authorize(&provider, id, out),
                 CredentialAction::Set { slot, account, value } => {
                     let (ok, message) = match self.credentials.set(&slot, &account, &value) {
@@ -1134,6 +1171,19 @@ impl Kernel for Daemon {
                     });
                 }
             },
+            Request::BlobDescribe { id, hash } => {
+                let blob = self.blobs.describe(&hash);
+                let suffix = match blob.as_ref().and_then(|blob| blob.media.as_deref()) {
+                    Some("image/png") => ".png", Some("image/jpeg") => ".jpg", Some("image/gif") => ".gif",
+                    Some("application/pdf") => ".pdf", Some("text/plain") => ".txt", _ => ".bin",
+                };
+                let download = misa_proto::wire::Download {
+                    name: if blob.is_some() { format!("{hash}{suffix}") } else { String::new() },
+                    error: if blob.is_none() { "This attachment is no longer in the blob store".into() } else { String::new() },
+                    blob,
+                };
+                let _ = out.send(KernelEvent::BlobDescribed { id, download });
+            }
             Request::BlobLoad { id, hash } => match self.blobs.get(&hash) {
                 Some(bytes) => {
                     let media = self.blobs.media(&hash).unwrap_or_default();
@@ -1466,6 +1516,27 @@ mod tests {
             token_url: Box::leak(format!("{base}/token").into_boxed_str()),
             verification_url: "https://example.invalid/device",
         }
+    }
+
+    #[tokio::test]
+    async fn device_cancellation_stops_polling_and_only_its_session_can_cancel() {
+        let base = oauth::script_server(vec![(200,
+            r#"{"device_code":"dev","user_code":"AAAA-BBBB","verification_uri":"https://example.invalid/device","interval":30,"expires_in":300}"#.into())]).await;
+        let kernel = kernel().with_flow("kimi-coding", local_flow(&base));
+        let (owner, mut reports) = mpsc::unbounded_channel();
+        kernel.execute(Request::Credential { id: "flow".into(), action: CredentialAction::OAuth { provider: "kimi-coding".into() } }, &owner).await;
+        assert!(matches!(tokio::time::timeout(std::time::Duration::from_secs(2), reports.recv()).await.unwrap(), Some(KernelEvent::CredentialPrompt { .. })));
+        let (other, mut refused) = mpsc::unbounded_channel();
+        kernel.execute(Request::Credential { id: "cancel".into(), action: CredentialAction::CancelOAuth { request: "flow".into() } }, &other).await;
+        assert!(matches!(refused.recv().await, Some(KernelEvent::Credential { ok: false, .. })));
+        assert_eq!(kernel.authorizations.lock().unwrap().len(), 1);
+        kernel.execute(Request::Credential { id: "cancel".into(), action: CredentialAction::CancelOAuth { request: "flow".into() } }, &owner).await;
+        match tokio::time::timeout(std::time::Duration::from_millis(200), reports.recv()).await.unwrap().unwrap() {
+            KernelEvent::Credential { id, ok, message, .. } => { assert_eq!(id, "flow"); assert!(!ok); assert_eq!(message, "Authorization cancelled"); }
+            other => panic!("unexpected report: {other:?}"),
+        }
+        assert!(kernel.credentials().slots().is_empty());
+        assert!(kernel.authorizations.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

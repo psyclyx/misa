@@ -24,6 +24,8 @@
 //!
 //! Nothing in this layer decides anything about the conversation. It is a wire.
 
+/// Deployment admission and pairing, shared by session and blob connections.
+pub mod admission;
 /// Bulk content by hash, on a connection of its own.
 pub mod blob;
 pub mod iroh;
@@ -47,6 +49,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 /// Per connection, because two clients may ask different questions and one may be
 /// attached from a browser while the other is a terminal of a very different width.
 pub struct Session {
+    recipient: u64,
     runtime: Arc<Runtime>,
     client: Option<ClientInfo>,
     subscriptions: BTreeMap<SubId, Subscription>,
@@ -63,7 +66,7 @@ struct Subscription {
 impl Session {
     pub fn new(runtime: Arc<Runtime>) -> Self {
         Session {
-            runtime,
+            recipient: misa_proto::wire::RequestContext::connection(),            runtime,
             client: None,
             subscriptions: BTreeMap::new(),
             last_seq: 0,
@@ -142,7 +145,7 @@ impl Session {
                 }
             }
             ClientMsg::Intent { id, intent } => {
-                let faults = self.runtime.intent(intent);
+                let faults = self.runtime.intent_from(intent, Some(misa_proto::wire::RequestContext { recipient: self.recipient, id }));
                 let mut out: Vec<SessionMsg> = faults
                     .into_iter()
                     .map(|fault| SessionMsg::Fault { id: Some(id), fault })
@@ -220,7 +223,12 @@ impl Session {
                 continue;
             }
             self.last_seq = emission.seq + 1;
-            out.push(SessionMsg::Event { seq: emission.seq, event: emission.event.clone() });
+            if emission.recipient.is_some_and(|recipient| recipient != self.recipient) { continue; }
+            match &emission.event {
+                SessionEvent::DownloadReady { id, download } if emission.recipient.is_some() => out.push(SessionMsg::Download { id: *id, download: download.clone() }),
+                SessionEvent::DownloadReady { .. } => {},
+                _ => out.push(SessionMsg::Event { seq: emission.seq, event: emission.event.clone() }),
+            }
         }
         out
     }
@@ -446,6 +454,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attachment_save_is_a_kernel_answer_only_the_requesting_connection_receives() {
+        use misa_proto::wire::Intent;
+        let kernel = Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("done")));
+        let blob = kernel.blobs().put(b"a file to keep", Some("text/plain")).unwrap();
+        let runtime = Runtime::start("save", "Save", None, kernel, "scripted", "test", misa_value::Value::Null);
+        runtime.intent(Intent::Prompt { text: "keep this".into(), attachments: vec![blob.clone()] });
+        fn target(node: &misa_proto::view::Node) -> Option<String> {
+            if node.actions.iter().any(|action| action.id == "attachment.save") { return Some(node.id.clone()); }
+            node.children.iter().find_map(target)
+        }
+        let node = target(&runtime.view().unwrap()).unwrap();
+        let mut owner = Session::new(runtime.clone());
+        let mut other = Session::new(runtime.clone());
+        owner.handle(hello("owner")); other.handle(hello("other"));
+        let mut events = runtime.subscribe_events();
+        let replies = owner.handle(ClientMsg::Intent { id: 42, intent: Intent::Action { node, action: "attachment.save".into(), args: misa_value::Value::str("/etc/shadow"), fields: vec![] } });
+        assert!(matches!(replies.as_slice(), [SessionMsg::Ack { id: 42 }]));
+        let emission = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop { let event = events.recv().await.unwrap(); if matches!(event.event, SessionEvent::DownloadReady { .. }) { break event; } }
+        }).await.unwrap();
+        assert!(other.events(&[emission.clone()]).is_empty());
+        match owner.events(&[emission.clone()]).as_slice() {
+            [SessionMsg::Download { id, download }] => {
+                assert_eq!(*id, 42); assert_eq!(download.blob.as_ref(), Some(&blob));
+                assert_eq!(download.name, format!("{}.txt", blob.hash)); assert!(download.error.is_empty());
+            }
+            other => panic!("unexpected answer: {other:?}"),
+        }
+        assert!(owner.events(&[emission]).is_empty());
+        let denied = owner.handle(ClientMsg::Intent { id: 43, intent: Intent::Action { node: "invented".into(), action: "attachment.save".into(), args: misa_value::Value::Null, fields: vec![] } });
+        assert!(matches!(denied.as_slice(), [SessionMsg::Fault { id: Some(43), .. }]));
+    }
+
+    #[tokio::test]
     async fn two_attached_clients_receive_byte_identical_trees() {
         let runtime = runtime();
         let mut first = Session::new(runtime.clone());
@@ -555,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn events_are_numbered_and_a_client_does_not_see_one_twice() {
         let mut session = Session::new(runtime());
-        let emission = |seq| misa_session::Emission { seq, event: SessionEvent::Status { text: format!("{seq}") } };
+        let emission = |seq| misa_session::Emission { recipient: None, seq, event: SessionEvent::Status { text: format!("{seq}") } };
         assert_eq!(session.events(&[emission(1), emission(2)]).len(), 2);
         assert!(
             session.events(&[emission(1), emission(2)]).is_empty(),

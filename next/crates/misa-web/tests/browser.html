@@ -1,0 +1,211 @@
+<!doctype html>
+<html>
+  <body>
+    <script src="../src/app.js"></script>
+    <script>
+      (async function () {
+        const checks = [];
+        function assert(value, name) {
+          if (!value) throw new Error(name);
+          checks.push(name);
+        }
+        function storage() {
+          const values = new Map();
+          return {
+            getItem: (key) => values.get(key) || null,
+            setItem: (key, value) => values.set(key, value),
+          };
+        }
+        const store = storage();
+        try {
+          const first = MisaClient.memory(store, "one");
+          first.state.draft = "half a thought";
+          first.state.theme = "plain";
+          first.state.opened = ["call"];
+          first.save();
+          assert(
+            MisaClient.memory(store, "one").state.draft === "half a thought",
+            "draft survives reload",
+          );
+          assert(
+            MisaClient.memory(store, "two").state.draft === "",
+            "session memories stay separate",
+          );
+          store.setItem("broken", "{not json");
+          assert(
+            MisaClient.memory(store, "broken").state.theme === "system",
+            "corrupt storage defaults",
+          );
+          store.setItem("shape", '{"opened":{},"draft":4,"theme":"bogus"}');
+          assert(
+            MisaClient.memory(store, "shape").state.opened.length === 0,
+            "invalid field types default",
+          );
+          const unavailable = {
+            getItem() {
+              throw Error("denied");
+            },
+            setItem() {
+              throw Error("full");
+            },
+          };
+          const temporary = MisaClient.memory(unavailable, "one");
+          temporary.state.draft = "still usable";
+          temporary.save();
+          assert(
+            temporary.state.draft === "still usable",
+            "storage denial preserves in-memory editing",
+          );
+
+          const frame = document.createElement("iframe");
+          document.body.appendChild(frame);
+          const doc = frame.contentDocument;
+          doc.body.dataset.session = "demo";
+          const region =
+            '<form id="composer"><textarea name="prompt"></textarea><button>Send</button></form>' +
+            '<details id="call"><summary>Tool</summary><p>result</p></details>';
+          doc.body.innerHTML =
+            '<select id="theme"><option>system</option><option>dark</option><option>plain</option></select><main id="main">' +
+            region +
+            "</main>";
+          const browser = {
+            localStorage: store,
+            scrollY: 0,
+            innerHeight: 800,
+            scrollTo() {},
+          };
+          const client = MisaClient.start(doc, browser);
+          let draft = doc.querySelector("textarea");
+          draft.value = "unsent";
+          draft.dispatchEvent(new Event("input", { bubbles: true }));
+          draft.focus();
+          draft.setSelectionRange(2, 4);
+          client.changes([
+            {
+              op: "insert",
+              parent: "call",
+              before: null,
+              html: '<p id="added">new result</p>',
+            },
+          ]);
+          assert(
+            doc.querySelector("textarea") === draft &&
+              doc.activeElement === draft,
+            "an unrelated operation preserves the actual focused element",
+          );
+          assert(
+            draft.selectionStart === 2 && draft.selectionEnd === 4,
+            "an unrelated operation preserves selection",
+          );
+          const unchanged = doc.getElementById("call");
+          client.changes([
+            {
+              op: "insert",
+              parent: "call",
+              before: "added",
+              html: '<p id="earlier">earlier</p>',
+            },
+            {
+              op: "replace",
+              id: "added",
+              html: '<p id="added">settled result</p>',
+            },
+          ]);
+          assert(
+            doc.getElementById("earlier").nextElementSibling.id === "added",
+            "insert respects its sibling anchor",
+          );
+          assert(
+            doc.getElementById("added").textContent === "settled result" &&
+              doc.getElementById("call") === unchanged,
+            "replacement keeps the parent DOM element",
+          );
+          client.changes([{ op: "remove", id: "earlier" }]);
+          assert(!doc.getElementById("earlier"), "remove deletes its target");
+          client.streams([{ id: "answer", role: "assistant", text: "é" }]);
+          const streamNode = doc.querySelector('[data-stream="answer"]');
+          const streamText = streamNode.firstChild;
+          client.streamUpdate({
+            update: "append",
+            id: "answer",
+            offset: 2,
+            text: "🙂",
+          });
+          assert(
+            streamNode.textContent === "é🙂" &&
+              streamNode.firstChild === streamText,
+            "stream appends use byte offsets and preserve the text node",
+          );
+          let rejected = false;
+          try {
+            client.streamUpdate({
+              update: "append",
+              id: "answer",
+              offset: 3,
+              text: "gap",
+            });
+          } catch (_) {
+            rejected = true;
+          }
+          assert(
+            rejected && streamNode.textContent === "é🙂",
+            "gapped append is rejected",
+          );
+          client.snapshot(region);
+          assert(
+            doc.querySelector('[data-stream="answer"]') === streamNode,
+            "canonical snapshot preserves the separate stream",
+          );
+          client.streamUpdate({ update: "end", id: "answer" });
+          assert(
+            !doc.querySelector('[data-stream="answer"]'),
+            "settled stream is removed",
+          );
+          draft = doc.querySelector("textarea");
+          assert(draft.value === "unsent", "snapshot preserves unsent draft");
+          assert(
+            doc.activeElement === draft &&
+              draft.selectionStart === 2 &&
+              draft.selectionEnd === 4,
+            "snapshot preserves composer focus and selection",
+          );
+          let detail = doc.getElementById("call");
+          detail.open = true;
+          detail.dispatchEvent(new Event("toggle"));
+          client.snapshot(region);
+          assert(
+            doc.getElementById("call").open,
+            "snapshot preserves opened disclosure",
+          );
+          const theme = doc.getElementById("theme");
+          theme.value = "plain";
+          theme.dispatchEvent(new Event("change"));
+          assert(
+            doc.documentElement.dataset.theme === "plain",
+            "theme is applied locally",
+          );
+          assert(
+            MisaClient.memory(store, "misa.preferences.demo").state.theme ===
+              "plain",
+            "theme is persisted",
+          );
+          doc
+            .getElementById("composer")
+            .dispatchEvent(
+              new Event("submit", { bubbles: true, cancelable: true }),
+            );
+          assert(
+            MisaClient.memory(store, "misa.preferences.demo").state.draft ===
+              "",
+            "submitted draft is cleared",
+          );
+          document.body.dataset.result = "passed";
+          document.body.append(checks.length + " browser checks passed");
+        } catch (error) {
+          document.body.dataset.result = "failed";
+          document.body.append(error.stack);
+        }
+      })();
+    </script>
+  </body>
+</html>
