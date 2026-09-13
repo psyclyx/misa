@@ -174,7 +174,14 @@ impl Parser<'_> {
             index += 1;
         }
         let text = body.trim_end_matches('\n').to_string();
-        (Node::new(self.role("code"), Kind::Code { lang, text, captures: Vec::new() }), index)
+        // A fence that says `diff` is a diff, and the role is how that reaches a frontend:
+        // the block is still `Kind::Code`, because a diff *is* code — what it needs is to be
+        // laid out line by line, and the role is what says so.
+        let shape = match lang.as_deref() {
+            Some(lang) if lang.eq_ignore_ascii_case("diff") => "diff",
+            _ => "code",
+        };
+        (Node::new(self.role(shape), Kind::Code { lang, text, captures: Vec::new() }), index)
     }
 
     fn quote(&self, lines: &[&str], start: usize) -> (Node, usize) {
@@ -474,6 +481,16 @@ mod tests {
             }
             other => panic!("expected code, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_diff_fence_is_marked_as_a_diff() {
+        // The block is still code; the role is what tells a frontend to lay it out line by
+        // line, which is the whole of what the previous system's `content.diff` component
+        // decided.
+        let out = parse("```diff\n@@ -1 +1 @@\n-old\n+new\n```");
+        assert_eq!(roles(&out), vec!["message.assistant.markdown.diff"]);
+        assert!(matches!(&out[0].kind, Kind::Code { lang, .. } if lang.as_deref() == Some("diff")));
     }
 
     #[test]

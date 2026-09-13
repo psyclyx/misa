@@ -345,16 +345,45 @@ fn call_node(call: &Value, position: usize, capabilities: &Capabilities) -> Node
         && !result.is_null()
     {
         let ok = status != "error";
-        let mut child = Node::text(
-            if ok { "tool.result" } else { "tool.result.error" },
-            [Span::plain(clip(text_of(result), 8192))],
-        )
+        let text = clip(text_of(result), 8192);
+        // A result that is a patch is laid out as one. This is the branch the previous
+        // system had as a `content.diff` component: a diff is code, so the kind does not
+        // change — what changes is the role, which is what tells every frontend that the
+        // lines mean added, removed, and where a hunk begins.
+        let mut child = if is_unified_diff(&text) {
+            Node::new(
+                if ok { "tool.result.diff" } else { "tool.result.error.diff" },
+                Kind::Code { lang: None, text, captures: Vec::new() },
+            )
+        } else {
+            Node::text(if ok { "tool.result" } else { "tool.result.error" }, [Span::plain(text)])
+        }
         .id(format!("{id}.result"))
         .state(if ok { State::Done } else { State::Failed });
         child.label = Some(if ok { "Result".into() } else { "Failure".into() });
         node.children.push(child);
     }
     node
+}
+
+/// Whether a tool's result is a unified diff.
+///
+/// By shape, and only where the shape is unambiguous: a hunk header, a `diff --git` line, or
+/// the `--- `/`+++ ` pair a patch opens with. A body that happens to contain a line starting
+/// with `+` is not a diff, which is why the pairing and the hunk header are what is looked
+/// for rather than a leading character.
+fn is_unified_diff(text: &str) -> bool {
+    let mut previous_was_removal_header = false;
+    for line in text.lines().take(16) {
+        if line.starts_with("@@ ") || line.starts_with("diff --git ") {
+            return true;
+        }
+        if previous_was_removal_header && line.starts_with("+++ ") {
+            return true;
+        }
+        previous_was_removal_header = line.starts_with("--- ");
+    }
+    false
 }
 
 fn notices(db: &Value) -> Option<Node> {
@@ -634,6 +663,53 @@ mod tests {
         assert_eq!(call.state, Some(State::Done));
         assert_eq!(call.label.as_deref(), Some("echo"));
         assert!(call.children.iter().any(|child| child.role == "tool.result"));
+    }
+
+    #[test]
+    fn a_result_that_is_a_patch_is_laid_out_as_a_diff() {
+        let base = initial_state("demo", "scripted", "scripted-1", 0);
+        let state = Value::map([
+            ("session", base.get("session").cloned().unwrap_or(Value::Null)),
+            ("attempts", Value::list([])),
+            ("notices", Value::list([])),
+            (
+                "messages",
+                Value::list([Value::map([
+                    ("seq", Value::Int(1)),
+                    ("role", Value::str("assistant")),
+                    ("text", Value::str("edited")),
+                    ("state", Value::str("done")),
+                    (
+                        "calls",
+                        Value::list([Value::map([
+                            ("id", Value::str("call.1")),
+                            ("name", Value::str("write")),
+                            ("args", Value::str("src/main.rs")),
+                            ("status", Value::str("ok")),
+                            ("result", Value::str("--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old\n+new")),
+                        ])]),
+                    ),
+                ])]),
+            ),
+        ]);
+        let node = document(&state, &Capabilities::plain(), 40);
+        let result = find(&node, "call.call.1.result").expect("the result");
+        assert_eq!(result.role, "tool.result.diff");
+        match &result.kind {
+            Kind::Code { text, .. } => assert!(text.starts_with("--- a/main.rs"), "{text}"),
+            other => panic!("a patch came through as {other:?}"),
+        }
+        misa_proto::view::validate(&node).expect("a diff result is a valid view");
+    }
+
+    #[test]
+    fn a_result_that_merely_mentions_a_plus_line_is_still_text() {
+        // The shape has to be unambiguous, or every bulleted list a tool prints becomes a
+        // patch. A hunk header or the `--- `/`+++ ` pair is a diff; a leading `+` is not.
+        assert!(!is_unified_diff("here is a bullet\n+ and a plus line"));
+        assert!(!is_unified_diff("+ one\n+ two"));
+        assert!(is_unified_diff("@@ -1 +1 @@\n-a\n+b"));
+        assert!(is_unified_diff("diff --git a/x b/x\n--- a/x\n+++ b/x"));
     }
 
     #[test]

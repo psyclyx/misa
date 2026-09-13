@@ -154,6 +154,17 @@ impl Theme {
         // A reader's selection. A background rather than a foreground, because it has
         // to sit over whatever the role underneath already decided.
         set("selection", Style::PLAIN.on(hex(0x39415a)));
+        // A diff. Named per line rather than once, because what changed is the whole point
+        // of looking at one: an added line, a removed one, the hunk header, and the file
+        // headers that say what the hunks are hunks of. A body is a diff because the
+        // session said so — a role that ends in `.diff`, or a fence that said `diff` — so
+        // nothing here has to guess.
+        set("diff", Style::fg(hex(0xb9bec6)));
+        set("diff.add", Style::fg(hex(0x98c379)));
+        set("diff.remove", Style::fg(hex(0xe06c75)));
+        set("diff.hunk", Style::fg(hex(0x56b6c2)).dim());
+        set("diff.header", Style::fg(hex(0x8a8f98)).bold());
+        set("diff.meta", Style::fg(hex(0x6a7178)));
         set("value.money", Style::fg(hex(0xc9a227)));
         set("value.count", Style::fg(hex(0x8a8f98)));
 
@@ -227,6 +238,17 @@ impl Theme {
                 None => return self.roles.get("").copied().unwrap_or(self.default),
             }
         }
+    }
+
+    /// Whether this theme names a role *itself*, rather than inheriting one.
+    ///
+    /// [`Theme::role`] answers "what does this look like", which is the right question
+    /// almost everywhere. This is for the one place where the answer is not enough: a
+    /// renderer that wants to fall back to a *generic* role when a theme has said
+    /// nothing about a specific one, rather than to whatever the inherited prefix
+    /// happens to be.
+    pub fn names(&self, role: &str) -> bool {
+        self.roles.contains_key(role)
     }
 
     /// Resolve a syntax capture name. An unknown name is plain text, because a

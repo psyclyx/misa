@@ -155,7 +155,14 @@ impl<'a> Renderer<'a> {
                 out.push(Line::simple(indent, style.dim(), "─".repeat(width), Some(&node.id)));
             }
             Kind::Code { lang, text, captures } => {
-                if let Some(lang) = lang {
+                // A diff is code whose meaning is *per line*, and the session says so —
+                // by naming a role that ends in `.diff`, or, for a body a model fenced,
+                // by the language it was fenced with. Nothing here guesses from the
+                // text: a block of code that happens to contain a `+` is still code.
+                let diff = is_diff(&node.role, lang.as_deref());
+                if let Some(lang) = lang
+                    && !diff
+                {
                     out.push(Line::simple(
                         indent,
                         style.dim(),
@@ -166,9 +173,10 @@ impl<'a> Renderer<'a> {
                 let budget = self.budget(indent);
                 for (index, raw) in text.split('\n').enumerate() {
                     let value = clip(raw, budget);
+                    let line_style = if diff { self.diff_style(style, &node.role, raw) } else { style };
                     out.push(Line {
                         indent,
-                        spans: self.code_spans(text, index, raw, &value, captures, style),
+                        spans: self.code_spans(text, index, raw, &value, captures, line_style),
                         node: Some(node.id.clone()),
                     });
                 }
@@ -420,10 +428,56 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// The style for one line of a diff, by what the line starts with.
+    ///
+    /// A theme may name the role under the node's own prefix — `…markdown.diff.add` —
+    /// and a theme that has not falls back to the generic `diff.add`. That is one place
+    /// to say what an added line looks like, and still a way to say something narrower.
+    /// The node's own style stays underneath, so a diff inside a tool result still reads
+    /// like a tool result.
+    fn diff_style(&self, base: Style, role: &str, raw: &str) -> Style {
+        let Some(suffix) = diff_suffix(raw) else {
+            return base;
+        };
+        let specific = format!("{role}.{suffix}");
+        if self.theme.names(&specific) {
+            return base.over(self.theme.role(&specific));
+        }
+        base.over(self.theme.role(&format!("diff.{suffix}")))
+    }
+
     /// Columns available to a node at a given indentation.
     fn budget(&self, indent: u8) -> usize {
         self.columns.saturating_sub(indent as usize).max(1)
     }
+}
+
+/// Whether a code node's body is a diff.
+///
+/// Two ways for a session to say so, and neither of them looks at the body: a role that
+/// ends in `.diff` — the sessions' own vocabulary for a result that is a patch — or a
+/// fence a model wrote with `diff`. A block of code that happens to begin a line with
+/// `+` is still a block of code.
+fn is_diff(role: &str, lang: Option<&str>) -> bool {
+    role.ends_with(".diff") || lang.is_some_and(|lang| lang.eq_ignore_ascii_case("diff"))
+}
+
+/// What a line of a diff is, named the way a theme names a role.
+///
+/// A unified diff says everything with one character in column zero, which is why this
+/// can be exact: `+`/`-` are the change, `@@` is where a hunk begins, `---`/`+++` are
+/// the file headers, and `diff --git`/`index`/`\ No newline` are the patch talking about
+/// itself. Anything else is context, and context is left in the node's own style.
+fn diff_suffix(raw: &str) -> Option<&'static str> {
+    Some(match raw {
+        line if line.starts_with("+++ ") || line.starts_with("--- ") => "header",
+        line if line.starts_with("@@") => "hunk",
+        line if line.starts_with("diff ") || line.starts_with("index ") => "meta",
+        line if line.starts_with("\\ No newline") => "meta",
+        line if line.starts_with('+') => "add",
+        line if line.starts_with('-') => "remove",
+        _ => return None,
+    })
 }
 
 fn state_word(state: State) -> &'static str {
@@ -463,6 +517,7 @@ pub fn value_text(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Color;
     use misa_proto::view::{Action, ActionOn, Field, FieldKind, State};
 
     fn theme() -> Theme {
@@ -633,6 +688,55 @@ mod tests {
         assert_eq!(value_text(&Value::Bool(true)), "yes");
         assert_eq!(value_text(&Value::str("x")), "x");
         assert_eq!(value_text(&Value::Null), "");
+    }
+    #[test]
+    fn a_diff_is_laid_out_by_what_changed_on_each_line() {
+        let node = Node::new(
+            "message.assistant.markdown.diff",
+            Kind::Code {
+                lang: Some("diff".into()),
+                text: "@@ -1 +1 @@\n-old line\n+new line\n context".into(),
+                captures: Vec::new(),
+            },
+        );
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 40);
+        // No `diff` banner: the body already says what it is, line by line.
+        assert_eq!(lines.len(), 4, "{:?}", to_plain(&lines));
+        assert_eq!(lines[0].spans[0].0, theme.role("diff.hunk"));
+        assert_eq!(lines[1].spans[0].0, theme.role("diff.remove"));
+        assert_eq!(lines[2].spans[0].0, theme.role("diff.add"));
+        // Context keeps the node's own style, so a diff still reads like a tool result.
+        assert_eq!(lines[3].spans[0].0, theme.role("message.assistant.markdown.diff"));
+        assert_eq!(to_plain(&lines), "@@ -1 +1 @@\n-old line\n+new line\n context\n");
+    }
+
+    #[test]
+    fn a_theme_may_name_a_diff_line_under_the_node_it_belongs_to() {
+        let node = Node::new(
+            "tool.result.diff",
+            Kind::Code { lang: None, text: "+added".into(), captures: Vec::new() },
+        );
+        // A theme that says something narrower wins over the generic role.
+        let theme = Theme::dark().with_role("tool.result.diff.add", Style::rgb(1, 2, 3).bold());
+        let line = &render(&node, &theme, 40)[0];
+        assert_eq!(line.spans[0].0.fg, Color::Rgb(1, 2, 3));
+        assert!(line.spans[0].0.bold);
+        // And the generic role is used when it has not.
+        let line = &render(&node, &Theme::dark(), 40)[0];
+        assert_eq!(line.spans[0].0, Theme::dark().role("diff.add"));
+    }
+
+    #[test]
+    fn code_that_merely_looks_like_a_diff_is_still_code() {
+        let node = Node::new(
+            "message.assistant.markdown.code",
+            Kind::Code { lang: Some("rust".into()), text: "+ 1".into(), captures: Vec::new() },
+        );
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 40);
+        assert_eq!(lines[0].text(), "rust", "the language banner is gone from a code block");
+        assert_eq!(lines[1].spans[0].0, theme.role("message.assistant.markdown.code"));
     }
 
     #[test]

@@ -232,9 +232,9 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (43), `misa-kernel` (88), `misa-session` (66), `misa-net` (27),
+`misa-render` (46), `misa-kernel` (88), `misa-session` (69), `misa-net` (27),
 `misa-client` (55), `misa-tui` (21), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 408 tests and no skips:
+and one more behind `misa-skia --features paint`. That is 414 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
@@ -269,17 +269,11 @@ items with no code at all, plus the two that are structural.
 2. **Durable state for the _client_.** A theme, the nodes somebody opened, a draft, and the
    picker's frecency are presentation state and belong client-side. None of it is persisted,
    which is why a restart forgets where somebody was.
-3. **A diff role, in the session.** A diff is a kind of code and deserves its own role and
-   view-builder branch so a frontend can lay it out as one. (Markdown structure is done:
-   `misa-session::markdown` parses headings, lists, quotes, rules, and inline runs once, for
-   every frontend, and `Kind::Heading`, `Kind::Quote`, and `Kind::Rule` carry the structure.
-   Selection and copy are done too: `misa-client::select` holds a selection over the
-   rendered rows, and `misa-tui` turns one into clipboard text without asking anything.)
-4. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
+3. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards.
-5. **Reconnect**, and a test with two clients on one session. Both are small and the
+4. **Reconnect**, and a test with two clients on one session. Both are small and the
    protocol was designed for both.
-6. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
+5. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
 
 Two things are honest limitations rather than planned work:
