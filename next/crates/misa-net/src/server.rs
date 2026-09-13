@@ -56,6 +56,8 @@ pub(crate) struct Fixture {
     pub sessions: Arc<Sessions>,
     pub blobs: Arc<Blobs>,
     pub router: Router,
+    /// Kept so the daemon can be taken away and brought back with the same door.
+    admission: Arc<Admission>,
 }
 
 #[cfg(test)]
@@ -75,8 +77,21 @@ impl Fixture {
         ));
         let blobs = Arc::new(Blobs::in_memory());
         let address = iroh::address_of(&iroh::node_of(&server)).expect("an address");
-        let router = serve(server.clone(), sessions.clone(), blobs.clone(), Arc::new(admission));
-        Fixture { server, client, address, sessions, blobs, router }
+        let admission = Arc::new(admission);
+        let router = serve(server.clone(), sessions.clone(), blobs.clone(), admission.clone());
+        Fixture { server, client, address, sessions, blobs, router, admission }
+    }
+
+    /// Take the daemon away without taking its identity away: what a restart is.
+    ///
+    /// The endpoint stays bound — its key *is* the identity a ticket names — while the router
+    /// that was answering on it goes, which drops every connection it was serving. `shutdown`
+    /// cannot be used for this: it closes the endpoint too, and then there is nothing to come
+    /// back to.
+    pub(crate) fn stop_serving(&mut self) {
+        let back = serve(self.server.clone(), self.sessions.clone(), self.blobs.clone(), self.admission.clone());
+        let dead = std::mem::replace(&mut self.router, back);
+        drop(dead);
     }
 
     pub(crate) async fn stop(self) {
@@ -362,6 +377,51 @@ mod tests {
         // A client's own window and scroll are its own, so what is compared is the words the
         // transcript holds, which is what a subscription promises to keep in step.
         assert_eq!(first_text, second_text, "\n{first_text}\n---\n{second_text}");
+        fixture.stop().await;
+    }
+
+    /// A connection is not the session. When the daemon goes away and comes back — the same
+    /// endpoint, the same session, a new socket — a client finds its own way back.
+    ///
+    /// Nothing above this layer has to know it happened, which is the point: a frontend sees a
+    /// stream of views, not a stream of connections. What it takes for that to be correct is a
+    /// subscription that converges, and this asserts it by comparing the transcript across the
+    /// drop: same words, including the turn that happened before it.
+    #[tokio::test]
+    async fn a_client_finds_its_way_back_when_the_connection_drops() {
+        let mut fixture = Fixture::start(Admission::open(), scripted()).await;
+        let mut client = attached(&fixture.client, &fixture).await;
+        within(
+            "sending",
+            client.intent(1, Intent::Prompt { text: "before the drop".into(), attachments: Vec::new() }),
+        )
+        .await
+        .expect("an intent");
+        let before = within("the first transcript", settled(&mut client, "all done")).await;
+        assert!(before.contains("before the drop"), "{before}");
+        assert_eq!(client.reconnects(), 0, "the client reconnected before anything dropped");
+
+        // The daemon goes away and comes back, with the same identity and the same session.
+        fixture.stop_serving();
+
+        // Reading is what notices: nothing tells the client, it finds out when the connection
+        // it is reading from is gone — which is after whatever was already in flight arrives,
+        // since a drop does not un-send a message — and it repairs that by itself.
+        let after = within("a transcript after the drop", async {
+            loop {
+                let text = settled(&mut client, "all done").await;
+                if client.reconnects() >= 1 {
+                    return text;
+                }
+            }
+        })
+        .await;
+        // The re-subscribed value is the whole current state, so it still holds what happened
+        // before the drop. It is not compared whole: the session was in the middle of a turn
+        // when the connection went, and a turn that kept going is not a lost transcript.
+        assert!(after.contains("before the drop"), "{after}");
+        assert!(after.contains("all done"), "{after}");
+        assert_eq!(client.reconnects(), 1, "the client re-established more than once");
         fixture.stop().await;
     }
 }

@@ -232,9 +232,9 @@ recorded in `wit/policy.wit`, and the reasoning is in §7.
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
-`misa-render` (46), `misa-kernel` (88), `misa-session` (69), `misa-net` (28),
+`misa-render` (46), `misa-kernel` (88), `misa-session` (69), `misa-net` (29),
 `misa-client` (55), `misa-tui` (21), `misa-web` (18), `misa-daemon` (3), `misa-skia` (5),
-and one more behind `misa-skia --features paint`. That is 415 tests and no skips:
+and one more behind `misa-skia --features paint`. That is 416 tests and no skips:
 `cargo test --workspace` is the gate, and these numbers are read back from it rather than
 remembered.
 
@@ -271,11 +271,7 @@ items with no code at all, plus the two that are structural.
    which is why a restart forgets where somebody was.
 3. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards.
-4. **Reconnect.** A subscription converges, so a client that reconnects and re-subscribes is
-   correct by construction; what is missing is the retry. (Two clients on one session used to
-   be listed here, and is tested now —
-   `misa-net::server::tests::two_clients_on_one_session_converge_on_the_same_transcript`.)
-5. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
+4. **A window** in the pixel frontend. The scene, the raster, and the PNG are done; a window
    is a second consumer of the scene and needs nothing from a session.
 
 Two things are honest limitations rather than planned work:

@@ -11,6 +11,8 @@
 //! One bidirectional QUIC stream. Client messages go up it, session messages come
 //! back. There is no second channel to keep in step, and no reconnection protocol:
 //! a client that reconnects subscribes again and the revision it gets is the truth.
+//! [`Client`] does exactly that when a connection drops, which is why nothing above
+//! this file has to know that connections can drop.
 //!
 //! # Identity
 //!
@@ -324,6 +326,22 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The two tasks one connection runs: a reader and a writer.
+///
+/// Aborted when the connection's handler goes away, which is what makes "the connection ended"
+/// true. Dropping a future aborts the future, not the tasks it spawned: without this, a handler
+/// that is dropped — because the router took the daemon down, say — would leave its reader and
+/// writer holding a stream open for as long as the peer kept it, which is a connection outliving
+/// the thing that was serving it.
+struct Tasks(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>);
+
+impl Drop for Tasks {
+    fn drop(&mut self) {
+        self.0.abort();
+        self.1.abort();
+    }
+}
+
 async fn converse(
     sessions: Arc<Sessions>,
     send: SendStream,
@@ -387,6 +405,7 @@ async fn converse(
             }
         }
     });
+    let _tasks = Tasks(reader, writer);
 
     // A connection establishes in two steps: `hello` says who is here and what this
     // endpoint serves, `attach` chooses one session. Everything after that is the session's
@@ -434,8 +453,6 @@ async fn converse(
                     }
                 }
                 crate::drive(state, inbox, to_wire.clone(), revision, events).await;
-                reader.abort();
-                writer.abort();
                 return Ok(());
             }
             other => {
@@ -447,19 +464,34 @@ async fn converse(
         }
     }
 
-    reader.abort();
-    writer.abort();
     Ok(())
 }
-
-
-
 /// A client of a session.
 ///
 /// Deliberately narrow: connect, say hello, subscribe, send an intent, read. A
 /// frontend that needs to do more than that is a frontend that needs a new message
 /// type, which is the conversation to have rather than a way around it.
+///
+/// # Reconnect
+///
+/// A client keeps what it needs to find its session again — the endpoint, the address, the
+/// name it attached to, and what it subscribed to — and re-establishes the connection when
+/// that connection drops. That is not a retry protocol: a subscription's value is the whole
+/// current state, so a client that re-subscribes converges on whatever happened while it was
+/// away and nothing has to be replayed. An *intent* is never replayed, because it either
+/// happened or it did not and only a person knows which they meant.
 pub struct Client {
+    /// Kept so a connection can be re-established. A client that did not keep these would
+    /// have to be handed its ticket again, which is a frontend's problem becoming a person's.
+    endpoint: Endpoint,
+    address: EndpointAddr,
+    info: ClientInfo,
+    /// The session this client asked for; empty for a client that attached to nothing.
+    session_id: String,
+    /// What this client subscribed to, in the order it asked, so a reconnect can ask again.
+    subscriptions: Vec<(SubId, Query)>,
+    /// How many times this client has silently found its way back.
+    reconnects: u32,
     send: SendStream,
     recv: RecvStream,
     decoder: Decoder,
@@ -467,27 +499,67 @@ pub struct Client {
 }
 
 impl Client {
+    /// How many times a dropped connection is re-established before a read gives up.
+    ///
+    /// Bounded, because "the daemon is gone" has to be an answer rather than a loop, and
+    /// small, because every attempt already costs a dial.
+    const RECONNECT_TRIES: u32 = 6;
+
     pub async fn connect(
         endpoint: &Endpoint,
         address: EndpointAddr,
         info: ClientInfo,
         session: &str,
     ) -> Result<Client, String> {
-        let connection = endpoint
-            .connect(address, ALPN_SESSION)
-            .await
-            .map_err(|err| err.to_string())?;
-        let (send, recv) = connection.open_bi().await.map_err(|err| err.to_string())?;
-        let mut client = Client { send, recv, decoder: Decoder::new(), session: None };
-        client
-            .write(&ClientMsg::Hello { version: PROTOCOL_VERSION, client: info })
-            .await?;
-        if session.is_empty() {
-            return Ok(client);
-        }
-        client.write(&ClientMsg::Attach { session: session.to_string() }).await?;
-        client.await_attachment().await?;
+        let (send, recv) = dial(endpoint, &address).await?;
+        let mut client = Client {
+            endpoint: endpoint.clone(),
+            address,
+            info,
+            session_id: session.to_string(),
+            subscriptions: Vec::new(),
+            reconnects: 0,
+            send,
+            recv,
+            decoder: Decoder::new(),
+            session: None,
+        };
+        client.introduce().await?;
         Ok(client)
+    }
+
+    /// Hello, attach, and read past the endpoint's greeting.
+    async fn introduce(&mut self) -> Result<(), String> {
+        let hello = ClientMsg::Hello { version: PROTOCOL_VERSION, client: self.info.clone() };
+        self.write(&hello).await?;
+        if self.session_id.is_empty() {
+            return Ok(());
+        }
+        self.write(&ClientMsg::Attach { session: self.session_id.clone() }).await?;
+        self.await_attachment().await
+    }
+
+    /// A fresh connection to the same session, with the same subscriptions.
+    async fn reestablish(&mut self) -> Result<(), String> {
+        let (send, recv) = dial(&self.endpoint, &self.address).await?;
+        self.send = send;
+        self.recv = recv;
+        // The old decoder holds bytes of a connection that is gone, and half a frame from a
+        // closed stream is not a frame.
+        self.decoder = Decoder::new();
+        self.session = None;
+        self.introduce().await?;
+        for (id, query) in std::mem::take(&mut self.subscriptions) {
+            self.write(&ClientMsg::Subscribe { id, query: query.clone() }).await?;
+            self.subscriptions.push((id, query));
+        }
+        self.reconnects += 1;
+        Ok(())
+    }
+
+    /// How many times this client has re-established its connection. For a test or a log.
+    pub fn reconnects(&self) -> u32 {
+        self.reconnects
     }
 
     /// Read until the attached session's own greeting arrives.
@@ -499,7 +571,9 @@ impl Client {
     /// one. A caller that has attached never has to know the greeting exists.
     async fn await_attachment(&mut self) -> Result<(), String> {
         loop {
-            match self.next().await? {
+            // `read_next`, not `next`: this is part of establishing a connection, and asking
+            // for a whole reconnect from inside one is how a future becomes infinitely deep.
+            match self.read_next().await? {
                 Some(SessionMsg::Welcome { session, .. }) if !session.id.is_empty() => return Ok(()),
                 Some(SessionMsg::Welcome { .. }) => continue,
                 // A refused pairing is an answer, not a message to skip: waiting for the
@@ -569,12 +643,41 @@ impl Client {
         self.session.as_ref()
     }
 
+    /// Ask for a subscription, and remember it so a reconnect can ask again.
+    ///
+    /// A subscription is the one thing here that is safe to send twice: the session answers
+    /// with the current value, and the current value *is* the state.
     pub async fn subscribe(&mut self, id: SubId, query: Query) -> Result<(), String> {
-        self.write(&ClientMsg::Subscribe { id, query }).await
+        self.remember(id, &query);
+        match self.write(&ClientMsg::Subscribe { id, query }).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // The connection may be gone. Finding a new one re-asks every subscription
+                // this client has, which includes the one that just failed.
+                self.restore().await.map_err(|_| error)
+            }
+        }
     }
 
+    /// An intent, which is never replayed: it either happened or it did not.
+    ///
+    /// A write that fails may still have been received — a connection can break after the
+    /// bytes left — so this reports the failure rather than sending it again. A prompt a
+    /// session recorded twice is worse than a prompt somebody has to type again.
     pub async fn intent(&mut self, id: u64, intent: misa_proto::wire::Intent) -> Result<(), String> {
-        self.write(&ClientMsg::Intent { id, intent }).await
+        match self.write(&ClientMsg::Intent { id, intent }).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // For the *next* call, not this one.
+                let _ = self.restore().await;
+                Err(error)
+            }
+        }
+    }
+
+    fn remember(&mut self, id: SubId, query: &Query) {
+        self.subscriptions.retain(|(seen, _)| *seen != id);
+        self.subscriptions.push((id, query.clone()));
     }
 
     async fn write(&mut self, message: &ClientMsg) -> Result<(), String> {
@@ -582,8 +685,53 @@ impl Client {
         self.send.write_all(&frame).await.map_err(|err| err.to_string())
     }
 
-    /// The next message, or `None` when the connection closed.
+    /// Re-establish, with a bounded backoff, and report whether it worked.
+    async fn restore(&mut self) -> Result<(), String> {
+        let mut last = String::new();
+        for attempt in 1..=Self::RECONNECT_TRIES {
+            tokio::time::sleep(backoff(attempt)).await;
+            match self.reestablish().await {
+                Ok(()) => return Ok(()),
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
+    }
+
+    /// The next message, or `None` when the session is gone.
+    ///
+    /// A dropped connection is not the end of a session: the facts live elsewhere and a
+    /// subscription converges, so the way back is to re-subscribe and keep reading. What
+    /// this will not do is retry for ever — a daemon that is not there has to be an answer.
     pub async fn next(&mut self) -> Result<Option<SessionMsg>, String> {
+        let mut attempts = 0;
+        let mut last: Option<String> = None;
+        loop {
+            match self.read_next().await {
+                Ok(Some(message)) => return Ok(Some(message)),
+                Ok(None) => {
+                    // A closed connection, which a daemon that is restarting cannot announce
+                    // any other way. Treated as a drop, and reported as one when it sticks.
+                    last = None;
+                }
+                Err(error) => last = Some(error),
+            }
+            if attempts >= Self::RECONNECT_TRIES {
+                return match last {
+                    Some(error) => Err(error),
+                    None => Ok(None),
+                };
+            }
+            attempts += 1;
+            tokio::time::sleep(backoff(attempts)).await;
+            if let Err(error) = self.reestablish().await {
+                last = Some(error);
+            }
+        }
+    }
+
+    /// Read one message from the connection this client has now.
+    async fn read_next(&mut self) -> Result<Option<SessionMsg>, String> {
         loop {
             if let Some(frame) = self.decoder.next() {
                 let payload = frame.map_err(|err| err.to_string())?;
@@ -607,6 +755,23 @@ impl Client {
             }
         }
     }
+}
+
+/// Dial, and open the one stream a session is.
+async fn dial(endpoint: &Endpoint, address: &EndpointAddr) -> Result<(SendStream, RecvStream), String> {
+    let connection = endpoint
+        .connect(address.clone(), ALPN_SESSION)
+        .await
+        .map_err(|err| err.to_string())?;
+    connection.open_bi().await.map_err(|err| err.to_string())
+}
+
+/// How long to wait before the *n*-th attempt at finding a session again.
+///
+/// Growing and capped: a daemon that is restarting is back in a moment, and one that is
+/// gone for good should not be dialled a hundred times a second while somebody finds out.
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((20 * u64::from(attempt)).min(200))
 }
 
 fn encode_client(message: &ClientMsg) -> Result<Vec<u8>, String> {

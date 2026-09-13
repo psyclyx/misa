@@ -9,7 +9,7 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the gate: 415 tests, no skips. Counts per crate are in
+`cargo test --workspace` is the gate: 416 tests, no skips. Counts per crate are in
 `docs/architecture.md`.
 
 ## The mechanisms everything else is built on
@@ -102,7 +102,7 @@ _do_.
 | Compaction                                                                                                                                                                               | built                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Conversations: journal, list, load, resume                                                                                                                                               | built on a durable log. Forking a branch is not                                                                                                                                                                                                                                                                                                                                                               |
 | Subagents                                                                                                                                                                                | not built: a child session is a session, so this is composition rather than new machinery                                                                                                                                                                                                                                                                                                                     |
-| Reconnect                                                                                                                                                                                | designed (a subscription converges) and not written: no client retries                                                                                                                                                                                                                                                                                                                                        |
+| Reconnect                                                                                                                                                                                | built: a client keeps the endpoint, the address, the session it attached to, and what it subscribed to, and re-establishes the connection when it drops. Re-subscribing is all a reconnect needs to be correct, because a subscription's value is the whole current state; an intent is never replayed. `misa-net::server::tests::a_client_finds_its_way_back_when_the_connection_drops`                      |
 | More than one client on one session                                                                                                                                                      | built and tested: `misa-net::server::tests::two_clients_on_one_session_converge_on_the_same_transcript` — two peers, one prompt, and both transcripts end the same, because a subscription's value is the whole current state. A client is not told that somebody else is here, which is a thing nobody has decided                                                                                           |
 | Admission: who may attach                                                                                                                                                                | built: `misa_session::admission::Roster` is consulted at accept time on the session connection _and_ the blob connection, before a byte is read, with `--open` and `--allow <endpoint-id>` on the daemon                                                                                                                                                                                                      |
 | Session lifecycle: create, list, close                                                                                                                                                   | not built: a daemon opens one session named on the command line                                                                                                                                                                                                                                                                                                                                               |
@@ -148,12 +148,9 @@ input uploads and a view shows, and nothing writes a received image to a directo
 
 ## Order I would do the rest in
 
-1. **Reconnect.** A subscription converges, so a client that reconnects and re-subscribes is
-   correct by construction; what is missing is the retry. (A second client on one session
-   used to be listed here, and is tested now — see the matrix above.)
-2. **A client-side way to authorize an account**, so `/login` is one story for a key and a
+1. **A client-side way to authorize an account**, so `/login` is one story for a key and a
    device code alike rather than "ask the daemon's console for the second one".
-3. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
+2. **The wasm plugin host.** `wit/policy.wit` names the interfaces and nothing implements
    them.
 
 ## Where the frontends differ, and why that is right
