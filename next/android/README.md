@@ -42,7 +42,7 @@ To build only a native library:
 nix-build next -A packages.misa-android.native.x86_64
 ```
 
-To verify installation and launch in a temporary x86_64 emulator (requires KVM):
+To run all three integration scenarios in a temporary x86_64 emulator (requires KVM):
 
 ```sh
 nix-build next -A packages.misa-android.installCheck -o result-android-check
@@ -84,15 +84,13 @@ direct ticket with that address.
   connecting and requests changes since that cursor. In-flight text remains a
   separate overlay and is never saved as settled history.
 
-The build also produces `misa-debug-androidTest.apk`. To exercise persistent
-reconnect, upload/fetch, and directed save through the actual JNI connection,
-run the installation check against an open daemon with a scripted provider:
+The build also produces `misa-debug-androidTest.apk`. The installation check
+starts its packaged scripted daemon with temporary credentials and tests
+persistent reconnect, image upload/fetch/decoding, and directed save through the
+actual JNI connection. It requires no ticket or pre-existing service.
 
-```sh
-MISA_TICKET='misa:ENDPOINT@10.0.2.2:PORT:demo' result-android-check/bin/misa-android-check
-```
-
-The check creates and removes its own emulator and app-private test files. The
-save test writes and reads a document through Android’s content resolver, then
-removes it. Native storage and snapshot tests run with
-`cargo test --manifest-path next/android/native/Cargo.toml`.
+The check removes its own daemon, emulator, and app-private test files. The save
+test writes and reads a document through Android’s content resolver, then
+removes it. To use an existing open scripted daemon instead, set `MISA_TICKET`
+to its ticket with host address `10.0.2.2`. Native storage and snapshot tests run
+with `cargo test --manifest-path next/android/native/Cargo.toml`.

@@ -2,6 +2,7 @@
   pkgs,
   apk,
   emulator,
+  daemon,
 }:
 pkgs.writeShellApplication {
   name = "misa-android-check";
@@ -13,6 +14,7 @@ pkgs.writeShellApplication {
   ];
   text = ''
     export ANDROID_HOME=${emulator.androidsdk}/libexec/android-sdk
+    export MISA_DAEMON=${daemon}/bin/misa-daemon
     export MISA_TEST_APK=${apk}/share/misa/misa-debug-androidTest.apk
     export MISA_APK=${apk}/share/misa/misa-debug.apk
     ${builtins.readFile ../android/verify-install.sh}
