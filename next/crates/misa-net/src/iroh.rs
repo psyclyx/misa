@@ -30,7 +30,7 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use misa_proto::chunk::Decoder;
 use misa_proto::wire::{ClientInfo, ClientMsg, Query, SessionMsg, SubId};
 use misa_proto::{ALPN_BLOB, ALPN_SESSION, Fault, PROTOCOL_VERSION, Ticket};
-use misa_session::Runtime;
+use misa_protocol::Session as Backend;
 use crate::admission::Admission;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -146,7 +146,7 @@ pub fn address_of(node: &str) -> Result<EndpointAddr, String> {
 
 #[derive(Default)]
 pub struct Sessions {
-    open: std::sync::Mutex<HashMap<String, Arc<Runtime>>>,
+    open: std::sync::Mutex<HashMap<String, Arc<dyn Backend>>>,
 }
 
 impl Sessions {
@@ -154,14 +154,14 @@ impl Sessions {
         Arc::new(Sessions::default())
     }
 
-    pub fn insert(&self, runtime: Arc<Runtime>) {
+    pub fn insert(&self, runtime: Arc<dyn Backend>) {
         self.open
             .lock()
             .expect("the session table is never poisoned")
-            .insert(runtime.id().to_string(), runtime);
+            .insert(runtime.info().id, runtime);
     }
 
-    pub fn get(&self, id: &str) -> Option<Arc<Runtime>> {
+    pub fn get(&self, id: &str) -> Option<Arc<dyn Backend>> {
         self.open.lock().expect("the session table is never poisoned").get(id).cloned()
     }
 
@@ -487,17 +487,12 @@ pub struct Client {
     /// have to be handed its ticket again, which is a frontend's problem becoming a person's.
     endpoint: Endpoint,
     address: EndpointAddr,
-    info: ClientInfo,
-    /// The session this client asked for; empty for a client that attached to nothing.
-    session_id: String,
-    /// What this client subscribed to, in the order it asked, so a reconnect can ask again.
-    subscriptions: Vec<(SubId, Query)>,
+    state: misa_protocol::Client,
     /// How many times this client has silently found its way back.
     reconnects: u32,
     send: SendStream,
     recv: RecvStream,
     decoder: Decoder,
-    session: Option<misa_proto::wire::SessionInfo>,
 }
 
 impl Client {
@@ -517,14 +512,11 @@ impl Client {
         let mut client = Client {
             endpoint: endpoint.clone(),
             address,
-            info,
-            session_id: session.to_string(),
-            subscriptions: Vec::new(),
+            state: misa_protocol::Client::new(info, session),
             reconnects: 0,
             send,
             recv,
             decoder: Decoder::new(),
-            session: None,
         };
         client.introduce().await?;
         Ok(client)
@@ -532,12 +524,8 @@ impl Client {
 
     /// Hello, attach, and read past the endpoint's greeting.
     async fn introduce(&mut self) -> Result<(), String> {
-        let hello = ClientMsg::Hello { version: PROTOCOL_VERSION, client: self.info.clone() };
-        self.write(&hello).await?;
-        if self.session_id.is_empty() {
-            return Ok(());
-        }
-        self.write(&ClientMsg::Attach { session: self.session_id.clone() }).await?;
+        for message in self.state.introduction() { self.write(&message).await?; }
+        if !self.state.needs_attachment() { return Ok(()); }
         self.await_attachment().await
     }
 
@@ -549,12 +537,8 @@ impl Client {
         // The old decoder holds bytes of a connection that is gone, and half a frame from a
         // closed stream is not a frame.
         self.decoder = Decoder::new();
-        self.session = None;
         self.introduce().await?;
-        for (id, query) in std::mem::take(&mut self.subscriptions) {
-            self.write(&ClientMsg::Subscribe { id, query: query.clone(), since: None }).await?;
-            self.subscriptions.push((id, query));
-        }
+        for message in self.state.resubscribe() { self.write(&message).await?; }
         self.reconnects += 1;
         Ok(())
     }
@@ -642,7 +626,7 @@ impl Client {
     }
 
     pub fn session(&self) -> Option<&misa_proto::wire::SessionInfo> {
-        self.session.as_ref()
+        self.state.session()
     }
 
     /// Ask for a subscription, and remember it so a reconnect can ask again.
@@ -650,18 +634,19 @@ impl Client {
     /// A subscription is the one thing here that is safe to send twice: the session answers
     /// with the current value, and the current value *is* the state.
     pub async fn subscribe_since(&mut self, id: SubId, query: Query, since: misa_proto::sync::Version) -> Result<(), String> {
-        self.write(&ClientMsg::Subscribe { id, query, since: Some(since) }).await
+        let message = self.state.subscribe(id, query, Some(since));
+        self.send_subscription(message).await
     }
 
     pub async fn subscribe(&mut self, id: SubId, query: Query) -> Result<(), String> {
-        self.remember(id, &query);
-        match self.write(&ClientMsg::Subscribe { id, query, since: None }).await {
+        let message = self.state.subscribe(id, query, None);
+        self.send_subscription(message).await
+    }
+
+    async fn send_subscription(&mut self, message: ClientMsg) -> Result<(), String> {
+        match self.write(&message).await {
             Ok(()) => Ok(()),
-            Err(error) => {
-                // The connection may be gone. Finding a new one re-asks every subscription
-                // this client has, which includes the one that just failed.
-                self.restore().await.map_err(|_| error)
-            }
+            Err(error) => self.restore().await.map_err(|_| error),
         }
     }
 
@@ -679,11 +664,6 @@ impl Client {
                 Err(error)
             }
         }
-    }
-
-    fn remember(&mut self, id: SubId, query: &Query) {
-        self.subscriptions.retain(|(seen, _)| *seen != id);
-        self.subscriptions.push((id, query.clone()));
     }
 
     async fn write(&mut self, message: &ClientMsg) -> Result<(), String> {
@@ -741,12 +721,14 @@ impl Client {
             if let Some(frame) = self.decoder.next() {
                 let payload = frame.map_err(|err| err.to_string())?;
                 let message: SessionMsg = misa_proto::chunk::decode(&payload).map_err(|err| err.to_string())?;
-                // The endpoint's greeting names no session; the session's own does. Only the
-                // latter is what a client means by "the session I am attached to".
-                if let SessionMsg::Welcome { session, .. } = &message
-                    && !session.id.is_empty()
-                {
-                    self.session = Some(session.clone());
+                if let Err(error) = self.state.receive(&message) {
+                    if let SessionMsg::Changes { id, .. } = &message {
+                        if let Some(reset) = self.state.reset_view(*id) {
+                            self.write(&reset).await?;
+                            continue;
+                        }
+                    }
+                    return Err(error);
                 }
                 return Ok(Some(message));
             }
@@ -801,7 +783,7 @@ pub fn ticket(endpoint: &Endpoint, session: &str) -> Ticket {
 mod tests {
     use super::*;
     use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
-    use misa_session::Runtime;
+    use misa_protocol::Session as Backend;
 
     #[test]
     fn a_ticket_that_names_only_this_machine_is_reached_without_a_relay() {
@@ -819,9 +801,9 @@ mod tests {
         assert!(!names_only_this_machine("abc@"));
     }
 
-    fn runtime() -> Arc<Runtime> {
+    fn runtime() -> Arc<dyn Backend> {
         let provider: Arc<dyn Provider> = ScriptedProvider::always("hello");
-        Runtime::start(
+        misa_session::Runtime::start(
             "demo",
             "a demo session",
             None,

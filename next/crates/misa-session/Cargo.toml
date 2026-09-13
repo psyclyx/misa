@@ -10,6 +10,7 @@ getrandom = "0.4"
 ciborium.workspace = true
 misa-kernel.workspace = true
 misa-proto.workspace = true
+misa-protocol.workspace = true
 misa-reframe.workspace = true
 misa-value.workspace = true
 serde.workspace = true

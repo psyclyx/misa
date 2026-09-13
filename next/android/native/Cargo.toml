@@ -22,3 +22,5 @@ misa-session = { path = "../../crates/misa-session" }
 misa-value = { path = "../../crates/misa-value" }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+iroh = "1.2"
+blake3 = "1"

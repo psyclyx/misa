@@ -154,16 +154,16 @@ input uploads and a view shows, and nothing writes a received image to a directo
 
 ## Where the frontends differ, and why that is right
 
-|             | terminal                                                                 | browser                                                                                     | pixels                                              |
-| ----------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| Picker      | `misa-client::picker`, drawn as lines                                    | a `<datalist>` from the declarations, no script                                             | not built: the scene draws, it does not choose      |
-| Collapsible | a summary line, body indented                                            | `<details>`                                                                                 | a summary and a body; no toggle yet                 |
-| Theming     | a role to ANSI style                                                     | a role to a CSS custom property                                                             | a role to a paint                                   |
-| Input       | modes and motions                                                        | a `<textarea>`                                                                              | not built; a window and input are `plan.md` phase 8 |
-| Transport   | iroh                                                                     | HTTP to its own server, which speaks iroh                                                   | iroh                                                |
-| Selection   | `misa-client::select`, copied by OSC 52                                  | the browser's own text selection, no script                                                 | not built                                           |
-| Panel       | modal while it is up: a field takes the keys, Enter sends, Esc dismisses | a `<form>` for the fields and one small form per action, so its buttons work with no script | the node and its actions; no interaction yet        |
-| Diff        | a role per line: added, removed, hunk                                    | the node's role as a class; its lines are a block                                           | the node's role as a paint; lines are a block       |
+|             | terminal                                                                 | browser                                                                                     | pixels                                                 |
+| ----------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Picker      | `misa-client::picker`, drawn as lines                                    | a `<datalist>` from the declarations, no script                                             | not built: the scene draws, it does not choose         |
+| Collapsible | a summary line, body indented                                            | `<details>`                                                                                 | local disclosure toggle, retained across view updates  |
+| Theming     | a role to ANSI style                                                     | a role to a CSS custom property                                                             | a role to a paint                                      |
+| Input       | modes and motions                                                        | a `<textarea>`                                                                              | native window; editable fields, keyboard and IME input |
+| Transport   | iroh                                                                     | HTTP to its own server, which speaks iroh                                                   | iroh                                                   |
+| Selection   | `misa-client::select`, copied by OSC 52                                  | the browser's own text selection, no script                                                 | drag selection and native clipboard copy               |
+| Panel       | modal while it is up: a field takes the keys, Enter sends, Esc dismisses | a `<form>` for the fields and one small form per action, so its buttons work with no script | typed fields and action buttons; drafts stay local     |
+| Diff        | a role per line: added, removed, hunk                                    | the node's role as a class; its lines are a block                                           | the node's role as a paint; lines are a block          |
 
 The crate names above are today's. `plan.md` phase 4 renames the kit to `misa-kit` and splits
 `misa-net` into `misa-protocol` (both ends of the protocol state machine) and `misa-transport`
@@ -183,4 +183,4 @@ the two items this section used to list — a client that keeps what it receives
 device flow a client started, which is the same shape of work), and the pixel frontend's window
 alongside the same memory for the browser and the phone.
 
-Saving attachments: the terminal offers `/save [number] <local path>` and the browser offers Save attachment. Both request the session-advertised `attachment.save`, receive a directed kernel metadata answer, and fetch the bytes over the blob protocol. Terminal writes create a new file and refuse overwrite; browser responses are downloads. Android and pixel destination selection remains frontend work.
+Saving attachments: the terminal offers `/save [number] <local path>` and the browser offers Save attachment. Both request the session-advertised `attachment.save`, receive a directed kernel metadata answer, and fetch the bytes over the blob protocol. Terminal writes create a new file and refuse overwrite; browser responses are downloads. Pixels offer a local destination dialog, use the same directed reply, and create a file without overwriting. Android destination selection remains frontend work.

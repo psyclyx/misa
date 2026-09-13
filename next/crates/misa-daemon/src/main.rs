@@ -375,7 +375,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // and it must not be on the path to answering a client on this one. A machine with no
     // route out never becomes online, so a daemon that waited first would print a ticket and
     // then ignore every peer that used it — on exactly the machine somebody tries first.
-    let router = misa_net::server::serve(endpoint.clone(), sessions, blobs, admission.clone());
+    let router = misa_net::server::serve(endpoint.clone(), sessions, Arc::new(blobs::Store(blobs)), admission.clone());
     let online = endpoint.clone();
     tokio::spawn(async move {
         online.online().await;
@@ -635,3 +635,5 @@ mod tests {
         assert!(parse_from(arguments("login")).is_err(), "a login with nothing to authorize");
     }
 }
+
+mod blobs;

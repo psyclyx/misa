@@ -33,6 +33,18 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+internal data class ImageFiles(val paths: Map<String, String>, val errors: Map<String, String>, val fetch: (String) -> Unit, val connected: Boolean = false)
+internal val LocalImages = staticCompositionLocalOf { ImageFiles(emptyMap(), emptyMap(), {}) }
+
 
 /**
  * A view tree, drawn.
@@ -99,7 +111,7 @@ private fun ShapeView(node: Node, expanded: Set<String>, onToggle: (String) -> U
         is Shape.Table -> DataTable(shape)
         is Shape.Fields -> Form(node, shape, onAction)
         is Shape.Collapsible -> Collapsible(node, shape, expanded, onToggle, onAction)
-        is Shape.Picture -> Text("[image: ${shape.alt}]", style = MaterialTheme.typography.bodySmall)
+        is Shape.Picture -> Picture(shape)
         is Shape.Status -> Text(shape.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         is Shape.Meter ->
             Column {
@@ -351,3 +363,28 @@ private fun tokenColor(name: String): Color =
         "operator", "punctuation" -> Color(0xFF56B6C2)
         else -> Color(0xFFABB2BF)
     }
+
+@Composable
+private fun Picture(shape: Shape.Picture) {
+    if (shape.media.isNotEmpty() && !shape.media.startsWith("image/")) {
+        Text(shape.alt, style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val files = LocalImages.current
+    val path = files.paths[shape.hash]
+    LaunchedEffect(shape.hash, files.connected) { files.fetch(shape.hash) }
+    val bitmap by produceState<android.graphics.Bitmap?>(null, path) {
+        value = if (path == null) null else withContext(Dispatchers.IO) {
+            runCatching {
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, options)
+                options.inSampleSize = 1
+                while (options.outWidth / options.inSampleSize > 2048 || options.outHeight / options.inSampleSize > 2048) options.inSampleSize *= 2
+                options.inJustDecodeBounds = false
+                BitmapFactory.decodeFile(path, options)
+            }.getOrNull()
+        }
+    }
+    bitmap?.let { Image(it.asImageBitmap(), contentDescription = shape.alt, modifier = Modifier.fillMaxWidth()) }
+        ?: Text(if (files.errors.containsKey(shape.hash) || path != null) "[image unavailable: ${shape.alt}]" else "[loading image: ${shape.alt}]", style = MaterialTheme.typography.bodySmall)
+}

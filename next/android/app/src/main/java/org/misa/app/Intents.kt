@@ -13,7 +13,7 @@ import org.json.JSONObject
  * — and no less.
  */
 object Intents {
-    fun prompt(text: String): String = JSONObject().put("intent", "prompt").put("text", text).toString()
+    fun prompt(text: String, attachments: List<JSONObject> = emptyList()): String = JSONObject().put("intent", "prompt").put("text", text).put("attachments", JSONArray(attachments)).toString()
 
     fun cancel(): String = JSONObject().put("intent", "cancel").toString()
 

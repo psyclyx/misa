@@ -100,24 +100,24 @@ These are forks that change later work, so they are answered first.
 
 ### 1. Semantics: the session stops knowing what a client is
 
-- [ ] Delete `Capabilities`, `RenderClass` and the class constructors; the hello carries a name and
+- [x] Delete `Capabilities`, `RenderClass` and the class constructors; the hello carries a name and
       a version.
 - [ ] `views::document(db, sections)`: delete the `graphics` read (`image_node` always emits
       `Kind::Image` with its `alt`), the `native_details` read (`Kind::Collapsible { summary }`, body
       as children), the memo's class key (memo by revision, one tree for every client), and the
       capabilities argument to `Section::build`.
-- [ ] `Kind::Meter` keeps `label`/`value`/`max`; `FieldKind` splits shape (`Inline`, `Block`, `Bool`,
+- [x] `Kind::Meter` keeps `label`/`value`/`max`; `FieldKind` splits shape (`Inline`, `Block`, `Bool`,
       `Choice`) from policy (`read_only`, `secret`), so a read-only block is expressible.
-- [ ] Group headers and footers around a run of messages (the parity row asks for a view-tree shape).
-- [ ] Move `views::VIEW_QUERY` and the completion-source names into `misa-proto` — names both ends
+- [x] Group headers and footers around a run of messages (the parity row asks for a view-tree shape).
+- [x] Move `views::VIEW_QUERY` and the completion-source names into `misa-proto` — names both ends
       must agree on belong to the protocol, not to the session.
-- [ ] The doc comments that argue for what is being deleted — `Capabilities`, `RenderClass`,
+- [x] The doc comments that argue for what is being deleted — `Capabilities`, `RenderClass`,
       `image_node`, `is_narrow` — and `parity.md`'s line in "Blobs, end to end" that says the
       words-for-an-image decision is made "from the capabilities the client declared" — and every
       other row that describes the capability path (the images row, the panel rows). The _positions_
       are already stated: §1's seams, §2's corollary and §7's numbered questions went in with this
       plan.
-- [ ] Verify: `cargo test --workspace`, plus a test that two clients attached to one session receive
+- [x] Verify: `cargo test --workspace`, plus a test that two clients attached to one session receive
       byte-identical trees.
 
 ### 2. Streaming and sync: content is not the document
@@ -175,12 +175,12 @@ These are forks that change later work, so they are answered first.
 
 ### 6. The terminal merge
 
-- [ ] `misa` becomes the terminal client: interactive when stdin and stdout are a tty, print mode
+- [x] `misa` becomes the terminal client: interactive when stdin and stdout are a tty, print mode
       otherwise, `--print`/`-p` to force. The print loop moves out of the binary so it can be tested;
       `misa-cli` goes.
-- [ ] The parity gaps: history search (Ctrl-R), the modal operators (`d`/`c`/`y` with motions, `dd`,
+- [x] The parity gaps: history search (Ctrl-R), the modal operators (`d`/`c`/`y` with motions, `dd`,
       `o`/`O`), and Alt-Enter.
-- [ ] Verify: the terminal's own suite plus the print loop's; the hand-checked two-process claim in
+- [x] Verify: the terminal's own suite plus the print loop's; the hand-checked two-process claim in
       the README with one binary.
 
 ### 7. Packaging
@@ -221,9 +221,9 @@ These are forks that change later work, so they are answered first.
       data the app persists, so a background check is "attach with `since`".
 - [ ] Browser: apply ops to the DOM instead of re-rendering the transcript per revision; its own
       memory (theme, opened nodes, draft) in the page's storage.
-- [ ] Pixels: a window; interaction for a panel's fields; selection; and the node kinds the scene does
-      not present yet — fields, meters, a collapsible's toggle, tables. Today it draws the text of the
-      tree with capture colours.
+- [x] Pixels: a native window with editable panel fields, selection and clipboard copy, meters,
+      disclosure toggles, wrapped tables and fetched images. Native keyboard, clipboard and
+      disclosure interaction are verified under Xvfb; 14 pixel tests cover scene and local interaction.
 - [ ] Terminal: the kit's memory shape with the terminal's storage; animations and spinners drawn from
       `State::Streaming`; a pasted binary image through a clipboard capability.
 - [ ] Verify: the parity rows move, and each frontend's own suite covers what it gained.

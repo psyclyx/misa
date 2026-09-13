@@ -61,11 +61,14 @@ let
       "-Pandroid.aapt2FromMavenOverride=${sdkRoot}/build-tools/37.0.0/aapt2"
       ":app:assembleDebug"
       ":app:testDebugUnitTest"
+      ":app:assembleDebugAndroidTest"
     ];
     installPhase = ''
       runHook preInstall
       install -Dm644 app/build/outputs/apk/debug/app-debug.apk $out/share/misa/misa-debug.apk
+      install -Dm644 app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk $out/share/misa/misa-debug-androidTest.apk
       ${sdkRoot}/build-tools/37.0.0/apksigner verify $out/share/misa/misa-debug.apk
+      ${sdkRoot}/build-tools/37.0.0/apksigner verify $out/share/misa/misa-debug-androidTest.apk
       runHook postInstall
     '';
     passthru = {

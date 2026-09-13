@@ -15,6 +15,7 @@ misa-reframe = { path = "crates/misa-reframe" }
 misa-render = { path = "crates/misa-render" }
 misa-kernel = { path = "crates/misa-kernel" }
 misa-session = { path = "crates/misa-session" }
+misa-protocol = { path = "crates/misa-protocol" }
 misa-net = { path = "crates/misa-net" }
 misa-plugin = { path = "crates/misa-plugin" }
 

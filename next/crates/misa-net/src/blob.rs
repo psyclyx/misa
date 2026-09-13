@@ -25,7 +25,6 @@ use std::sync::Arc;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
-use misa_kernel::Blobs;
 use misa_proto::ALPN_BLOB;
 use misa_proto::blob::{BlobMsg, BlobReply, MAX_BLOB_FRAME};
 use misa_proto::frame::{Decoder, decode, encode_within};
@@ -40,9 +39,17 @@ use tracing::{debug, warn};
 /// frame bound before allocating for it.
 const READ_CHUNK: usize = 1024 * 1024;
 
+/// Storage supplied by the daemon. Client builds contain no kernel implementation.
+pub trait BlobStore: Send + Sync {
+    fn get(&self, hash: &str) -> Option<Vec<u8>>;
+    fn media(&self, hash: &str) -> Option<String>;
+    fn has(&self, hash: &str) -> bool;
+    fn store(&self, bytes: Vec<u8>, media: Option<&str>) -> Result<BlobRef, String>;
+}
+
 /// Serves blobs from a store to admitted peers.
 pub struct Handler {
-    pub blobs: Arc<Blobs>,
+    pub blobs: Arc<dyn BlobStore>,
     pub admission: Arc<Admission>,
 }
 
@@ -74,7 +81,7 @@ impl ProtocolHandler for Handler {
 }
 
 /// Answer requests until the client stops asking.
-async fn converse(blobs: Arc<Blobs>, mut send: SendStream, mut recv: RecvStream) -> Result<(), String> {
+async fn converse(blobs: Arc<dyn BlobStore>, mut send: SendStream, mut recv: RecvStream) -> Result<(), String> {
     let mut decoder = Decoder::with_limit(MAX_BLOB_FRAME);
     let mut buffer = vec![0u8; READ_CHUNK];
     loop {
@@ -84,7 +91,7 @@ async fn converse(blobs: Arc<Blobs>, mut send: SendStream, mut recv: RecvStream)
         let reply = match decode::<BlobMsg>(&payload) {
             Ok(message) => match message.acceptable() {
                 Err(fault) => BlobReply::Refused { fault },
-                Ok(()) => answer(&blobs, message),
+                Ok(()) => answer(blobs.as_ref(), message),
             },
             Err(error) => BlobReply::refused(format!("that is not a blob request: {error}")),
         };
@@ -96,7 +103,7 @@ async fn converse(blobs: Arc<Blobs>, mut send: SendStream, mut recv: RecvStream)
 ///
 /// Pure, and the only place a request becomes an answer: the store is asked, and whatever
 /// it says — including a refusal for being full — is what the client is told.
-fn answer(blobs: &Blobs, message: BlobMsg) -> BlobReply {
+fn answer(blobs: &dyn BlobStore, message: BlobMsg) -> BlobReply {
     match message {
         BlobMsg::Get { hash } => match blobs.get(&hash) {
             // The media type is read before the hash is moved: it is the store's memory of
@@ -198,7 +205,7 @@ impl Client {
     pub async fn get(&mut self, hash: &str) -> Result<Option<Blob>, String> {
         match self.ask(&BlobMsg::Get { hash: hash.to_string() }).await? {
             BlobReply::Bytes { hash: received, media, bytes } => {
-                if received != hash || misa_kernel::blobs::hash_of(&bytes) != hash {
+                if received != hash || blake3::hash(&bytes).to_hex().to_string() != hash {
                     return Err("The blob response does not match the requested content hash".into());
                 }
                 Ok(Some(Blob { hash: received, media, bytes }))
@@ -237,7 +244,7 @@ impl Client {
     /// was no. Two messages for one intent, which is why it lives here rather than in
     /// every frontend.
     pub async fn share(&mut self, bytes: Vec<u8>, media: Option<&str>) -> Result<BlobRef, String> {
-        let hash = misa_kernel::blobs::hash_of(&bytes);
+        let hash = blake3::hash(&bytes).to_hex().to_string();
         let len = bytes.len() as u64;
         if !self.have(std::slice::from_ref(&hash)).await?.is_empty() {
             return Ok(BlobRef { hash, len, media: media.map(str::to_string) });
@@ -291,7 +298,7 @@ impl Store {
     pub async fn get(&self, hash: &str) -> Result<Option<Blob>, String> {
         match self.ask(BlobMsg::Get { hash: hash.to_string() }).await? {
             BlobReply::Bytes { hash: received, media, bytes } => {
-                if received != hash || misa_kernel::blobs::hash_of(&bytes) != hash {
+                if received != hash || blake3::hash(&bytes).to_hex().to_string() != hash {
                     return Err("The blob response does not match the requested content hash".into());
                 }
                 Ok(Some(Blob { hash: received, media, bytes }))
@@ -307,7 +314,7 @@ impl Store {
     /// send the bytes only if the answer was no. An attachment that has been uploaded before
     /// costs a question and nothing else.
     pub async fn share(&self, bytes: Vec<u8>, media: Option<&str>) -> Result<BlobRef, String> {
-        let hash = misa_kernel::blobs::hash_of(&bytes);
+        let hash = blake3::hash(&bytes).to_hex().to_string();
         let len = bytes.len() as u64;
         match self.ask(BlobMsg::Have { hashes: vec![hash.clone()] }).await? {
             BlobReply::Have { hashes } if !hashes.is_empty() => {
