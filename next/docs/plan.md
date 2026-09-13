@@ -84,19 +84,19 @@ Each phase is independently landable, states its verification, and shrinks what 
 
 These are forks that change later work, so they are answered first.
 
-- [ ] The incremental view's mechanism: a `Δdb → Δview` rule table for node _content_, or
-      structural ops plus memoised node content with declared inputs. Recommendation: the second —
+- [x] The incremental view uses structural ops plus memoised node content with declared inputs —
       containers get explicit ops (O(1), nothing to get wrong), content is a memoised build keyed by
       declared inputs (the idiom `Subscription { inputs }` already uses), and only aggregates need
       real delta care.
-- [ ] Whether the window argument goes now or after the transport can carry a value of any size. The
-      8 MiB frame cap is its only remaining justification; the size fix is a transport property.
-- [ ] The per-connection outbound queue bound, and what a full queue does (mark the client behind,
-      which means its next read is the canonical view).
-- [ ] The terminal surface: one `misa` (interactive when stdin and stdout are a tty, `--print` to
-      force), and whether `misa-tui` stays as an alias.
-- [ ] `gradle2nix` as a second `npins` pin — this nixpkgs has no `buildGradlePackage`.
-- [ ] APK signing: debug-signed in the build, or unsigned plus a signing step.
+- [x] The window argument goes after chunked transport lands. Session protocol version 2 carries
+      values in 64 KiB chunks with no whole-message ceiling; a real-endpoint test carries a view
+      larger than the former 8 MiB limit.
+- [x] The per-connection outbound queue holds 64 revision units. A full queue marks the client
+      behind; after queued units drain it receives the canonical view before further changes.
+- [x] One `misa` is interactive when stdin and stdout are a tty; `--print`/`-p` forces print mode.
+      `misa-tui` stays as an alias.
+- [x] `gradle2nix` v2 is the second `npins` pin, for its offline `buildGradlePackage`.
+- [x] The APK derivation is debug-signed, so the built artifact can be installed on an emulator.
 
 ### 1. Semantics: the session stops knowing what a client is
 
