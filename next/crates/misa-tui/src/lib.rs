@@ -21,6 +21,7 @@
 //! items to hold — see [`misa_client::picker`].
 
 pub mod print;
+pub mod output;
 pub mod storage;
 pub mod save;
 
@@ -1090,6 +1091,7 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
         screen.declare(&info);
     }
     let mut stdout = std::io::stdout();
+    let mut output = output::Output::default();
     crossterm::terminal::enable_raw_mode().map_err(|err| err.to_string())?;
     let result = 'session: loop {
         let Some(view) = session.next().await? else {
@@ -1097,8 +1099,8 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
         };
         let mut painted = draw(&screen, &view);
         loop {
-            if let Err(error) = write(&mut stdout, &painted) {
-                break 'session Err(error);
+            if let Err(error) = output.paint(&mut stdout, &painted) {
+                break 'session Err(error.to_string());
             }
             if !event::poll(Duration::from_millis(1)).map_err(|err| err.to_string())? {
                 // Nothing to handle, so hand the wait back to the session. A client that
@@ -1188,23 +1190,6 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
     })
 }
 
-fn write(stdout: &mut std::io::Stdout, lines: &[Line]) -> Result<(), String> {
-    use crossterm::{cursor, execute, terminal};
-    use std::io::Write as _;
-
-    execute!(stdout, terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))
-        .map_err(|err| err.to_string())?;
-    for line in lines {
-        let mut out = String::new();
-        for (style, text) in &line.spans {
-            out.push_str(&sgr(style));
-            out.push_str(text);
-            out.push_str("\u{1b}[0m");
-        }
-        write!(stdout, "{}{}\r\n", " ".repeat(line.indent as usize), out).map_err(|err| err.to_string())?;
-    }
-    stdout.flush().map_err(|err| err.to_string())
-}
 /// Put text on the terminal's clipboard, by asking the terminal to put it there.
 ///
 /// OSC 52 is the only clipboard a program with no window can reach, and that is the
