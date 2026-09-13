@@ -317,20 +317,6 @@ fn render_node(node: &Node, out: &mut String) {
         Kind::Collapsible { summary } => {
             // `<details>` is why this node exists as a node: a short form and a long
             // form are a thing HTML already has a word for.
-            if let Some(index) = out.find('>') {
-                let element = "<details";
-                let rest = out[index + 1..].to_string();
-                let head = out[..index].to_string();
-                let head = head
-                    .replace("<section", element)
-                    .replace("<div", element)
-                    .replace("<article", element)
-                    .replace("<p", element);
-                out.clear();
-                out.push_str(&head);
-                out.push('>');
-                out.push_str(&rest);
-            }
             out.push_str("<summary>");
             inline(summary, out);
             out.push_str("</summary>");
@@ -1415,6 +1401,23 @@ mod tests {
         assert!(SCRIPT.lines().count() < 40, "the script has grown a framework:\n{SCRIPT}");
         assert!(SCRIPT.contains("EventSource"), "{SCRIPT}");
         assert!(!SCRIPT.contains("function render"), "the browser started rendering: {SCRIPT}");
+    }
+
+    #[test]
+    fn nested_disclosures_do_not_rewrite_their_ancestors() {
+        let tree = Node::section("session").id("session")
+            .child(Node::text("message", [Span::plain("before")]))
+            .child(Node::new("tool.call", Kind::Collapsible {
+                summary: vec![Span::plain("details")],
+            }).id("call").child(Node::text("body", [Span::plain("inside")])))
+            .child(Node::text("message", [Span::plain("after")]));
+        let html = render_main(&tree);
+        assert!(html.starts_with("<section "), "{html}");
+        assert_eq!(html.matches("<details ").count(), 1, "{html}");
+        assert_eq!(html.matches("</details>").count(), 1, "{html}");
+        assert!(html.ends_with("</section>"), "{html}");
+        assert!(html.find("before").unwrap() < html.find("<details ").unwrap());
+        assert!(html.find("</details>").unwrap() < html.find("after").unwrap());
     }
 
     #[test]
