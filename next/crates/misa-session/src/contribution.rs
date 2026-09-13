@@ -34,13 +34,16 @@ use crate::views;
 /// is what the transcript does with messages, and the reason a plugin's root is durable state.
 pub const PATCH_KIND: &str = "plugin.patch";
 
-/// A handler whose writes into a composition's own roots are recorded.
-struct Recording {
+/// A handler confined to the roots its composition declared, whose writes are recorded.
+///
+/// One rule seen twice: a composition declares what it may write, so a patch into a root it
+/// declared is a fact the log has to keep, and a patch into anything else is a fault.
+struct Confined {
     inner: std::sync::Arc<dyn Handler>,
     roots: Vec<String>,
 }
 
-impl Handler for Recording {
+impl Handler for Confined {
     fn id(&self) -> &str {
         self.inner.id()
     }
@@ -48,14 +51,27 @@ impl Handler for Recording {
     fn handle(&self, tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         let before = tx.patches().len();
         self.inner.handle(tx, event)?;
+        // Checked after the handler ran, because that is when its patches exist — and safe for the
+        // same reason every fault here is: the transaction is the unit. Nothing it wrote lands and
+        // nothing it asked for is performed, including the entries this would have recorded.
+        //
+        // A patch with no root at all (`[0].text`) fails this too, which is right: there is no root
+        // to have declared, and the database would refuse the path a moment later anyway.
+        for (path, _) in &tx.patches()[before..] {
+            let declared = Op::root_of(path).is_some_and(|root| self.roots.iter().any(|declared| declared == root));
+            if !declared {
+                return Err(Fault::new(
+                    "composition.root",
+                    format!("`{path}` is not in a root this composition declared"),
+                ));
+            }
+        }
         let conversation = tx.text("session.conversation");
         // Collected before anything is queued: an effect is a mutable borrow and the patches are
-        // being read.
+        // being read. Every patch is in a declared root by now, so this list is the whole of what
+        // the composition wrote.
         let recorded = tx.patches()[before..]
             .iter()
-            .filter(|(path, _)| {
-                Op::root_of(path).is_some_and(|root| self.roots.iter().any(|declared| declared == root))
-            })
             .map(|(path, op)| (path.to_string(), op.to_value()))
             .collect::<Vec<_>>();
         for (path, patch) in recorded {
@@ -172,10 +188,11 @@ impl Contribution {
 
     /// Declare a root this contribution writes into.
     ///
-    /// Refused for a name the session already owns, which is the whole of what stops a
-    /// contribution from overwriting what the loop decided: a plugin that claimed `session` or
-    /// `messages` would be writing the agent's own state, and the manifest is what says which
-    /// names are taken.
+    /// Refused for a name the session already owns: a plugin that claimed `session` or `messages`
+    /// would be writing the agent's own state, and the manifest is what says which names are taken.
+    /// This is half of the rule and not the whole of it — the other half is the write, held to these
+    /// declarations by the wrapper `registry` puts on every handler, so a patch into a root nobody
+    /// declared is refused whether or not anybody declared anything.
     ///
     /// The name must be plain — a root is one top-level name, not a path — and it is
     /// [`views::Ownership::Plugin`]: not a kernel fact, and not a client's presentation.
@@ -201,20 +218,25 @@ impl Contribution {
 
     /// The shipped registry with this contribution registered.
     ///
-    /// Every handler is wrapped so that a patch into one of the roots this contribution declared is
-    /// *recorded* — after the transaction commits, because effects run then, so a transaction that
-    /// faults leaves nothing in the log. The session records rather than the host, because the log
-    /// and its vocabulary are the session's and "what is a fact" is the middle layer's decision
-    /// everywhere else here too.
+    /// Every handler is wrapped, and the wrapper is the composition's whole rule about state: a patch
+    /// into a root this contribution declared is *recorded*, and a patch into anything else fails the
+    /// transaction. Declaring what it may write is how a composition says what its state is, and the
+    /// write is where that is enforced — refusing the *declaration* of a name the session owns
+    /// (`with_root`) is only half of it, and a handler reaching past its roots is exactly the half a
+    /// declaration cannot catch.
+    ///
+    /// Recording is the session's job rather than the host's, because the log and its vocabulary are
+    /// the session's and "what is a fact" is the middle layer's decision everywhere else here too.
+    /// It is an *effect* rather than a write because effects run after the commit: a transaction that
+    /// faults leaves nothing in the log, so a fault takes its recording with it.
     pub(crate) fn registry(&self, shipped: Registry) -> Registry {
         let mut registry = shipped;
         let roots: Vec<String> = self.roots.iter().map(|(name, _)| name.clone()).collect();
         for (kind, priority, handler) in &self.handlers {
-            let handler: std::sync::Arc<dyn Handler> = if roots.is_empty() {
-                handler.clone()
-            } else {
-                std::sync::Arc::new(Recording { inner: handler.clone(), roots: roots.clone() })
-            };
+            // Wrapped even when it declared no roots: "declares nothing" and "may write anything" are
+            // not the same statement, and the composition that declared nothing may write nothing.
+            let handler: std::sync::Arc<dyn Handler> =
+                std::sync::Arc::new(Confined { inner: handler.clone(), roots: roots.clone() });
             registry = registry.on(kind.clone(), *priority, handler);
         }
         for (name, subscription) in &self.subscriptions {

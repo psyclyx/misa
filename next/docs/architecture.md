@@ -280,17 +280,20 @@ possible:
   as a `plugin.patch` entry, and a session that resumes the conversation folds them back with the
   same patch application the loop itself uses. No file, no format, and nothing the plugin has to
   cooperate with — and history that cannot be replayed, because the log and the composition
-  disagree, is counted and said out loud rather than dropped in silence.
+  disagree, is counted and said out loud rather than dropped in silence. The same wrapper is the
+  other half of the rule: a handler may only write into the roots its composition declared, so a
+  patch into `session.status` is a fault rather than a quiet rewrite of what the loop decided, and
+  the declaration is what says which state is a plugin's at all.
 
 ---
 
 ## 6. What is built, and what is not
 
 Built, with tests, per crate: `misa-value` (21), `misa-proto` (41), `misa-reframe` (24),
-`misa-render` (46), `misa-kernel` (91), `misa-session` (86), `misa-net` (29),
+`misa-render` (46), `misa-kernel` (91), `misa-session` (87), `misa-net` (29),
 `misa-plugin` (16, and thirteen more behind `--features guest-fixture`), `misa-client` (61),
 `misa-tui` (27), `misa-web` (19), `misa-daemon` (4), `misa-skia` (5), and one more behind
-`misa-skia --features paint`. That is 470 tests and no skips: `cargo test --workspace` is the
+`misa-skia --features paint`. That is 471 tests and no skips: `cargo test --workspace` is the
 gate, and these numbers are read back from it rather than remembered.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
@@ -389,10 +392,13 @@ already made.
 - Nothing may enter `Intent` that a session would have to trust. The test is: _could
   a client break the agent with this?_ If yes, it is not a client message.
 - A state root must be declared: the shipped session's in `views::MANIFEST`, with an owner and a
-  lifetime, and a composition's by the `Contribution` that adds it. A name the session already owns
-  cannot be claimed — that is the manifest's job — and a root a composition declared is what makes
-  its patches recordable, and therefore replayable (§5). A presentation root that is journalled is a
-  bug the manifest test catches.
+  lifetime, and a composition's by the `Contribution` that adds it. Both halves of that are
+  enforced, and they are enforced in the two places the mistake can be made: a name the session
+  already owns cannot be _claimed_ (`with_root`, against the manifest), and a handler may only
+  _write_ into the roots its composition declared (the wrapper `registry` puts on every handler).
+  The second is the one a declaration cannot catch, and it is also what makes a patch recordable —
+  and therefore replayable (§5). A presentation root that is journalled is a bug the manifest test
+  catches.
 - A fault is data. A handler that fails rolls back and reports; a session that
   cannot build a view keeps the last valid one. Nothing in this system panics on
   input, and `Session::read` is where that is enforced for the wire.

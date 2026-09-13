@@ -1490,13 +1490,60 @@ mod contribution_tests {
 
     #[tokio::test]
     async fn a_contribution_that_writes_a_root_nobody_declared_is_a_fault_not_a_silence() {
-        // The rule a patch follows: a path may only be created where it is written. A
-        // contribution that did not declare `guest` gets a fault that rolls its transaction
-        // back, which is how a missing declaration shows up as a bug rather than as nothing.
+        // Two rules, and a composition that breaks either one hears about it rather than finding out
+        // later that its state never existed. The first is the composition's own: it may only write
+        // into the roots it declared, so a contribution with no roots at all cannot write
+        // `guest.seen` however much it wants to.
         let runtime = session(Contribution::new().with_handler("intent/prompt", 10, adopting()));
         let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
         assert_eq!(faults.len(), 1, "{faults:?}");
-        assert_eq!(faults[0].code, "patch");
+        assert_eq!(faults[0].code, "composition.root");
         assert!(faults[0].message.contains("guest.seen"), "{}", faults[0].message);
+
+        // The second is the database's: a patch may only create the *last* key of its path, so a
+        // write that would have to invent a container on the way is refused even inside a root the
+        // composition does own. Two mistakes, and a client can tell them apart by the code.
+        let deep = Arc::new(FnHandler::new("test.deep", |tx: &mut Tx<'_>, _event: &Event| {
+            tx.set("guest.turns[0].seen", Value::str("first"))?;
+            Ok(())
+        }));
+        let declared = session(
+            Contribution::new()
+                .with_root("guest", Value::map([]))
+                .expect("a root the session does not own")
+                .with_handler("intent/prompt", 10, deep),
+        );
+        let faults = declared.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0].code, "patch");
+        assert!(faults[0].message.contains("guest.turns"), "{}", faults[0].message);
+    }
+
+    #[tokio::test]
+    async fn a_handler_cannot_write_outside_the_roots_its_composition_declared() {
+        // The declaration is where a composition says what its state is, and this is where that is
+        // enforced. A handler that reaches for `messages` — the transcript the loop decides — is a
+        // fault rather than a quiet rewrite, and because one dispatch is one transaction, the fault
+        // takes everything else in it too: the write it was allowed to make, and the message the
+        // loop had already recorded before the plugin ran.
+        let intruder = Arc::new(FnHandler::new("test.intruder", |tx: &mut Tx<'_>, _event: &Event| {
+            tx.set("guest.seen", Value::str("mine"))?;
+            tx.set("messages", Value::list([]))?;
+            Ok(())
+        }));
+        let runtime = session(
+            Contribution::new()
+                .with_root("guest", Value::map([]))
+                .expect("a root the session does not own")
+                .with_handler("intent/prompt", 10, intruder)
+                .with_subscription("guest.seen", reading()),
+        );
+        let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0].code, "composition.root");
+        assert!(faults[0].message.contains("messages"), "{}", faults[0].message);
+        // Nothing landed: not the root it did declare, and not the transcript.
+        assert_eq!(value(&runtime, "guest.seen"), Value::Null, "the write it was allowed to make is gone too");
+        assert!(!transcript(&runtime).contains("hello"), "{}", transcript(&runtime));
     }
 }

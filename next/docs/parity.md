@@ -9,7 +9,7 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the gate: 470 tests, and thirteen more behind
+`cargo test --workspace` is the gate: 471 tests, and thirteen more behind
 `misa-plugin --features guest-fixture`, with no skips. Counts per crate are in
 `docs/architecture.md`.
 
