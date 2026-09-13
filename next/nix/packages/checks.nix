@@ -10,6 +10,7 @@
   xclip,
   sway,
   wl-clipboard,
+  dbus,
 }:
 let
   skia = callPackage ../skia.nix { };
@@ -25,6 +26,7 @@ in
     xclip
     sway
     wl-clipboard
+    dbus
   ];
   inherit (skia) buildInputs preCheck;
   env = skia.env // {
@@ -40,7 +42,8 @@ in
     bash crates/misa-web/tests/browser.sh
     bash crates/misa-skia/tests/window.sh target/${stdenv.hostPlatform.rust.rustcTarget}/release/misa-skia
     bash crates/misa-tui/tests/clipboard.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
-    bash crates/misa-tui/tests/clipboard-wayland.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
+    ${dbus}/bin/dbus-run-session --config-file=${dbus}/share/dbus-1/session.conf -- \
+      bash crates/misa-tui/tests/clipboard-wayland.sh --release --offline --target ${stdenv.hostPlatform.rust.rustcTarget}
   '';
   installPhase = ''
     mkdir -p "$out"
