@@ -1,0 +1,26 @@
+[package]
+name = "misa-skia"
+description = "The pixel frontend: the semantic tree as a scene, and as a raster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Painting needs a Skia that can be linked, which needs freetype and fontconfig. The
+# scene is built without either, so the mapping from tree to scene is testable
+# everywhere and only the raster is opt-in.
+default = []
+paint = ["dep:skia-safe", "dep:image"]
+
+[dependencies]
+futures.workspace = true
+image = { workspace = true, optional = true }
+misa-net.workspace = true
+misa-proto.workspace = true
+misa-render.workspace = true
+misa-session.workspace = true
+misa-value.workspace = true
+serde_json.workspace = true
+skia-safe = { workspace = true, optional = true }
+tokio.workspace = true

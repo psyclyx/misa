@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The surface is Compose's; this only says "no action bar, and let the
+         system draw the bars", which is the whole of what a Compose activity
+         needs from an XML theme. -->
+    <style name="Theme.Misa" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

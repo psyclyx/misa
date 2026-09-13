@@ -1,0 +1,19 @@
+[package]
+name = "misa-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-value.workspace = true
+async-trait.workspace = true
+iroh.workspace = true
+misa-kernel.workspace = true
+misa-proto.workspace = true
+misa-session.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+misa-render.workspace = true

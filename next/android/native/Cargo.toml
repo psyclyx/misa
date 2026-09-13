@@ -1,0 +1,24 @@
+[package]
+name = "misa-android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A workspace of its own, like every JNI crate here: the Android library links the
+# client half of the protocol and must not drag the whole desktop workspace's
+# feature unification into a phone build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.21"
+misa-client = { path = "../../crates/misa-client" }
+misa-net = { path = "../../crates/misa-net" }
+misa-proto = { path = "../../crates/misa-proto" }
+misa-render = { path = "../../crates/misa-render" }
+misa-session = { path = "../../crates/misa-session" }
+misa-value = { path = "../../crates/misa-value" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }

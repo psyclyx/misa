@@ -1,0 +1,10 @@
+[package]
+name = "misa-reframe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-proto.workspace = true
+misa-value.workspace = true

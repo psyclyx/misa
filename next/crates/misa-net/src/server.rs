@@ -1,0 +1,293 @@
+//! One endpoint, two protocols.
+//!
+//! A daemon serves sessions and blobs from the same iroh endpoint, and this is the only
+//! place that says so. It is a module rather than two `serve` functions because two
+//! functions would be two ways to build a router, and a daemon that mounted one of them
+//! would silently be a daemon whose tickets point at a node that does not answer for
+//! images.
+//!
+//! # Why one endpoint
+//!
+//! A ticket is `misa:<node>:<session>`: one string, one node, one session. If blobs were
+//! served by a second endpoint, every ticket would have to carry a second address, every
+//! client would have to keep two connections in step, and the admission decision would
+//! have to be made twice by two pieces of code that could disagree. Serving both from one
+//! endpoint makes "can this peer fetch this session's images" the same question as "can
+//! this peer talk to this session", which is the question a [`Roster`] answers.
+
+use std::sync::Arc;
+
+// `::iroh` rather than `iroh`, because this file also names our own transport module
+// `iroh`. A name that can mean two things is a name to spell out.
+use ::iroh::protocol::Router;
+use ::iroh::Endpoint;
+#[cfg(test)]
+use ::iroh::EndpointAddr;
+use misa_kernel::Blobs;
+use misa_proto::{ALPN_BLOB, ALPN_SESSION};
+use misa_session::admission::Admission;
+
+use crate::iroh::{self, Sessions};
+use crate::blob;
+
+/// Start serving: sessions on one ALPN, their bytes on another, one admission decision.
+pub fn serve(
+    endpoint: Endpoint,
+    sessions: Arc<Sessions>,
+    blobs: Arc<Blobs>,
+    admission: Arc<Admission>,
+) -> Router {
+    Router::builder(endpoint)
+        .accept(ALPN_SESSION, iroh::Handler { sessions, admission: admission.clone() })
+        .accept(ALPN_BLOB, blob::Handler { blobs, admission })
+        .spawn()
+}
+
+/// A daemon endpoint with one session and one blob store, and where to reach it.
+///
+/// What every transport test needs and none of them should build by hand: two endpoints —
+/// one serving, one dialing, because connecting to yourself is not a thing iroh does — and
+/// a session composed over an in-memory kernel.
+#[cfg(test)]
+pub(crate) struct Fixture {
+    pub server: Endpoint,
+    pub client: Endpoint,
+    pub address: EndpointAddr,
+    pub sessions: Arc<Sessions>,
+    pub blobs: Arc<Blobs>,
+    pub router: Router,
+}
+
+#[cfg(test)]
+impl Fixture {
+    pub(crate) async fn start(admission: Admission, provider: Arc<dyn misa_kernel::Provider>) -> Fixture {
+        let server = iroh::bind(None, false).await.expect("a server endpoint");
+        let client = iroh::bind(None, false).await.expect("a client endpoint");
+        let sessions = Sessions::new();
+        sessions.insert(misa_session::Runtime::start(
+            "demo",
+            "a demo session",
+            Some("c1".into()),
+            Arc::new(misa_kernel::LocalKernel::new(provider)),
+            "scripted",
+            "scripted-1",
+            misa_value::Value::Null,
+        ));
+        let blobs = Arc::new(Blobs::in_memory());
+        let address = iroh::address_of(&iroh::node_of(&server)).expect("an address");
+        let router = serve(server.clone(), sessions.clone(), blobs.clone(), Arc::new(admission));
+        Fixture { server, client, address, sessions, blobs, router }
+    }
+
+    pub(crate) async fn stop(self) {
+        self.router.shutdown().await.ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob as blob_client;
+    use crate::iroh::Client;
+    use misa_kernel::{Provider, ScriptedProvider, Turn};
+    use misa_proto::wire::{Capabilities, Intent, SessionMsg, SubId};
+    use misa_proto::{ClientInfo, Query};
+    use misa_value::Value;
+
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+
+    /// Every await in these tests is bounded, because a transport that never answers is a
+    /// test suite that hangs instead of reporting.
+    async fn within<F: std::future::Future>(what: &str, future: F) -> F::Output {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), future).await {
+            Ok(value) => value,
+            Err(_) => panic!("{what} did not finish"),
+        }
+    }
+
+    fn scripted() -> Arc<dyn Provider> {
+        ScriptedProvider::new([
+            Turn::call("echo", Value::str("hello"), Turn::say("all done")),
+            Turn::say("all done"),
+        ])
+    }
+
+    fn client_info() -> ClientInfo {
+        ClientInfo::new("test-client", "0.1.0", Capabilities::plain())
+    }
+
+    /// The whole point of the transport, end to end: a real endpoint, a real client, a
+    /// prompt, and a transcript that changes.
+    ///
+    /// This is the test that would have caught the second copy of the session loop: that
+    /// copy answered a subscription once and never refreshed it, so a client over a real
+    /// connection saw an empty transcript and then silence.
+    #[tokio::test]
+    async fn a_client_attaches_prompts_and_sees_the_transcript_change() {
+        let fixture = Fixture::start(Admission::open(), scripted()).await;
+        let mut client = within(
+            "attaching",
+            Client::connect(&fixture.client, fixture.address.clone(), client_info(), "demo"),
+        )
+        .await
+        .expect("a connection");
+        // `connect` has already read past the endpoint's greeting: the first thing a caller
+        // sees from an attached connection is the session's own answer to a subscription.
+        assert_eq!(client.session().map(|session| session.id.as_str()), Some("demo"));
+        within("subscribing", client.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)))
+            .await
+            .expect("a subscription");
+        let first = within("a view", client.next()).await.expect("a message").expect("a view");
+        let before = match first {
+            SessionMsg::View { view, .. } => view,
+            other => panic!("expected a view, got {other:?}"),
+        };
+        assert!(
+            misa_proto::view::find(&before, "transcript").is_some(),
+            "the first view has no transcript"
+        );
+
+        within(
+            "sending",
+            client.intent(1, Intent::Prompt { text: "what is this".into(), attachments: Vec::new() }),
+        )
+        .await
+        .expect("an intent");
+
+        // The session answers with an acknowledgement and then with views: one where the
+        // prompt has been written, and one the reply has landed in. The second is the part
+        // that used to never arrive, because the network path had its own copy of the
+        // session loop and that copy never watched the revision.
+        let mut saw_ack = false;
+        let mut saw_prompt = false;
+        let mut saw_reply = false;
+        for _ in 0..60 {
+            let Some(message) = within("a message", client.next()).await.expect("a message") else {
+                break;
+            };
+            match message {
+                SessionMsg::Ack { .. } => saw_ack = true,
+                SessionMsg::View { view, .. } => {
+                    let text =
+                        misa_render::to_plain(&misa_render::render(&view, &misa_render::Theme::plain(), 100));
+                    saw_prompt |= text.contains("what is this");
+                    saw_reply |= text.contains("all done");
+                    if saw_prompt && saw_reply {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_ack, "the intent was never acknowledged");
+        assert!(saw_prompt, "the transcript never showed the prompt");
+        assert!(saw_reply, "the transcript never showed the reply");
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
+    async fn one_ticket_reaches_both_the_session_and_its_bytes() {
+        let fixture = Fixture::start(Admission::open(), scripted()).await;
+        // The bytes a view would point at, put where the daemon serves them.
+        let stored = fixture.blobs.put(PNG, None).expect("a blob");
+
+        // The same address, the same endpoint: no second ticket and no second address.
+        let mut session = within(
+            "attaching",
+            Client::connect(&fixture.client, fixture.address.clone(), client_info(), "demo"),
+        )
+        .await
+        .expect("a session connection");
+        assert!(session.session().is_some(), "the connection is not attached to anything");
+        let mut blobs = within("connecting", blob_client::Client::connect(&fixture.client, fixture.address.clone()))
+            .await
+            .expect("a blob connection");
+        let fetched = within("a fetch", blobs.get(&stored.hash)).await.expect("a fetch").expect("the blob");
+        assert_eq!(fetched.bytes, PNG);
+
+        // And the session connection is still attached, which is what "in step" means here:
+        // two connections, one identity, neither disturbing the other.
+        within("a subscription", session.subscribe(SubId(1), Query::new(misa_session::views::VIEW_QUERY)))
+            .await
+            .expect("a subscription");
+        assert!(matches!(
+            within("a view", session.next()).await.expect("a message"),
+            Some(SessionMsg::View { .. })
+        ));
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_empty_roster_admits_nobody_on_either_protocol() {
+        let fixture = Fixture::start(Admission::listed([]), scripted()).await;
+        fixture.blobs.put(PNG, None).expect("a blob");
+
+        let session = within(
+            "attaching",
+            Client::connect(&fixture.client, fixture.address.clone(), client_info(), "demo"),
+        )
+        .await;
+        // Either the connection is refused outright or it is closed the moment it is used;
+        // what must not happen is a session arriving.
+        if let Ok(mut client) = session {
+            match within("a read", client.next()).await {
+                Err(_) => {}
+                Ok(None) => {}
+                Ok(Some(message)) => panic!("a refused peer was handed {message:?}"),
+            }
+        }
+
+        let blobs = within("connecting", blob_client::Client::connect(&fixture.client, fixture.address.clone())).await;
+        if let Ok(mut client) = blobs {
+            assert!(
+                within("a fetch", client.get(&"0".repeat(64))).await.is_err(),
+                "a refused peer got an answer from the blob store"
+            );
+        }
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_ticket_a_daemon_prints_is_the_one_that_reaches_its_session() {
+        // The line a daemon prints is the whole of what a person carries: one node, one
+        // session. It has to parse back into somewhere to dial and something to ask for,
+        // because that string is the entire interface to a running session.
+        let fixture = Fixture::start(Admission::open(), scripted()).await;
+        assert_eq!(fixture.sessions.ids(), vec!["demo".to_string()]);
+
+        let ticket = iroh::ticket(&fixture.server, "demo");
+        let parsed: misa_proto::Ticket = ticket.to_string().parse().expect("a ticket is text");
+        assert_eq!(parsed.session, "demo");
+        let address = iroh::address_of(&parsed.node).expect("a ticket says where to dial");
+        assert_eq!(address.id, fixture.address.id);
+
+        let client = within(
+            "attaching",
+            Client::connect(&fixture.client, address, client_info(), &parsed.session),
+        )
+        .await
+        .expect("the printed ticket reaches the session");
+        assert_eq!(client.session().map(|session| session.id.as_str()), Some("demo"));
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
+    async fn attaching_to_a_session_the_daemon_does_not_have_says_so() {
+        let fixture = Fixture::start(Admission::open(), scripted()).await;
+        let refused = within(
+            "attaching",
+            Client::connect(&fixture.client, fixture.address.clone(), client_info(), "nope"),
+        )
+        .await;
+        match refused {
+            Err(message) => assert!(message.contains("nope"), "{message}"),
+            // A session nobody has must not be handed out, and if the connection is not
+            // refused outright then reading from it has to fail.
+            Ok(mut client) => assert!(
+                within("a read", client.next()).await.is_err(),
+                "a session nobody has was handed out"
+            ),
+        }
+        fixture.stop().await;
+    }
+}

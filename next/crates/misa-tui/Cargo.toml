@@ -1,0 +1,18 @@
+[package]
+name = "misa-tui"
+description = "The terminal frontend: a renderer, an editor, a picker, and a key loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+crossterm.workspace = true
+misa-client = { path = "../misa-client" }
+misa-net.workspace = true
+misa-proto.workspace = true
+misa-render.workspace = true
+misa-session.workspace = true
+misa-value.workspace = true
+tokio.workspace = true

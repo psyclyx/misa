@@ -1,0 +1,18 @@
+[package]
+name = "misa-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciborium.workspace = true
+misa-kernel.workspace = true
+misa-proto.workspace = true
+misa-reframe.workspace = true
+misa-value.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+misa-render.workspace = true

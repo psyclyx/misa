@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.91"
+
+[workspace.dependencies]
+misa-proto = { path = "crates/misa-proto" }
+misa-value = { path = "crates/misa-value" }
+misa-reframe = { path = "crates/misa-reframe" }
+misa-render = { path = "crates/misa-render" }
+misa-kernel = { path = "crates/misa-kernel" }
+misa-session = { path = "crates/misa-session" }
+misa-net = { path = "crates/misa-net" }
+
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "multipart", "tokio", "tracing"] }
+ciborium = "0.2"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+iroh = "1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+skia-safe = { version = "0.93", features = ["textlayout"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-width = "0.2"
+blake3 = "1"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

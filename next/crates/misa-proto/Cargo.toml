@@ -1,0 +1,13 @@
+[package]
+name = "misa-proto"
+description = "The misa wire vocabulary: semantic view data, intents, subscriptions, and framing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciborium.workspace = true
+misa-value.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,150 @@
+// The policy plugin interface, as designed and not yet hosted.
+//
+// A plugin is a wasm component that reacts to events and answers queries — the same
+// two things every handler in `misa-reframe` already does. The interfaces below are
+// therefore thin: what crosses the boundary is *data*, in exactly the shapes the
+// loop already passes in process.
+//
+// Four decisions are already made and are visible here:
+//
+//  * A plugin **declares**; it does not register at runtime. `describe` is called
+//    once at install, the host validates the whole composition, and nothing a plugin
+//    does later can add a handler or a subscription. The previous system kept that
+//    rule and it is what makes a composition checkable before it runs.
+//  * A plugin **never sees a secret**. An effect names a credential by ID; the host
+//    injects it. This is the trust boundary, and it is why effects are a closed set
+//    the interpreter validates rather than an open channel.
+//  * A plugin **cannot present**. It returns view nodes — roles, structure, typed
+//    fields — and never a colour, a size, or a position, because there is no type
+//    here that can express one.
+//  * A plugin **may fail**. Every call returns a `fault`, and a fault rolls the
+//    plugin's transaction back and is reported. It does not take the session down.
+
+package misa:policy@0.1.0;
+
+interface types {
+    /// A contained failure. `code` is stable; `message` is for a person.
+    record fault {
+        code: string,
+        message: string,
+        /// The event being handled, when there was one.
+        event: option<string>,
+    }
+
+    /// A patch to the session database: a path and what to do at it.
+    ///
+    /// Explicit, so nothing is inferred from the shape of the value. Merging and
+    /// appending are separate op kinds because they are the two operations that are
+    /// not replacement.
+    variant op {
+        set(value),       // json
+        merge(value),     // json
+        delete,
+        append(value),    // json
+        append-all(value),// json
+    }
+
+    /// One patch entry. A path is `a.b[0].c`; an empty path is the root, and a root
+    /// patch may only merge.
+    record patch {
+        path: string,
+        op: op,
+    }
+
+    /// An effect: a name and its data. The kind must be one the host's interpreter
+    /// accepts, or the transaction does not commit.
+    record effect {
+        kind: string,
+        data: option<string>,  // json
+    }
+
+    /// A view node: a role, a kind, and children.
+    ///
+    /// `role` is an open, dotted, lowercase name — the one part of the vocabulary a
+    /// plugin extends, because a plugin that adds a tool needs to name the thing it
+    /// added. `kind` is one of the structural shapes the protocol defines.
+    record node {
+        id: string,
+        role: string,
+        kind: string,
+        data: option<string>,   // json: the kind's own fields
+        children: list<node>,
+        actions: list<action>,
+        state: option<string>,
+    }
+
+    record action {
+        id: string,
+        label: option<string>,
+        on-submit: bool,
+        args: option<string>,   // json
+    }
+
+    /// An event, as a handler receives it: a kind and its data.
+    record event {
+        kind: string,
+        data: option<string>,   // json
+    }
+
+    /// A query: a name and its arguments.
+    record query {
+        id: string,
+        args: list<string>,     // json
+    }
+}
+
+/// What every policy plugin exports.
+interface policy-api {
+    use types.{action, effect, event, fault, node, op, patch, query};
+
+    /// Called once, at install. What this plugin contributes and what it needs.
+    ///
+    /// The host validates the whole composition from these declarations and then
+    /// seals it, so a running session cannot be changed underneath itself.
+    record descriptor {
+        id: string,
+        version: string,
+        /// Event kinds this plugin handles.
+        events: list<string>,
+        /// Query names this plugin answers.
+        queries: list<string>,
+        /// Effect kinds this plugin may ask for.
+        effects: list<string>,
+    }
+
+    /// Options from the composition, in order.
+    record option-value {
+        key: string,
+        value: string,
+    }
+
+    describe: func() -> descriptor;
+    configure: func(options: list<option-value>) -> result<_, fault>;
+
+    /// Handle one event. Returns the patches to apply and the effects to run, both
+    /// of which the host validates *before* anything commits.
+    ///
+    /// Handlers are pure: a handler that needs an answer emits an effect and handles
+    /// its completion event, which is why this signature has no async and no host
+    /// callback in it.
+    handle: func(event: event, db: string) -> result<tuple<list<patch>, list<effect>>, fault>;
+
+    /// Answer one query. The host provides the declared inputs it evaluated.
+    ///
+    /// `previous` is the value this plugin produced last time, if the host still
+    /// holds it. It is a hint and may be absent, so a computation must produce the
+    /// same result without it.
+    query: func(query: query, inputs: list<string>, db: string, previous: option<string>) -> result<string, fault>;
+
+    /// Build a view for a client with the given capabilities.
+    ///
+    /// The capabilities are what a client says it can draw — images, links, a native
+    /// disclosure widget — and they are the *only* thing about a client a plugin
+    /// learns. It never learns a size, a font, or a colour, because it has none of
+    /// those to ask about.
+    view: func(role: string, capabilities: string, db: string, window: u32) -> result<node, fault>;
+}
+
+world policy {
+    export policy-api;
+}

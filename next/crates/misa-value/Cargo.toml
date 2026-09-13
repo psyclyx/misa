@@ -1,0 +1,13 @@
+[package]
+name = "misa-value"
+description = "Immutable, structurally shared values and explicit patches for the misa re-frame loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true

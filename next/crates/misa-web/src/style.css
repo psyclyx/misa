@@ -1,0 +1,171 @@
+/* The browser frontend's theme.
+ *
+ * A role from the view tree becomes a class here, and everything a role looks like
+ * is decided in this file. Swapping a theme is swapping this file: no colour, size
+ * or font crosses the wire, which is the same rule the terminal and pixel frontends
+ * follow, expressed the way a browser expresses it.
+ */
+
+:root {
+  --fg: #e9ebee;
+  --fg-muted: #9aa2ad;
+  --bg: #14161a;
+  --bg-raised: #1b1e24;
+  --rule: #262a31;
+  --accent: #64b5a0;
+  --user: #6f7bd6;
+  --tool: #c9a227;
+  --error: #e06c75;
+
+  --text: 17px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "DejaVu Sans Mono", monospace;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --fg: #14161a;
+    --fg-muted: #5b6270;
+    --bg: #fbfbfc;
+    --bg-raised: #f2f3f5;
+    --rule: #dfe1e5;
+    --accent: #2f7a68;
+    --user: #4a56b0;
+    --tool: #8a6d10;
+    --error: #b3353f;
+    color-scheme: light;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--text);
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* A message is a block with a coloured rule down its left edge. The rule is the
+ * same affordance the terminal draws and the pixel frontend paints; only the
+ * medium differs. */
+.n-message\.user,
+.n-message\.assistant {
+  border-left: 3px solid var(--rule);
+  padding: 0.25rem 0 0.25rem 0.9rem;
+  white-space: pre-wrap;
+}
+
+.n-message\.user { border-left-color: var(--user); }
+.n-message\.assistant { border-left-color: var(--accent); }
+
+.n-session\.header,
+.n-status,
+.n-turn { color: var(--fg-muted); font-size: 0.85rem; }
+
+.n-notice { color: var(--fg-muted); font-size: 0.9rem; }
+.n-notice\.warn { color: var(--tool); }
+.n-notice\.error, .n-error, .n-tool\.result\.error { color: var(--error); }
+
+/* A tool call: closed by default, and the summary says what it was. */
+.n-tool\.call {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-raised);
+}
+.n-tool\.call > summary { cursor: pointer; color: var(--tool); }
+.n-tool\.call[data-state="failed"] > summary { color: var(--error); }
+.n-tool\.call\.args { color: var(--fg-muted); font-size: 0.9rem; }
+
+code, pre {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+pre {
+  margin: 0.4rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-raised);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+/* Syntax captures, mapped from the names a parser used. An unknown name is
+ * simply unstyled, which is why this list can be short. */
+[data-token] { color: inherit; }
+[data-token="comment"] { color: #6a7178; font-style: italic; }
+[data-token="string"] { color: #98c379; }
+[data-token="number"] { color: #d19a66; }
+[data-token="keyword"] { color: #c678dd; }
+[data-token="type"] { color: #e5c07b; }
+[data-token="function"] { color: #61afef; }
+[data-token="property"] { color: #9ecbff; }
+
+dl { margin: 0; }
+dt { color: var(--fg-muted); font-size: 0.85rem; }
+dd { margin: 0 0 0.4rem; }
+
+/* The composer. It is a form because it submits, and it works with no script. */
+.n-composer {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--rule);
+}
+
+.n-composer textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 0.6rem 0.75rem;
+  font: var(--text);
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.n-composer button,
+button { font: inherit; padding: 0.4rem 0.9rem; border-radius: 6px; cursor: pointer; }
+
+.n-composer\.hint { color: var(--fg-muted); font-size: 0.75rem; }
+
+.n-turn button { font-size: 0.85rem; }
+
+.n-value\.money, .n-session\.header\.spend { color: var(--tool); }
+
+meter { width: 8rem; }
+
+.n-transcript\.earlier { color: var(--fg-muted); font-size: 0.8rem; }
+
+/*
+ * The client's own strip: what it is holding and has not sent. It has no view role because no
+ * session knows about it — it is a form and a list of names, and it is styled here for the
+ * same reason the rest is: a role to a look, and nothing else.
+ */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+}
+
+.attachments p { margin: 0; }
+.attachments code { font-size: 0.8rem; }

@@ -1,0 +1,312 @@
+//! Text measurement and wrapping.
+//!
+//! The previous system learned that cell measurement belongs in native code and
+//! decided nothing else did. This keeps that division and makes it explicit: this
+//! module measures and breaks, and it never decides what a thing looks like.
+
+use misa_proto::view::{Span, SpanKind};
+use unicode_width::UnicodeWidthStr;
+
+/// The display width of text, in columns.
+///
+/// Wide characters are two columns, combining marks are none. This is the number
+/// a terminal and a fixed-advance layout both mean.
+pub fn width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+/// Cut text to at most `columns`, never inside a character.
+pub fn clip(text: &str, columns: usize) -> String {
+    split_at_width(text, columns).0
+}
+
+/// Pad text on the right to exactly `columns`, clipping when it is longer.
+pub fn pad(text: &str, columns: usize) -> String {
+    let mut out = clip(text, columns);
+    let used = width(&out);
+    for _ in used..columns {
+        out.push(' ');
+    }
+    out
+}
+
+/// Break inline content into lines of at most `columns`, keeping each run's kind.
+///
+/// Three rules, in order, and each one exists because a real transcript needed it:
+///
+/// 1. A word that fits on the current line stays there.
+/// 2. A word that does not fit moves to the next line, and the whitespace it moved
+///    across is dropped rather than left at the end of the previous line.
+/// 3. A word longer than a whole line is broken at the column. A URL, a path, or a
+///    base64 blob must widen the layout, not overflow it.
+///
+/// A newline inside a run is a break, not a word. Emphasis spanning a break stays
+/// on both halves, because a renderer that dropped it would silently change what
+/// the author emphasised.
+pub fn wrap_spans(spans: &[Span], columns: usize) -> Vec<Vec<Span>> {
+    if columns == 0 {
+        return vec![spans.to_vec()];
+    }
+    let mut out = Lines::new(columns);
+    for span in spans {
+        for piece in split_pieces(&span.text) {
+            match piece {
+                Piece::Break => out.break_line(),
+                Piece::Word { text, space_before } => out.word(&text, space_before, &span.kind),
+            }
+        }
+    }
+    out.finish()
+}
+
+enum Piece {
+    Break,
+    Word { text: String, space_before: bool },
+}
+
+/// Split a run into words, remembering which had whitespace before them.
+fn split_pieces(text: &str) -> Vec<Piece> {
+    let mut out = Vec::new();
+    let mut at_start = true;
+    for (index, segment) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push(Piece::Break);
+        }
+        let mut rest = segment;
+        let mut space = !at_start;
+        while !rest.is_empty() {
+            let trimmed = rest.trim_start_matches(char::is_whitespace);
+            if trimmed.len() != rest.len() {
+                space = true;
+                rest = trimmed;
+            }
+            if rest.is_empty() {
+                break;
+            }
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            out.push(Piece::Word { text: rest[..end].to_string(), space_before: space });
+            rest = &rest[end..];
+            space = true;
+        }
+        at_start = false;
+    }
+    out
+}
+
+struct Lines {
+    columns: usize,
+    lines: Vec<Vec<Span>>,
+    current: Vec<Span>,
+    used: usize,
+}
+
+impl Lines {
+    fn new(columns: usize) -> Self {
+        Lines { columns, lines: Vec::new(), current: Vec::new(), used: 0 }
+    }
+
+    fn break_line(&mut self) {
+        self.lines.push(std::mem::take(&mut self.current));
+        self.used = 0;
+    }
+
+    fn word(&mut self, text: &str, space_before: bool, kind: &SpanKind) {
+        let size = width(text);
+        let separator = usize::from(space_before && self.used > 0);
+        if self.used + separator + size <= self.columns {
+            if separator == 1 {
+                self.push(" ", kind);
+            }
+            self.push(text, kind);
+            self.used += separator + size;
+            return;
+        }
+        if self.used > 0 {
+            self.break_line();
+        }
+        // The line is empty now. Either the word fits, or it has to be broken.
+        if size <= self.columns {
+            self.push(text, kind);
+            self.used = size;
+            return;
+        }
+        let mut rest = text.to_string();
+        while width(&rest) > self.columns {
+            let (take, kept) = split_at_width(&rest, self.columns);
+            if take.is_empty() {
+                break;
+            }
+            self.push(&take, kind);
+            self.lines.push(std::mem::take(&mut self.current));
+            rest = kept;
+            self.used = 0;
+        }
+        if !rest.is_empty() {
+            self.push(&rest, kind);
+            self.used = width(&rest);
+        }
+    }
+
+    fn push(&mut self, text: &str, kind: &SpanKind) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(last) = self.current.last_mut()
+            && &last.kind == kind
+        {
+            last.text.push_str(text);
+            return;
+        }
+        self.current.push(Span { text: text.to_string(), kind: kind.clone() });
+    }
+
+    fn finish(mut self) -> Vec<Vec<Span>> {
+        if !self.current.is_empty() || self.lines.is_empty() {
+            self.lines.push(self.current);
+        }
+        self.lines
+    }
+}
+
+/// Break a single token at the column, since it cannot be moved to another line.
+///
+/// Returns what fits and the remainder, both on character boundaries.
+fn split_at_width(text: &str, columns: usize) -> (String, String) {
+    if width(text) <= columns {
+        return (text.to_string(), String::new());
+    }
+    let mut used = 0usize;
+    let mut end = 0usize;
+    for (index, ch) in text.char_indices() {
+        let size = width(&ch.to_string());
+        if used + size > columns {
+            break;
+        }
+        used += size;
+        end = index + ch.len_utf8();
+    }
+    (text[..end].to_string(), text[end..].to_string())
+}
+
+/// Whether a span carries no semantic marking at all.
+pub fn is_plain(span: &Span) -> bool {
+    matches!(span.kind, SpanKind::Plain)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain(text: &str) -> Span {
+        Span::plain(text)
+    }
+
+    fn text_of(lines: &[Vec<Span>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.iter().map(|span| span.text.clone()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn width_counts_wide_characters_as_two() {
+        assert_eq!(width("abc"), 3);
+        assert_eq!(width("日本"), 4);
+        assert_eq!(width(""), 0);
+    }
+
+    #[test]
+    fn clip_never_splits_a_character() {
+        assert_eq!(clip("hello", 3), "hel");
+        assert_eq!(clip("日本語", 3), "日");
+        assert_eq!(clip("hi", 9), "hi");
+    }
+
+    #[test]
+    fn pad_fills_and_clips() {
+        assert_eq!(pad("ab", 5), "ab   ");
+        assert_eq!(pad("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn a_sentence_wraps_on_whitespace() {
+        let lines = wrap_spans(&[plain("one two three four")], 9);
+        assert_eq!(text_of(&lines), vec!["one two", "three", "four"]);
+    }
+
+    #[test]
+    fn the_whitespace_a_word_moved_across_is_not_left_behind() {
+        let lines = wrap_spans(&[plain("aaaa bbbb cccc")], 4);
+        assert_eq!(text_of(&lines), vec!["aaaa", "bbbb", "cccc"]);
+    }
+
+    #[test]
+    fn an_unbreakable_token_is_broken_rather_than_overflowing() {
+        let lines = wrap_spans(&[plain("averylongword")], 4);
+        assert_eq!(text_of(&lines), vec!["aver", "ylon", "gwor", "d"]);
+        for line in &lines {
+            let width: usize = line.iter().map(|span| width(&span.text)).sum();
+            assert!(width <= 4);
+        }
+    }
+
+    #[test]
+    fn a_long_token_after_a_short_one_still_fits() {
+        let lines = wrap_spans(&[plain("a supercalifragilistic")], 6);
+        assert_eq!(text_of(&lines), vec!["a", "superc", "alifra", "gilist", "ic"]);
+    }
+
+    #[test]
+    fn a_newline_in_a_run_ends_a_line() {
+        let lines = wrap_spans(&[plain("first\nsecond")], 80);
+        assert_eq!(text_of(&lines), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn emphasis_that_spans_a_break_stays_on_both_halves() {
+        let spans = vec![Span { text: "one two three".into(), kind: SpanKind::Strong }];
+        let lines = wrap_spans(&spans, 7);
+        assert_eq!(text_of(&lines), vec!["one two", "three"]);
+        for line in &lines {
+            for span in line {
+                assert_eq!(span.kind, SpanKind::Strong);
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_runs_of_the_same_kind_merge_and_different_ones_do_not() {
+        let lines = wrap_spans(&[plain("a"), plain("b")], 80);
+        assert_eq!(lines[0].len(), 1);
+        assert_eq!(lines[0][0].text, "ab");
+
+        let lines = wrap_spans(
+            &[plain("a"), Span { text: "b".into(), kind: SpanKind::Code }],
+            80,
+        );
+        assert_eq!(lines[0].len(), 2);
+    }
+
+    #[test]
+    fn a_link_keeps_its_target_across_a_break() {
+        let spans = vec![Span::link("a very long link label", "https://example.invalid")];
+        let lines = wrap_spans(&spans, 8);
+        assert!(lines.len() >= 3);
+        for span in lines.iter().flatten() {
+            assert_eq!(span.kind, SpanKind::Link { href: "https://example.invalid".into() });
+        }
+    }
+
+    #[test]
+    fn wrapping_at_zero_columns_returns_the_content_unchanged() {
+        let lines = wrap_spans(&[plain("anything")], 0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].text, "anything");
+    }
+
+    #[test]
+    fn whitespace_only_content_produces_one_empty_line() {
+        let lines = wrap_spans(&[plain("   ")], 10);
+        assert_eq!(text_of(&lines), vec![""]);
+    }
+}

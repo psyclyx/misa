@@ -1,0 +1,11 @@
+[package]
+name = "misa-client"
+description = "The client kit: a picker, an editor, and the intents they produce"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-proto.workspace = true
+misa-value.workspace = true
