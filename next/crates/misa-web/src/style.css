@@ -24,7 +24,7 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]):not([data-theme="plain"]) {
     --fg: #14161a;
     --fg-muted: #5b6270;
     --bg: #fbfbfc;
@@ -169,3 +169,20 @@ meter { width: 8rem; }
 
 .attachments p { margin: 0; }
 .attachments code { font-size: 0.8rem; }
+
+:root[data-theme="plain"] {
+  --fg: #14161a;
+  --fg-muted: #5b6270;
+  --bg: #fbfbfc;
+  --bg-raised: #f2f3f5;
+  --rule: #dfe1e5;
+  --accent: #2f7a68;
+  --user: #4a56b0;
+  --tool: #8a6d10;
+  --error: #b3353f;
+  color-scheme: light;
+}
+nav[aria-label="Display"] {
+  padding: 0.75rem 1rem;
+  text-align: right;
+}

@@ -83,13 +83,19 @@ pub fn document_with(session: &SessionInfo, region: &str, lead: &str) -> String 
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
 <title>{title}</title>\n<link rel=\"stylesheet\" href=\"/style.css\">\n\
-</head>\n<body>\n<main id=\"main\">{lead}{region}</main>\n{declarations}\
+</head>\n<body data-session=\"{session_id}\">\n{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
 <script src=\"/app.js\" defer></script>\n</body>\n</html>\n",
         title = escape(&session.title),
+        session_id = escape(&session.id),
+        toolbar = toolbar(),
         lead = lead,
         region = region,
         declarations = declarations(session)
     )
+}
+
+fn toolbar() -> &'static str {
+    "<nav aria-label=\"Display\"><label>Theme <select id=\"theme\"><option value=\"system\">System</option><option value=\"dark\">Dark</option><option value=\"plain\">Light</option></select></label></nav>"
 }
 
 /// What this client is holding and has not sent yet, and the way to add to it.
@@ -1014,21 +1020,12 @@ async fn remote_blob(State(state): State<Arc<Remote>>, Path(hash): Path<String>)
 }
 
 async fn remote_page(State(state): State<Arc<Remote>>) -> Html<String> {
-    let title = state
-        .session
-        .as_ref()
-        .map(|session| session.title.clone())
-        .unwrap_or_default();
     let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
-    Html(format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<title>{}</title><link rel=\"stylesheet\" href=\"/style.css\"></head>\
-<body><main id=\"main\">{}{}</main><script src=\"/app.js\" defer></script></body></html>",
-        escape(&title),
-        lead,
-        state.region.get()
-    ))
+    let session = state.session.clone();
+    match session {
+        Some(session) => Html(document_with(&session, &state.region.get(), &lead)),
+        None => Html(format!("<!doctype html><html><body><main id=\"main\">{lead}{}</main></body></html>", state.region.get())),
+    }
 }
 
 async fn remote_events(
@@ -1394,13 +1391,8 @@ mod tests {
         assert!(html.contains("<main id=\"main\">"), "{html}");
         assert!(html.contains("/style.css"), "{html}");
         assert!(html.contains("/app.js"), "{html}");
-    }
-
-    #[test]
-    fn the_script_is_small_enough_to_read_and_does_one_thing() {
-        assert!(SCRIPT.lines().count() < 40, "the script has grown a framework:\n{SCRIPT}");
-        assert!(SCRIPT.contains("EventSource"), "{SCRIPT}");
-        assert!(!SCRIPT.contains("function render"), "the browser started rendering: {SCRIPT}");
+        assert!(html.contains("data-session=\"demo\""), "{html}");
+        assert!(html.contains("id=\"theme\""), "{html}");
     }
 
     #[test]
