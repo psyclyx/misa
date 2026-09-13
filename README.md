@@ -1,5 +1,14 @@
 # misa
 
+The Rust rewrite lives in [`next/`](next/README.md): a daemon, one terminal client, browser and
+pixel frontends, wasm plugins and an Android app. Its [implementation plan](next/docs/plan.md)
+records completed work and the remaining final client/artifact gates. Build the Rust artifacts
+with `nix-build next -A packages.<name>` and enter their environment with `nix-shell next -A shell`.
+
+The rest of this README documents the legacy Zig/Fennel harness and its locally built executable.
+The root package set retains that implementation as `misa-legacy`; Rust daemon deployment uses the
+separate `nixosModules.misa-daemon` module.
+
 misa is a small event-driven coding-agent harness built with Zig 0.16,
 system LuaJIT, bundled Fennel 1.6.0, and system tree-sitter. Terminal presentation
 uses Zig; bounded image decoding uses system libpng and libjpeg-turbo.
