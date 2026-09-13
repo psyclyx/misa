@@ -15,9 +15,9 @@
 //!                                                                     ▼
 //!                                                                agent/step
 //!                          record an attempt, ask the provider, open a
-//!                          streaming assistant message
+//!                          independent assistant stream
 //!                                                                     ▼
-//! kernel/provider.delta ──▶ append to that message ──▶ wire TextDelta
+//! kernel/provider.delta ──▶ append to stream current ──▶ wire Stream
 //!                                                                     ▼
 //! kernel/provider.finished ──▶ settle the attempt with what it cost
 //!        │
@@ -63,6 +63,7 @@ pub fn registry() -> Registry {
         .on_fn("intent/queue.clear", 0, "agent.queue.clear", on_queue_clear)
         .on_fn("kernel/conversations", 0, "agent.conversations", on_conversations)
         .on_fn("kernel/log.loaded", 0, "agent.loaded", on_loaded)
+        .on_fn("kernel/log.appended", 0, "agent.appended", on_appended)
         .on_fn("kernel/credential", 0, "agent.credential", on_credential)
         .on_fn("kernel/credential.prompt", 0, "agent.credential.prompt", on_credential_prompt)
         .on_fn("intent/attachment.save", 0, "agent.attachment.save", on_attachment_save)
@@ -72,8 +73,6 @@ pub fn registry() -> Registry {
         .on_fn("queue/next", 0, "agent.queue.next", on_queue_next)
         .on_fn("agent/step", 0, "agent.step", on_step)
         .on_fn("agent/tools", 0, "agent.tools", on_tools)
-        .on_fn("kernel/provider.delta", 0, "agent.delta", on_delta)
-        .on_fn("kernel/provider.thinking", 0, "agent.thinking", on_thinking)
         .on_fn("kernel/usage", 0, "agent.usage", on_usage)
         .on_fn("kernel/models", 0, "agent.models", on_models)
         .on_fn("kernel/provider.finished", 0, "agent.finished", on_finished)
@@ -196,8 +195,11 @@ pub fn event_for(event: KernelEvent) -> Event {
         KernelEvent::Failed { id, message } => {
             Event::new("kernel/failed").with("id", Value::str(id)).with("message", Value::str(message))
         }
-        // A recorded fact changes nothing the loop decides, so it is not an event.
-        KernelEvent::Appended { .. } | KernelEvent::AttemptRecorded { .. } => {
+        // Durable acknowledgment is the only point at which a fact joins canonical state.
+        KernelEvent::Appended { conversation, seq, kind, data } => Event::new("kernel/log.appended")
+            .with("conversation", Value::str(conversation)).with("seq", Value::Int(seq))
+            .with("kind", Value::str(kind)).with("data", data),
+        KernelEvent::AttemptRecorded { .. } => {
             Event::new("kernel/noted").with_value(Value::Null)
         }
     }
@@ -220,12 +222,14 @@ fn on_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let attachments = submitted_attachments(tx, event);
     if tx.text("session.status") != "idle" {
         let waiting = queue_len(tx) + 1;
+        let queue_id = next_id(tx, "session.queue_seq")?;
         tx.push(
             "session.queue",
             Value::map([
                 ("text", Value::str(&text)),
                 ("attachments", attachments),
                 ("state", Value::str("waiting")),
+                ("id", Value::Int(queue_id)),
             ]),
         )?;
         notice(tx, Level::Info, format!("queued ({waiting} waiting)"))?;
@@ -248,13 +252,12 @@ fn begin_turn(tx: &mut Tx<'_>, text: &str, attachments: Value) -> Result<(), Fau
         ("attachments", attachments),
     ]);
     tx.set("session.turn", Value::Int(turn))?;
-    tx.push("messages", message.clone())?;
+
     // A submitted prompt is spent: the draft's attachments belong to the turn, not to the
     // next one.
     tx.set("session.attachments", Value::list([]))?;
-    tx.set("session.status", Value::str("thinking"))?;
+    tx.set("session.status", Value::str("recording"))?;
     tx.fx(log_effect(tx, "message", message));
-    tx.dispatch(Event::new("agent/step"));
     Ok(())
 }
 
@@ -339,21 +342,19 @@ fn submitted_attachments(tx: &Tx<'_>, event: &Event) -> Value {
     Value::list(out)
 }
 
-fn on_cancel(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
-    let status = tx.text("session.status");
-    if status == "idle" {
-        return Ok(());
-    }
-    // The attempt stays unfinished, on purpose: that is what makes "a request was made and
-    // nothing came back" visible instead of looking like a fresh turn.
-    if let Some(index) = pending_message(tx) {
-        tx.set(&format!("messages[{index}].state"), Value::str("cancelled"))?;
-    }
+fn on_cancel(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if tx.text("session.status") == "idle" { return Ok(()) }
+    if let Some(seq) = tx.get("session.pending").and_then(|pending| pending.get("seq")).and_then(Value::as_i64) {
+        tx.fx(log_effect(tx, "message", Value::map([
+            ("seq", Value::Int(seq)), ("role", Value::str("assistant")), ("state", Value::str("cancelled")),
+            ("text", fields::event_value(event, "text")), ("thinking", fields::event_value(event, "thinking")),
+            ("calls", Value::list([])), ("attachments", Value::list([])),
+        ])));
+        tx.set("session.status", Value::str("recording"))?;
+    } else { tx.set("session.status", Value::str("idle"))?; }
     tx.delete("session.pending")?;
     tx.delete("session.compacting")?;
-    tx.set("session.status", Value::str("idle"))?;
     tx.fx(notice_effect(Level::Warn, "cancelled"));
-    tx.dispatch(Event::new("queue/next"));
     Ok(())
 }
 
@@ -389,8 +390,6 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     match name.as_str() {
         "clear" => {
             let conversation = tx.text("session.conversation");
-            tx.set("messages", Value::list([]))?;
-            tx.set("session.turn", Value::Int(0))?;
             tx.set("session.status", Value::str("idle"))?;
             tx.set("session.attachments", Value::list([]))?;
             tx.delete("session.pending")?;
@@ -975,6 +974,52 @@ fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     )
 }
 
+fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if fields::event_text(event, "conversation") != tx.text("session.conversation") { return Ok(()); }
+    let kind = fields::event_text(event, "kind");
+    let data = fields::event_value(event, "data");
+    for (path, op) in crate::journal::patches(tx.db(), &kind, &data, fields::event_int(event, "seq")) {
+        tx.patch(&path.to_string(), op)?;
+    }
+    if kind == crate::contribution::PATCH_KIND {
+        let records = data.get("patches").and_then(Value::as_list).map(<[Value]>::to_vec).unwrap_or_else(|| vec![data.clone()]);
+        for record in records {
+            if let Some((path, op)) = crate::contribution::recorded(&record) {
+                if let Some(root) = Op::root_of(&path) {
+                    if tx.get("session.plugin_defaults").and_then(|defaults| defaults.get(root)).is_some() {
+                        tx.patch(&path.to_string(), op)?;
+                    }
+                }
+            }
+        }
+    }
+    match kind.as_str() {
+        "message" => match data.get("role").and_then(Value::as_str) {
+            Some("user") if tx.text("session.status") == "recording" => {
+                tx.set("session.status", Value::str("thinking"))?;
+                tx.dispatch(Event::new("agent/step"));
+            }
+            Some("assistant") => {
+                tx.delete("session.pending")?;
+                tx.set("session.running_tools", Value::list([]))?;
+                let has_calls = data.get("calls").and_then(Value::as_list).is_some_and(|calls| !calls.is_empty());
+                tx.set("session.status", Value::str(if has_calls { "tools" } else { "idle" }))?;
+                tx.dispatch(Event::new(if has_calls { "agent/tools" } else { "queue/next" }));
+            }
+            _ => {}
+        },
+        "tool_result" => {
+            tx.dispatch(Event::new("agent/tools"));
+        }
+        "reset" => {
+            tx.set("session.status", Value::str("idle"))?;
+            tx.dispatch(Event::new("queue/next"));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// A stored conversation, read back, which is what `/resume <id>` asked for.
 ///
 /// The log is the truth, so the transcript is *rebuilt* from the entries rather than merged
@@ -986,30 +1031,14 @@ fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 /// A message that was still streaming when the log was written is settled exactly as it was:
 /// an unfinished turn is a fact about what happened, and nothing here re-issues it.
 fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let starting = tx.text("session.status") == "loading";
     let conversation = fields::event_text(event, "conversation");
     let entries = fields::event_value(event, "entries");
-    let mut messages: Vec<Value> = Vec::new();
-    for entry in entries.as_list().unwrap_or(&[]) {
-        match entry.get("kind").and_then(Value::as_str).unwrap_or_default() {
-            "reset" => messages.clear(),
-            "message" => {
-                if let Some(message) = entry.get("data").and_then(Value::as_map) {
-                    let mut message = message.clone();
-                    // A sequence is the id every node made from this message is keyed by, and
-                    // two messages with no id are two nodes with the same id — a tree no client
-                    // may be sent. An entry that carries none gets the log's own.
-                    if !matches!(message.get("seq"), Some(Value::Int(_))) {
-                        let seq = entry.get("seq").and_then(Value::as_i64).unwrap_or(messages.len() as i64);
-                        message.insert("seq".to_string(), Value::Int(seq));
-                    }
-                    messages.push(Value::Map(std::sync::Arc::new(message)));
-                }
-            }
-            // A kind this session does not know is a fact from a version that knew more, and
-            // skipping it is the only honest thing to do with it.
-            _ => {}
-        }
-    }
+    let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
+    let folded = crate::journal::fold(base, entries.as_list().unwrap_or(&[]));
+    let messages = folded.get("messages").and_then(Value::as_list).unwrap_or(&[]).to_vec();
+    let max_seq = messages.iter().filter_map(|message| message.get("seq").and_then(Value::as_i64)).max().unwrap_or(0);
+    tx.set("attempts", folded.get("attempts").cloned().unwrap_or(Value::list([])))?;
     // What a composition wrote into its own roots, applied again: its state is a fold of the
     // patches the log recorded, because nothing else can reproduce it. A patch that does not apply
     // is counted rather than ignored — a log and a composition that disagree is something a person
@@ -1022,9 +1051,10 @@ fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     // Nothing that was in flight is in flight any more, and a queue of prompts belongs to the
     // branch somebody was in: they asked to be somewhere else.
     tx.set("session.status", Value::str("idle"))?;
-    tx.set("session.turn", Value::Int(loaded as i64))?;
-    tx.delete("session.queue")?;
+    tx.set("session.turn", Value::Int(max_seq))?;
+    if !starting { tx.delete("session.queue")?; }
     tx.delete("panel")?;
+    if !starting {
     notice(
         tx,
         Level::Info,
@@ -1034,6 +1064,8 @@ fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             format!("resumed `{conversation}`: {loaded} messages")
         },
     )?;
+    }
+    if starting { tx.dispatch(Event::new("queue/next")); }
     if replayed > 0 {
         notice(tx, Level::Info, format!("replayed {replayed} patches a composition recorded"))?;
     }
@@ -1064,9 +1096,19 @@ fn replay_patches(tx: &mut Tx<'_>, entries: &[Value]) -> (usize, usize) {
     // would be a second implementation of the rule this one is supposed to confirm.
     let mut database = tx.db().clone();
     let mut touched: Vec<String> = Vec::new();
+    let defaults = tx.get("session.plugin_defaults").and_then(Value::as_map).cloned().unwrap_or_default();
+    for (root, value) in &defaults {
+        database = misa_value::apply_one(&database, &misa_value::Path::parse(root).unwrap(), &Op::Set(value.clone())).expect("declared root defaults apply");
+        touched.push(root.clone());
+    }
     let mut replayed = 0;
     let mut failed = 0;
-    for entry in entries {
+    let expanded = entries.iter().flat_map(|entry| {
+        if let Some(records) = entry.get("data").and_then(|data| data.get("patches")).and_then(Value::as_list) {
+            records.iter().map(|record| Value::map([("kind", Value::str(crate::contribution::PATCH_KIND)), ("data", record.clone())])).collect::<Vec<_>>()
+        } else { vec![entry.clone()] }
+    }).collect::<Vec<_>>();
+    for entry in &expanded {
         if entry.get("kind").and_then(Value::as_str) != Some(crate::contribution::PATCH_KIND) {
             continue;
         }
@@ -1079,7 +1121,7 @@ fn replay_patches(tx: &mut Tx<'_>, entries: &[Value]) -> (usize, usize) {
             continue;
         };
         // A root this composition does not declare: history from one that is not running.
-        if tx.get(root).is_none() {
+        if !defaults.contains_key(root) {
             continue;
         }
         match misa_value::apply_one(&database, &path, &op) {
@@ -1157,16 +1199,12 @@ fn on_process_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         "[background] `{command}` (pid {pid}) {ending} after {} · log {log}",
         seconds_text(seconds)
     );
-    tx.push(
-        "messages",
-        Value::map([
-            ("seq", Value::Int(message_count(tx) as i64 + 1)),
-            ("role", Value::str("system")),
-            ("text", Value::str(&line)),
-            ("state", Value::str("done")),
-            ("attachments", Value::list([])),
-        ]),
-    )?;
+    let seq = tx.int("session.turn") + 1;
+    tx.set("session.turn", Value::Int(seq))?;
+    tx.fx(log_effect(tx, "message", Value::map([
+        ("seq", Value::Int(seq)), ("role", Value::str("system")), ("text", Value::str(&line)),
+        ("state", Value::str("done")), ("attachments", Value::list([])),
+    ])));
     Ok(())
 }
 
@@ -1233,22 +1271,9 @@ fn on_step(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     let index = message_count(tx);
     let seq = tx.int("session.turn") + 1;
     tx.set("session.turn", Value::Int(seq))?;
-    tx.push(
-        "messages",
-        Value::map([
-            ("seq", Value::Int(seq)),
-            ("role", Value::str("assistant")),
-            ("text", Value::str("")),
-            ("state", Value::str("streaming")),
-            ("thinking", Value::str("")),
-            ("calls", Value::list([])),
-            ("attachments", Value::list([])),
-        ]),
-    )?;
-    tx.set(
-        "session.pending",
-        Value::map([("request", Value::str(&id)), ("message", Value::Int(index as i64))]),
-    )?;
+    tx.set("session.pending", Value::map([
+        ("request", Value::str(&id)), ("seq", Value::Int(seq)), ("message", Value::Int(index as i64)),
+    ]))?;
 
     let provider = tx.text("session.provider");
     let model = tx.text("session.model");
@@ -1280,40 +1305,6 @@ fn on_step(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
         .with("settings", settings)
         .with("messages", request_messages(tx.db()))
         .with("tools", tools()));
-    Ok(())
-}
-
-fn on_delta(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
-    let id = fields::event_text(event, "id");
-    let text = fields::event_text(event, "text");
-    let Some((index, seq)) = active_message(tx, &id) else {
-        return Ok(());
-    };
-    tx.patch(&format!("messages[{index}].text"), Op::Append(Value::str(&text)))?;
-    // The same text, pushed cheaply, so a client can show a growing answer without
-    // re-reading a tree per token. A client that misses it converges on the next
-    // subscription value.
-    tx.fx(Effect::new("wire.event").with(
-        "event",
-        session_event(&SessionEvent::TextDelta { node: format!("msg.{seq}.text"), text }),
-    ));
-    Ok(())
-}
-
-/// Reasoning a service streamed, which the transcript shows apart from the answer.
-///
-/// It is patched into the message as it arrives rather than collected at the end, so a person
-/// watching a slow model can see that it is thinking rather than that it is stuck. It travels
-/// as a view refresh and not as a wire event of its own, which is exactly how the answer text
-/// travels: a delta event is an optimisation, and a session with two of them is a session with
-/// two things to keep in step.
-fn on_thinking(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
-    let id = fields::event_text(event, "id");
-    let text = fields::event_text(event, "text");
-    let Some((index, _)) = active_message(tx, &id) else {
-        return Ok(());
-    };
-    tx.patch(&format!("messages[{index}].thinking"), Op::Append(Value::str(&text)))?;
     Ok(())
 }
 
@@ -1359,30 +1350,18 @@ fn on_summary(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         notice(tx, Level::Warn, "the summary did not arrive; nothing was replaced")?;
         return Ok(());
     }
-    let conversation = tx.text("session.conversation");
     let replaced = tx.get("messages").and_then(Value::as_list).map(<[Value]>::len).unwrap_or(0);
-    tx.set(
-        "messages",
-        Value::list([Value::map([
-            ("seq", Value::Int(1)),
-            ("role", Value::str("assistant")),
-            ("text", Value::str(format!("[summary of {replaced} messages]\n\n{summary}"))),
-            ("state", Value::str("done")),
-            ("calls", Value::list([])),
-            ("attachments", Value::list([])),
-        ])]),
-    )?;
-    tx.set("session.turn", Value::Int(1))?;
-    tx.set("session.status", Value::str("idle"))?;
-    // The replacement is a fact, not a deletion: a shorter history means the branch was
-    // replaced, and the log records that rather than quietly diverging.
-    tx.fx(Effect::new("kernel.log.append")
-        .with("conversation", Value::str(&conversation))
-        .with("kind", Value::str("reset"))
-        .with("data", Value::map([
-            ("reason", Value::str("compacted")),
-            ("replaced", Value::Int(replaced as i64)),
-        ])));
+    let seq = tx.int("session.turn") + 1;
+    tx.set("session.turn", Value::Int(seq))?;
+    let message = Value::map([
+        ("seq", Value::Int(seq)), ("role", Value::str("assistant")),
+        ("text", Value::str(format!("[summary of {replaced} messages]\n\n{summary}"))),
+        ("state", Value::str("done")), ("calls", Value::list([])), ("attachments", Value::list([])),
+    ]);
+    tx.set("session.status", Value::str("recording"))?;
+    tx.fx(log_effect(tx, "reset", Value::map([
+        ("reason", Value::str("compacted")), ("replaced", Value::Int(replaced as i64)), ("message", message),
+    ])));
     notice(tx, Level::Info, format!("compacted {replaced} messages"))?;
     tx.dispatch(Event::new("queue/next"));
     Ok(())
@@ -1390,95 +1369,36 @@ fn on_summary(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 
 fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let id = fields::event_text(event, "id");
-    // A side request is answered by its own handler, and it never touches the transcript
-    // until the summary is in hand.
-    if tx
-        .get("session.pending")
-        .and_then(|pending| pending.get("side"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if tx.get("session.pending").and_then(|pending| pending.get("side")).and_then(Value::as_bool).unwrap_or(false) {
         return on_summary(tx, event);
     }
-    let Some((index, seq)) = active_message(tx, &id) else {
-        return Ok(());
-    };
+    let Some((_, seq)) = active_message(tx, &id) else { return Ok(()) };
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let text = fields::event_text(event, "text");
-    let calls = fields::event_value(event, "tool_calls");
-
-    tx.set(&format!("messages[{index}].state"), Value::str(if ok { "done" } else { "failed" }))?;
-    tx.set(&format!("messages[{index}].text"), Value::str(&text))?;
-    // The whole of what it reasoned, in case a delta was missed and because the message is
-    // what gets replayed to a service that wants its own reasoning back.
     let thinking = fields::event_text(event, "thinking");
-    if !thinking.is_empty() {
-        tx.set(&format!("messages[{index}].thinking"), Value::str(&thinking))?;
-    }
-
     let input_tokens = fields::event_int(event, "input_tokens");
     let output_tokens = fields::event_int(event, "output_tokens");
     let model = tx.text("session.model");
     let provider = tx.text("session.provider");
     let cost = crate::catalog::cost_micros(&model, input_tokens, output_tokens);
     tx.fx(Effect::new("kernel.attempt.settled")
-        .with("id", Value::str(&id))
-        .with("status", Value::str(if ok { "ok" } else { "error" }))
-        .with("input_tokens", Value::Int(input_tokens))
-        .with("output_tokens", Value::Int(output_tokens))
+        .with("id", Value::str(&id)).with("status", Value::str(if ok { "ok" } else { "error" }))
+        .with("input_tokens", Value::Int(input_tokens)).with("output_tokens", Value::Int(output_tokens))
         .with("cost_micros", Value::Int(cost)));
-    // The session keeps its own row as well, so an indicator has something to read without
-    // a round trip to the ledger it just wrote.
-    tx.push(
-        "attempts",
-        Value::map([
-            ("name", Value::str(&id)),
-            ("kind", Value::str("turn")),
-            ("provider", Value::str(&provider)),
-            ("model", Value::str(&model)),
-            ("status", Value::str(if ok { "ok" } else { "error" })),
-            ("input_tokens", Value::Int(input_tokens)),
-            ("output_tokens", Value::Int(output_tokens)),
-            ("cost_micros", Value::Int(cost)),
-            ("finished_ms", Value::Int(now_ms())),
-        ]),
-    )?;
-    tx.delete("session.pending")?;
-
-    if !ok {
-        let error = fields::event_text(event, "error");
-        tx.set("session.status", Value::str("idle"))?;
-        notice(tx, Level::Error, format!("the provider failed: {error}"))?;
-        tx.dispatch(Event::new("queue/next"));
-        return Ok(());
-    }
-
-    let calls = normalise_calls(&calls);
-    tx.set(&format!("messages[{index}].calls"), Value::list(calls.clone()))?;
-    // The journalled message is the one that finished, written from the values this
-    // transaction has rather than read back out of the database: a read would see the text as
-    // of the previous commit, which for a streamed answer is the text before the last delta.
-    tx.fx(log_effect(
-        tx,
-        "message",
-        Value::map([
-            ("seq", Value::Int(seq)),
-            ("role", Value::str("assistant")),
-            ("text", Value::str(&text)),
-            ("state", Value::str(if ok { "done" } else { "failed" })),
-            ("thinking", Value::str(&thinking)),
-            ("calls", Value::list(calls.clone())),
-            ("attachments", Value::list([])),
-        ]),
-    ));
-
-    if calls.is_empty() {
-        tx.set("session.status", Value::str("idle"))?;
-        tx.dispatch(Event::new("queue/next"));
-    } else {
-        tx.set("session.status", Value::str("tools"))?;
-        tx.dispatch(Event::new("agent/tools"));
-    }
+    let attempt = Value::map([
+        ("name", Value::str(&id)), ("kind", Value::str("turn")), ("provider", Value::str(&provider)),
+        ("model", Value::str(&model)), ("status", Value::str(if ok { "ok" } else { "error" })),
+        ("input_tokens", Value::Int(input_tokens)), ("output_tokens", Value::Int(output_tokens)),
+        ("cost_micros", Value::Int(cost)), ("finished_ms", Value::Int(now_ms())),
+    ]);
+    let calls = if ok { normalise_calls(&fields::event_value(event, "tool_calls")) } else { vec![] };
+    tx.fx(log_effect(tx, "message", Value::map([
+        ("seq", Value::Int(seq)), ("role", Value::str("assistant")), ("text", Value::str(text)),
+        ("state", Value::str(if ok { "done" } else { "failed" })), ("thinking", Value::str(thinking)),
+        ("calls", Value::list(calls)), ("attachments", Value::list([])), ("attempt", attempt),
+    ])));
+    tx.set("session.status", Value::str("recording"))?;
+    if !ok { notice(tx, Level::Error, format!("the provider failed: {}", fields::event_text(event, "error")))?; }
     Ok(())
 }
 
@@ -1490,24 +1410,24 @@ fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
         return Ok(());
     };
     let calls = calls_at(tx.db(), index);
-    let mut dispatched = 0usize;
-    for (position, call) in calls.iter().enumerate() {
+    let mut running = tx.get("session.running_tools").and_then(Value::as_list).unwrap_or(&[]).to_vec();
+    for call in &calls {
         if call.get("status").and_then(Value::as_str) != Some("pending") {
             continue;
         }
         let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-        tx.set(&format!("messages[{index}].calls[{position}].status"), Value::str("running"))?;
+        if running.iter().any(|id| id.as_str() == Some(&call_id)) { continue; }
+        running.push(Value::str(&call_id));
         tx.fx(Effect::new("kernel.tool.run")
             .with("id", Value::str(&call_id))
             .with("call_id", Value::str(&call_id))
             .with("name", Value::str(call.get("name").and_then(Value::as_str).unwrap_or_default()))
             .with("args", call.get("args").cloned().unwrap_or(Value::Null)));
-        dispatched += 1;
     }
-    if dispatched == 0 {
-        // Nothing to run and nothing to wait for: the turn is over.
-        tx.set("session.status", Value::str("idle"))?;
-        tx.dispatch(Event::new("queue/next"));
+    tx.set("session.running_tools", Value::list(running))?;
+    if calls.iter().all(|call| matches!(call.get("status").and_then(Value::as_str), Some("ok" | "error"))) {
+        tx.set("session.status", Value::str("thinking"))?;
+        tx.dispatch(Event::new("agent/step"));
     }
     Ok(())
 }
@@ -1520,18 +1440,13 @@ fn on_tool_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         return Ok(());
     };
     let calls = calls_at(tx.db(), index);
-    let Some(position) = calls
+    let Some(_position) = calls
         .iter()
         .position(|call| call.get("id").and_then(Value::as_str) == Some(call_id.as_str()))
     else {
         return Ok(());
     };
 
-    tx.set(
-        &format!("messages[{index}].calls[{position}].status"),
-        Value::str(if ok { "ok" } else { "error" }),
-    )?;
-    tx.set(&format!("messages[{index}].calls[{position}].result"), Value::str(&text))?;
     tx.fx(log_effect(
         tx,
         "tool_result",
@@ -1542,21 +1457,7 @@ fn on_tool_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         ]),
     ));
 
-    // The batch is done when no call is still pending or running. The call this event
-    // settles has not been written yet, so its status is known here rather than read back.
-    let settled_here = if ok { "ok" } else { "error" };
-    let unsettled = calls.iter().enumerate().any(|(at, call)| {
-        let status = if at == position {
-            settled_here
-        } else {
-            call.get("status").and_then(Value::as_str).unwrap_or("pending")
-        };
-        matches!(status, "pending" | "running")
-    });
-    if !unsettled {
-        tx.set("session.status", Value::str("thinking"))?;
-        tx.dispatch(Event::new("agent/step"));
-    }
+
     Ok(())
 }
 
@@ -1588,16 +1489,10 @@ fn active_message(tx: &Tx<'_>, id: &str) -> Option<(usize, i64)> {
         return None;
     }
     let index = pending.get("message").and_then(Value::as_i64)? as usize;
-    let seq = messages(tx.db()).get(index)?.get("seq").and_then(Value::as_i64)?;
+    let seq = pending.get("seq").and_then(Value::as_i64)?;
     Some((index, seq))
 }
 
-fn pending_message(tx: &Tx<'_>) -> Option<usize> {
-    tx.get("session.pending")
-        .and_then(|pending| pending.get("message"))
-        .and_then(Value::as_i64)
-        .map(|index| index as usize)
-}
 
 fn last_assistant(db: &Value) -> Option<usize> {
     messages(db)
@@ -1718,12 +1613,22 @@ fn log_effect(tx: &Tx<'_>, kind: &str, data: Value) -> Effect {
 /// manifest says so, and a test enforces it.
 fn notice(tx: &mut Tx<'_>, level: Level, text: impl Into<String>) -> Result<(), Fault> {
     let text = text.into();
+    let id = next_id(tx, "session.notice_seq")?;
     tx.push(
         "notices",
-        Value::map([("level", Value::str(level.as_str())), ("text", Value::str(&text))]),
+        Value::map([("id", Value::Int(id)), ("level", Value::str(level.as_str())), ("text", Value::str(&text))]),
     )?;
     tx.fx(notice_effect(level, text));
     Ok(())
+}
+
+fn next_id(tx: &mut Tx<'_>, path: &str) -> Result<i64, Fault> {
+    let previous = tx.patches().iter().rev().find_map(|(at, op)| {
+        if at.to_string() == path { if let Op::Set(value) = op { return value.as_i64(); } }
+        None
+    }).unwrap_or_else(|| tx.int(path));
+    tx.set(path, Value::Int(previous + 1))?;
+    Ok(previous + 1)
 }
 
 fn notice_effect(level: Level, text: impl Into<String>) -> Effect {

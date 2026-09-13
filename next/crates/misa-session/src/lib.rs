@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use misa_proto::view::{Node, validate};
+use misa_proto::view::Node;
 use misa_proto::wire::{Intent, SessionEvent, SessionInfo};
 use misa_proto::{Fault, Query};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Outcome};
@@ -43,8 +43,6 @@ use misa_kernel::{CredentialAction, Kernel, KernelEvent, Request};
 
 pub use contribution::Contribution;
 
-/// Who may attach, as configuration rather than code.
-pub mod admission;
 /// What a composition adds to the loop: handlers, subscriptions, and their state.
 pub mod contribution;
 pub mod agent;
@@ -56,6 +54,8 @@ pub mod completions;
 /// Markdown, parsed once so that no frontend has to.
 pub mod markdown;
 pub mod views;
+mod journal;
+mod canonical;
 
 /// What a query produced.
 ///
@@ -93,13 +93,9 @@ pub struct Runtime {
 
 struct State {
     state: Loop,
-    /// The last view built, keyed by revision and the temporary history window.
-    ///
-    /// Cached because building a tree over a long transcript is the one expensive
-    /// thing this layer does, and because a view is a pure function of the database
-    /// and requested history window: the same inputs must produce the same
-    /// tree, so caching cannot be observed.
-    view: Option<(u64, usize, Node)>,
+    streams: std::collections::BTreeMap<String, misa_proto::sync::Stream>,
+    stream_bytes: u64,
+    view: canonical::Canonical,
 }
 
 /// The composition a session runs. Named so a client can display it and a
@@ -158,10 +154,15 @@ impl Runtime {
         // reader that is not a request. There is exactly one such stream, so there is one task.
         let unsolicited = kernel.events();
 
+        let mut initial = contribution.initial_state(&id, &provider, &model, created_ms);
+        if let Some(conversation) = &conversation {
+            initial = misa_value::apply_one(&initial, &misa_value::Path::parse("session.conversation").unwrap(), &misa_value::Op::Set(Value::str(conversation))).unwrap();
+            initial = misa_value::apply_one(&initial, &misa_value::Path::parse("session.status").unwrap(), &misa_value::Op::Set(Value::str("loading"))).unwrap();
+        }
         let mut state = Loop::new(
             registry.clone(),
             Arc::new(AcceptedEffects),
-            contribution.initial_state(&id, &provider, &model, created_ms),
+            initial,
         );
         state.set_clock(created_ms);
         state.set_config(config);
@@ -180,13 +181,17 @@ impl Runtime {
             sources: catalog::sources(),
         };
 
+        let mut epoch = [0u8; 16];
+        getrandom::fill(&mut epoch).expect("session incarnation requires system randomness");
+        let epoch = epoch.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let view = canonical::Canonical::new(state.db(), &contribution.sections, epoch);
         let runtime = Arc::new(Runtime {
-            state: Mutex::new(State { state, view: None }),
+            state: Mutex::new(State { state, view, streams: Default::default(), stream_bytes: 0 }),
             sections: contribution.sections,
             to_kernel: to_kernel.clone(),
             rev,
             events,
-            seq: AtomicU64::new(0),
+            seq: AtomicU64::new(1),
             info,
             provider,
             model,
@@ -205,9 +210,11 @@ impl Runtime {
             while let Some(request) = from_loop.recv().await {
                 let kernel = kernel.clone();
                 let out = kernel_events.clone();
-                tokio::spawn(async move {
+                if matches!(request, Request::Append { .. } | Request::Load { .. }) {
                     kernel.execute(request, &out).await;
-                });
+                } else {
+                    tokio::spawn(async move { kernel.execute(request, &out).await; });
+                }
             }
         });
 
@@ -218,6 +225,9 @@ impl Runtime {
             }
         });
 
+        if let Some(conversation) = &runtime.info.conversation {
+            let _ = to_kernel.send(Request::Load { conversation: conversation.clone(), after: 0, limit: i64::MAX as usize });
+        }
         runtime
     }
 
@@ -271,11 +281,46 @@ impl Runtime {
     /// Everything that leaves this method has already committed. An effect the
     /// interpreter refused was refused *before* the commit, so a client can never
     /// observe a state that asked for something impossible.
-    pub fn dispatch(&self, event: Event) -> Vec<Fault> {
+    pub fn dispatch(&self, mut event: Event) -> Vec<Fault> {
+        if matches!(event.kind.as_str(), "kernel/provider.delta" | "kernel/provider.thinking") {
+            self.append_stream(&event);
+            return Vec::new();
+        }
         let outcome = {
             let mut state = self.state.lock().expect("session state is never poisoned");
+            if event.kind == "intent/cancel" {
+                if let Some(seq) = pending_seq(state.state.db()) {
+                    for (field, suffix) in [("text", "text"), ("thinking", "thinking")] {
+                        let text = state.streams.get(&format!("msg.{seq}.{suffix}")).map(|stream| stream.text.clone()).unwrap_or_default();
+                        event = event.with(field, Value::str(text));
+                    }
+                }
+            }
             state.state.set_clock(now_ms());
-            state.state.dispatch(event)
+            let previous = pending_seq(state.state.db());
+            let outcome = state.state.dispatch(event);
+            if outcome.committed() {
+                let State { state: loop_, view, .. } = &mut *state;
+                view.advance(loop_.db(), &outcome.changes, &self.sections, loop_.rev());
+            }
+            let current = pending_seq(state.state.db());
+            if previous != current {
+                if let Some(seq) = previous {
+                    for suffix in ["text", "thinking"] {
+                        let id = format!("msg.{seq}.{suffix}");
+                        state.streams.remove(&id);
+                        self.emit(SessionEvent::Stream { update: misa_proto::sync::StreamUpdate::End { id } });
+                    }
+                }
+                if let Some(seq) = current {
+                    for (suffix, role) in [("text", "message.assistant"), ("thinking", "message.assistant.thinking")] {
+                        let stream = misa_proto::sync::Stream { id: format!("msg.{seq}.{suffix}"), role: role.into(), text: String::new() };
+                        state.streams.insert(stream.id.clone(), stream.clone());
+                        self.emit(SessionEvent::Stream { update: misa_proto::sync::StreamUpdate::Current { stream } });
+                    }
+                }
+            }
+            outcome
         };
         let faults = outcome.as_faults();
         self.perform(&outcome);
@@ -287,6 +332,25 @@ impl Runtime {
             self.rev.send_replace(rev);
         }
         faults
+    }
+
+    fn append_stream(&self, event: &Event) {
+        let mut state = self.state.lock().expect("session state is never poisoned");
+        let pending = state.state.db().get("session").and_then(|session| session.get("pending"));
+        if pending.and_then(|pending| pending.get("request")).and_then(Value::as_str) != event.get("id").and_then(Value::as_str) { return; }
+        let Some(seq) = pending_seq(state.state.db()) else { return };
+        let suffix = if event.kind.ends_with("thinking") { "thinking" } else { "text" };
+        let id = format!("msg.{seq}.{suffix}");
+        let text = event.get("text").and_then(Value::as_str).unwrap_or_default();
+        let Some(stream) = state.streams.get_mut(&id) else { return };
+        let offset = stream.text.len();
+        stream.text.push_str(text);
+        state.stream_bytes += text.len() as u64;
+        self.emit(SessionEvent::Stream { update: misa_proto::sync::StreamUpdate::Append { id, offset, text: text.into() } });
+    }
+
+    pub fn streams(&self) -> Vec<misa_proto::sync::Stream> {
+        self.state.lock().expect("session state is never poisoned").streams.values().cloned().collect()
     }
 
     fn perform(&self, outcome: &Outcome) {
@@ -497,6 +561,20 @@ impl Runtime {
         }
     }
 
+    pub fn sync(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
+        let mut state = self.state.lock().expect("session state is never poisoned");
+        let streams = state.streams.values().cloned().collect();
+        state.view.sync(since, streams)
+    }
+
+    pub fn changes(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
+        self.state.lock().expect("session state is never poisoned").view.sync(since, Vec::new())
+    }
+
+    pub fn view_version(&self) -> misa_proto::sync::Version {
+        self.state.lock().expect("session state is never poisoned").view.version.clone()
+    }
+
     /// Answer an on-demand completion source.
     ///
     /// The counterpart to a resident source's query, and the reason the distinction
@@ -522,28 +600,9 @@ impl Runtime {
     pub fn read(&self, query: &Query) -> Result<Reading, Fault> {
         let mut state = self.state.lock().expect("session state is never poisoned");
         if query.id == misa_proto::VIEW_QUERY {
-            let rev = state.state.rev();
-            let limit = query
-                .args
-                .first()
-                .and_then(Value::as_i64)
-                .unwrap_or(views::DEFAULT_WINDOW as i64)
-                .max(1) as usize;
-            if let Some((cached_rev, cached_limit, node)) = &state.view
-                && *cached_rev == rev && *cached_limit == limit
-            {
-                return Ok(Reading::View(node.clone()));
-            }
-            let node = views::document(state.state.db(), limit, &self.sections);
-            // A tree a client cannot rely on is not sent: the session reports and
-            // keeps the last valid view, which is what the previous system learned
-            // at its frame boundary.
-            if let Err(fault) = validate(&node) {
-                return Err(Fault::new("view", fault.to_string()));
-            }
-            state.view = Some((rev, limit, node.clone()));
-            return Ok(Reading::View(node));
+            return Ok(Reading::View(state.view.tree.snapshot()));
         }
+
         let value = state
             .state
             .query(query)
@@ -585,6 +644,10 @@ impl Interpreter for AcceptedEffects {
     }
 }
 
+fn pending_seq(db: &Value) -> Option<i64> {
+    db.get("session")?.get("pending")?.get("seq")?.as_i64()
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -606,7 +669,7 @@ pub(crate) mod tests {
         Runtime::start(
             "demo",
             "a demo session",
-            Some("c1".into()),
+            Some("demo".into()),
             Arc::new(misa_kernel::LocalKernel::new(provider)),
             "scripted",
             "scripted-1",
@@ -751,9 +814,8 @@ pub(crate) mod tests {
         let runtime = runtime();
         let faults = runtime.intent(Intent::Prompt { text: "write a haiku".into(), attachments: vec![] });
         assert!(faults.is_empty(), "{faults:?}");
-        let text = transcript(&runtime);
+        let text = wait_for(&runtime, |text| text.contains("write a haiku")).await;
         assert!(text.contains("write a haiku"), "{text}");
-        assert_eq!(runtime.status(), "thinking");
     }
 
     #[tokio::test]
@@ -775,12 +837,13 @@ pub(crate) mod tests {
         });
         assert!(faults.is_empty(), "{faults:?}");
 
-        // Every client receives the image reference and its alternative text.
+        // Every client receives the image reference after the log acknowledges it.
+        settle(&runtime).await;
         let drawn = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
             Reading::View(node) => node,
             Reading::Data(_) => panic!("expected a view"),
         };
-        let attachment = misa_proto::view::find(&drawn, "attachment.0").expect("the attachment is in the view");
+        let attachment = misa_proto::view::find(&drawn, &format!("msg.1.attachment.{hash}")).expect("the attachment is in the view");
         match &attachment.kind {
             misa_proto::view::Kind::Image { blob, .. } => assert_eq!(blob.hash, hash),
             _ => panic!("an attachment that is not an image is an attachment nothing can show"),
@@ -1027,7 +1090,7 @@ pub(crate) mod tests {
         );
         assert!(faults.is_empty(), "{faults:?}");
 
-        let text = transcript(&runtime);
+        let text = wait_for(&runtime, |text| text.contains("cargo build")).await;
         assert!(text.contains("cargo build"), "{text}");
         assert!(text.contains("pid 4242"), "{text}");
         assert!(text.contains("exited 0"), "{text}");
@@ -1104,6 +1167,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_data_query_is_answered_as_data() {
         let runtime = runtime();
+        settle(&runtime).await;
         match runtime.read(&Query::new("session.status")).unwrap() {
             Reading::Data(value) => assert_eq!(value.get("status").and_then(Value::as_str), Some("idle")),
             Reading::View(_) => panic!("expected data"),
@@ -1114,10 +1178,9 @@ pub(crate) mod tests {
     async fn the_view_is_cached_until_the_database_changes() {
         let runtime = runtime();
         let first = view(&runtime);
-        let (rev, window, cached) = runtime.state.lock().unwrap().view.clone().expect("a cached view");
-        assert_eq!(first.id, cached.id);
-        assert_eq!(window, views::DEFAULT_WINDOW);
-        assert_eq!(rev, runtime.rev());
+        let state = runtime.state.lock().unwrap();
+        assert_eq!(first, state.view.tree.snapshot());
+        assert_eq!(state.view.version.rev, state.state.rev());
     }
 
     #[tokio::test]
@@ -1135,7 +1198,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn the_view_window_is_an_argument_not_a_property_of_the_session() {
+    async fn legacy_query_arguments_cannot_truncate_the_canonical_document() {
         let runtime = runtime();
         let narrow = runtime
             .read(&Query::new(misa_proto::VIEW_QUERY).arg(Value::Int(1)))
@@ -1145,8 +1208,7 @@ pub(crate) mod tests {
             .unwrap();
         match (narrow, wide) {
             (Reading::View(a), Reading::View(b)) => {
-                assert!(misa_proto::view::find(&a, "transcript").is_some());
-                assert!(misa_proto::view::find(&b, "transcript").is_some());
+                assert_eq!(a, b);
             }
             _ => panic!("expected two views"),
         }
@@ -1294,8 +1356,9 @@ mod contribution_tests {
     /// A section a composition contributed, as a test builds one.
     fn presenting(plugin: &'static str) -> views::Section {
         views::Section {
+            inputs: vec![misa_value::Path::root()],
             plugin: plugin.to_string(),
-            build: std::sync::Arc::new(|db, _window| {
+            build: std::sync::Arc::new(|db| {
                 let mut tree = Node::section("test.widget").id("widget");
                 tree.label = Some(format!("{} bytes of state", misa_render::to_plain(&[]).len()));
                 tree.children.push(
@@ -1364,8 +1427,9 @@ mod contribution_tests {
         // A fault is data: a plugin that cannot draw is a line in the document, which is the
         // difference between a widget that is missing and a session whose view nobody can draw.
         let broken = views::Section {
+            inputs: vec![misa_value::Path::root()],
             plugin: "test.broken".to_string(),
-            build: std::sync::Arc::new(|_db, _window| Err("nothing to draw".to_string())),
+            build: std::sync::Arc::new(|_db| Err("nothing to draw".to_string())),
         };
         let runtime = session(Contribution::new().with_section(broken));
         let node = view(&runtime);
@@ -1403,6 +1467,7 @@ mod contribution_tests {
             fields: Vec::new(),
         });
         assert!(faults.is_empty(), "{faults:?}");
+        wait_for_value(&runtime, "guest.acted", &Value::str("refresh")).await;
         match runtime.read(&Query::new("guest.acted")).expect("a value") {
             Reading::Data(value) => assert_eq!(value.as_str(), Some("refresh")),
             Reading::View(_) => panic!("expected data"),
@@ -1487,7 +1552,7 @@ mod contribution_tests {
         );
         let faults = first.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
         assert!(faults.is_empty(), "{faults:?}");
-        assert_eq!(value(&first, "guest.seen").as_str(), Some("intent/prompt"));
+        wait_for_value(&first, "guest.seen", &Value::str("intent/prompt")).await;
         // The turn is allowed to finish, because an append is an effect and effects reach the
         // daemon after the transaction that asked for them.
         settle(&first).await;
@@ -1560,11 +1625,13 @@ mod contribution_tests {
         let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
         assert!(faults.is_empty(), "{faults:?}");
 
+        wait_for_value(&runtime, "guest.seen", &Value::str("intent/prompt")).await;
         let reading = runtime.read(&Query::new("guest.seen")).expect("a value");
         match reading {
             Reading::Data(value) => assert_eq!(value.as_str(), Some("intent/prompt")),
             Reading::View(_) => panic!("a composition's subscription answered with a view"),
         }
+        tests::settle(&runtime).await;
         // And a client can see the turn the shipped loop ran, which is what says the two
         // registrations live in one loop rather than two.
         let text = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
@@ -1631,5 +1698,77 @@ mod contribution_tests {
         // Nothing landed: not the root it did declare, and not the transcript.
         assert_eq!(value(&runtime, "guest.seen"), Value::Null, "the write it was allowed to make is gone too");
         assert!(!transcript(&runtime).contains("hello"), "{}", transcript(&runtime));
+    }
+}
+
+#[cfg(test)]
+mod stream_contract_tests {
+    use super::*;
+    use misa_proto::sync::StreamUpdate;
+
+    fn runtime() -> Arc<Runtime> {
+        Runtime::start("stream-test", "stream test", None,
+            Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("unused"))),
+            "scripted", "scripted-1", Value::Null)
+    }
+    fn ack(runtime: &Runtime, seq: i64, data: Value) {
+        assert!(runtime.dispatch(Event::new("kernel/log.appended")
+            .with("conversation", Value::str("stream-test")).with("seq", Value::Int(seq))
+            .with("kind", Value::str("message")).with("data", data)).is_empty());
+    }
+    // No await: the kernel tasks cannot run until these controlled acknowledgments finish.
+    #[tokio::test]
+    async fn streaming_work_is_linear_and_canonical_state_waits_for_the_log() {
+        for tokens in [64, 128] {
+            let mut runs = Vec::new();
+            for _ in 0..6 {
+                let runtime = runtime();
+                runtime.intent(Intent::Prompt { text: "prompt".into(), attachments: vec![] });
+                assert!(runtime.state.lock().unwrap().state.db().get("messages").unwrap().as_list().unwrap().is_empty());
+                ack(&runtime, 1, Value::map([
+                    ("seq", Value::Int(1)), ("role", Value::str("user")), ("text", Value::str("prompt")),
+                    ("state", Value::str("done")), ("attachments", Value::list([])),
+                ]));
+                let (request, before, version, work) = {
+                    let state = runtime.state.lock().unwrap();
+                    (state.state.db().get("session").unwrap().get("pending").unwrap().get("request").unwrap().as_str().unwrap().to_owned(),
+                     state.state.db().clone(), state.view.version.clone(), state.view.work.clone())
+                };
+                let mut events = runtime.subscribe_events();
+                let chunk = "é".repeat(32);
+                let mut wire_bytes = 0;
+                for index in 0..tokens {
+                    assert!(runtime.dispatch(Event::new("kernel/provider.delta").with("id", Value::str(&request)).with("text", Value::str(&chunk))).is_empty());
+                    let emission = events.try_recv().expect("each successful token is emitted");
+                    match &emission.event {
+                        SessionEvent::Stream { update: StreamUpdate::Append { offset, text, .. } } => {
+                            assert_eq!(*offset, index * 64); assert_eq!(text, &chunk);
+                        }
+                        other => panic!("expected append, got {other:?}"),
+                    }
+                    wire_bytes += misa_proto::encode(&emission.event).unwrap().len();
+                }
+                {
+                    let state = runtime.state.lock().unwrap();
+                    assert!(state.state.db().same(&before), "tokens must not patch the database");
+                    assert_eq!(state.view.version, version);
+                    assert_eq!(state.view.work, work, "tokens must not build or encode tree operations");
+                    assert_eq!(state.stream_bytes, (tokens * 64) as u64);
+                    assert_eq!(state.streams["msg.2.text"].text, chunk.repeat(tokens));
+                    runs.push((state.stream_bytes, wire_bytes));
+                }
+                let settled = Value::map([
+                    ("seq", Value::Int(2)), ("role", Value::str("assistant")),
+                    ("text", Value::str(chunk.repeat(tokens))), ("state", Value::str("done")),
+                    ("calls", Value::list([])), ("attachments", Value::list([])),
+                ]);
+                ack(&runtime, 2, settled.clone());
+                let state = runtime.state.lock().unwrap();
+                assert!(state.streams.is_empty());
+                assert_eq!(state.state.db().get("messages").unwrap().as_list().unwrap()[1], settled);
+            }
+            assert!(runs.iter().all(|run| run == &runs[0]));
+            eprintln!("tokens={tokens} repetitions=6 append_bytes={} wire_bytes={} token_db_patches=0 token_view_ops=0", runs[0].0, runs[0].1);
+        }
     }
 }

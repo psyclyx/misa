@@ -2,8 +2,8 @@
 //!
 //! iroh authenticates the peer's public key, so by the time a connection reaches an
 //! application the peer has an *identity*. Nothing about that identity says whether the
-//! peer should be talking to this session, and that question is policy — which is why the
-//! decision lives here and the transport only carries it out.
+//! peer should be talking to this session. Deployment admission belongs beside the
+//! transport, where session and blob connections share the same decision.
 //!
 //! # Why this is data
 //!

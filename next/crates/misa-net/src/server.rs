@@ -25,7 +25,7 @@ use ::iroh::Endpoint;
 use ::iroh::EndpointAddr;
 use misa_kernel::Blobs;
 use misa_proto::{ALPN_BLOB, ALPN_SESSION};
-use misa_session::admission::Admission;
+use crate::admission::Admission;
 
 use crate::iroh::{self, Sessions};
 use crate::blob;
@@ -69,7 +69,7 @@ impl Fixture {
         sessions.insert(misa_session::Runtime::start(
             "demo",
             "a demo session",
-            Some("c1".into()),
+            None,
             Arc::new(misa_kernel::LocalKernel::new(provider)),
             "scripted",
             "scripted-1",
@@ -134,8 +134,11 @@ mod tests {
     #[tokio::test]
     async fn a_large_canonical_view_crosses_a_real_endpoint() {
         let fixture = Fixture::start(Admission::open(), scripted()).await;
-        let runtime = fixture.sessions.get("demo").unwrap();
-        runtime.notice(misa_proto::Level::Info, "x".repeat(misa_proto::MAX_CONTROL_FRAME + 1024));
+        let runtime = misa_session::Runtime::start(
+            "demo", "large", None, Arc::new(misa_kernel::LocalKernel::new(scripted())),
+            "scripted", "x".repeat(misa_proto::MAX_CONTROL_FRAME + 1024), Value::Null,
+        );
+        fixture.sessions.insert(runtime.clone());
         let expected = runtime.view().unwrap();
         let mut client = within(
             "attaching",
@@ -172,10 +175,9 @@ mod tests {
             .await
             .expect("a subscription");
         let first = within("a view", client.next()).await.expect("a message").expect("a view");
-        let before = match first {
-            SessionMsg::View { view, .. } => view,
-            other => panic!("expected a view, got {other:?}"),
-        };
+        let mut state = misa_proto::sync::ClientView::default();
+        state.receive(&first).unwrap();
+        let before = state.canonical().unwrap();
         assert!(
             misa_proto::view::find(&before, "transcript").is_some(),
             "the first view has no transcript"
@@ -199,9 +201,9 @@ mod tests {
             let Some(message) = within("a message", client.next()).await.expect("a message") else {
                 break;
             };
-            match message {
-                SessionMsg::Ack { .. } => saw_ack = true,
-                SessionMsg::View { view, .. } => {
+            saw_ack |= matches!(message, SessionMsg::Ack { .. });
+            if state.receive(&message).unwrap() {
+                if let Some(view) = state.canonical() {
                     let text =
                         misa_render::to_plain(&misa_render::render(&view, &misa_render::Theme::plain(), 100));
                     saw_prompt |= text.contains("what is this");
@@ -210,7 +212,6 @@ mod tests {
                         break;
                     }
                 }
-                _ => {}
             }
         }
         assert!(saw_ack, "the intent was never acknowledged");
@@ -345,17 +346,19 @@ mod tests {
 
     /// Read views until the transcript says the thing, and hand back what it says.
     async fn settled(client: &mut Client, looking_for: &str) -> String {
+        let mut state = misa_proto::sync::ClientView::default();
         for _ in 0..80 {
             let Some(message) = within("a message", client.next()).await.expect("a message") else {
                 break;
             };
-            if let SessionMsg::View { view, .. } = message {
+            state.receive(&message).unwrap();
+            if let Some(view) = state.canonical() {
                 let text = misa_render::to_plain(&misa_render::render(
                     &view,
                     &misa_render::Theme::plain(),
                     100,
                 ));
-                if text.contains(looking_for) {
+                if text.contains(looking_for) && text.contains(" · idle · ") {
                     return text;
                 }
             }

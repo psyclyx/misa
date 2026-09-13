@@ -30,7 +30,7 @@ use misa_proto::ALPN_BLOB;
 use misa_proto::blob::{BlobMsg, BlobReply, MAX_BLOB_FRAME};
 use misa_proto::frame::{Decoder, decode, encode_within};
 use misa_proto::view::BlobRef;
-use misa_session::admission::Admission;
+use crate::admission::Admission;
 use tracing::{debug, warn};
 
 /// How much is read at a time.

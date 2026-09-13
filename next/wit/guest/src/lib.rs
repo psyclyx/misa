@@ -112,7 +112,7 @@ impl Guest for Shell {
     /// on is one this plugin offered. The database is checked for `spin`, which is a switch a
     /// test flips to prove that a runaway guest is stopped by its budget rather than by anybody
     /// noticing.
-    fn view(db: String, window: u32) -> Result<ViewTree, Fault> {
+    fn view(db: String) -> Result<ViewTree, Fault> {
         if db.contains("\"spin\"") {
             let mut turns: u64 = 0;
             loop {
@@ -149,8 +149,7 @@ impl Guest for Shell {
                     kind: "status".to_string(),
                     // A semantic report of the state the session supplied.
                     data: Some(format!(
-                        "{{\"text\":\"{} messages, {} bytes of state, drawn for {}\"}}",
-                        window,
+                        "{{\"text\":\"{} bytes of state, drawn for {}\"}}",
                         db.len(),
                         "semantic",
                     )),

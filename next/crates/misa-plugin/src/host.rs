@@ -362,14 +362,14 @@ impl Plugin {
     /// The validation is [`misa_proto::view::validate`] — the same function a session's own
     /// view is held to — so a plugin's tree is not merely *its* tree: it is a tree every
     /// client may assume things about, or it is a fault.
-    pub fn view(&self, db: &Value, window: usize) -> Result<Node, PluginFault> {
+    pub fn view(&self, db: &Value) -> Result<Node, PluginFault> {
         let db = to_json(db, "this session's state")?;
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
         fuelled(store)?;
         let tree = bindings
             .interface0
-            .call_view(store, &db, window as u32)
+            .call_view(store, &db)
             .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
             .map_err(|fault| PluginFault::guest(&fault))?;
         let node = tree_of(&tree)?;

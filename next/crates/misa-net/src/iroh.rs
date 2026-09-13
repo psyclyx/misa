@@ -31,7 +31,7 @@ use misa_proto::chunk::Decoder;
 use misa_proto::wire::{ClientInfo, ClientMsg, Query, SessionMsg, SubId};
 use misa_proto::{ALPN_BLOB, ALPN_SESSION, Fault, PROTOCOL_VERSION, Ticket};
 use misa_session::Runtime;
-use misa_session::admission::Admission;
+use crate::admission::Admission;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -349,12 +349,13 @@ async fn converse(
     decoder: Decoder,
     pending: Vec<ClientMsg>,
 ) -> Result<(), String> {
-    let (to_wire, mut from_session) = mpsc::unbounded_channel::<SessionMsg>();
-    let (to_session, from_wire) = mpsc::unbounded_channel::<ClientMsg>();
+    let (to_wire, mut from_session) = mpsc::channel::<crate::OutboundBatch>(crate::OUTBOUND_REVISIONS);
+    let (to_session, from_wire) = mpsc::channel::<ClientMsg>(crate::OUTBOUND_REVISIONS);
 
     let writer = tokio::spawn(async move {
         let mut send = send;
-        while let Some(message) = from_session.recv().await {
+        while let Some(batch) = from_session.recv().await {
+            for message in batch {
             match encode(&message) {
                 Ok(frame) => {
                     if send.write_all(&frame).await.is_err() {
@@ -365,6 +366,7 @@ async fn converse(
                     warn!(error = %error.message, "a message could not be encoded");
                     return;
                 }
+            }
             }
         }
     });
@@ -380,7 +382,7 @@ async fn converse(
         // other and goes to the session first, so the order a client wrote in is the order the
         // session sees.
         for message in pending {
-            if to_session.send(message).is_err() {
+            if to_session.send(message).await.is_err() {
                 return;
             }
         }
@@ -391,12 +393,12 @@ async fn converse(
                     for message in crate::split_frames(&mut decoder, &buffer[..bytes]) {
                         match message {
                             Ok(message) => {
-                                if to_session.send(message).is_err() {
+                                if to_session.send(message).await.is_err() {
                                     return;
                                 }
                             }
                             Err(fault) => {
-                                let _ = reader_to_wire.send(SessionMsg::Fault { id: None, fault });
+                                let _ = reader_to_wire.send(vec![SessionMsg::Fault { id: None, fault }]).await;
                             }
                         }
                     }
@@ -419,7 +421,7 @@ async fn converse(
             ClientMsg::Hello { version, client: info } => {
                 let ids = sessions.ids();
                 client = Some(info);
-                let _ = to_wire.send(SessionMsg::Welcome {
+                let _ = to_wire.send(vec![SessionMsg::Welcome {
                     version: version.min(PROTOCOL_VERSION),
                     session: misa_proto::wire::SessionInfo {
                         id: String::new(),
@@ -431,14 +433,14 @@ async fn converse(
                         commands: Vec::new(),
                         sources: Vec::new(),
                     },
-                });
+                }]).await;
             }
             ClientMsg::Attach { session: id } => {
                 let Some(runtime) = sessions.get(&id) else {
-                    let _ = to_wire.send(SessionMsg::Fault {
+                    let _ = to_wire.send(vec![SessionMsg::Fault {
                         id: None,
                         fault: Fault::protocol(format!("no session named `{id}`")),
-                    });
+                    }]).await;
                     continue;
                 };
                 let revision = runtime.watch_rev();
@@ -449,17 +451,17 @@ async fn converse(
                 // twice.
                 if let Some(client) = client.clone() {
                     for reply in state.handle(ClientMsg::Hello { version: PROTOCOL_VERSION, client }) {
-                        let _ = to_wire.send(reply);
+                        let _ = to_wire.send(vec![reply]).await;
                     }
                 }
                 crate::drive(state, inbox, to_wire.clone(), revision, events).await;
                 return Ok(());
             }
             other => {
-                let _ = to_wire.send(SessionMsg::Fault {
+                let _ = to_wire.send(vec![SessionMsg::Fault {
                     id: None,
                     fault: Fault::protocol(format!("a `{}` arrived before `attach`", other.name())),
-                });
+                }]).await;
             }
         }
     }
@@ -550,7 +552,7 @@ impl Client {
         self.session = None;
         self.introduce().await?;
         for (id, query) in std::mem::take(&mut self.subscriptions) {
-            self.write(&ClientMsg::Subscribe { id, query: query.clone() }).await?;
+            self.write(&ClientMsg::Subscribe { id, query: query.clone(), since: None }).await?;
             self.subscriptions.push((id, query));
         }
         self.reconnects += 1;
@@ -647,9 +649,13 @@ impl Client {
     ///
     /// A subscription is the one thing here that is safe to send twice: the session answers
     /// with the current value, and the current value *is* the state.
+    pub async fn subscribe_since(&mut self, id: SubId, query: Query, since: misa_proto::sync::Version) -> Result<(), String> {
+        self.write(&ClientMsg::Subscribe { id, query, since: Some(since) }).await
+    }
+
     pub async fn subscribe(&mut self, id: SubId, query: Query) -> Result<(), String> {
         self.remember(id, &query);
-        match self.write(&ClientMsg::Subscribe { id, query }).await {
+        match self.write(&ClientMsg::Subscribe { id, query, since: None }).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 // The connection may be gone. Finding a new one re-asks every subscription

@@ -1,29 +1,58 @@
-# The shell `next/` is worked on in: the Rust toolchain the rewrite is built with, and the wasm
-# tools the plugin host needs. Bare `nix-shell` in this directory, or `nix-shell next -A shell`
-# from the repository root. `../../shell.nix` beside it is the file that decides which nixpkgs
-# these come from.
-#
-# The toolchain itself is in `nix/rust-toolchain.nix` at the repository root, shared with the
-# root shell — one answer to "which rustc", for both halves of this repository.
+# Build inputs come from the artifacts themselves. The remaining list is tooling.
 {
-  pkgs,
+  callPackage,
   mkShell,
+  misa-daemon,
+  misa,
+  misa-web,
+  misa-skia,
+  misa-guest,
+  misa-android,
+  checks,
+  rustfmt,
+  clippy,
+  rust-analyzer,
+  cargo-nextest,
   treefmt,
   nixfmt,
   prettier,
+  wasm-tools,
+  wasmtime,
+  wasm-component-ld,
+  wabt,
 }:
 let
-  rust = import ../../nix/rust-toolchain.nix { inherit pkgs; };
+  skia = callPackage ./skia.nix { };
 in
 mkShell (
   {
-    packages = rust.packages ++ [
-      # The pre-commit hook is treefmt over this tree, and a hook that is not on the path is a
-      # commit that fails for a reason that has nothing to do with the change.
+    inputsFrom = [
+      misa-daemon
+      misa
+      misa-web
+      misa-skia
+      misa-guest
+      checks
+      misa-android
+    ]
+    ++ builtins.attrValues misa-android.native;
+    packages = [
+      rustfmt
+      clippy
+      rust-analyzer
+      cargo-nextest
       treefmt
       nixfmt
       prettier
+      wasm-tools
+      wasmtime
+      wasm-component-ld
+      wabt
+      skia.dejavu_fonts
     ];
   }
-  // rust.env
+  // skia.env
+  // {
+    inherit (misa-android) ANDROID_HOME ANDROID_SDK_ROOT;
+  }
 )

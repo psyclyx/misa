@@ -239,7 +239,7 @@ pub enum KernelEvent {
         ok: bool,
         text: String,
     },
-    Appended { conversation: String, seq: i64 },
+    Appended { conversation: String, seq: i64, kind: String, data: Value },
     Loaded { conversation: String, entries: Vec<Entry> },
     Conversations { id: String, headers: Value },
     AttemptRecorded { id: String, name: String },
@@ -976,9 +976,11 @@ impl Kernel for Daemon {
                 // The branch is needed for the event afterwards and the closure owns what
                 // it is given, so the name is cloned once into the worker.
                 let branch = conversation.clone();
-                match tokio::task::spawn_blocking(move || store.append(&branch, &kind, &data, at)).await {
+                let stored_kind = kind.clone();
+                let stored_data = data.clone();
+                match tokio::task::spawn_blocking(move || store.append(&branch, &stored_kind, &stored_data, at)).await {
                     Ok(Ok(seq)) => {
-                        let _ = out.send(KernelEvent::Appended { conversation, seq });
+                        let _ = out.send(KernelEvent::Appended { conversation, seq, kind, data });
                     }
                     Ok(Err(message)) => {
                         let _ = out.send(KernelEvent::Failed { id: conversation, message });

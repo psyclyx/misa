@@ -80,7 +80,87 @@
           draft.dispatchEvent(new Event("input", { bubbles: true }));
           draft.focus();
           draft.setSelectionRange(2, 4);
+          client.changes([
+            {
+              op: "insert",
+              parent: "call",
+              before: null,
+              html: '<p id="added">new result</p>',
+            },
+          ]);
+          assert(
+            doc.querySelector("textarea") === draft &&
+              doc.activeElement === draft,
+            "an unrelated operation preserves the actual focused element",
+          );
+          assert(
+            draft.selectionStart === 2 && draft.selectionEnd === 4,
+            "an unrelated operation preserves selection",
+          );
+          const unchanged = doc.getElementById("call");
+          client.changes([
+            {
+              op: "insert",
+              parent: "call",
+              before: "added",
+              html: '<p id="earlier">earlier</p>',
+            },
+            {
+              op: "replace",
+              id: "added",
+              html: '<p id="added">settled result</p>',
+            },
+          ]);
+          assert(
+            doc.getElementById("earlier").nextElementSibling.id === "added",
+            "insert respects its sibling anchor",
+          );
+          assert(
+            doc.getElementById("added").textContent === "settled result" &&
+              doc.getElementById("call") === unchanged,
+            "replacement keeps the parent DOM element",
+          );
+          client.changes([{ op: "remove", id: "earlier" }]);
+          assert(!doc.getElementById("earlier"), "remove deletes its target");
+          client.streams([{ id: "answer", role: "assistant", text: "é" }]);
+          const streamNode = doc.querySelector('[data-stream="answer"]');
+          const streamText = streamNode.firstChild;
+          client.streamUpdate({
+            update: "append",
+            id: "answer",
+            offset: 2,
+            text: "🙂",
+          });
+          assert(
+            streamNode.textContent === "é🙂" &&
+              streamNode.firstChild === streamText,
+            "stream appends use byte offsets and preserve the text node",
+          );
+          let rejected = false;
+          try {
+            client.streamUpdate({
+              update: "append",
+              id: "answer",
+              offset: 3,
+              text: "gap",
+            });
+          } catch (_) {
+            rejected = true;
+          }
+          assert(
+            rejected && streamNode.textContent === "é🙂",
+            "gapped append is rejected",
+          );
           client.snapshot(region);
+          assert(
+            doc.querySelector('[data-stream="answer"]') === streamNode,
+            "canonical snapshot preserves the separate stream",
+          );
+          client.streamUpdate({ update: "end", id: "answer" });
+          assert(
+            !doc.querySelector('[data-stream="answer"]'),
+            "settled stream is removed",
+          );
           draft = doc.querySelector("textarea");
           assert(draft.value === "unsent", "snapshot preserves unsent draft");
           assert(

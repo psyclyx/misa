@@ -2771,6 +2771,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-protocol"
+version = "0.1.0"
+dependencies = [
+ "misa-proto",
+ "misa-value",
+ "tokio",
+]
+
+[[package]]
 name = "misa-reframe"
 version = "0.1.0"
 dependencies = [
@@ -2792,6 +2801,7 @@ name = "misa-session"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "getrandom 0.4.3",
  "misa-kernel",
  "misa-proto",
  "misa-reframe",

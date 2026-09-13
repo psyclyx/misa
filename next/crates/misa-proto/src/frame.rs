@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn a_decoder_reassembles_a_message_split_at_every_boundary() {
-        let frame = encode(&ClientMsg::Subscribe { id: SubId(1), query: Query::new("session.view") }).unwrap();
+        let frame = encode(&ClientMsg::Subscribe { since: None, id: SubId(1), query: Query::new("session.view") }).unwrap();
         // Every byte boundary except the last leaves an incomplete frame, and the
         // next push completes it from whatever arrived.
         for split in 0..frame.len() {
@@ -175,16 +175,16 @@ mod tests {
     fn a_decoder_returns_several_frames_from_one_read() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&encode(&hello()).unwrap());
-        bytes.extend_from_slice(&encode(&ClientMsg::Ping { nonce: 1 }).unwrap());
-        bytes.extend_from_slice(&encode(&ClientMsg::Ping { nonce: 2 }).unwrap());
+        bytes.extend_from_slice(&encode(&ClientMsg::Unsubscribe { id: SubId(1) }).unwrap());
+        bytes.extend_from_slice(&encode(&ClientMsg::Unsubscribe { id: SubId(2) }).unwrap());
         let mut decoder = Decoder::new();
         decoder.push(&bytes).unwrap();
         let first = decoder.next().unwrap().unwrap();
         assert!(matches!(decode::<ClientMsg>(&first).unwrap(), ClientMsg::Hello { .. }));
         let second = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMsg>(&second).unwrap(), ClientMsg::Ping { nonce: 1 }));
+        assert!(matches!(decode::<ClientMsg>(&second).unwrap(), ClientMsg::Unsubscribe { id: SubId(1) }));
         let third = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMsg>(&third).unwrap(), ClientMsg::Ping { nonce: 2 }));
+        assert!(matches!(decode::<ClientMsg>(&third).unwrap(), ClientMsg::Unsubscribe { id: SubId(2) }));
         assert!(decoder.next().is_none());
     }
 
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn an_oversized_message_is_refused_by_the_writer() {
         let payload = "x".repeat(4096);
-        match encode_within(&ClientMsg::Ping { nonce: 1 }, 8) {
+        match encode_within(&ClientMsg::Unsubscribe { id: SubId(1) }, 8) {
             Err(FrameError::TooLarge(_, 8)) => {}
             other => panic!("expected a refusal, got {other:?}"),
         }

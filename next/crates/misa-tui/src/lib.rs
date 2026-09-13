@@ -21,6 +21,8 @@
 //! items to hold — see [`misa_client::picker`].
 
 pub mod print;
+pub mod output;
+mod event_loop;
 pub mod storage;
 pub mod save;
 
@@ -1084,79 +1086,7 @@ pub trait Session: Send {
 
 /// The interactive loop.
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
-    use crossterm::event;
-    let mut screen = Screen::durable();
-    if let Some(info) = session.info() {
-        screen.declare(&info);
-    }
-    let mut stdout = std::io::stdout();
-    crossterm::terminal::enable_raw_mode().map_err(|err| err.to_string())?;
-    let result = 'session: loop {
-        let Some(view) = session.next().await? else {
-            break Ok(());
-        };
-        let mut painted = draw(&screen, &view);
-        loop {
-            if let Err(error) = write(&mut stdout, &painted) {
-                break 'session Err(error);
-            }
-            if !event::poll(Duration::from_millis(1)).map_err(|err| err.to_string())? {
-                // Nothing to handle, so hand the wait back to the session. A client that
-                // redrew here would be a client spinning on its own poll.
-                break;
-            }
-            let event = event::read().map_err(|err| err.to_string())?;
-            let crossterm::event::Event::Key(key) = event else {
-                continue;
-            };
-            let Some(interpreted) = translate(key.code, key.modifiers) else {
-                continue;
-            };
-            // The selection gets the key first: it is a mode over the view, and while one is
-            // open every key that moves it belongs to the reader rather than the composer.
-            let out = match screen.selection_key(&view, &interpreted) {
-                Some(out) => out,
-                None => match screen.panel_key(&view, &interpreted) {
-                    Some(out) => out,
-                    None => screen.key(interpreted),
-                },
-            };
-            match out {
-                KeyOut::Save(request) => {
-                    screen.notice = Some(match save::target(&view, &request) {
-                        Ok(node) => match session.save_attachment(node, &request.destination).await {
-                            Ok(()) => format!("Saved {}", request.destination), Err(error) => error,
-                        },
-                        Err(error) => error,
-                    });
-                }
-                KeyOut::Local => {}
-                KeyOut::Quit => break 'session Ok(()),
-                KeyOut::Intent(intent) => {
-                    if let Err(error) = session.send(intent).await {
-                        screen.notice = Some(error);
-                    }
-                }
-                KeyOut::Complete { source, prefix } => match session.complete(&source, &prefix).await {
-                    Ok((items, truncated)) => screen.candidates(&source, items, truncated),
-                    Err(error) => screen.notice = Some(error),
-                },
-                KeyOut::Copy(text) => {
-                    if let Err(error) = copy_to_clipboard(&mut stdout, &text) {
-                        screen.notice = Some(error);
-                    }
-                }
-            }
-            // What a client decided for itself is painted here rather than waited for,
-            // because nothing on the other side of the connection knows it happened: a
-            // selection moving is not something a session could send a view for.
-            painted = draw(&screen, &view);
-        }
-    };
-    crossterm::terminal::disable_raw_mode().map_err(|err| err.to_string())?;
-    // The draft is the one thing that could not be written while somebody was typing it.
-    screen.save();
-    result
+    event_loop::run(session).await
 }
 
 fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<Key> {
@@ -1188,40 +1118,6 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
     })
 }
 
-fn write(stdout: &mut std::io::Stdout, lines: &[Line]) -> Result<(), String> {
-    use crossterm::{cursor, execute, terminal};
-    use std::io::Write as _;
-
-    execute!(stdout, terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))
-        .map_err(|err| err.to_string())?;
-    for line in lines {
-        let mut out = String::new();
-        for (style, text) in &line.spans {
-            out.push_str(&sgr(style));
-            out.push_str(text);
-            out.push_str("\u{1b}[0m");
-        }
-        write!(stdout, "{}{}\r\n", " ".repeat(line.indent as usize), out).map_err(|err| err.to_string())?;
-    }
-    stdout.flush().map_err(|err| err.to_string())
-}
-/// Put text on the terminal's clipboard, by asking the terminal to put it there.
-///
-/// OSC 52 is the only clipboard a program with no window can reach, and that is the
-/// whole reason this is client-side: the text does not leave the machine, so there is
-/// nothing to ask a session for and no capability to request. Whether anything lands
-/// is the terminal's business — a multiplexer may drop it and a terminal may refuse it
-/// — and that is not an error this program can see, so it does not invent one.
-fn copy_to_clipboard(stdout: &mut std::io::Stdout, text: &str) -> Result<(), String> {
-    use base64::Engine as _;
-    use std::io::Write as _;
-
-    let payload = base64::engine::general_purpose::STANDARD.encode(text);
-    write!(stdout, "\u{1b}]52;c;{payload}\u{7}").map_err(|err| err.to_string())?;
-    stdout.flush().map_err(|err| err.to_string())
-}
-
-/// A style as an ANSI sequence. The one place a colour becomes bytes.
 pub fn sgr(style: &misa_render::Style) -> String {
     use misa_render::Color;
     let mut codes: Vec<String> = Vec::new();
@@ -1262,7 +1158,7 @@ pub struct Remote {
     blobs: std::sync::Arc<misa_net::blob::Store>,
     inbox: std::collections::VecDeque<misa_proto::SessionMsg>,
     client: misa_net::iroh::Client,
-    view: Option<Node>,
+    view: misa_proto::sync::ClientView,
     info: Option<SessionInfo>,
 }
 
@@ -1297,7 +1193,7 @@ impl Remote {
             client.subscribe(source_subscription(source), query).await?;
         }
         let info = client.session().cloned();
-        Ok(Remote { client, view: None, info, blobs, inbox: std::collections::VecDeque::new() })
+        Ok(Remote { client, view: Default::default(), info, blobs, inbox: std::collections::VecDeque::new() })
     }
 }
 
@@ -1312,31 +1208,17 @@ impl Session for Remote {
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
             let message = match self.inbox.pop_front() { Some(message) => Some(message), None => self.client.next().await? };
+            let Some(message) = message else { return Ok(None) };
+            match self.view.receive(&message) {
+                Ok(true) => if let Some(view) = self.view.rendered() { return Ok(Some(view)); },
+                Err(_) => { self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?; }
+                Ok(false) => {}
+            }
             match message {
-                Some(misa_proto::SessionMsg::Welcome { session, .. }) => {
-                    self.info = Some(session);
-                }
-                Some(misa_proto::SessionMsg::View { view, .. }) => {
-                    self.view = Some(view.clone());
-                    return Ok(Some(view));
-                }
-                Some(misa_proto::SessionMsg::Value { value, .. }) => {
-                    // A resident source's items, held for the picker.
-                    let _ = value;
-                }
-                Some(misa_proto::SessionMsg::Event { event, .. }) => {
-                    if let misa_proto::SessionEvent::TextDelta { node, text } = event
-                        && let Some(view) = self.view.as_mut()
-                        && let Some(target) = find_mut(view, &node)
-                        && let Kind::Text { spans } = &mut target.kind
-                    {
-                        spans.push(misa_proto::view::Span::plain(text));
-                        return Ok(Some(view.clone()));
-                    }
-                }
-                Some(misa_proto::SessionMsg::Fault { fault, .. }) => return Err(fault.message),
-                Some(_) => {}
-                None => return Ok(None),
+                misa_proto::SessionMsg::Welcome { session, .. } => self.info = Some(session),
+                misa_proto::SessionMsg::Fault { fault, .. } => return Err(fault.message),
+                _ => {}
+
             }
         }
     }
@@ -1387,7 +1269,7 @@ impl Session for Remote {
                 Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => {
                     return Err(fault.message);
                 }
-                Some(_) => {}
+                Some(message) => { let _ = self.view.receive(&message); }
                 None => return Err("the session closed".into()),
             }
         }
@@ -1398,12 +1280,7 @@ impl Session for Remote {
     }
 }
 
-fn find_mut<'a>(node: &'a mut Node, id: &str) -> Option<&'a mut Node> {
-    if node.id == id {
-        return Some(node);
-    }
-    node.children.iter_mut().find_map(|child| find_mut(child, id))
-}
+
 
 fn next_intent_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};

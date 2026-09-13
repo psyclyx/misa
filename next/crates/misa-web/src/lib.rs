@@ -974,6 +974,7 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     let stream = region.clone();
     let (downloads, mut download_requests) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
     tokio::spawn(async move {
+        let mut view = misa_proto::sync::ClientView::default();
         let mut pending_downloads = std::collections::HashMap::<u64, tokio::sync::oneshot::Sender<Result<misa_proto::wire::Download, String>>>::new();
         loop {
             tokio::select! {
@@ -984,10 +985,12 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
                     Ok(Some(misa_proto::SessionMsg::Fault { id: Some(id), fault })) => {
                         if let Some(reply) = pending_downloads.remove(&id) { let _ = reply.send(Err(fault.message)); }
                     }
-                    Ok(Some(misa_proto::SessionMsg::View { view, .. })) => stream.set(render_main(&view)),
-                    // A delta is an optimisation the browser already gets from the next
-                    // view, so it is not applied here.
-                    Ok(Some(_)) => {}
+                    Ok(Some(message)) => match view.receive(&message) {
+                        Ok(true) => if let Some(view) = view.rendered() { stream.set(render_main(&view)); },
+                        Err(_) => { let _ = client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await; },
+                        Ok(false) => {},
+                    },
+
                     Ok(None) | Err(_) => return,
                 },
                 request = download_requests.recv() => if let Some(request) = request {
@@ -1170,12 +1173,18 @@ mod tests {
         let stored = blobs.put(PNG, Some("image/png")).unwrap();
         let runtime = Runtime::start("save", "Save", None, kernel, "scripted", "test", misa_value::Value::Null);
         runtime.intent(misa_proto::wire::Intent::Prompt { text: "save it".into(), attachments: vec![stored.clone()] });
-        let tree = runtime.view().unwrap();
         fn target(node: &Node) -> Option<String> {
             if node.actions.iter().any(|action| action.id == "attachment.save") { return Some(node.id.clone()); }
             node.children.iter().find_map(target)
         }
-        let node = target(&tree).unwrap();
+        let mut revision = runtime.watch_rev();
+        let (tree, node) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let tree = runtime.view().unwrap();
+                if let Some(node) = target(&tree) { break (tree, node); }
+                revision.changed().await.unwrap();
+            }
+        }).await.expect("attachment was not durably recorded");
         let html = render_main(&tree);
         assert!(html.contains("action=\"/download\""));
         assert!(html.contains("Save attachment"));

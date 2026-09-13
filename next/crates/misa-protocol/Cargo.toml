@@ -1,19 +1,12 @@
 [package]
-name = "misa-session"
+name = "misa-protocol"
+description = "Session protocol state machines over injected application state"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-getrandom = "0.4"
-ciborium.workspace = true
-misa-kernel.workspace = true
 misa-proto.workspace = true
-misa-reframe.workspace = true
 misa-value.workspace = true
-serde.workspace = true
 tokio.workspace = true
-
-[dev-dependencies]
-misa-render.workspace = true
