@@ -13,19 +13,36 @@ to live somewhere, and it is neither a fact nor a drawing.
 
 ## 1. The five layers, and the direction of dependency
 
-| Layer              | Crates                                                         | Owns                                                                | May not                                            |
-| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------- |
-| **Wire**           | `misa-proto`                                                   | the vocabulary: view nodes, intents, subscriptions, framing         | decide anything; perform IO                        |
-| **Value and loop** | `misa-value`, `misa-reframe`                                   | immutable state, patches, the event/effect/subscription machinery   | know what an agent is                              |
-| **Kernel**         | `misa-kernel`                                                  | durable facts, the attempt ledger, capability (provider, tool, log) | know what a turn is; know what anything looks like |
-| **Session**        | `misa-session`                                                 | the agent loop, tools, the view tree, dialog composition            | draw; decide colour, size, or layout               |
-| **Client**         | `misa-render`, `misa-tui`, `misa-web`, `misa-skia`, `misa-cli` | theme, layout, wrapping, focus, interaction state                   | own agent policy; invent agent state               |
+| Layer              | Crates                                                                        | Owns                                                                                              | May not                                            |
+| ------------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| **Wire**           | `misa-proto`                                                                  | the vocabulary: view nodes, intents, subscriptions, framing                                       | decide anything; perform IO                        |
+| **Value and loop** | `misa-value`, `misa-reframe`                                                  | immutable state, patches, the event/effect/subscription machinery                                 | know what an agent is                              |
+| **Kernel**         | `misa-kernel`                                                                 | durable facts, the attempt ledger, capability (provider, tool, log)                               | know what a turn is; know what anything looks like |
+| **Session**        | `misa-session`                                                                | the agent loop, tools, the view tree, dialog composition                                          | draw; decide colour, size, or layout               |
+| **Client**         | `misa-render`, `misa-client`, `misa-tui`, `misa-web`, `misa-skia`, `misa-cli` | theme, layout, wrapping, focus, interaction state, and the client-side machinery a surface reuses | own agent policy; invent agent state               |
 
 Dependencies point one way: wire ← value ← loop ← kernel ← session ← client. A
-crate never imports the one above it. `misa-net` is the transport seam and depends
-on the session and the wire, and nothing depends on it except the frontends.
+crate never imports the one above it.
 
-A second seam, beside the transport: `misa-plugin` implements the loop's own `Handler` and
+Three seams sit beside that line, and each exists because the alternative would drag a
+layer somewhere it does not belong:
+
+- **The protocol** is _both ends_ of one state machine: a session's end, which answers a
+  connection, and a client's end, which attaches, subscribes and applies what comes back.
+  Neither end has policy. The session's end reaches the session through a trait rather
+  than a concrete `Runtime`, so a client build links no session and no kernel — not for
+  tidiness: the phone links this crate, and it links `misa-session` and `misa-kernel`
+  today to learn one query name.
+- **The transport** is bytes: QUIC, the blob connection, the accept loop, and the tasks
+  that pump one into the other. It is the only thing here that spawns.
+- **The kit** is what the frontends share and the protocol does not own: the picker, the
+  editor, the selection, and a client's own memory. It carries no IO, because a browser
+  and a phone have their own storage and neither of them has a `$HOME`.
+
+`misa-net` holds the protocol's two ends and the transport in one crate today, and `misa-client` is
+the kit under a name that should mean the protocol's client end; `plan.md` phase 4 is the slice.
+
+`misa-plugin` is the fourth seam: it implements the loop's own `Handler` and
 `Subscription` traits over a wasm component, and depends on the loop, the wire, and the value
 types — nothing above them. It is where a plugin stops being a boundary and becomes something
 the loop runs, and it is a crate of its own because the runtime it needs (`wasmtime`) is the
@@ -33,9 +50,7 @@ largest dependency in this workspace and has nothing to do with a session.
 
 One frontend is not a crate here: `android/` is a Kotlin app over the shared Rust
 client, linked through a JNI seam, and it is a client for the same reason the others
-are — it draws a tree it did not build and decides nothing about the agent. It
-declares `RenderClass::MOBILE`, which is how a session knows the surface is narrow
-and that a collapsible has somewhere to live.
+are — it draws a tree it did not build and decides nothing about the agent.
 
 The three layers the rewrite was asked for map onto this as:
 
@@ -62,6 +77,11 @@ not say "this thinking block is collapsed". It says the block is streaming, how
 large it is, and that the node has a short form and a long form
 (`Kind::Collapsible`). Whether the long form is showing is the client's, and two
 clients with different tastes are both right.
+
+The same rule reaches what a session knows about a client. One tree serves every client,
+a client declares a name and a version and nothing a session acts on, and the only
+per-client inputs to a view are the requests it makes. A session that branched on what a
+client can draw would be deciding appearance by proxy.
 
 > **A client may not invent agent state.**
 
@@ -143,7 +163,9 @@ The alternative — the session emits only domain facts and each client derives 
 own view — was rejected because it multiplies presentation policy across every
 frontend, and a plugin's UI contribution would then need one implementation per
 surface.
-The tree is _presentation policy_, and policy lives in the middle layer once. The
+The tree is _presentation policy_, and policy lives in the middle layer once — and it is _one_
+tree: nothing about a client changes what the session emits, so two clients attached to one session
+hold the same nodes, and a change to one of them is addressed by that node's id. The
 escape hatch is that a client may ignore the view query entirely: `session.status`,
 `session.conversation`, `session.attempts`, and `session.spend` are data
 subscriptions, and a client with unusual needs builds its own tree from those.
@@ -182,13 +204,36 @@ Two update kinds, and the asymmetry is deliberate:
 
 Consequences worth naming, because they are the design's cost:
 
-- a subscription value is a whole value, so a very long transcript must be windowed.
-  `session.view` takes a window argument; the default is 40 messages.
-- a frame is capped at 8 MiB (`misa_proto::MAX_CONTROL_FRAME`). A transcript that
-  grows past that must be paged or moved behind a blob reference. That is the
-  reason `Kind::Image` carries a content hash and not bytes: the bytes travel on a
-  connection of their own (`misa/blob/0`, `misa-net::blob`) rather than through a
-  control frame sized for tokens.
+- a client's tree is its own. The canonical view is the whole session, a change to it is
+  addressed by node id, and a client applies what it holds — so a client that renders only
+  the tail renders the tail, and nothing tells the session a count.
+- a control frame is capped at 8 MiB (`misa_proto::MAX_CONTROL_FRAME`), which bounds a
+  _message_. Carrying a value of any size is the transport's job — bound the chunk, not the
+  value. `Kind::Image` carries a content hash rather than bytes for the same reason it
+  always did: the bytes travel on a connection of their own (`misa/blob/0`,
+  `misa-net::blob`) rather than through a frame sized for tokens.
+
+### What a change sends
+
+The session's view is a value at a version, and a client's copy of it is its own. Three rules make
+that work, and none of them is an optimisation:
+
+- **The canonical view is the whole session.** It is what a client with nothing gets, what a client
+  that has fallen too far behind gets, and what a session builds when it starts or resumes. Nothing
+  in it depends on who asked, so one tree serves every client.
+- **A change is addressed by node id.** A revision's changes go out as one unit with the version, and
+  a client applies them to the tree it holds: append this node, set this state, append these spans.
+  Applying the ops of revisions R+1…N to the tree at R yields the tree at N, so a client converges by
+  applying what it is given, and an op naming something a client has dropped is a no-op for it.
+- **In-flight content is a stream, not a tree.** The body of a message still being streamed is in
+  neither the tree nor the log: it arrives as a current value and then as appends. A body enters the
+  tree when it enters the log, which is where "canonical" stops being ambiguous.
+
+Eviction and staleness follow from the first rule rather than needing machinery of their own: the
+session keeps a change chain back to the oldest client it is still serving, a connection's own
+bounded queue is what a slow client makes it hold, and a full queue means that client's next read is
+the canonical view. That is also the whole reason there is no ACK: the canonical view is the
+reconciliation point, and a client whose copy disagrees with it takes it.
 
 ### Reserved: the kernel protocol
 
@@ -236,8 +281,10 @@ Dropped, with the reason:
   shape of incoming data. Merging is opt-in; appending is opt-in; replacement is the
   default.
 - **Cursors for journalling.** With the log as the truth and the fold owning the
-  meaning, there is no second representation to reconcile. The previous system
-  reached the same conclusion (its Slices 1 and 2) and this starts there.
+  meaning, a _journal_ cursor is not what a client syncs against: a client's cursor is
+  a version of the tree, its changes are addressed by node id, and one that has fallen
+  past them takes the canonical view. The previous system reached the same conclusion
+  about a second representation (its Slices 1 and 2) and this starts there.
 
 ### Where the wasm plugins go
 
@@ -283,7 +330,10 @@ possible:
   disagree, is counted and said out loud rather than dropped in silence. The same wrapper is the
   other half of the rule: a handler may only write into the roots its composition declared, so a
   patch into `session.status` is a fault rather than a quiet rewrite of what the loop decided, and
-  the declaration is what says which state is a plugin's at all.
+  the declaration is what says which state is a plugin's at all. A plugin's _section_ is
+  rebuilt when what it reads changes, because a section declares its inputs the way a subscription
+  declares its own — so a plugin that keeps a thousand things costs a rebuild of its own section and
+  never a rebuild of the transcript.
 
 ---
 
@@ -295,6 +345,12 @@ Built, with tests, per crate: `misa-value` (21), `misa-proto` (41), `misa-refram
 `misa-tui` (27), `misa-web` (19), `misa-daemon` (4), `misa-skia` (5), and one more behind
 `misa-skia --features paint`. That is 471 tests and no skips: `cargo test --workspace` is the
 gate, and these numbers are read back from it rather than remembered.
+
+The largest thing stated in this document that is _not_ built is the view's change protocol: today a
+revision re-sends whole subscription values (`Session::refresh` compares what it last sent against
+what it holds), a streamed body is in the tree as well as in an event, and a session still asks a
+client how much history to send. The op stream, the content stream and the incremental view that
+makes producing ops O(change) are `plan.md` phases 2 and 3, and the crate slice in §1 is phase 4.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
 session does: `misa-client` is the picker, the editor, and the selection, `misa-render` is how a
@@ -332,17 +388,24 @@ items with no code at all, plus the two that are structural.
    today: a surface that renders server-side has to decide whose state a page's draft is,
    which is a question about browsers rather than about this architecture.
 
-Two things are honest limitations rather than planned work:
+Five things are honest limitations rather than planned work:
 
 - **`misa-skia`'s text flow is the linear renderer's.** The scene maps roles to
   appearance and is tested, but it wraps to a column count and stacks runs. A pixel
   frontend that wants proportional type or a non-linear layout needs its own layout;
-  the `paint` feature is opt-in because it needs a linkable Skia.
+  needs its own layout. The raster is behind a `paint` feature today only because Skia is not
+  yet an input the build provides; `plan.md` phase 7 builds the pixel frontend with the Skia it
+  needs, unconditionally, because a pixel frontend that cannot paint is not a frontend.
 - **A window does not exist in any frontend.** `misa-skia` renders a PNG. The
   scene is the part worth getting right first.
 - **A panel's rows are strings, not typed facts.** `/usage` writes "spend micros" and a
   number; a client that could render `value.money` would need the row to carry the fact and
   its role, which is a change to what `panel()` takes and not to what a client does with it.
+- **A session still tells a client how much history to send, and still reads what a client can
+  draw.** The window argument on the view query is the last place a client hands a session a
+  count, and `graphics` and `native_details` are the last things a session reads about a
+  surface. `plan.md` phases 1 and 2 delete them — the first with the class a view is memoised
+  by, the second when the transport can carry a value of any size.
 - **A device flow cannot be cancelled by a client.** The kernel starts one, reports the code,
   and reports the outcome; nothing in `Request` stops it, so a person who thought better of
   it dismisses the panel and waits for the code to expire. The task does give up when the
@@ -361,21 +424,17 @@ already made.
    powerful and makes the trust boundary a policy rather than a property. The
    current answer is "only use it", because that is what `Interpreter::accepts` can
    enforce.
-2. **Whether the view tree should ever carry a patch.** Today a change sends a whole
-   `Node` subtree. A delta would help a very large transcript; it would also mean the
-   client holds a tree it must patch, which is the beginning of the client
-   understanding structure. Probably the answer is windowing, not patching.
-3. **How far a session should go for a second client.** Reachable by more than one at once is
+2. **How far a session should go for a second client.** Reachable by more than one at once is
    settled — it is built, and
    `misa-net::server::tests::two_clients_on_one_session_converge_on_the_same_transcript` holds
    it. What is not decided is what a _client_ should do when it sees that somebody else is
    driving: today two clients share a transcript and either may prompt, and a "somebody else is
    here" indicator is not written.
-4. **How a session is addressed when it outlives its daemon.** A ticket is
+3. **How a session is addressed when it outlives its daemon.** A ticket is
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
    protocol in §4.
-5. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
+4. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
    is open and lets a plugin invent an affordance without a protocol change. It also
    means a client cannot tell a valid action from a typo before sending it. The
    session advertises its queries; it could advertise its actions.

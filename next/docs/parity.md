@@ -9,8 +9,9 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the gate: 471 tests, and thirteen more behind
-`misa-plugin --features guest-fixture`, with no skips. Counts per crate are in
+`cargo test --workspace` is the gate: 471 tests, thirteen more behind
+`misa-plugin --features guest-fixture`, and one behind `misa-skia --features paint` — a feature
+`plan.md` phase 7 deletes, at which point that test joins the gate. Counts per crate are in
 `docs/architecture.md`.
 
 ## The mechanisms everything else is built on
@@ -154,16 +155,20 @@ input uploads and a view shows, and nothing writes a received image to a directo
 
 ## Where the frontends differ, and why that is right
 
-|             | terminal                                                                 | browser                                                                                     | pixels                                        |
-| ----------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| Picker      | `misa-client::picker`, drawn as lines                                    | a `<datalist>` from the declarations, no script                                             | `misa-client::picker`, drawn in the scene     |
-| Collapsible | a summary line, body indented                                            | `<details>`                                                                                 | a scene toggle                                |
-| Theming     | a role to ANSI style                                                     | a role to a CSS custom property                                                             | a role to a paint                             |
-| Input       | modes and motions                                                        | a `<textarea>`                                                                              | modes and motions                             |
-| Transport   | iroh                                                                     | HTTP to its own server, which speaks iroh                                                   | iroh                                          |
-| Selection   | `misa-client::select`, copied by OSC 52                                  | the browser's own text selection, no script                                                 | not built                                     |
-| Panel       | modal while it is up: a field takes the keys, Enter sends, Esc dismisses | a `<form>` for the fields and one small form per action, so its buttons work with no script | the node and its actions; no interaction yet  |
-| Diff        | a role per line: added, removed, hunk                                    | the node's role as a class; its lines are a block                                           | the node's role as a paint; lines are a block |
+|             | terminal                                                                 | browser                                                                                     | pixels                                              |
+| ----------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Picker      | `misa-client::picker`, drawn as lines                                    | a `<datalist>` from the declarations, no script                                             | not built: the scene draws, it does not choose      |
+| Collapsible | a summary line, body indented                                            | `<details>`                                                                                 | a summary and a body; no toggle yet                 |
+| Theming     | a role to ANSI style                                                     | a role to a CSS custom property                                                             | a role to a paint                                   |
+| Input       | modes and motions                                                        | a `<textarea>`                                                                              | not built; a window and input are `plan.md` phase 8 |
+| Transport   | iroh                                                                     | HTTP to its own server, which speaks iroh                                                   | iroh                                                |
+| Selection   | `misa-client::select`, copied by OSC 52                                  | the browser's own text selection, no script                                                 | not built                                           |
+| Panel       | modal while it is up: a field takes the keys, Enter sends, Esc dismisses | a `<form>` for the fields and one small form per action, so its buttons work with no script | the node and its actions; no interaction yet        |
+| Diff        | a role per line: added, removed, hunk                                    | the node's role as a class; its lines are a block                                           | the node's role as a paint; lines are a block       |
+
+The crate names above are today's. `plan.md` phase 4 renames the kit to `misa-kit` and splits
+`misa-net` into `misa-protocol` (both ends of the protocol state machine) and `misa-transport`
+(bytes), so every row that says `misa-client::…` becomes `misa-kit::…`.
 
 `android/` is a fourth surface and not one of these three: a Kotlin app over the same Rust
 client, whose own `README.md` records what it draws today — the transcript, the palette, the
@@ -172,12 +177,9 @@ composer — and that an image is words until it can fetch a blob.
 The web frontend is the proof that the boundary is real: it uses _none_ of the picker kit and
 still offers the same commands, because what it needed was the declaration.
 
-## Order I would do the rest in
+## What is left, and in what order
 
-1. **A client that keeps what it receives**, and **cancelling a device flow a client started.**
-   Both are the same shape of work: an intent a session asks the kernel for, and an answer that is
-   a file or a stop. `docs/architecture.md` §6 item 1.
-
-2. **A window** in the pixel frontend, and **the same memory for the browser and the phone** — the
-   two items after it there, both of which are a frontend's own business rather than the
-   architecture's.
+This file says what is _built_; [`plan.md`](plan.md) says what is next and in what order, including
+the two items this section used to list — a client that keeps what it receives (with cancelling a
+device flow a client started, which is the same shape of work), and the pixel frontend's window
+alongside the same memory for the browser and the phone.

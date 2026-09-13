@@ -90,4 +90,4 @@ Focused syntax/state tests cover 300 documents, unique request IDs, unchanged
 transaction identity, other-document sharing, completion coalescing, retained
 state, and source changes. Existing generated syntax sequences and async
 regressions continue to pass. Final full-suite, installed-build and PTY results
-are recorded in `ARCHITECTURE-WORK.md`.
+are recorded in `docs/history/architecture-audit.md`.

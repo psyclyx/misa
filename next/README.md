@@ -7,7 +7,9 @@ stage a real boundary, because a client now lives on the other side of a network
 
 The design, with its invariants and its open questions, is
 [`docs/architecture.md`](docs/architecture.md). Read that first; this file is how
-to run it.
+to run it. The work that is left, and the order it is in, is
+[`docs/plan.md`](docs/plan.md); [`docs/parity.md`](docs/parity.md) records what of
+the previous system is already built.
 
 ## The shape
 
@@ -47,8 +49,7 @@ gets a document and one stream of replacements.
 
 `android/` is the fifth frontend and is not a crate: a Kotlin app over the shared Rust
 client, linked through a small JNI seam, with its own [`README`](android/README.md). It
-draws the same view tree and declares the `mobile` render class, so a session knows the
-surface is narrow and that a disclosure has somewhere to live.
+draws the same view tree the other frontends draw.
 
 ## The shell
 
@@ -83,8 +84,11 @@ cargo run -p misa-cli -- misa:<endpoint id>:demo "say something"
 The daemon ships a scripted provider, so a session runs end to end with no network,
 no account, and no spend. That is the provider every test uses.
 
-`misa-skia`'s raster is behind a feature, because painting needs a Skia that can be
-linked, which needs `freetype` and `fontconfig`:
+`misa-skia`'s raster is behind a feature, because painting needs a Skia that can be linked, which
+needs `freetype` and `fontconfig`. That feature is temporary: it exists because Skia is not yet an
+input the build provides, and `docs/plan.md` phase 7 builds the pixel frontend with the Skia it
+needs, unconditionally — a pixel frontend that cannot paint is not a frontend. Until then the raster
+is tested behind the feature:
 
 ```sh
 cargo test -p misa-skia --features paint
@@ -138,10 +142,11 @@ declares the state roots it asked for (`Ownership::Plugin`) so its patches have 
 land — a plugin that names a root the session already owns is refused at startup rather than
 failing inside somebody's transaction later.
 
-What is not wired yet is a plugin's _presentation_: `view(role, capabilities, db, window)`
-returns a tree, and nothing decides where a client should put it. That decision, and why the
-smallest honest step is a query per plugin rather than merging a guest's tree into the session's
-document, are in `docs/architecture.md` §6 item 1.
+A plugin presents, too: the tree `view(role, db, window)` returns is placed in the document under a
+role built from the plugin's id (`plugin.<id>`), with the ids of that subtree prefixed so nothing a
+plugin writes can collide with a node the session wrote — so every frontend draws it with no
+frontend code at all. Why it is _placed_ rather than merged, and what a plugin may name, are in
+`docs/architecture.md` §5.
 
 ## Conventions
 
