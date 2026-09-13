@@ -50,7 +50,11 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
 
 async fn drive(session: &mut dyn Session, screen: &mut Screen,
     mut events: mpsc::UnboundedReceiver<Result<Event, String>>, writer: &mut impl Write) -> Result<(), String> {
-    let Some(mut view) = session.next().await? else { return Ok(()); };
+    let mut view = misa_proto::Node::section("session").id("session");
+    let (commands, requests) = mpsc::channel(16);
+    let (updates, mut incoming) = mpsc::channel(1);
+    let driver = requests_loop(session, requests, updates);
+    tokio::pin!(driver);
     let mut output = crate::output::Output::default();
     let mut animation = tokio::time::interval(Duration::from_millis(90));
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -70,8 +74,22 @@ async fn drive(session: &mut dyn Session, screen: &mut Screen,
         write!(writer, "\x1b[{};{}H", lines.len().max(1), column + 1)
             .and_then(|_| writer.flush()).map_err(|error| error.to_string())?;
         let event = tokio::select! {
-            incoming = session.next() => {
-                match incoming? { Some(next) => view = next, None => return Ok(()) }
+            result = &mut driver => return result,
+            update = incoming.recv() => {
+                match update {
+                    Some(Update::View(next)) => view = next,
+                    Some(Update::Complete { source, prefix, result }) => match result {
+                        Ok((items, truncated)) => {
+                            if let Some(picker) = screen.picker.as_mut()
+                                && picker.source.as_deref() == Some(&source) && picker.query == prefix {
+                                picker.set_items(items, truncated);
+                            }
+                        }
+                        Err(error) => screen.notice = Some(error),
+                    },
+                    Some(Update::Notice(notice)) => screen.notice = Some(notice),
+                    None => return Ok(()),
+                }
                 continue;
             }
             _ = animation.tick(), if misa_proto::view::find(&view, "turn").is_some() => {
@@ -98,16 +116,12 @@ async fn drive(session: &mut dyn Session, screen: &mut Screen,
         match out {
             KeyOut::Local => {},
             KeyOut::Quit => return Ok(()),
-            KeyOut::Intent(intent) => if let Err(error) = session.send(intent).await { screen.notice = Some(error); },
-            KeyOut::Complete { source, prefix } => match session.complete(&source, &prefix).await {
-                Ok((items, truncated)) => screen.candidates(&source, items, truncated),
+            KeyOut::Intent(intent) => enqueue(&commands, Request::Intent(intent), screen),
+            KeyOut::Complete { source, prefix } => enqueue(&commands, Request::Complete { source, prefix }, screen),
+            KeyOut::Save(request) => match crate::save::target(&view, &request) {
+                Ok(node) => enqueue(&commands, Request::Save { node: node.into(), destination: request.destination }, screen),
                 Err(error) => screen.notice = Some(error),
             },
-            KeyOut::Save(request) => screen.notice = Some(match crate::save::target(&view, &request) {
-                Ok(node) => match session.save_attachment(node, &request.destination).await {
-                    Ok(()) => format!("Saved {}", request.destination), Err(error) => error,
-                }, Err(error) => error,
-            }),
             KeyOut::Copy(text) => {
                 use base64::Engine as _;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(text);
@@ -115,6 +129,47 @@ async fn drive(session: &mut dyn Session, screen: &mut Screen,
                 writer.flush().map_err(|error| error.to_string())?;
             }
         }
+    }
+}
+
+// The session is borrowed by this future, not by the keyboard branch. Every
+// queue is bounded, and dropping the drive future cancels outstanding UI waits.
+enum Request {
+    Intent(misa_proto::Intent),
+    Complete { source: String, prefix: String },
+    Save { node: String, destination: String },
+}
+enum Update {
+    View(misa_proto::Node),
+    Complete { source: String, prefix: String, result: Result<(Vec<misa_proto::view::Choice>, bool), String> },
+    Notice(String),
+}
+fn enqueue(sender: &mpsc::Sender<Request>, request: Request, screen: &mut Screen) {
+    if sender.try_send(request).is_err() {
+        screen.notice = Some("The session request queue is full; try again shortly".into());
+    }
+}
+async fn requests_loop(session: &mut dyn Session, mut requests: mpsc::Receiver<Request>, updates: mpsc::Sender<Update>) -> Result<(), String> {
+    loop {
+        let update = tokio::select! {
+            request = requests.recv() => match request {
+                None => return Ok(()),
+                Some(Request::Intent(intent)) => match session.send(intent).await {
+                    Ok(()) => continue, Err(error) => Update::Notice(error),
+                },
+                Some(Request::Complete { source, prefix }) => {
+                    let result = session.complete(&source, &prefix).await;
+                    Update::Complete { source, prefix, result }
+                }
+                Some(Request::Save { node, destination }) => Update::Notice(match session.save_attachment(&node, &destination).await {
+                    Ok(()) => format!("Saved {destination}"), Err(error) => error,
+                }),
+            },
+            incoming = session.next() => match incoming? {
+                Some(view) => Update::View(view), None => return Ok(()),
+            },
+        };
+        if updates.send(update).await.is_err() { return Ok(()); }
     }
 }
 
@@ -147,5 +202,56 @@ mod tests {
             .await.expect("idle session blocked local input").unwrap();
         assert_eq!(screen.editor.text(), "two\nlines");
         assert_eq!((screen.width, screen.height), (100, 30));
+    }
+
+    struct Waiting { started: Arc<tokio::sync::Notify> }
+    #[async_trait::async_trait]
+    impl Session for Waiting {
+        async fn next(&mut self) -> Result<Option<Node>, String> { std::future::pending().await }
+        async fn send(&mut self, _: Intent) -> Result<(), String> { std::future::pending().await }
+        async fn complete(&mut self, _: &str, _: &str) -> Result<(Vec<Choice>, bool), String> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+        async fn save_attachment(&mut self, _: &str, _: &str) -> Result<(), String> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+        fn info(&self) -> Option<SessionInfo> { None }
+    }
+    #[tokio::test]
+    async fn a_slow_completion_keeps_paste_resize_and_quit_live() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut session = Waiting { started: started.clone() };
+        let mut screen = Screen::new(80, 24);
+        screen.commands = vec![misa_proto::wire::Command::new("model", "Model", "choose")
+            .arg(misa_proto::wire::Arg::new("model", "Model").required().from("models"))];
+        screen.sources = vec![misa_proto::wire::Source::resident("models", "Models")];
+        screen.editor.set_text("/model");
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Tab, event::KeyModifiers::NONE)))).unwrap();
+        let input = async move {
+            started.notified().await;
+            sender.send(Ok(Event::Paste("still editing".into()))).unwrap();
+            sender.send(Ok(Event::Resize(100, 30))).unwrap();
+            sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
+        };
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let (result, ()) = tokio::join!(drive(&mut session, &mut screen, receiver, &mut output), input);
+            result.unwrap();
+        }).await.expect("completion blocked local input");
+        assert!(screen.editor.text().contains("still editing"));
+        assert_eq!((screen.width, screen.height), (100, 30));
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_wait_for_a_snapshot_before_quit() {
+        let mut session = Waiting { started: Default::default() };
+        let mut screen = Screen::new(80, 24);
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'), event::KeyModifiers::CONTROL)))).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), drive(&mut session, &mut screen, receiver, &mut Vec::new()))
+            .await.expect("startup blocked quit").unwrap();
     }
 }

@@ -1156,13 +1156,22 @@ pub fn sgr(style: &misa_render::Style) -> String {
 /// A session reached over iroh.
 pub struct Remote {
     blobs: std::sync::Arc<misa_net::blob::Store>,
-    inbox: std::collections::VecDeque<misa_proto::SessionMsg>,
+    dirty: bool,
     client: misa_net::iroh::Client,
     view: misa_proto::sync::ClientView,
     info: Option<SessionInfo>,
 }
 
 impl Remote {
+    // Reply waits retain one accumulator, never a queue of transcript messages.
+    async fn hold(&mut self, message: misa_proto::SessionMsg) -> Result<(), String> {
+        match self.view.receive(&message) {
+            Ok(changed) => self.dirty |= changed,
+            Err(_) => self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?,
+        }
+        if let misa_proto::SessionMsg::Welcome { session, .. } = message { self.info = Some(session); }
+        Ok(())
+    }
     pub async fn attach(ticket: &str) -> Result<Remote, String> {
         // A ticket, or a pairing string: whatever the daemon printed or the QR said.
         let (ticket, code) = misa_proto::Pairing::given(ticket)?;
@@ -1193,7 +1202,7 @@ impl Remote {
             client.subscribe(source_subscription(source), query).await?;
         }
         let info = client.session();
-        Ok(Remote { client, view: Default::default(), info, blobs, inbox: std::collections::VecDeque::new() })
+        Ok(Remote { client, view: Default::default(), info, blobs, dirty: false })
     }
 }
 
@@ -1207,7 +1216,11 @@ fn source_subscription(source: &str) -> misa_proto::SubId {
 impl Session for Remote {
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
-            let message = match self.inbox.pop_front() { Some(message) => Some(message), None => self.client.next().await? };
+            if self.dirty {
+                self.dirty = false;
+                if let Some(view) = self.view.rendered() { return Ok(Some(view)); }
+            }
+            let message = self.client.next().await?;
             let Some(message) = message else { return Ok(None) };
             match self.view.receive(&message) {
                 Ok(true) => if let Some(view) = self.view.rendered() { return Ok(Some(view)); },
@@ -1235,7 +1248,7 @@ impl Session for Remote {
                 match self.client.next().await? {
                     Some(misa_proto::SessionMsg::Download { id: reply, download }) if reply == id => return Ok(download),
                     Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => return Err(fault.message),
-                    Some(message) => self.inbox.push_back(message),
+                    Some(message) => self.hold(message).await?,
                     None => return Err("The session disconnected before the save request finished".into()),
                 }
             }
@@ -1269,7 +1282,7 @@ impl Session for Remote {
                 Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => {
                     return Err(fault.message);
                 }
-                Some(message) => { self.inbox.push_back(message); }
+                Some(message) => self.hold(message).await?,
                 None => return Err("the session closed".into()),
             }
         }
