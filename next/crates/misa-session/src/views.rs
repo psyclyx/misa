@@ -32,13 +32,6 @@ use crate::agent;
 
 use misa_proto::VIEW_QUERY;
 
-/// How many messages a view shows unless a client asks for a different window.
-///
-/// A window rather than the whole transcript because the frame is the thing a
-/// client has to receive, and a long conversation must not make it unbounded. The
-/// client passes its own number, which is why this is a default and not a rule.
-pub const DEFAULT_WINDOW: usize = 40;
-
 /// The queries this session advertises.
 pub fn queries() -> Vec<String> {
     vec![
@@ -119,9 +112,11 @@ pub fn subscriptions(registry: Registry) -> Registry {
 pub struct Section {
     /// The plugin's id, which is also the role its tree is placed under (plugin.<id>).
     pub plugin: String,
+    /// Database inputs this content builder reads. An empty path explicitly means the whole db.
+    pub inputs: Vec<misa_value::Path>,
     /// Build it. A failure is a sentence in the document and not a broken tree: a plugin that
     /// cannot present itself must not be able to stop a session from answering.
-    pub build: Arc<dyn Fn(&Value, usize) -> Result<Node, String> + Send + Sync>,
+    pub build: Arc<dyn Fn(&Value) -> Result<Node, String> + Send + Sync>,
 }
 
 impl std::fmt::Debug for Section {
@@ -135,15 +130,15 @@ impl std::fmt::Debug for Section {
 /// The sections are what compositions contributed, placed after the transcript: a plugin's
 /// furniture sits under the conversation it is about, and above the panel, the notices, and the
 /// composer, which are about *now*. The composer is last because it is always last.
-pub fn document(db: &Value, window: usize, sections: &[Section]) -> Node {
+pub fn document(db: &Value, sections: &[Section]) -> Node {
     let session = db.get("session");
     let mut root = Node::section("session").id("session");
     root.label = Some(title(session));
 
     root.children.push(header(db, session));
-    root.children.push(transcript(db, window));
+    root.children.push(transcript(db));
     for section in sections {
-        root.children.push(section_node(section, db, window));
+        root.children.push(section_node(section, db));
     }
     if let Some(panel) = panel(db) {
         root.children.push(panel);
@@ -151,10 +146,13 @@ pub fn document(db: &Value, window: usize, sections: &[Section]) -> Node {
     if let Some(notices) = notices(db) {
         root.children.push(notices);
     }
+    if let Some(queue) = queue(db) { root.children.push(queue); }
+    if let Some(attachments) = attachments(db) { root.children.push(attachments); }
     root.children.push(agent::composer());
     if let Some(cancel) = cancel(db) {
         root.children.push(cancel);
     }
+    misa_proto::sync::address(&mut root);
     root
 }
 
@@ -170,7 +168,22 @@ fn text_at<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
-fn header(db: &Value, session: Option<&Value>) -> Node {
+pub(crate) fn header(db: &Value, session: Option<&Value>) -> Node {
+    let spend = db
+        .get("attempts")
+        .and_then(Value::as_list)
+        .map(|rows| rows.iter().filter_map(|row| row.get("cost_micros").and_then(Value::as_i64)).sum::<i64>())
+        .unwrap_or(0);
+    let used = db
+        .get("attempts")
+        .and_then(Value::as_list)
+        .and_then(|rows| rows.last())
+        .map(|row| input_tokens(row))
+        .unwrap_or(0);
+    header_with_totals(session, spend, used)
+}
+
+pub(crate) fn header_with_totals(session: Option<&Value>, spend: i64, used: i64) -> Node {
     let provider = session.map(|session| text_at(session, "provider")).unwrap_or_default();
     let model = session.map(|session| text_at(session, "model")).unwrap_or_default();
     let status = session.map(|session| text_at(session, "status")).unwrap_or("unknown");
@@ -190,11 +203,6 @@ fn header(db: &Value, session: Option<&Value>) -> Node {
         Node::new("value.turns", Kind::Fact { value: Value::Int(turns) }).label("turns"),
     );
 
-    let spend = db
-        .get("attempts")
-        .and_then(Value::as_list)
-        .map(|rows| rows.iter().filter_map(|row| row.get("cost_micros").and_then(Value::as_i64)).sum::<i64>())
-        .unwrap_or(0);
     if spend > 0 {
         node.children.push(
             Node::new("value.spend", Kind::Fact { value: Value::Int(spend) }).label("spend"),
@@ -204,12 +212,6 @@ fn header(db: &Value, session: Option<&Value>) -> Node {
     // How full the context window is, when a model is known. A meter rather than a
     // fact because it is bounded, and bound is what a meter is for.
     if let Some(model) = crate::catalog::model(model) {
-        let used = db
-            .get("attempts")
-            .and_then(Value::as_list)
-            .and_then(|rows| rows.last())
-            .map(|row| input_tokens(row))
-            .unwrap_or(0);
         node.children.push(Node::new(
             "value.context",
             Kind::Meter {
@@ -228,7 +230,7 @@ fn input_tokens(row: &Value) -> i64 {
     row.get("input_tokens").and_then(Value::as_i64).unwrap_or(0)
 }
 
-fn transcript(db: &Value, window: usize) -> Node {
+pub(crate) fn transcript(db: &Value) -> Node {
     let empty;
     let messages = match db.get("messages").and_then(Value::as_list) {
         Some(messages) => messages,
@@ -238,17 +240,8 @@ fn transcript(db: &Value, window: usize) -> Node {
         }
     };
     let mut node = Node::section("transcript").id("transcript");
-    let start = messages.len().saturating_sub(window.max(1));
-    if start > 0 {
-        // The session says that it is showing a window and what is above it. What
-        // to do about that — a button, a scroll, nothing — is the client's.
-        node.children.push(Node::new(
-            "transcript.earlier",
-            Kind::Status { text: format!("{start} earlier messages") },
-        ));
-    }
     let mut group: Option<Node> = None;
-    for message in messages.iter().skip(start) {
+    for message in messages.iter() {
         let Some(child) = message_node(message) else { continue };
         if text_at(message, "role") == "user" || group.is_none() {
             if let Some(previous) = group.take() {
@@ -274,14 +267,14 @@ fn transcript(db: &Value, window: usize) -> Node {
 }
 
 /// A run's boundary and count are semantic facts; surfaces choose their decoration.
-fn finish_group(mut group: Node) -> Node {
+pub(crate) fn finish_group(mut group: Node) -> Node {
     let count = group.children.len().saturating_sub(1);
     group.children.push(Node::new("message.group.footer", Kind::Fact { value: Value::Int(count as i64) })
         .id(format!("{}.footer", group.id)).label("messages"));
     group
 }
 
-fn message_node(message: &Value) -> Option<Node> {
+pub(crate) fn message_node(message: &Value) -> Option<Node> {
     let seq = message.get("seq").and_then(Value::as_i64).unwrap_or(0);
     let role = text_at(message, "role");
     let id = format!("msg.{seq}");
@@ -302,7 +295,9 @@ fn message_node(message: &Value) -> Option<Node> {
             node.state = state;
             node.children.extend(body("message.user", &id, text_at(message, "text")));
             for (position, attachment) in message_attachments(message).into_iter().enumerate() {
-                node.children.push(attachment_node(&attachment, position));
+                let mut attachment = attachment_node(&attachment, position);
+                attachment.id = format!("{id}.{}", attachment.id);
+                node.children.push(attachment);
             }
             Some(node)
         }
@@ -354,7 +349,7 @@ fn message_node(message: &Value) -> Option<Node> {
 ///
 /// A collapsible, because a tool result is usually long and usually not what the
 /// reader came for. Clients remember their own expansion against the node id.
-fn call_node(call: &Value, position: usize) -> Node {
+pub(crate) fn call_node(call: &Value, position: usize) -> Node {
     let name = text_at(call, "name");
     let id = call
         .get("id")
@@ -441,11 +436,16 @@ fn is_unified_diff(text: &str) -> bool {
 ///
 /// The wrapper is the session's, so a theme can style a plugin's whole contribution by its role
 /// (plugin.<id>) and so a client can find it without knowing anything about the plugin.
-fn section_node(section: &Section, db: &Value, window: usize) -> Node {
+pub(crate) fn section_node(section: &Section, db: &Value) -> Node {
     let role = format!("plugin.{}", section.plugin);
     let mut wrapper = Node::section(&role).id(&role);
     wrapper.label = Some(section.plugin.clone());
-    wrapper.children.push(match (section.build)(db, window) {
+    let built = (section.build)(db).and_then(|mut tree| {
+        misa_proto::sync::address(&mut tree);
+        misa_proto::view::validate(&tree).map_err(|fault| fault.to_string())?;
+        Ok(tree)
+    });
+    wrapper.children.push(match built {
         Ok(tree) => namespaced(&role, tree),
         // A fault is data, and here it is a sentence in place of a tree. A session that answered
         // with nothing would be a session whose view a plugin can break.
@@ -484,7 +484,7 @@ fn namespaced(prefix: &str, mut node: Node) -> Node {
 ///   does not offer an edit that could never be saved;
 /// - the action that submits the form travels on the fields node, and every other action is
 ///   a button on the panel itself, because those are the two pairings clients already read.
-fn panel(db: &Value) -> Option<Node> {
+pub(crate) fn panel(db: &Value) -> Option<Node> {
     let panel = db.get("panel")?;
     let id = text_at(panel, "id");
     if id.is_empty() {
@@ -591,13 +591,13 @@ fn panel(db: &Value) -> Option<Node> {
     Some(node)
 }
 
-fn notices(db: &Value) -> Option<Node> {
+pub(crate) fn notices(db: &Value) -> Option<Node> {
     let rows = db.get("notices").and_then(Value::as_list)?;
     if rows.is_empty() {
         return None;
     }
     let mut node = Node::section("notices").id("notices");
-    for (index, notice) in rows.iter().rev().take(4).enumerate() {
+    for notice in rows.iter().rev().take(4) {
         let level = text_at(notice, "level");
         node.children.push(
             Node::new(
@@ -608,14 +608,43 @@ fn notices(db: &Value) -> Option<Node> {
                 },
                 Kind::Status { text: text_at(notice, "text").to_string() },
             )
-            .id(format!("notice.{index}")),
+            .id(notice_id(notice)),
         );
     }
     Some(node)
 }
 
+pub(crate) fn notice_id(notice: &Value) -> String {
+    format!("notice.{}", notice.get("id").and_then(Value::as_i64).unwrap_or(0))
+}
+
+pub(crate) fn queue(db: &Value) -> Option<Node> {
+    let rows = db.get("session")?.get("queue")?.as_list()?;
+    if rows.is_empty() { return None; }
+    let mut node = Node::section("queue").id("queue");
+    for row in rows { node.children.push(queue_item(row)); }
+    node.actions = vec![
+        Action { id: "queue.take".into(), on: ActionOn::Click, label: Some("Take back".into()), args: Value::Null },
+        Action { id: "queue.clear".into(), on: ActionOn::Click, label: Some("Clear queue".into()), args: Value::Null },
+    ];
+    Some(node)
+}
+
+pub(crate) fn queue_item(row: &Value) -> Node {
+    Node::text("queue.item", [Span::plain(text_at(row, "text"))])
+        .id(format!("queue.{}", row.get("id").and_then(Value::as_i64).unwrap_or(0)))
+}
+
+pub(crate) fn attachments(db: &Value) -> Option<Node> {
+    let rows = db.get("session")?.get("attachments")?.as_list()?;
+    if rows.is_empty() { return None; }
+    let mut node = Node::section("attachments").id("attachments");
+    for (position, row) in rows.iter().enumerate() { node.children.push(attachment_node(row, position)); }
+    Some(node)
+}
+
 /// The one agent action a view offers while a turn is in flight.
-fn cancel(db: &Value) -> Option<Node> {
+pub(crate) fn cancel(db: &Value) -> Option<Node> {
     let status = db.get("session").map(|session| text_at(session, "status"))?;
     if status == "idle" {
         return None;
@@ -632,16 +661,15 @@ fn cancel(db: &Value) -> Option<Node> {
     )
 }
 
-/// The blocks of a message body, with the node a streamed delta appends to.
+/// The blocks of a settled message body.
 ///
 /// Markdown is parsed here, in the middle layer, so that no frontend has to parse it and
-/// every frontend agrees on what a quote is. The first block keeps `{id}.text` when it is a
-/// run of text, because that is the id a `TextDelta` grows: a client watching an answer
-/// arrive appends to it instead of re-reading a tree per token.
+/// every frontend agrees on what a quote is. The first text block keeps `{id}.text`;
+/// in-flight content with that identity lives in the separate stream channel.
 fn body(prefix: &str, id: &str, text: &str) -> Vec<Node> {
     let mut blocks = crate::markdown::blocks(prefix, text);
     if blocks.is_empty() {
-        // An empty body still has a line, so a delta always has somewhere to land.
+        // An empty settled body still has a semantic line.
         blocks.push(Node::text(format!("{prefix}.text"), Vec::new()));
     }
     if let Some(first) = blocks.first_mut()
@@ -705,7 +733,7 @@ fn message_attachments(message: &Value) -> Vec<Value> {
 /// The dimensions are zero, which says "unknown": nothing in the store records them, and a
 /// client that wants them can read them from the bytes it fetches. A client that lays out
 /// before the fetch can reserve whatever room it likes.
-fn attachment_node(attachment: &Value, position: usize) -> Node {
+fn attachment_node(attachment: &Value, _position: usize) -> Node {
     let hash = text_at(attachment, "hash");
     let media = text_at(attachment, "media");
     let len = attachment.get("len").and_then(Value::as_i64).unwrap_or(0).max(0) as u64;
@@ -718,7 +746,7 @@ fn attachment_node(attachment: &Value, position: usize) -> Node {
     };
     let blob = BlobRef { hash: hash.to_string(), len, media: (!media.is_empty()).then_some(media.to_string()) };
     let mut node = image_node(blob, &alt, 0, 0);
-    node.id = format!("attachment.{position}");
+    node.id = format!("attachment.{hash}");
     node
 }
 
@@ -826,14 +854,14 @@ mod tests {
 
     #[test]
     fn a_tree_is_built_and_valid() {
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         misa_proto::view::validate(&node).expect("the shipped view is valid");
         assert_eq!(node.role, "session");
     }
 
     #[test]
     fn the_transcript_holds_the_messages_in_order_with_stable_ids() {
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         let transcript = find(&node, "transcript").expect("a transcript");
         let group = &transcript.children[0];
         assert_eq!(group.role, "message.group");
@@ -845,13 +873,13 @@ mod tests {
 
     #[test]
     fn a_streamed_delta_has_a_node_to_append_to() {
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         assert!(find(&node, "msg.2.text").is_some(), "the first text node must carry the delta id");
     }
 
     #[test]
     fn a_fenced_block_becomes_a_code_node_rather_than_prose() {
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         let message = find(&node, "msg.2").expect("the assistant message");
         let code = message
             .children
@@ -869,7 +897,7 @@ mod tests {
 
     #[test]
     fn a_tool_call_carries_its_arguments_and_its_result() {
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         let call = find(&node, "call.call.1").expect("the tool call");
         assert_eq!(call.state, Some(State::Done));
         assert_eq!(call.label.as_deref(), Some("echo"));
@@ -903,7 +931,7 @@ mod tests {
                 ])]),
             ),
         ]);
-        let node = document(&state, 40, &[]);
+        let node = document(&state, &[]);
         let result = find(&node, "call.call.1.result").expect("the result");
         assert_eq!(result.role, "tool.result.diff");
         match &result.kind {
@@ -925,34 +953,26 @@ mod tests {
 
     #[test]
     fn tool_details_are_semantic() {
-        let tree = document(&state(), 40, &[]);
+        let tree = document(&state(), &[]);
         assert!(matches!(&find(&tree, "call.call.1").unwrap().kind, Kind::Collapsible { summary } if !summary.is_empty()));
     }
 
     #[test]
-    fn the_window_is_what_the_caller_asked_for() {
-        let node = document(&state(), 1, &[]);
-        let transcript = find(&node, "transcript").expect("a transcript");
-        assert!(transcript.children.iter().any(|child| child.role == "transcript.earlier"));
-        assert_eq!(transcript.children.iter().flat_map(|group| &group.children).filter(|child| child.id.starts_with("msg.")).count(), 1);
-    }
-
-    #[test]
     fn an_empty_transcript_says_so_instead_of_being_empty() {
-        let node = document(&initial_state("demo", "p", "m", 0), 40, &[]);
+        let node = document(&initial_state("demo", "p", "m", 0), &[]);
         assert!(find(&node, "transcript").expect("a transcript").children[0].role == "transcript.empty");
         misa_proto::view::validate(&node).unwrap();
     }
 
     #[test]
     fn there_is_no_cancel_action_when_nothing_is_running() {
-        let idle = document(&initial_state("demo", "p", "m", 0), 40, &[]);
+        let idle = document(&initial_state("demo", "p", "m", 0), &[]);
         assert!(find(&idle, "turn").is_none());
     }
 
     #[test]
     fn the_composer_offers_exactly_one_action_and_the_session_owns_its_meaning() {
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         let composer = find(&node, "composer").expect("a composer");
         assert_eq!(composer.actions.len(), 1);
         assert_eq!(composer.actions[0].id, "composer.submit");
@@ -1001,7 +1021,7 @@ mod tests {
         // which is collision-free only while no node the session writes is in that namespace. The
         // collision is not a theoretical one: a duplicate id refuses the whole tree a client is
         // sent, so one plugin's mistake would freeze every client's view.
-        let node = document(&state(), 40, &[]);
+        let node = document(&state(), &[]);
         let mut ids = Vec::new();
         ids_of(&node, &mut ids);
         assert!(ids.contains(&"composer".to_string()), "the walk found the session's own nodes");

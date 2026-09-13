@@ -285,6 +285,9 @@ impl<'a> Tx<'a> {
         &self.patches
     }
 
+    /// Transfer pending patches to an owner that must durably record them before applying.
+    pub fn take_patches_from(&mut self, index: usize) -> Vec<(Path, Op)> { self.patches.split_off(index) }
+
     /// Queue a patch. Order is preserved, and a later patch sees an earlier one.
     pub fn patch(&mut self, path: &str, op: Op) -> Result<(), Fault> {
         let path = Path::parse(path).map_err(|err| Fault::patch(err.to_string()))?;
@@ -491,9 +494,19 @@ impl Interpreter for AcceptsEverything {
     }
 }
 
+/// A committed database transaction, preserved for incremental consumers.
+#[derive(Clone, Debug)]
+pub struct Change {
+    pub before: Value,
+    pub after: Value,
+    pub patches: Vec<(Path, Op)>,
+}
+
 /// What one dispatch did.
 #[derive(Clone, Debug, Default)]
 pub struct Outcome {
+    /// Successful event transactions in this atomic dispatch, in application order.
+    pub changes: Vec<Change>,
     /// Effects to execute, in the order their handlers asked for them.
     pub effects: Vec<Effect>,
     /// Events that were handled as part of this dispatch, in order.
@@ -648,6 +661,7 @@ impl Loop {
     /// the chain, because later events would see a database an earlier handler
     /// meant to change.
     pub fn dispatch(&mut self, event: Event) -> Outcome {
+        let before = self.db.clone();
         let mut outcome = Outcome { rev: self.rev, ..Outcome::default() };
         let mut queue = VecDeque::new();
         queue.push_back(event);
@@ -667,7 +681,8 @@ impl Loop {
             chain += 1;
             outcome.handled.push(event.kind.clone());
             match self.dispatch_one(&event) {
-                Ok((effects, next)) => {
+                Ok((effects, next, change)) => {
+                    if let Some(change) = change { outcome.changes.push(change); }
                     outcome.effects.extend(effects);
                     queue.extend(next);
                 }
@@ -681,20 +696,25 @@ impl Loop {
         if outcome.committed() {
             self.rev += 1;
             outcome.rev = self.rev;
+        } else {
+            self.db = before;
+            outcome.effects.clear();
+            outcome.changes.clear();
         }
         outcome
     }
 
     /// One event, one transaction, one commit.
-    fn dispatch_one(&mut self, event: &Event) -> Result<(Vec<Effect>, Vec<Event>), Vec<Fault>> {
+    fn dispatch_one(&mut self, event: &Event) -> Result<(Vec<Effect>, Vec<Event>, Option<Change>), Vec<Fault>> {
         let handlers = self.registry.handlers_for(&event.kind).to_vec();
         if handlers.is_empty() {
             // An event nothing reacts to is not an error: a policy observes what
             // it cares about, and a session is a composition of several policies.
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), None));
         }
 
         let mut working = self.db.clone();
+        let mut committed_patches = Vec::new();
         let mut effects = Vec::new();
         let mut dispatches = Vec::new();
         let mut faults = Vec::new();
@@ -755,6 +775,7 @@ impl Loop {
             }
 
             working = applied;
+            committed_patches.extend(patches);
             effects.extend(asked);
             dispatches.extend(next);
         }
@@ -763,8 +784,11 @@ impl Loop {
             return Err(faults);
         }
 
+        let change = (!committed_patches.is_empty()).then(|| Change {
+            before: self.db.clone(), after: working.clone(), patches: committed_patches,
+        });
         self.db = working;
-        Ok((effects, dispatches))
+        Ok((effects, dispatches, change))
     }
 }
 
@@ -939,6 +963,29 @@ mod tests {
         assert_eq!(outcome.handled, vec!["first", "second"]);
         assert_eq!(loop_.db().get("count").and_then(Value::as_i64), Some(11));
         assert_eq!(outcome.rev, 1, "one dispatch is one revision, however long its chain");
+        assert_eq!(outcome.changes.len(), 2);
+        assert_eq!(outcome.changes[0].after, outcome.changes[1].before);
+        assert_eq!(outcome.changes[1].after, *loop_.db());
+    }
+
+    #[test]
+    fn a_later_chained_fault_rolls_back_all_changes_and_effects() {
+        let registry = Arc::new(Registry::new()
+            .on_fn("first", 0, "first", |tx, _| {
+                tx.set("count", Value::Int(9))?;
+                tx.fx(Effect::new("reported"));
+                tx.dispatch(Event::new("second"));
+                Ok(())
+            })
+            .on_fn("second", 0, "second", |_, _| Err(Fault::new("test", "failure"))));
+        let mut loop_ = Loop::new(registry, Arc::new(AcceptsEverything), base());
+        let before = loop_.db().clone();
+        let outcome = loop_.dispatch(Event::new("first"));
+        assert!(!outcome.committed());
+        assert!(outcome.changes.is_empty());
+        assert!(outcome.effects.is_empty());
+        assert_eq!(loop_.rev(), 0);
+        assert!(loop_.db().same(&before));
     }
 
     #[test]

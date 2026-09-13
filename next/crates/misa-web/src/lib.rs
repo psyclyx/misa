@@ -891,13 +891,15 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
     let (intents, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<misa_proto::wire::Intent>();
     let stream = region.clone();
     tokio::spawn(async move {
+        let mut view = misa_proto::sync::ClientView::default();
         loop {
             tokio::select! {
                 message = client.next() => match message {
-                    Ok(Some(misa_proto::SessionMsg::View { view, .. })) => stream.set(render_main(&view)),
-                    // A delta is an optimisation the browser already gets from the next
-                    // view, so it is not applied here.
-                    Ok(Some(_)) => {}
+                    Ok(Some(message)) => match view.receive(&message) {
+                        Ok(true) => if let Some(view) = view.rendered() { stream.set(render_main(&view)); },
+                        Err(_) => { let _ = client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await; },
+                        Ok(false) => {},
+                    },
                     Ok(None) | Err(_) => return,
                 },
                 intent = outgoing.recv() => match intent {

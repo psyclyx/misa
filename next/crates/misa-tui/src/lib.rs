@@ -1234,7 +1234,7 @@ pub fn sgr(style: &misa_render::Style) -> String {
 /// A session reached over iroh.
 pub struct Remote {
     client: misa_net::iroh::Client,
-    view: Option<Node>,
+    view: misa_proto::sync::ClientView,
     info: Option<SessionInfo>,
 }
 
@@ -1268,7 +1268,7 @@ impl Remote {
             client.subscribe(source_subscription(source), query).await?;
         }
         let info = client.session().cloned();
-        Ok(Remote { client, view: None, info })
+        Ok(Remote { client, view: Default::default(), info })
     }
 }
 
@@ -1282,31 +1282,16 @@ fn source_subscription(source: &str) -> misa_proto::SubId {
 impl Session for Remote {
     async fn next(&mut self) -> Result<Option<Node>, String> {
         loop {
-            match self.client.next().await? {
-                Some(misa_proto::SessionMsg::Welcome { session, .. }) => {
-                    self.info = Some(session);
-                }
-                Some(misa_proto::SessionMsg::View { view, .. }) => {
-                    self.view = Some(view.clone());
-                    return Ok(Some(view));
-                }
-                Some(misa_proto::SessionMsg::Value { value, .. }) => {
-                    // A resident source's items, held for the picker.
-                    let _ = value;
-                }
-                Some(misa_proto::SessionMsg::Event { event, .. }) => {
-                    if let misa_proto::SessionEvent::TextDelta { node, text } = event
-                        && let Some(view) = self.view.as_mut()
-                        && let Some(target) = find_mut(view, &node)
-                        && let Kind::Text { spans } = &mut target.kind
-                    {
-                        spans.push(misa_proto::view::Span::plain(text));
-                        return Ok(Some(view.clone()));
-                    }
-                }
-                Some(misa_proto::SessionMsg::Fault { fault, .. }) => return Err(fault.message),
-                Some(_) => {}
-                None => return Ok(None),
+            let Some(message) = self.client.next().await? else { return Ok(None) };
+            match self.view.receive(&message) {
+                Ok(true) => if let Some(view) = self.view.rendered() { return Ok(Some(view)); },
+                Err(_) => { self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?; }
+                Ok(false) => {}
+            }
+            match message {
+                misa_proto::SessionMsg::Welcome { session, .. } => self.info = Some(session),
+                misa_proto::SessionMsg::Fault { fault, .. } => return Err(fault.message),
+                _ => {}
             }
         }
     }
@@ -1338,7 +1323,7 @@ impl Session for Remote {
                 Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => {
                     return Err(fault.message);
                 }
-                Some(_) => {}
+                Some(message) => { let _ = self.view.receive(&message); }
                 None => return Err("the session closed".into()),
             }
         }
@@ -1349,12 +1334,7 @@ impl Session for Remote {
     }
 }
 
-fn find_mut<'a>(node: &'a mut Node, id: &str) -> Option<&'a mut Node> {
-    if node.id == id {
-        return Some(node);
-    }
-    node.children.iter_mut().find_map(|child| find_mut(child, id))
-}
+
 
 fn next_intent_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};

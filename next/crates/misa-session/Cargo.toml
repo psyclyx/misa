@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+getrandom = "0.4"
 ciborium.workspace = true
 misa-kernel.workspace = true
 misa-proto.workspace = true

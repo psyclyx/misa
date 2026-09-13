@@ -57,6 +57,7 @@ pub struct Session {
 struct Subscription {
     query: Query,
     current: Option<Reading>,
+    version: Option<misa_proto::sync::Version>,
 }
 
 impl Session {
@@ -103,22 +104,23 @@ impl Session {
                     session: self.runtime.info(),
                 }]
             }
-            ClientMsg::Subscribe { id, query } => {
-                match self.runtime.read(&query) {
-                    Ok(reading) => {
-                        let revision = self.runtime.rev();
-                        let message = answer(id, revision, reading.clone());
-                        self.subscriptions.insert(id, Subscription { query, current: Some(reading) });
-                        match message {
-                            Some(message) => vec![message],
-                            None => Vec::new(),
+            ClientMsg::Subscribe { id, query, since } => {
+                if query.id == misa_proto::VIEW_QUERY {
+                    let sync = self.runtime.sync(since.as_ref());
+                    let (version, replies) = sync_answer(id, sync, true);
+                    self.subscriptions.insert(id, Subscription { query, current: None, version: Some(version) });
+                    replies
+                } else {
+                    match self.runtime.read(&query) {
+                        Ok(reading) => {
+                            let message = answer(id, self.runtime.rev(), reading.clone());
+                            self.subscriptions.insert(id, Subscription { query, current: Some(reading), version: None });
+                            message.into_iter().collect()
                         }
-                    }
-                    Err(fault) => {
-                        // The subscription is kept: a query that cannot be answered
-                        // now may be answerable after the next change.
-                        self.subscriptions.insert(id, Subscription { query, current: None });
-                        vec![SessionMsg::QueryFault { id, fault }]
+                        Err(fault) => {
+                            self.subscriptions.insert(id, Subscription { query, current: None, version: None });
+                            vec![SessionMsg::QueryFault { id, fault }]
+                        }
                     }
                 }
             }
@@ -150,7 +152,6 @@ impl Session {
                 }
                 out
             }
-            ClientMsg::Ping { nonce } => vec![SessionMsg::Pong { nonce }],
             // A session is named by the transport before its state machine starts,
             // so by the time a message reaches here there is nothing left to choose.
             ClientMsg::Attach { .. } => vec![SessionMsg::Fault {
@@ -169,6 +170,12 @@ impl Session {
         let revision = self.runtime.rev();
         let mut out = Vec::new();
         for (id, subscription) in self.subscriptions.iter_mut() {
+            if subscription.query.id == misa_proto::VIEW_QUERY {
+                let (version, replies) = sync_answer(*id, self.runtime.changes(subscription.version.as_ref()), false);
+                subscription.version = Some(version);
+                out.extend(replies);
+                continue;
+            }
             match self.runtime.read(&subscription.query) {
                 Ok(reading) => {
                     let changed = match (&subscription.current, &reading) {
@@ -190,6 +197,16 @@ impl Session {
         out
     }
 
+    fn resync(&mut self) -> Vec<SessionMsg> {
+        for subscription in self.subscriptions.values_mut() {
+            subscription.current = None;
+            subscription.version = None;
+        }
+        let mut replies = self.refresh();
+        replies.push(SessionMsg::Streams { streams: self.runtime.streams() });
+        replies
+    }
+
     /// The next ephemeral events, as wire messages. Anything already seen is
     /// The next ephemeral events, as wire messages.
     ///
@@ -209,9 +226,22 @@ impl Session {
     }
 }
 
+fn sync_answer(id: SubId, sync: misa_proto::sync::ViewSync, include_streams: bool) -> (misa_proto::sync::Version, Vec<SessionMsg>) {
+    use misa_proto::sync::ViewSync;
+    let (version, mut replies, streams) = match sync {
+        ViewSync::Snapshot { version, view, streams } => (version.clone(), vec![SessionMsg::View { id, version, view }], streams),
+        ViewSync::Changes { version, changes, streams } => {
+            let replies = if changes.is_empty() { vec![] } else { vec![SessionMsg::Changes { id, changes }] };
+            (version, replies, streams)
+        }
+    };
+    if include_streams { replies.push(SessionMsg::Streams { streams }); }
+    (version, replies)
+}
+
 fn answer(id: SubId, revision: u64, reading: Reading) -> Option<SessionMsg> {
     match reading {
-        Reading::View(view) => Some(SessionMsg::View { id, rev: revision, view }),
+        Reading::View(_) => unreachable!("view subscriptions use the revision protocol"),
         Reading::Data(value) => Some(SessionMsg::Value { id, rev: revision, value }),
     }
 }
@@ -246,46 +276,75 @@ pub struct Wire {
 /// The transport calls this with whatever it has: a QUIC stream pair, a pair of
 /// in-memory channels, or a test. Everything the protocol does happens here, which
 /// is why the interesting cases are testable without a network.
+pub const OUTBOUND_REVISIONS: usize = 64;
+pub type OutboundBatch = Vec<SessionMsg>;
+
+/// Each queue slot carries at most one canonical revision, regardless of catch-up size.
+fn revision_batches(messages: Vec<SessionMsg>) -> Vec<OutboundBatch> {
+    let mut batches = Vec::new();
+    for message in messages {
+        match message {
+            SessionMsg::Changes { id, changes } => {
+                for change in changes {
+                    batches.push(vec![SessionMsg::Changes { id, changes: vec![change] }]);
+                }
+            }
+            message => batches.push(vec![message]),
+        }
+    }
+    batches
+}
+
 pub async fn drive(
     mut session: Session,
-    mut inbound: mpsc::UnboundedReceiver<ClientMsg>,
-    outbound: mpsc::UnboundedSender<SessionMsg>,
+    mut inbound: mpsc::Receiver<ClientMsg>,
+    outbound: mpsc::Sender<OutboundBatch>,
     mut revision: watch::Receiver<u64>,
     mut events: broadcast::Receiver<misa_session::Emission>,
 ) {
+    let mut behind = false;
     loop {
         tokio::select! {
+            permit = outbound.reserve(), if behind => {
+                let Ok(permit) = permit else { return };
+                permit.send(session.resync());
+                behind = false;
+            }
             message = inbound.recv() => match message {
                 Some(message) => {
-                    for reply in session.handle(message) {
-                        if outbound.send(reply).is_err() {
-                            return;
-                        }
+                    let replies = session.handle(message);
+                    for batch in revision_batches(replies) {
+                        if outbound.send(batch).await.is_err() { return; }
                     }
                 }
                 None => return,
             },
             changed = revision.changed() => {
-                if changed.is_err() {
-                    return;
-                }
-                for reply in session.refresh() {
-                    if outbound.send(reply).is_err() {
-                        return;
+                if changed.is_err() { return; }
+                if !behind {
+                    let replies = session.refresh();
+                    for batch in revision_batches(replies) {
+                        match outbound.try_send(batch) {
+                            Ok(()) => {},
+                            Err(mpsc::error::TrySendError::Full(_)) => { behind = true; break; },
+                            Err(mpsc::error::TrySendError::Closed(_)) => return,
+                        }
                     }
                 }
             }
             emission = events.recv() => match emission {
-                Ok(emission) => {
-                    for reply in session.events(&[emission]) {
-                        if outbound.send(reply).is_err() {
-                            return;
+                Ok(emission) if !behind => {
+                    let replies = session.events(&[emission]);
+                    if !replies.is_empty() {
+                        match outbound.try_send(replies) {
+                            Ok(()) => {},
+                            Err(mpsc::error::TrySendError::Full(_)) => behind = true,
+                            Err(mpsc::error::TrySendError::Closed(_)) => return,
                         }
                     }
                 }
-                // Lagging is not an error: the deltas missed are the ones a
-                // subscription value will carry in full.
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Ok(_) => {},
+                Err(broadcast::error::RecvError::Lagged(_)) => behind = true,
                 Err(broadcast::error::RecvError::Closed) => return,
             },
         }
@@ -331,7 +390,7 @@ mod tests {
         Runtime::start(
             "demo",
             "a demo session",
-            Some("c1".into()),
+            None,
             Arc::new(LocalKernel::new(provider)),
             "scripted",
             "scripted-1",
@@ -356,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn a_message_before_hello_is_refused_rather_than_guessed_at() {
         let mut session = Session::new(runtime());
-        let replies = session.handle(ClientMsg::Ping { nonce: 1 });
+        let replies = session.handle(ClientMsg::Unsubscribe { id: SubId(1) });
         assert!(matches!(replies[0], SessionMsg::Fault { .. }));
     }
 
@@ -378,6 +437,7 @@ mod tests {
         let mut session = Session::new(runtime());
         assert!(matches!(session.handle(hello("tui"))[0], SessionMsg::Welcome { .. }));
         let replies = session.handle(ClientMsg::Subscribe {
+            since: None,
             id: SubId(1),
             query: Query::new(misa_proto::VIEW_QUERY),
         });
@@ -392,7 +452,7 @@ mod tests {
         let mut second = Session::new(runtime.clone());
         first.handle(hello("terminal"));
         second.handle(hello("browser"));
-        let subscribe = || ClientMsg::Subscribe { id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) };
+        let subscribe = || ClientMsg::Subscribe { since: None, id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) };
         let a = first.handle(subscribe());
         let b = second.handle(subscribe());
         assert_eq!(frame::encode(view_of(&a).expect("first tree")).unwrap(),
@@ -400,8 +460,8 @@ mod tests {
         runtime.intent(misa_proto::Intent::Command { name: "status".into(), args: misa_value::Value::Null });
         let a = first.refresh();
         let b = second.refresh();
-        assert_eq!(frame::encode(view_of(&a).expect("updated first tree")).unwrap(),
-                   frame::encode(view_of(&b).expect("updated second tree")).unwrap());
+        assert_eq!(frame::encode(&a).unwrap(),
+                   frame::encode(&b).unwrap());
     }
 
     #[tokio::test]
@@ -409,6 +469,7 @@ mod tests {
         let mut session = Session::new(runtime());
         session.handle(hello("cli"));
         let replies = session.handle(ClientMsg::Subscribe {
+            since: None,
             id: SubId(2),
             query: Query::new("session.status"),
         });
@@ -425,15 +486,13 @@ mod tests {
         let mut session = Session::new(runtime());
         session.handle(hello("cli"));
         let replies = session.handle(ClientMsg::Subscribe {
+            since: None,
             id: SubId(3),
             query: Query::new("no.such.query"),
         });
         assert!(matches!(replies[0], SessionMsg::QueryFault { .. }));
         // And the connection is still usable.
-        assert!(matches!(
-            session.handle(ClientMsg::Ping { nonce: 2 })[0],
-            SessionMsg::Pong { .. }
-        ));
+        assert!(session.handle(ClientMsg::Unsubscribe { id: SubId(3) }).is_empty());
     }
 
     #[tokio::test]
@@ -463,6 +522,7 @@ mod tests {
     async fn a_client_that_asks_before_hello_cannot_get_a_view() {
         let mut session = Session::new(runtime());
         let replies = session.handle(ClientMsg::Subscribe {
+            since: None,
             id: SubId(1),
             query: Query::new(misa_proto::VIEW_QUERY),
         });
@@ -475,15 +535,19 @@ mod tests {
         let runtime = runtime();
         let mut session = Session::new(runtime.clone());
         session.handle(hello("tui"));
-        session.handle(ClientMsg::Subscribe { id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) });
+        let mut state = misa_proto::sync::ClientView::default();
+        for message in session.handle(ClientMsg::Subscribe { since: None, id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) }) {
+            state.receive(&message).unwrap();
+        }
         session.refresh();
 
         runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
         let replies = session.refresh();
         assert_eq!(replies.len(), 1, "expected exactly one changed subscription");
-        let view = view_of(&replies).expect("a view");
+        for message in &replies { state.receive(message).unwrap(); }
+        let view = state.canonical().expect("a view");
         assert!(
-            misa_proto::view::find(view, "transcript").is_some(),
+            misa_proto::view::find(&view, "transcript").is_some(),
             "the transcript is missing from the refreshed view"
         );
     }
@@ -515,14 +579,16 @@ mod tests {
         for (index, byte) in frame.iter().enumerate() {
             assert!(split_frames(&mut decoder, &[*byte]).is_empty() || index == frame.len() - 1);
         }
-        assert!(!session.handle(ClientMsg::Ping { nonce: 1 }).is_empty());
+        assert!(!session.handle(ClientMsg::Unsubscribe { id: SubId(1) }).is_empty());
     }
 
     #[tokio::test]
     async fn the_state_machine_drives_over_channels_with_no_network() {
         let runtime = runtime();
-        let (client_tx, server_rx) = mpsc::unbounded_channel::<ClientMsg>();
-        let (server_tx, mut client_rx) = mpsc::unbounded_channel::<SessionMsg>();
+        let (client_tx, server_rx) = mpsc::channel::<ClientMsg>(OUTBOUND_REVISIONS);
+        let (server_tx, mut batches) = mpsc::channel::<OutboundBatch>(OUTBOUND_REVISIONS);
+        let (flatten, mut client_rx) = mpsc::unbounded_channel::<SessionMsg>();
+        tokio::spawn(async move { while let Some(batch) = batches.recv().await { for message in batch { let _ = flatten.send(message); } } });
         let session = Session::new(runtime.clone());
         let handle = tokio::spawn(drive(
             session,
@@ -532,11 +598,11 @@ mod tests {
             runtime.subscribe_events(),
         ));
 
-        client_tx.send(hello("web")).unwrap();
+        client_tx.send(hello("web")).await.unwrap();
         assert!(matches!(client_rx.recv().await.unwrap(), SessionMsg::Welcome { .. }));
         client_tx
-            .send(ClientMsg::Subscribe { id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) })
-            .unwrap();
+            .send(ClientMsg::Subscribe { since: None, id: SubId(1), query: Query::new(misa_proto::VIEW_QUERY) })
+            .await.unwrap();
         let first = client_rx.recv().await.unwrap();
         assert!(view_of(std::slice::from_ref(&first)).is_some());
 
@@ -545,7 +611,7 @@ mod tests {
                 id: 1,
                 intent: Intent::Prompt { text: "over channels".into(), attachments: vec![] },
             })
-            .unwrap();
+            .await.unwrap();
         // An ack, then whichever of a refreshed view or an ephemeral delta arrives
         // first. Both are legitimate; neither is a re-send of the old tree.
         let mut saw_ack = false;
