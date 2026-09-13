@@ -16,6 +16,7 @@ misa-render = { path = "crates/misa-render" }
 misa-kernel = { path = "crates/misa-kernel" }
 misa-session = { path = "crates/misa-session" }
 misa-net = { path = "crates/misa-net" }
+misa-plugin = { path = "crates/misa-plugin" }
 
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "multipart", "tokio", "tracing"] }

@@ -1,0 +1,136 @@
+//! What a composition adds to a session's loop.
+//!
+//! The shipped agent loop is a *composition*, not a law: `agent::registry()` is the handlers
+//! and subscriptions a session starts with, and this is how a caller adds to them — a plugin
+//! loaded by a daemon, a policy a deployment ships, a test that wants one handler.
+//!
+//! # Why this is not `misa_plugin`
+//!
+//! Nothing here knows what a plugin *is*. A contribution is handlers, subscriptions, and the
+//! state roots they write into, which is the same three things the shipped loop contributes —
+//! all of them `misa_reframe`'s vocabulary. A composition that loaded a wasm component has
+//! already turned it into those; this crate never grows a dependency on a wasm runtime for the
+//! privilege of naming what it registers.
+//!
+//! # Why a root has to be declared
+//!
+//! A patch may only create the *last* key of its path — the rule in [`misa_value::patch`] is
+//! that an absent branch is a leaf, never a container to descend through — so a handler whose
+//! state lives at `guest.turns` needs somebody to have made `guest` first. That somebody is the
+//! composition, which is the only layer that knows what it loaded.
+
+use std::sync::Arc;
+
+use misa_reframe::{Handler, Registry, Subscription};
+use misa_value::Value;
+
+use crate::views;
+
+/// What a composition contributes to a session, beyond the shipped loop.
+///
+/// Registered in the order given, each handler at the priority it names: a contribution that
+/// wants to see an event *before* the loop's own handlers registers below zero, and one that
+/// wants to act on what they decided registers above it. Both are real; neither is this
+/// crate's decision.
+#[derive(Clone, Default)]
+pub struct Contribution {
+    /// Event kind, priority, and the handler for it.
+    pub handlers: Vec<(String, i32, Arc<dyn Handler>)>,
+    /// Query name and the subscription that answers it.
+    pub subscriptions: Vec<(String, Subscription)>,
+    /// Roots this contribution writes into, as a name and the value it starts at.
+    ///
+    /// Empty maps rather than nothing, because a patch descending through an absent key is a
+    /// fault: what is declared here is what the contribution may write into.
+    pub roots: Vec<(String, Value)>,
+}
+
+impl std::fmt::Debug for Contribution {
+    /// Counts and names, not closures: what a diagnostic wants to know about a contribution is
+    /// how much of it there is and which state it may write.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Contribution")
+            .field("handlers", &self.handlers.iter().map(|(kind, priority, handler)| (kind.clone(), *priority, handler.id().to_string())).collect::<Vec<_>>())
+            .field("subscriptions", &self.subscriptions.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>())
+            .field("roots", &self.roots.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl Contribution {
+    /// An empty contribution: the shipped loop and nothing else.
+    pub fn new() -> Contribution {
+        Contribution::default()
+    }
+
+    pub fn with_handler(
+        mut self,
+        kind: impl Into<String>,
+        priority: i32,
+        handler: Arc<dyn Handler>,
+    ) -> Contribution {
+        self.handlers.push((kind.into(), priority, handler));
+        self
+    }
+
+    pub fn with_subscription(mut self, name: impl Into<String>, subscription: Subscription) -> Contribution {
+        self.subscriptions.push((name.into(), subscription));
+        self
+    }
+
+    /// Declare a root this contribution writes into.
+    ///
+    /// Refused for a name the session already owns, which is the whole of what stops a
+    /// contribution from overwriting what the loop decided: a plugin that claimed `session` or
+    /// `messages` would be writing the agent's own state, and the manifest is what says which
+    /// names are taken.
+    ///
+    /// The name must be plain — a root is one top-level name, not a path — and it is
+    /// [`views::Ownership::Plugin`]: not a kernel fact, and not a client's presentation.
+    pub fn with_root(mut self, name: &str, initial: Value) -> Result<Contribution, misa_proto::Fault> {
+        if name.is_empty() || name.contains(['.', '[', ']']) {
+            return Err(misa_proto::Fault::argument("composition", "root", None));
+        }
+        if views::declared(name).is_some() {
+            return Err(misa_proto::Fault::new(
+                "composition.root",
+                format!("`{name}` is a root this session already owns"),
+            ));
+        }
+        if self.roots.iter().any(|(declared, _)| declared == name) {
+            return Err(misa_proto::Fault::new(
+                "composition.root",
+                format!("`{name}` is declared twice"),
+            ));
+        }
+        self.roots.push((name.to_string(), initial));
+        Ok(self)
+    }
+
+    /// The shipped registry with this contribution registered.
+    pub(crate) fn registry(&self, shipped: Registry) -> Registry {
+        let mut registry = shipped;
+        for (kind, priority, handler) in &self.handlers {
+            registry = registry.on(kind.clone(), *priority, handler.clone());
+        }
+        for (name, subscription) in &self.subscriptions {
+            registry = registry.subscription(name.clone(), subscription.clone());
+        }
+        registry
+    }
+
+    /// The database a session starts from: the shipped state, plus these roots.
+    pub(crate) fn initial_state(&self, id: &str, provider: &str, model: &str, created_ms: i64) -> Value {
+        let mut state = views::initial_state(id, provider, model, created_ms);
+        if self.roots.is_empty() {
+            return state;
+        }
+        let mut fields = state.as_map().cloned().unwrap_or_default();
+        for (name, value) in &self.roots {
+            fields.insert(name.clone(), value.clone());
+        }
+        state = Value::Map(Arc::new(fields));
+        state
+    }
+}

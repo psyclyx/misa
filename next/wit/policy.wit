@@ -139,6 +139,14 @@ interface policy-api {
         queries: list<string>,
         /// Effect kinds this plugin may ask for.
         effects: list<string>,
+        /// The state roots this plugin writes into, as plain names.
+        ///
+        /// Declared for the same reason the event kinds are: a patch may only create the
+        /// *last* key of its path, so a root somebody has to make first is a thing the
+        /// composition must know before the plugin runs. A name is plain — no dots and no
+        /// brackets — because a root is a top-level name; the paths inside it are the
+        /// plugin's own business.
+        roots: list<string>,
     }
 
     /// Options from the composition, in order.

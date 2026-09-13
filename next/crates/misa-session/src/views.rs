@@ -672,6 +672,14 @@ pub enum Ownership {
     Kernel,
     /// Belongs to the client: it exists to be drawn.
     Presentation,
+    /// Belongs to a handler this session was composed with, and to nobody else.
+    ///
+    /// The third category exists because the first two are not a dichotomy: a plugin's state is
+    /// not a fact about the world the kernel witnessed, and it is not a client's presentation
+    /// either — it is the middle layer's own, written only by the handlers that declared it.
+    /// A composition declares these ([`crate::Contribution::with_root`]); the shipped manifest
+    /// cannot, because it cannot know what a caller loaded.
+    Plugin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

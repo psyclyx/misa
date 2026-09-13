@@ -9,7 +9,7 @@ each platform's own idiom: a collapsible is a `<details>` in a browser and a rai
 indentation in a terminal, and both are correct. What must not differ is what a person can
 _do_.
 
-`cargo test --workspace` is the gate: 452 tests, and eight more behind
+`cargo test --workspace` is the gate: 457 tests, and nine more behind
 `misa-plugin --features guest-fixture`, with no skips. Counts per crate are in
 `docs/architecture.md`.
 
@@ -173,9 +173,10 @@ still offers the same commands, because what it needed was the declaration.
 
 ## Order I would do the rest in
 
-1. **Wiring a plugin into a session.** The host is built (`misa-plugin`, tested over a real
-   component) and a session does not load one yet: three decisions are missing, and they are in
-   `docs/architecture.md` §6 item 1.
+1. **Where a plugin's view goes.** A plugin runs in a session now (`misa-daemon --plugin`,
+   tested over a real component inside a real session); what is missing is presentation —
+   `view(role, capabilities, db, window)` returns a tree and nothing decides where a client
+   should put it. `docs/architecture.md` §6 item 1.
 
 2. **Cancelling a device flow a client started.** The kernel starts one and reports twice,
    and nothing a client can send stops it: a `login` that somebody thought better of polls

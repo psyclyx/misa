@@ -41,8 +41,12 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use misa_kernel::{CredentialAction, Kernel, KernelEvent, Request};
 
+pub use contribution::Contribution;
+
 /// Who may attach, as configuration rather than code.
 pub mod admission;
+/// What a composition adds to the loop: handlers, subscriptions, and their state.
+pub mod contribution;
 pub mod agent;
 /// What a session declares: its commands, their arguments, and where a value can
 /// come from.
@@ -114,12 +118,32 @@ impl Runtime {
         model: impl Into<String>,
         config: Value,
     ) -> Arc<Runtime> {
+        Runtime::start_with(id, title, conversation, kernel, provider, model, config, Contribution::default())
+    }
+
+    /// A session whose loop is the shipped one *plus* what a composition added.
+    ///
+    /// The contribution is registered the way the shipped handlers are — through the loop's own
+    /// registry — so a plugin is not a special case anywhere in this crate: its handlers are
+    /// handlers, its subscriptions are subscriptions, and the effects it asks for are held to
+    /// the accepted-effects list like every other effect in the system.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        conversation: Option<String>,
+        kernel: Arc<dyn Kernel>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        config: Value,
+        contribution: Contribution,
+    ) -> Arc<Runtime> {
         let id = id.into();
         let provider = provider.into();
         let model = model.into();
         let created_ms = now_ms();
 
-        let registry = Arc::new(agent::registry());
+        let registry = Arc::new(contribution.registry(agent::registry()));
         // Two channels, not one: a request goes out to the kernel and a report comes
         // back. The loop never awaits, and a kernel report re-enters it as an
         // ordinary event rather than as a callback from inside a transaction.
@@ -133,8 +157,8 @@ impl Runtime {
 
         let mut state = Loop::new(
             registry.clone(),
-            Arc::new(OnlyKnownEffects),
-            views::initial_state(&id, &provider, &model, created_ms),
+            Arc::new(AcceptedEffects),
+            contribution.initial_state(&id, &provider, &model, created_ms),
         );
         state.set_clock(created_ms);
         state.set_config(config);
@@ -493,13 +517,16 @@ impl Runtime {
 
 /// The interpreter: which effect kinds this session will run.
 ///
-/// This list is the whole of the session's authority over its kernel. An effect
-/// outside it fails the transaction before anything commits, so a policy cannot
-/// ask for something the session does not understand and have its state land
-/// anyway.
-struct OnlyKnownEffects;
+/// This list is the whole of the session's authority over its kernel. An effect outside it
+/// fails the transaction before anything commits, so a policy cannot ask for something the
+/// session does not understand and have its state land anyway.
+///
+/// Public because it is also the *composition's* question: a caller that loaded a plugin has to
+/// know whether this session can run what the plugin asks for, and the answer belongs here
+/// rather than in a second list somewhere else that would drift from this one.
+pub struct AcceptedEffects;
 
-impl Interpreter for OnlyKnownEffects {
+impl Interpreter for AcceptedEffects {
     fn accepts(&self, effect: &Effect) -> Result<(), String> {
         match effect.kind.as_str() {
             "kernel.provider.call"
@@ -1098,4 +1125,112 @@ fn encode_blobs(attachments: &[misa_proto::view::BlobRef]) -> Value {
             })
             .collect::<Vec<_>>(),
     )
+}
+
+#[cfg(test)]
+mod contribution_tests {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use misa_kernel::{Provider, ScriptedProvider};
+    use misa_reframe::{Event, FnHandler, Inputs, Subscription, Tx};
+    use misa_value::Value;
+
+    /// A handler a composition brought: it writes into the root the contribution declared.
+    fn adopting() -> Arc<dyn misa_reframe::Handler> {
+        Arc::new(FnHandler::new("test.contribution", |tx: &mut Tx<'_>, event: &Event| {
+            tx.set("guest.seen", Value::str(event.kind.as_str()))?;
+            Ok(())
+        }))
+    }
+
+    /// A subscription over the root that handler writes, so a test can read it the way a client
+    /// would: as a query.
+    fn reading() -> Subscription {
+        Subscription {
+            inputs: Inputs::Database,
+            compute: Arc::new(|db, _inputs, _query, _previous| {
+                db.get("guest").and_then(|guest| guest.get("seen")).cloned().unwrap_or(Value::Null)
+            }),
+        }
+    }
+
+    fn contribution() -> Contribution {
+        Contribution::new()
+            .with_root("guest", Value::map([]))
+            .expect("a root the session does not own")
+            .with_handler("intent/prompt", 10, adopting())
+            .with_subscription("guest.seen", reading())
+    }
+
+    fn session(contribution: Contribution) -> Arc<Runtime> {
+        let provider: Arc<dyn Provider> = ScriptedProvider::always("an answer");
+        Runtime::start_with(
+            "demo",
+            "a demo session",
+            None,
+            Arc::new(misa_kernel::LocalKernel::new(provider)),
+            "scripted",
+            "scripted-1",
+            Value::Null,
+            contribution,
+        )
+    }
+
+    #[test]
+    fn a_contribution_may_not_claim_a_root_the_session_already_owns() {
+        // The manifest is what says which names are taken, and this is the whole of what stops
+        // a contribution from overwriting what the loop decided: `session.status` is not a
+        // plugin's to write.
+        let fault = Contribution::new().with_root("session", Value::Null).unwrap_err();
+        assert_eq!(fault.code, "composition.root");
+        assert!(fault.message.contains("session"), "{}", fault.message);
+        // A root is one top-level name, not a path.
+        assert!(Contribution::new().with_root("guest.turns", Value::Null).is_err());
+        assert!(Contribution::new().with_root("", Value::Null).is_err());
+        // And the same name twice is a mistake rather than two roots.
+        assert!(
+            Contribution::new()
+                .with_root("guest", Value::Null)
+                .expect("a root")
+                .with_root("guest", Value::Null)
+                .is_err()
+        );
+        assert!(Contribution::new().with_root("guest", Value::Null).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_contributions_handlers_subscriptions_and_roots_are_part_of_the_session() {
+        // The shipped loop still runs — a prompt is still a turn — and the contribution saw the
+        // same event, wrote into the root it declared, and is readable as a query.
+        let runtime = session(contribution());
+        let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
+        assert!(faults.is_empty(), "{faults:?}");
+
+        let reading = runtime.read(&Query::new("guest.seen"), &Capabilities::plain()).expect("a value");
+        match reading {
+            Reading::Data(value) => assert_eq!(value.as_str(), Some("intent/prompt")),
+            Reading::View(_) => panic!("a composition's subscription answered with a view"),
+        }
+        // And a client can see the turn the shipped loop ran, which is what says the two
+        // registrations live in one loop rather than two.
+        let text = match runtime.read(&Query::new(views::VIEW_QUERY), &Capabilities::plain()).unwrap() {
+            Reading::View(node) => misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100)),
+            Reading::Data(_) => panic!("expected a view"),
+        };
+        assert!(text.contains("hello"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_contribution_that_writes_a_root_nobody_declared_is_a_fault_not_a_silence() {
+        // The rule a patch follows: a path may only be created where it is written. A
+        // contribution that did not declare `guest` gets a fault that rolls its transaction
+        // back, which is how a missing declaration shows up as a bug rather than as nothing.
+        let runtime = session(Contribution::new().with_handler("intent/prompt", 10, adopting()));
+        let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0].code, "patch");
+        assert!(faults[0].message.contains("guest.seen"), "{}", faults[0].message);
+    }
 }

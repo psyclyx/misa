@@ -18,8 +18,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
+use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
 use misa_plugin::{Descriptor, Engine, PLUGIN_PRIORITY, Plugin, PluginFault};
-use misa_reframe::{Effect, Event, Interpreter, Loop, Registry};
+use misa_reframe::{Effect, Event, Interpreter, Loop, Query, Registry};
+use misa_proto::wire::{Capabilities, Intent};
+use misa_session::{Reading, Runtime};
 use misa_value::Value;
 
 /// An interpreter that accepts exactly the effect kinds a test names.
@@ -103,10 +106,14 @@ fn a_plugin_tells_the_host_what_it_is_before_it_runs() {
             id: "policy.guest".into(),
             version: "0.1.0".into(),
             events: vec!["intent/prompt".into(), "intent/cancel".into()],
-            queries: vec!["policy.guest.turns".into()],
+            queries: vec!["policy.guest.turns".into(), "policy.guest.state".into()],
             effects: vec!["kernel.log.append".into()],
+            roots: vec!["guest".into()],
         }
     );
+    // The root it declared is the one it writes into: the composition makes it, and that is
+    // what makes its patch land.
+    assert_eq!(plugin.descriptor().roots, vec!["guest".to_string()]);
 }
 
 #[test]
@@ -245,4 +252,83 @@ fn a_component_that_is_not_a_policy_plugin_is_refused_rather_than_run() {
     let fault: PluginFault = Plugin::load(&engine, b"not a component at all").expect_err("refused");
     assert_eq!(fault.code, "plugin.host");
     assert!(fault.message.contains("component"), "{}", fault.message);
+}
+
+/// Wait for the kernel to have entries in a conversation, the way a client waits: by looking.
+///
+/// Async, and awaited: an effect is executed by a task of the session's own, and a test whose
+/// runtime is one thread that blocks is a test that starves the writer it is waiting for.
+async fn wait_for_entries(kernel: &misa_kernel::LocalKernel, conversation: &str) -> Vec<misa_kernel::LogEntry> {
+    for _ in 0..200 {
+        let entries = kernel
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.conversation == conversation)
+            .collect::<Vec<_>>();
+        if !entries.is_empty() {
+            return entries;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("no entry arrived for `{conversation}`");
+}
+
+/// A session spawns the tasks that carry kernel reports back, so this one is async like the
+/// rest of the loop\'s tests.
+#[tokio::test]
+async fn a_session_runs_what_a_plugin_declared() {
+    // The whole point, end to end: a daemon loads a component, a session registers what it
+    // declared, and a prompt in that session reaches wasm — whose patch lands in the state the
+    // composition made for it and whose effect is run by the session's own interpreter.
+    let plugin = loaded();
+    plugin.validate(&misa_session::AcceptedEffects).expect("this session can run it");
+
+    let mut contribution = misa_session::Contribution::new();
+    for (kind, handler) in plugin.handlers() {
+        contribution = contribution.with_handler(kind, PLUGIN_PRIORITY, handler);
+    }
+    for (name, subscription) in plugin.subscriptions() {
+        contribution = contribution.with_subscription(name, subscription);
+    }
+    for root in &plugin.descriptor().roots {
+        contribution = contribution.with_root(root, Value::map([])).expect("a root of its own");
+    }
+
+    let provider: Arc<dyn Provider> = ScriptedProvider::always("an answer");
+    let kernel = Arc::new(LocalKernel::new(provider));
+    let runtime = Runtime::start_with(
+        "demo",
+        "a demo session",
+        None,
+        kernel.clone(),
+        "scripted",
+        "scripted-1",
+        Value::Null,
+        contribution,
+    );
+
+    let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
+    assert!(faults.is_empty(), "{faults:?}");
+
+    // The plugin's patch landed in the root the composition made for it. It is read back the way
+    // a client would: through the plugin's own query, which answers with the state it was handed.
+    let state = match runtime
+        .read(&Query::new("policy.guest.state"), &Capabilities::plain())
+        .expect("an answer from the plugin")
+    {
+        Reading::Data(value) => value,
+        Reading::View(_) => panic!("a plugin's query answered with a view"),
+    };
+    let turns = state
+        .get("guest")
+        .and_then(|guest| guest.get("turns"))
+        .expect("the plugin's root holds what it wrote");
+    assert!(turns.get("seen").is_some(), "{turns:?}");
+
+    // And its effect reached the kernel: `kernel.log.append` was in this session's accepted set,
+    // so the interpreter ran it and the daemon's log has the entry the plugin asked for.
+    let entries = wait_for_entries(&kernel, "guest").await;
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].kind, "note");
+    assert_eq!(entries[0].data.as_str(), Some("seen a prompt"));
 }

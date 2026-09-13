@@ -257,9 +257,9 @@ What is left is the session's half — see item 1 of §6.
 
 Built, with tests, per crate: `misa-value` (19), `misa-proto` (41), `misa-reframe` (22),
 `misa-render` (46), `misa-kernel` (91), `misa-session` (76), `misa-net` (29),
-`misa-plugin` (12, and eight more behind `--features guest-fixture`), `misa-client` (61),
-`misa-tui` (27), `misa-web` (19), `misa-daemon` (3), `misa-skia` (5), and one more behind
-`misa-skia --features paint`. That is 452 tests and no skips: `cargo test --workspace` is the
+`misa-plugin` (13, and nine more behind `--features guest-fixture`), `misa-client` (61),
+`misa-tui` (27), `misa-web` (19), `misa-daemon` (4), `misa-skia` (5), and one more behind
+`misa-skia --features paint`. That is 457 tests and no skips: `cargo test --workspace` is the
 gate, and these numbers are read back from it rather than remembered.
 
 Three of those crates exist because of what a _client_ needs and not because of what a
@@ -288,21 +288,19 @@ it.
 Not built, in the order they matter. `docs/parity.md` is the full matrix; these are the
 items with no code at all, plus the two that are structural.
 
-1. **The wasm plugin host.**1. **Wiring a plugin into a session.** The host is built and tested against a `Loop`
-   (`misa-plugin`): a component declares, the composition checks those declarations, and its
-   handlers and subscriptions run. What a session adds is not code but three decisions:
-   - **Where a plugin's view goes.** `view(role, capabilities, db, window)` returns a tree,
-     and nothing says whether it replaces part of the session's document, is added as a
-     section, or is a query a client subscribes to. The last is the smallest step and the one
-     that keeps the session's tree its own.
-   - **How a plugin's state root is declared.** `views::MANIFEST` is a `const`, and a plugin's
-     patch is refused if the path's parent does not exist, so a plugin may only write state
-     the shipped composition declared. Either a composition builds the manifest, or a plugin
-     is limited to `session.*` and `messages` — and a plugin that wants to remember something
-     of its own needs the first.
-   - **Which plugins a daemon loads.** A path on the command line, a directory scanned at
-     startup, or a field in a composition: the previous system had extensions declared in its
-     configuration, and this one has no configuration file yet.
+1. **Where a plugin's view goes.** Everything else of the plugin host is built: `misa-plugin`
+   loads a component and holds it to the composition; `misa-daemon --plugin <path>` loads,
+   validates, and registers what it declared; a plugin's state roots are declared by the
+   composition (`Ownership::Plugin`, because a patch may only create the _last_ key of its
+   path, so somebody has to make the root first); and
+   `misa-plugin`'s own tests run a plugin inside a real session — a prompt, a patch in the
+   root, an effect the session's interpreter ran. What is left is presentation:
+   `view(role, capabilities, db, window)` returns a tree and nothing decides where it goes.
+   The smallest honest step is a query per plugin that answers with its tree — a client
+   subscribes to `plugin.<id>.view` and draws it where that client wants — because the
+   alternative (the session merging a plugin's tree into its document) puts a guest call on
+   the path of every view build, under the session's own lock, and needs a timeout nobody has
+   designed yet.
 2. **A client that keeps what it receives.** A blob can be fetched and shown; nothing writes
    one to a place a person could find it afterwards. A device flow a client started cannot be
    cancelled either, and both are the same shape of work: an intent a session asks the kernel
@@ -356,7 +354,12 @@ already made.
    `misa:<endpoint id>:<session>`, so it names a process. A session that can move
    needs a name that is not a process, and that is the same question as the kernel
    protocol in §4.
-5. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
+5. **Whether a plugin's state should outlive a restart.** Its root is
+   `Ownership::Plugin` and ephemeral, so a daemon that restarts forgets what a plugin kept —
+   and a plugin that wanted to keep it could journal it through `kernel.log.append` and
+   rebuild on the first event, which is work nobody has done and a decision nobody has made.
+
+6. **Whether `Intent::Action` should be typed.** It is a string plus fields, which
    is open and lets a plugin invent an affordance without a protocol change. It also
    means a client cannot tell a valid action from a typo before sending it. The
    session advertises its queries; it could advertise its actions.

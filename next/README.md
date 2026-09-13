@@ -73,6 +73,7 @@ plus the Zig system's, so `cargo` is this repository's rustc wherever you are st
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # prints a ticket
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
+cargo run -p misa-daemon -- --plugin /tmp/policy.component.wasm   # a policy plugin, in wasm
                                                    # (a client can start the same flow: `/login openai-codex`)
 cargo run -p misa-tui -- misa:<endpoint id>:demo
 cargo run -p misa-web -- --ticket misa:<endpoint id>:demo --listen 127.0.0.1:8080
@@ -131,10 +132,16 @@ process, so no test needs a `.wasm` in the repository. `MISA_PLUGIN_FIXTURE=/pat
 skips the build and uses one somebody already made, which is what to do when the question is
 "is the host wrong, or is the guest?".
 
-What is not wired yet: a _session_ does not load plugins. The host is proven against a
-`misa_reframe::Loop`, and the two things a session adds are decisions rather than code — where a
-plugin's view goes in the document, and how a plugin's own state root gets declared, because the
-manifest is a `const`. Both are written down in `docs/architecture.md` §7.
+A daemon loads them with `--plugin <path>`, once or more. It validates each one against the
+session's own list of accepted effects, registers the handlers and subscriptions it declared, and
+declares the state roots it asked for (`Ownership::Plugin`) so its patches have somewhere to
+land — a plugin that names a root the session already owns is refused at startup rather than
+failing inside somebody's transaction later.
+
+What is not wired yet is a plugin's _presentation_: `view(role, capabilities, db, window)`
+returns a tree, and nothing decides where a client should put it. That decision, and why the
+smallest honest step is a query per plugin rather than merging a guest's tree into the session's
+document, are in `docs/architecture.md` §6 item 1.
 
 ## Conventions
 

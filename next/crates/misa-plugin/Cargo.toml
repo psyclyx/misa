@@ -17,6 +17,13 @@ wasmtime.workspace = true
 # The fixture test encodes `wit/guest`'s module into a component in process, which is the
 # same thing `wasm-tools component new` does — so the test needs no binary of its own.
 wit-component.workspace = true
+# And one test runs a plugin inside a *session*, because that is where a plugin is meant to
+# live: the host is below the session in the dependency order, so this is a test's business and
+# not the crate's.
+misa-kernel.workspace = true
+misa-session.workspace = true
+# A session is a runtime: starting one spawns the tasks that carry kernel reports back.
+tokio.workspace = true
 
 [features]
 # The integration test that needs a *component*: it builds `wit/guest` for

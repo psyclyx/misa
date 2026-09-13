@@ -367,6 +367,7 @@ where
 pub type Compute = Arc<dyn Fn(&Value, &[Value], &Query, Option<&Value>) -> Value + Send + Sync>;
 
 /// A pure query with declared inputs.
+#[derive(Clone)]
 pub struct Subscription {
     pub inputs: Inputs,
     pub compute: Compute,
@@ -385,6 +386,7 @@ pub fn read_query(compute: impl Fn(&Value, &Query) -> Value + Send + Sync + 'sta
 }
 
 /// What a query depends on.
+#[derive(Clone)]
 pub enum Inputs {
     /// Dependencies that never change, so the query is computed once.
     ///

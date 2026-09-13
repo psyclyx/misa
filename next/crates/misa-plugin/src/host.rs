@@ -38,6 +38,12 @@ pub struct Descriptor {
     pub queries: Vec<String>,
     /// Effect kinds it may ask for.
     pub effects: Vec<String>,
+    /// State roots it writes into, as plain names.
+    ///
+    /// The composition makes these before the first event arrives, because a patch may only
+    /// create the *last* key of its path: a plugin whose root nobody made is a fault in
+    /// somebody's transaction, and a declaration is what stops that being a surprise.
+    pub roots: Vec<String>,
 }
 
 /// One patch a plugin asked for: a path, and what to do at it.
@@ -134,6 +140,7 @@ impl Plugin {
             events: declared.events,
             queries: declared.queries,
             effects: declared.effects,
+            roots: declared.roots,
         };
         if descriptor.id.is_empty() {
             return Err(PluginFault::refused("a plugin with no id cannot be named in a diagnostic"));
@@ -188,7 +195,7 @@ impl Plugin {
                 )));
             }
         }
-        Ok(())
+        plain_roots(&self.descriptor.id, &self.descriptor.roots)
     }
 
     /// One handler per event kind the plugin declared, ready for a [`misa_reframe::Registry`].
@@ -320,6 +327,30 @@ impl Plugin {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Guest>, PluginFault> {
         self.inner.lock().map_err(|_| PluginFault::host("the plugin is poisoned by a panic"))
     }
+}
+
+/// What a plugin declared as a state root has to be: one plain name, once.
+///
+/// A root is a *name* — the composition's check against the manifest is about names, and the
+/// paths inside a root are the plugin's own business — so a plugin that declared `session.status`
+/// would be claiming something that is not a root at all. Twice is a mistake rather than two
+/// roots, and an empty name is not a name.
+fn plain_roots(id: &str, roots: &[String]) -> Result<(), PluginFault> {
+    let mut seen: Vec<&String> = Vec::new();
+    for root in roots {
+        if root.is_empty() || root.contains(['.', '[', ']']) {
+            return Err(PluginFault::refused(format!(
+                "`{id}` declares `{root}` as a state root, and a root is one plain name"
+            )));
+        }
+        if seen.contains(&root) {
+            return Err(PluginFault::refused(format!(
+                "`{id}` declares the state root `{root}` twice"
+            )));
+        }
+        seen.push(root);
+    }
+    Ok(())
 }
 
 /// Effect kinds a plugin may not ask for, whatever the composition accepts.
@@ -720,6 +751,19 @@ mod tests {
         }
         let fault = tree_of(&ViewTree { nodes, root: 0 }).unwrap_err();
         assert!(fault.message.contains("deep"), "{}", fault.message);
+    }
+
+    #[test]
+    fn a_state_root_is_one_plain_name_and_only_once() {
+        assert!(plain_roots("guest", &["guest".to_string()]).is_ok());
+        assert!(plain_roots("guest", &[]).is_ok());
+        for bad in ["", "guest.turns", "guest[0]", "a..b"] {
+            let fault = plain_roots("guest", &[bad.to_string()]).expect_err("refused");
+            assert_eq!(fault.code, "plugin.refused");
+            assert!(fault.message.contains("plain name"), "{}", fault.message);
+        }
+        let twice = plain_roots("guest", &["guest".to_string(), "guest".to_string()]).unwrap_err();
+        assert!(twice.message.contains("twice"), "{}", twice.message);
     }
 
     #[test]

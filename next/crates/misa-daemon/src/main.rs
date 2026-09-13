@@ -11,6 +11,7 @@
 //! misa-daemon login openai-codex
 //! # a service that takes a key is stored from a client's login panel, because a key on
 //! # a command line is a key in a process listing
+//! misa-daemon --plugin ~/plugins/guest.component.wasm   # a policy plugin, in wasm
 //! ```
 //!
 //! It prints a ticket for each session it opens. Nothing about the session — not the model,
@@ -69,6 +70,11 @@ struct Options {
     search: Option<String>,
     search_url: String,
     once: bool,
+    /// Wasm components to load as policy plugins, in the order given.
+    ///
+    /// Repeatable, and paths rather than names: what a daemon may run is a decision somebody
+    /// makes where the daemon is, and a plugin's id is its own to declare.
+    plugins: Vec<PathBuf>,
     /// `login <provider>`: authorize an account by a device code and store the
     /// token, then exit. A subcommand rather than a flag because it is a thing
     /// somebody does, once, and not a mode the daemon runs in.
@@ -116,6 +122,7 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
         search: None,
         search_url: "http://localhost:8080".into(),
         once: false,
+        plugins: Vec::new(),
         login: None,
     };
     while let Some(argument) = arguments.next() {
@@ -132,6 +139,7 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
             "--search" => options.search = Some(next("--search")?),
             "--search-url" => options.search_url = next("--search-url")?,
             "--once" => options.once = true,
+            "--plugin" => options.plugins.push(PathBuf::from(next("--plugin")?)),
             // The one bare word this command line takes: `login <provider>` is
             // something a person does, and a `--login` flag would be the same thing
             // spelled less like what it is.
@@ -317,7 +325,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = misa_net::iroh::bind(None, options.relay).await?;
 
     let sessions = misa_net::iroh::Sessions::new();
-    let runtime = Runtime::start(
+    let contribution = plugins(&options.plugins)?;
+    let runtime = Runtime::start_with(
         options.session.clone(),
         format!("{} ({})", options.session, options.provider),
         Some(options.session.clone()),
@@ -325,6 +334,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         options.provider.clone(),
         options.model.clone(),
         Value::Null,
+        contribution,
     );
     sessions.insert(runtime);
 
@@ -427,6 +437,57 @@ async fn login(provider: &str, credentials: &Arc<Credentials>) -> Result<(), Box
         if token.account.is_empty() { "unknown" } else { &token.account }
     );
     Ok(())
+}
+
+/// Load the plugins this daemon was told to run, as what a session registers.
+///
+/// Validation happens here, at install, and against the session's own list of accepted effects:
+/// a plugin that asks for something this composition cannot do is refused *now*, with a message
+/// that names it and the kind, rather than failing inside somebody's transaction later. Its
+/// declared state roots become roots of the session's database, which is what makes its patches
+/// land — a patch may only create the *last* key of its path, so somebody has to make the root
+/// first, and the composition is the only layer that knows what it loaded.
+fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
+    let mut contribution = misa_session::Contribution::new();
+    if paths.is_empty() {
+        return Ok(contribution);
+    }
+    // One engine for every plugin: compiling a component is the expensive part, and two plugins
+    // in one process have no reason to have two code generators between them.
+    let engine = misa_plugin::Engine::default();
+    for path in paths {
+        let bytes = std::fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let plugin = Arc::new(
+            misa_plugin::Plugin::load(&engine, &bytes)
+                .map_err(|fault| format!("{}: {} ({})", path.display(), fault.message, fault.code))?,
+        );
+        plugin.configure(&[]).map_err(|fault| {
+            format!("`{}` could not be configured: {}", plugin.descriptor().id, fault.message)
+        })?;
+        plugin.validate(&misa_session::AcceptedEffects).map_err(|fault| {
+            format!("`{}` is not something this daemon can run: {}", plugin.descriptor().id, fault.message)
+        })?;
+
+        let descriptor = plugin.descriptor().clone();
+        eprintln!(
+            "plugin `{}` {}: handling {:?}, answering {:?}, roots {:?}",
+            descriptor.id, descriptor.version, descriptor.events, descriptor.queries, descriptor.roots
+        );
+        for (kind, handler) in plugin.handlers() {
+            contribution = contribution.with_handler(kind, misa_plugin::PLUGIN_PRIORITY, handler);
+        }
+        for (name, subscription) in plugin.subscriptions() {
+            contribution = contribution.with_subscription(name, subscription);
+        }
+        for root in &descriptor.roots {
+            // Empty, because what a plugin keeps in its own root is its own business and its
+            // first patch is what fills it. A name the session already owns is refused in here.
+            contribution = contribution.with_root(root, Value::map([])).map_err(|fault| {
+                format!("`{}` asked for a state root it may not have: {}", descriptor.id, fault.message)
+            })?;
+        }
+    }
+    Ok(contribution)
 }
 
 /// Show a pairing code: as a QR a camera can read, and as text a person can type.
@@ -542,6 +603,17 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_plugin_is_a_path_given_once_or_more() {
+        // Repeatable because it is a list, and a path because what a daemon runs is a decision
+        // somebody makes where the daemon is.
+        let parsed = parse_from(arguments("--plugin a.wasm --plugin b.wasm")).expect("a command line");
+        assert_eq!(parsed.plugins, vec![PathBuf::from("a.wasm"), PathBuf::from("b.wasm")]);
+        assert!(parse_from(arguments("--plugin")).is_err(), "a plugin with no path");
+        let none = parse_from(arguments("--session demo")).expect("a command line");
+        assert!(none.plugins.is_empty(), "a daemon with no plugins runs none");
+    }
+
     fn login_names_a_provider_and_a_key_is_never_an_argument() {
         // The command line has no way to carry a secret: it names what to authorize, and the
         // value comes from a device flow — or, for a service with a key, from a client's login

@@ -2436,6 +2436,7 @@ dependencies = [
  "clap",
  "misa-kernel",
  "misa-net",
+ "misa-plugin",
  "misa-proto",
  "misa-session",
  "misa-value",
@@ -2483,10 +2484,13 @@ dependencies = [
 name = "misa-plugin"
 version = "0.1.0"
 dependencies = [
+ "misa-kernel",
  "misa-proto",
  "misa-reframe",
+ "misa-session",
  "misa-value",
  "serde_json",
+ "tokio",
  "wasmtime",
  "wit-component 0.259.0",
 ]
