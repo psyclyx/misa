@@ -519,8 +519,20 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
             // back as a panel. That is the difference between a subscription being usable
             // from this session and it being usable only from the daemon's own command line.
             if misa_kernel::presets::oauth(&slot).is_some() {
+                if let Some(previous) = tx.get("session.oauth_request").and_then(Value::as_str) {
+                    tx.fx(Effect::new("kernel.credential").with_value(Value::map([
+                        ("id", Value::str(previous)), ("action", Value::str("cancel_oauth")), ("request", Value::str(previous)),
+                    ])));
+                }
+                let sequence = tx.int("session.oauth_sequence") + 1;
+                let request = format!("oauth:{}:{sequence}", tx.text("session.id"));
+                tx.set("session.oauth_sequence", Value::Int(sequence))?;
+                tx.set("session.oauth_request", Value::str(&request))?;
+                panel(tx, "authorize", &format!("Authorize `{slot}`"), "Requesting a device code", vec![], vec![],
+                    vec![("credential.cancel".into(), "Cancel authorization".into())])?;
+
                 tx.fx(Effect::new("kernel.credential").with_value(Value::map([
-                    ("id", Value::str("login")),
+                    ("id", Value::str(&request)),
                     ("action", Value::str("oauth")),
                     ("provider", Value::str(&slot)),
                 ])));
@@ -779,6 +791,7 @@ fn panel(
 /// answer, and pinned by a test that every one of them is handled below.
 pub const ACTIONS: &[&str] = &[
     "composer.submit",
+    "credential.cancel",
     "panel.close",
     "panel.submit",
     "queue.take",
@@ -826,6 +839,18 @@ fn on_action(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         }
         "queue.clear" => {
             tx.dispatch(Event::new("intent/queue.clear"));
+            Ok(())
+        }
+        "credential.cancel" => {
+            if let Some(request) = tx.get("session.oauth_request").and_then(Value::as_str) {
+                tx.fx(Effect::new("kernel.credential").with_value(Value::map([
+                    ("id", Value::str(request)), ("action", Value::str("cancel_oauth")), ("request", Value::str(request)),
+                ])));
+                if tx.text("panel.id") == "authorize" {
+                    tx.set("panel.text", Value::str("Cancelling authorization"))?;
+                    tx.set("panel.actions", Value::list([]))?;
+                }
+            }
             Ok(())
         }
         "panel.close" => {
@@ -902,6 +927,8 @@ fn on_conversations(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 /// It is replaced by the outcome: the same `kernel.credential` event that follows closes it,
 /// so an approved code never sits on a screen looking like something still to do.
 fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if tx.text("session.oauth_request") != fields::event_text(event, "id") { return Ok(()); }
+
     let provider = fields::event_text(event, "provider");
     let url = fields::event_text(event, "url");
     let code = fields::event_text(event, "code");
@@ -913,7 +940,7 @@ fn on_credential_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
          approved, and the token it gets back is stored by the daemon.",
         vec![("code", code), ("address", url)],
         Vec::new(),
-        vec![("panel.close".into(), "Dismiss".into())],
+        vec![("credential.cancel".into(), "Cancel authorization".into()), ("panel.close".into(), "Dismiss".into())],
     )
 }
 
@@ -1053,6 +1080,11 @@ fn replay_patches(tx: &mut Tx<'_>, entries: &[Value]) -> (usize, usize) {
 
 /// What a credential change did.
 fn on_credential(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let id = fields::event_text(event, "id");
+    let oauth = id.starts_with("oauth:");
+    if oauth && tx.text("session.oauth_request") != id { return Ok(()); }
+    if oauth { tx.delete("session.oauth_request")?; }
+
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let message = fields::event_text(event, "message");
     if !message.is_empty() {
@@ -1064,7 +1096,7 @@ fn on_credential(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     // formality: an authorization can finish long after somebody dismissed the panel, and a
     // delete of a *child* of a root that is not there fails the whole transaction — which is
     // how a report whose panel had already gone became a fault and no notice at all.
-    tx.delete("panel")?;
+    if !oauth || tx.text("panel.id") == "authorize" { tx.delete("panel")?; }
     Ok(())
 }
 

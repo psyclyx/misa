@@ -373,6 +373,7 @@ impl Runtime {
                         // A device code rather than a value: the provider names the flow, and
                         // the daemon is the only side that knows how to run one.
                         "oauth" => CredentialAction::OAuth { provider: fields::text(effect, "provider") },
+                        "cancel_oauth" => CredentialAction::CancelOAuth { request: fields::text(effect, "request") },
                         // A listing asks for nothing and stores nothing, which makes it the
                         // safe reading of an action a handler spelled wrong.
                         _ => CredentialAction::List,
@@ -795,6 +796,23 @@ pub(crate) mod tests {
         assert!(!report.contains("Current quota"));
         runtime.dispatch(response("usage.2", "Duplicate quota"));
         assert!(!transcript(&runtime).contains("Duplicate quota"));
+    }
+
+    #[tokio::test]
+    async fn device_panel_cancel_stops_authorization_and_late_prompts_do_not_reopen_it() {
+        let base = device_server().await;
+        let runtime = flow_runtime(&base);
+        let mut events = runtime.subscribe_events();
+        assert!(runtime.intent(Intent::Command { name: "login".into(), args: Value::str("kimi-coding") }).is_empty());
+        wait_for(&runtime, |text| text.contains("AAAA-BBBB")).await;
+        let tree = view(&runtime);
+        let panel = misa_proto::view::find(&tree, "authorize").unwrap();
+        assert!(panel.actions.iter().any(|action| action.id == "credential.cancel"));
+        assert!(runtime.intent(Intent::Action { node: "authorize".into(), action: "credential.cancel".into(), args: Value::Null, fields: vec![] }).is_empty());
+        wait_notice(&mut events, "Authorization cancelled").await;
+        assert!(!transcript(&runtime).contains("AAAA-BBBB"));
+        runtime.dispatch(Event::new("kernel/credential.prompt").with("id", Value::str("oauth:demo:1")).with("code", Value::str("LATE-CODE")));
+        assert!(!transcript(&runtime).contains("LATE-CODE"));
     }
 
     /// Something a command can be run with, for the test below.
