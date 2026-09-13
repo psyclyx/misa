@@ -1,0 +1,12 @@
+[package]
+name = "misa-protocol"
+description = "Session protocol state machines over injected application state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-proto.workspace = true
+misa-value.workspace = true
+tokio.workspace = true
