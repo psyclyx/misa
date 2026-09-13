@@ -49,15 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(usage().into());
     };
 
-    if !cfg!(feature = "paint") {
-        // The scene is built either way; only painting needs a linkable Skia.
-        eprintln!(
-            "misa-skia can describe a frame without Skia, but writing one needs it: \
-             rebuild with `--features paint`"
-        );
-        return Ok(());
-    }
-
     let mut first: Option<Node> = match &view_file {
         Some(path) => {
             let text = std::fs::read_to_string(path)?;
@@ -129,20 +120,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Paint a scene to a file. Absent without Skia, which is a build choice rather than a
-/// runtime one: the scene is built either way.
-#[cfg(feature = "paint")]
+/// Paint a scene to a file.
 fn write_frame(view: &Node, columns: u32, rows: u32, out: &str) -> Result<(), Box<dyn std::error::Error>> {
     let theme = misa_render::Theme::dark();
     let scene = misa_skia::scene(view, &theme, columns as usize, rows as usize, misa_skia::Layout::default());
     let png = misa_skia::paint::png(&scene, misa_render::Color::Rgb(20, 22, 26))?;
     std::fs::write(out, png)?;
-    Ok(())
-}
-
-/// Without Skia there is nothing to write, and the caller already said so.
-#[cfg(not(feature = "paint"))]
-fn write_frame(_view: &Node, _columns: u32, _rows: u32, _out: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
