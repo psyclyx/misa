@@ -135,10 +135,26 @@ impl IndexedTree {
         Ok(())
     }
 
+    fn check_depth(&self, node: &Node, parent: Option<&str>) -> Result<(), String> {
+        let mut depth = 0;
+        let mut cursor = parent;
+        while let Some(id) = cursor { depth += 1; cursor = self.parent(id); }
+        let mut pending = vec![(node, depth)];
+        while let Some((node, depth)) = pending.pop() {
+            if depth > crate::view::MAX_DEPTH { return Err("operation exceeds the document depth bound".into()); }
+            pending.extend(node.children.iter().map(|child| (child, depth + 1)));
+            if let crate::view::Kind::List { items, .. } = &node.kind {
+                pending.extend(items.iter().flatten().map(|child| (child, depth + 1)));
+            }
+        }
+        Ok(())
+    }
+
     /// Apply one op. A receiver discards its accumulator and resynchronizes on an invalid op.
     pub fn apply(&mut self, op: &ViewOp) -> Result<(), String> {
         match op {
             ViewOp::Insert { parent, before, node } => {
+                self.check_depth(node, Some(parent))?;
                 self.check_subtree(node, None)?;
                 if self.contains(&node.id) { return Err(format!("duplicate node {}", node.id)); }
                 let owner = self.nodes.get(parent).ok_or_else(|| format!("missing parent {parent}"))?;
@@ -165,6 +181,7 @@ impl IndexedTree {
                 self.erase(id);
             }
             ViewOp::Replace { id, node } => {
+                self.check_depth(node, self.parent(id))?;
                 self.check_subtree(node, Some(id))?;
                 if node.id != *id { return Err("replacement changes identity".into()); }
                 let entry = self.nodes.get(id).ok_or_else(|| format!("missing node {id}"))?;
@@ -344,5 +361,17 @@ mod receiver_tests {
         let mut root = Node::section("root").id("root");
         root.children = (0..200_001).map(|id| Node::section("message").id(format!("msg.{id}"))).collect();
         crate::view::validate(&root).unwrap();
+    }
+    #[test]
+    fn operation_depth_includes_its_existing_ancestors() {
+        let mut root = Node::section("leaf").id("leaf");
+        for depth in 0..crate::view::MAX_DEPTH { root = Node::section("layer").id(format!("layer.{depth}")).child(root); }
+        let mut tree = IndexedTree::new(root);
+        let before = tree.snapshot();
+        let insert = ViewOp::Insert { parent: "leaf".into(), before: None, node: Node::section("child").id("child") };
+        assert!(tree.apply(&insert).is_err());
+        let replace = ViewOp::Replace { id: "leaf".into(), node: Node::section("leaf").id("leaf").child(Node::section("child").id("child")) };
+        assert!(tree.apply(&replace).is_err());
+        assert_eq!(tree.snapshot(), before);
     }
 }
