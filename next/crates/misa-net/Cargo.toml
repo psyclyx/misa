@@ -11,9 +11,10 @@ async-trait.workspace = true
 iroh.workspace = true
 misa-kernel.workspace = true
 misa-proto.workspace = true
-misa-session.workspace = true
+misa-protocol.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+misa-session.workspace = true
 misa-render.workspace = true

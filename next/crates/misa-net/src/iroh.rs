@@ -30,7 +30,7 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use misa_proto::chunk::Decoder;
 use misa_proto::wire::{ClientInfo, ClientMsg, Query, SessionMsg, SubId};
 use misa_proto::{ALPN_BLOB, ALPN_SESSION, Fault, PROTOCOL_VERSION, Ticket};
-use misa_session::Runtime;
+use misa_protocol::Session as Backend;
 use crate::admission::Admission;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -146,7 +146,7 @@ pub fn address_of(node: &str) -> Result<EndpointAddr, String> {
 
 #[derive(Default)]
 pub struct Sessions {
-    open: std::sync::Mutex<HashMap<String, Arc<Runtime>>>,
+    open: std::sync::Mutex<HashMap<String, Arc<dyn Backend>>>,
 }
 
 impl Sessions {
@@ -154,14 +154,14 @@ impl Sessions {
         Arc::new(Sessions::default())
     }
 
-    pub fn insert(&self, runtime: Arc<Runtime>) {
+    pub fn insert(&self, runtime: Arc<dyn Backend>) {
         self.open
             .lock()
             .expect("the session table is never poisoned")
-            .insert(runtime.id().to_string(), runtime);
+            .insert(runtime.info().id, runtime);
     }
 
-    pub fn get(&self, id: &str) -> Option<Arc<Runtime>> {
+    pub fn get(&self, id: &str) -> Option<Arc<dyn Backend>> {
         self.open.lock().expect("the session table is never poisoned").get(id).cloned()
     }
 
@@ -801,7 +801,7 @@ pub fn ticket(endpoint: &Endpoint, session: &str) -> Ticket {
 mod tests {
     use super::*;
     use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
-    use misa_session::Runtime;
+    use misa_protocol::Session as Backend;
 
     #[test]
     fn a_ticket_that_names_only_this_machine_is_reached_without_a_relay() {
@@ -819,9 +819,9 @@ mod tests {
         assert!(!names_only_this_machine("abc@"));
     }
 
-    fn runtime() -> Arc<Runtime> {
+    fn runtime() -> Arc<dyn Backend> {
         let provider: Arc<dyn Provider> = ScriptedProvider::always("hello");
-        Runtime::start(
+        misa_session::Runtime::start(
             "demo",
             "a demo session",
             None,

@@ -46,6 +46,7 @@ pub use contribution::Contribution;
 /// What a composition adds to the loop: handlers, subscriptions, and their state.
 pub mod contribution;
 pub mod agent;
+mod protocol;
 /// What a session declares: its commands, their arguments, and where a value can
 /// come from.
 pub mod catalog;
@@ -57,25 +58,7 @@ pub mod views;
 mod journal;
 mod canonical;
 
-/// What a query produced.
-///
-/// The view is its own variant rather than a `Value` because it is a different
-/// kind of thing: a client *draws* a view and *reads* data. Keeping them distinct
-/// in the type is what stops a view from quietly becoming a bag of values that
-/// every client has to interpret.
-#[derive(Clone, Debug)]
-pub enum Reading {
-    View(Node),
-    Data(Value),
-}
-
-/// One ephemeral event, numbered so a client can tell a repeat from a rerun.
-#[derive(Clone, Debug)]
-pub struct Emission {
-    pub recipient: Option<u64>,
-    pub seq: u64,
-    pub event: SessionEvent,
-}
+pub use misa_protocol::{Reading, Emission};
 
 /// A running agent session.
 pub struct Runtime {
