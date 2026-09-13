@@ -21,6 +21,7 @@
 //! items to hold — see [`misa_client::picker`].
 
 pub mod print;
+pub mod storage;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -198,8 +199,8 @@ impl Screen {
     /// a client that wrote to somebody's home during a test would be a client whose tests
     /// depend on the order they ran in.
     pub fn durable() -> Screen {
-        let path = Prefs::default_path();
-        Screen::remembering(Prefs::load(&path), path)
+        let path = storage::File::default_path();
+        Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path)
     }
 
     /// A screen remembering a document somebody else decided where to keep.
@@ -228,7 +229,7 @@ impl Screen {
             return;
         };
         self.prefs.draft = self.editor.text().to_string();
-        if let Err(error) = self.prefs.save(&path) {
+        if let Err(error) = self.prefs.save(&storage::File::at(path)) {
             self.notice = Some(error);
         }
     }
@@ -1701,7 +1702,7 @@ mod tests {
         type_text(&mut first, "half a question");
         first.save();
 
-        let second = Screen::remembering(Prefs::load(&path), path.clone());
+        let second = Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path.clone());
         // The theme somebody chose is the one they are drawn with next time.
         assert_eq!(second.theme.name, "plain");
         assert_eq!(second.editor.text(), "half a question");
@@ -1718,7 +1719,7 @@ mod tests {
         assert!(matches!(screen.key(Key::Submit), KeyOut::Intent(_)));
         assert!(screen.editor.is_empty());
         // The line went out, so the memory of it goes out with it.
-        let next = Screen::remembering(Prefs::load(&path), path.clone());
+        let next = Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path.clone());
         assert_eq!(next.editor.text(), "");
         let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
     }
@@ -1745,7 +1746,7 @@ mod tests {
         first.key(Key::Motion(ed::Motion::Down));
         assert!(matches!(first.key(Key::Submit), KeyOut::Intent(_)));
 
-        let mut second = Screen::remembering(Prefs::load(&path), path.clone());
+        let mut second = Screen::remembering(Prefs::load(&storage::File::at(path.clone())), path.clone());
         second.declare(&declaration());
         second.editor.set_text("/model");
         second.key(Key::Submit);
