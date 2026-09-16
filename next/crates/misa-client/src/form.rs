@@ -70,28 +70,7 @@ impl Form {
         })
     }
     pub fn prepare(&self, drafts: &BTreeMap<String, String>) -> Result<(String, Value), Fault> {
-        let mut values = BTreeMap::new();
-        for (id, field) in &self.fields {
-            let text = drafts.get(id).map(String::as_str).unwrap_or("");
-            if text.is_empty() && field.optional {
-                continue;
-            }
-            if text.len() > misa_proto::schema::Limits::default().bytes {
-                return Err(Fault::query("Form field exceeds input limit"));
-            }
-            let value = if matches!(field.schema, Schema::String) {
-                Value::str(text)
-            } else {
-                serde_json::from_str::<Value>(text)
-                    .map_err(|_| Fault::query(format!("{id}: enter a valid JSON value")))?
-            };
-            let value = typed(&field.schema, value)?;
-            field
-                .schema
-                .validate(&value)
-                .map_err(|error| Fault::query(format!("{id}: {error}")))?;
-            values.insert(id.clone(), value);
-        }
+        let values = parse_fields(&self.fields, drafts)?;
         let input = self.binding.prepare(&values)?;
         self.command
             .input
@@ -99,6 +78,41 @@ impl Form {
             .map_err(|error| Fault::query(error.to_string()))?;
         Ok((self.command.id.clone(), input))
     }
+}
+/// Parse bounded local drafts according to declared input fields.
+pub fn parse_fields(
+    fields: &[(String, Field)],
+    drafts: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Value>, Fault> {
+    let mut values = BTreeMap::new();
+    for (id, field) in fields {
+        let text = drafts.get(id).map(String::as_str).unwrap_or("");
+        if text.is_empty() && field.optional {
+            continue;
+        }
+        if text.len() > misa_proto::schema::Limits::default().bytes {
+            return Err(Fault::query("Form field exceeds input limit"));
+        }
+        let value = if matches!(field.schema, Schema::String) {
+            Value::str(text)
+        } else {
+            serde_json::from_str::<Value>(text)
+                .map_err(|_| Fault::query(format!("{id}: enter a valid JSON value")))?
+        };
+        let value = typed(&field.schema, value)?;
+        field
+            .schema
+            .validate(&value)
+            .map_err(|error| Fault::query(format!("{id}: {error}")))?;
+        values.insert(id.clone(), value);
+    }
+    Schema::Record {
+        fields: fields.iter().cloned().collect(),
+        allow_unknown: false,
+    }
+    .validate(&Value::Map(values.clone().into()))
+    .map_err(|error| Fault::query(error.to_string()))?;
+    Ok(values)
 }
 // JSON arrays provide an explicit portable spelling for schema-declared bytes.
 fn typed(schema: &Schema, value: Value) -> Result<Value, Fault> {

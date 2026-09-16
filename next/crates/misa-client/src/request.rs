@@ -28,6 +28,7 @@ pub struct Model {
     pub title: String,
     pub body: Node,
     pub input: Option<Input>,
+    pub form: Option<misa_proto::input::Form>,
     pub actions: Vec<Action>,
 }
 impl Model {
@@ -58,9 +59,37 @@ impl Model {
             title: String::new(),
             body: Node::section("request.body").id(format!("request.{id}.body")),
             input: None,
+            form: None,
             actions: vec![],
         };
         match text("kind")? {
+            "form" => {
+                let form: misa_proto::input::Form = crate::interface::decode(value)?;
+                form.validate()?;
+                model.title = form.title.clone();
+                model.form = Some(form);
+                for (key, label) in [("resolve", "Submit"), ("cancel", "Cancel request")] {
+                    let Some(value) = value.get(key) else {
+                        continue;
+                    };
+                    let binding: ActionBinding = crate::interface::decode(value)?;
+                    if binding.bound.get("request") != Some(&Value::str(&id))
+                        || binding.bound.get("generation") != Some(&Value::Int(generation))
+                    {
+                        return Err(Fault::protocol(
+                            "Request binding does not match its identity",
+                        ));
+                    }
+                    model.actions.push(Action {
+                        id: key.into(),
+                        label: label.into(),
+                        binding,
+                    });
+                }
+                if !model.actions.iter().any(|action| action.id == "resolve") {
+                    return Err(Fault::protocol("Input form needs a resolve action"));
+                }
+            }
             "credential_value" => {
                 model.title = format!("Credential for {}", text("provider")?);
                 model.input = Some(Input {
@@ -141,6 +170,17 @@ impl Model {
         fields: &BTreeMap<String, Value>,
         interface: &Interface,
     ) -> Result<Prepared, Fault> {
+        if action == "resolve"
+            && let Some(form) = &self.form
+        {
+            form.input
+                .validate(
+                    fields
+                        .get("value")
+                        .ok_or_else(|| Fault::protocol("Input form needs a value"))?,
+                )
+                .map_err(|error| Fault::protocol(error.to_string()))?;
+        }
         let action = self
             .actions
             .iter()
@@ -159,6 +199,33 @@ impl Model {
             command: command.clone(),
             input,
         })
+    }
+
+    pub fn prepare_drafts(
+        &self,
+        action: &str,
+        drafts: &BTreeMap<String, String>,
+        interface: &Interface,
+    ) -> Result<Prepared, Fault> {
+        let values = if action == "resolve"
+            && let Some(form) = &self.form
+        {
+            let misa_proto::schema::Schema::Record { fields, .. } = &form.input else {
+                return Err(Fault::protocol("Input form needs record schema"));
+            };
+            let fields = fields
+                .iter()
+                .map(|(id, field)| (id.clone(), field.clone()))
+                .collect::<Vec<_>>();
+            let values = crate::form::parse_fields(&fields, drafts)?;
+            BTreeMap::from([("value".into(), Value::Map(values.into()))])
+        } else {
+            drafts
+                .iter()
+                .map(|(id, value)| (id.clone(), Value::str(value)))
+                .collect()
+        };
+        self.prepare(action, &values, interface)
     }
 }
 
@@ -216,6 +283,107 @@ pub fn report(title: &str, value: &Value) -> Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generic_form_parses_typed_drafts_and_fences_bindings() {
+        use misa_proto::schema::{Field, Schema};
+        let record = |fields| Schema::Record {
+            fields,
+            allow_unknown: false,
+        };
+        let command = misa_proto::invocation::Command {
+            id: "input.resolve".into(),
+            input: record(BTreeMap::from([
+                (
+                    "request".into(),
+                    Field {
+                        schema: Schema::String,
+                        optional: false,
+                    },
+                ),
+                (
+                    "generation".into(),
+                    Field {
+                        schema: Schema::Int,
+                        optional: false,
+                    },
+                ),
+                (
+                    "value".into(),
+                    Field {
+                        schema: Schema::Value,
+                        optional: false,
+                    },
+                ),
+            ])),
+            result: Schema::Value,
+        };
+        let interface = Interface {
+            scope: misa_proto::observation::Scope {
+                id: misa_proto::observation::ScopeId::Daemon,
+                incarnation: "run".into(),
+            },
+            queries: BTreeMap::new(),
+            commands: BTreeMap::from([(command.id.clone(), command)]),
+            actions: BTreeMap::new(),
+            presentations: vec![],
+        };
+        let form = misa_proto::input::Form {
+            title: "Choose retries".into(),
+            input: record(BTreeMap::from([(
+                "retries".into(),
+                Field {
+                    schema: Schema::Int,
+                    optional: false,
+                },
+            )])),
+            fields: BTreeMap::new(),
+        };
+        let binding = ActionBinding {
+            command: "input.resolve".into(),
+            bound: BTreeMap::from([
+                ("request".into(), Value::str("request")),
+                ("generation".into(), Value::Int(4)),
+            ]),
+            inputs: BTreeMap::from([("value".into(), "value".into())]),
+        };
+        let mut json = serde_json::to_value(form).unwrap();
+        for (key, value) in [
+            ("id", serde_json::json!("request")),
+            ("generation", serde_json::json!(4)),
+            ("kind", serde_json::json!("form")),
+            ("resolve", serde_json::to_value(binding).unwrap()),
+        ] {
+            json[key] = value;
+        }
+        let value = serde_json::from_value(json.clone()).unwrap();
+        let model = Model::parse(&value, &interface).unwrap().unwrap();
+        assert!(
+            model
+                .prepare_drafts(
+                    "resolve",
+                    &BTreeMap::from([("retries".into(), "bad".into())]),
+                    &interface
+                )
+                .is_err()
+        );
+        let Prepared::Invoke { input, .. } = model
+            .prepare_drafts(
+                "resolve",
+                &BTreeMap::from([("retries".into(), "3".into())]),
+                &interface,
+            )
+            .unwrap()
+        else {
+            panic!("expected invocation")
+        };
+        assert_eq!(
+            input.get("value").and_then(|v| v.get("retries")),
+            Some(&Value::Int(3))
+        );
+        assert_eq!(input.get("generation"), Some(&Value::Int(4)));
+        json["resolve"]["bound"]["generation"] = serde_json::json!(5);
+        assert!(Model::parse(&serde_json::from_value(json).unwrap(), &interface).is_err());
+    }
     #[test]
     fn report_identities_do_not_alias_nested_paths_and_null_is_not_zero() {
         let value = Value::map([
