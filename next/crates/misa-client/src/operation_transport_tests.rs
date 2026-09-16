@@ -259,11 +259,12 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
         .unwrap();
     assert!(watch.poll().is_none());
     let mut changes = watch.changes();
+    let generation = client.status().borrow().generation;
     cut.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             changes.changed().await.unwrap();
-            if !client.online() {
+            if !client.online() || client.status().borrow().generation > generation {
                 break;
             }
         }
@@ -279,6 +280,7 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
         .await
         .unwrap();
     assert_eq!(completion.operation, reference);
+    assert!(client.status().borrow().generation > generation);
     assert!(matches!(completion.outcome,Terminal::Finished{ref state,..} if state=="succeeded"));
     for state in [State::Value(Value::Null), State::Fault, State::Closed] {
         owner.set(State::Value(result(false)));
