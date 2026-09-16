@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use misa_proto::view::Node;
@@ -45,6 +45,8 @@ pub use contribution::Contribution;
 
 /// What a composition adds to the loop: handlers, subscriptions, and their state.
 pub mod contribution;
+pub mod indicators;
+pub mod usage;
 pub mod agent;
 mod protocol;
 mod replies;
@@ -58,11 +60,20 @@ pub mod markdown;
 pub mod views;
 mod journal;
 mod canonical;
+mod publication;
+mod reports;
+pub mod observation;
+pub mod commands;
+mod tool_bindings;
+pub(crate) mod operations;
+#[cfg(test)]
+mod observation_tests;
 
 pub use misa_protocol::{Reading, Emission};
 
 /// A running agent session.
 pub struct Runtime {
+    reports: Mutex<reports::Pending>,
     state: Mutex<State>,
     /// What compositions contributed to every view this session builds.
     sections: Vec<views::Section>,
@@ -75,13 +86,29 @@ pub struct Runtime {
     info: SessionInfo,
     provider: String,
     model: String,
+    incarnation: String,
+    parent_attempt: Option<String>,
+    exports: std::collections::BTreeMap<String, misa_proto::query::Definition>,
+    restricted_exports: std::collections::BTreeMap<String, observation::RestrictedQuery>,
+    command_registry: std::collections::BTreeMap<String, commands::CommandRegistration>,
+    tool_bindings: std::collections::BTreeMap<String,misa_proto::tool::Binding>,
+    tool_invocations: Mutex<std::collections::BTreeMap<u64,(Request,String)>>,
+    operation_deadline: watch::Sender<Option<i64>>,
+    tool_approval: operations::ToolApprovalPolicy,
+    closed: AtomicBool,
+    started: AtomicBool,
+    closing: watch::Sender<bool>,
+    stopped: watch::Receiver<bool>,
 }
 
 struct State {
+    operations: operations::Store,
+    deferred: operations::DeferredWork,
     state: Loop,
     streams: std::collections::BTreeMap<String, misa_proto::sync::Stream>,
     stream_bytes: u64,
     view: canonical::Canonical,
+    publications: publication::Publications,
 }
 
 /// The composition a session runs. Named so a client can display it and a
@@ -123,12 +150,85 @@ impl Runtime {
         config: Value,
         contribution: Contribution,
     ) -> Arc<Runtime> {
+        let runtime=Self::prepare_with(id,title,conversation,kernel,provider,model,config,contribution);
+        runtime.activate();
+        runtime
+    }
+
+    /// Compose an owner without admitting startup effects. The daemon activates
+    /// it only after desired membership has committed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with(
+        id:impl Into<String>,title:impl Into<String>,conversation:Option<String>,kernel:Arc<dyn Kernel>,
+        provider:impl Into<String>,model:impl Into<String>,config:Value,contribution:Contribution,
+    )->Arc<Runtime> {
+        let tool_approval = operations::ToolApprovalPolicy::from_config(&config);
+        let parent_attempt = config.get("parent_attempt").and_then(Value::as_str).map(str::to_owned);
         let id = id.into();
         let provider = provider.into();
         let model = model.into();
         let created_ms = now_ms();
+        let command_registry = commands::install(&contribution.commands).expect("invalid command composition");
+        let tool_bindings=tool_bindings::install(&contribution.tools,&command_registry).expect("invalid tool composition");
+        let tool_schemas=tool_bindings::schemas(&tool_bindings,&command_registry);
+        let mut config=config.as_map().cloned().unwrap_or_default();
+        config.insert("installed_tools".into(),tool_schemas);
+        let config=Value::Map(Arc::new(config));
+        let command_catalogs = commands::catalogs(&command_registry, &contribution.bindings).expect("invalid action binding composition");
 
-        let registry = Arc::new(contribution.registry(agent::registry()));
+        let registry = contribution.registry(operations::registry(indicators::subscriptions(agent::registry())));
+        let mut indicators = indicators::builtins();
+        for indicator in &contribution.indicators {
+            indicators.register(indicator.clone()).expect("contribution validates indicator names");
+        }
+        let mut presentations = vec![misa_proto::presentation::Presentation {
+            id: "conversation".into(), title: "Conversation".into(), variants: vec![misa_proto::presentation::Variant {
+                id: "semantic".into(), requirements: vec![], member: misa_proto::observation::Member {
+                    query: misa_proto::Query::new(observation::CONVERSATION), contract: "conversation.presentation@1".into(),
+                    encoding: misa_proto::observation::Encoding::Document, optional: false,
+                },
+            }],
+        }];
+        presentations.push(misa_proto::presentation::Presentation {
+            id: "status".into(), title: "Status".into(), variants: vec![misa_proto::presentation::Variant {
+                id: "semantic".into(), requirements: vec![], member: indicators::definition().member(vec![]).expect("status contract"),
+            }],
+        });
+        presentations.extend(contribution.presentations.iter().cloned());
+        let catalog = wire::render(&presentations);
+        let catalog_export = misa_proto::presentation::definition();
+        if let misa_proto::query::ResultContract::Data { schema } = &catalog_export.result {
+            schema.validate(&catalog).expect("invalid presentation catalog data");
+        }
+        let mut registry = registry.subscription(indicators::MODEL_QUERY, indicators.subscription())
+            .subscription(indicators::DOCUMENT_QUERY, indicators.document())
+            .subscription(misa_proto::presentation::CATALOG, misa_reframe::derived_query([], move |_| catalog.clone()));
+        for (definition, value) in &command_catalogs {
+            let value = value.clone();
+            registry = registry.subscription(&definition.id, misa_reframe::derived_query([], move |_| value.clone()));
+        }
+        let mut exports = std::collections::BTreeMap::new();
+        let mut restricted_exports = std::collections::BTreeMap::new();
+        for (definition, project) in operations::restricted_exports() {
+            definition.check().expect("invalid restricted query contract");
+            assert!(!registry.query_ids().any(|id| id == definition.id), "restricted query cannot be installed in the shared graph");
+            assert!(restricted_exports.insert(definition.id.clone(), project).is_none(), "duplicate restricted query");
+            exports.insert(definition.id.clone(), definition);
+        }
+        for definition in observation::builtins().into_iter().chain(completions::exports()).chain(usage::exports()).chain(operations::definitions()).chain([catalog_export, misa_proto::query::catalog_definition(), indicators::definition()]).chain(command_catalogs.into_iter().map(|(definition, _)| definition)).chain(contribution.query_exports.iter().cloned()) {
+            definition.check().expect("invalid exported query contract");
+            assert!(definition.id == observation::CONVERSATION || definition.id == misa_proto::query::CATALOG || registry.query_ids().any(|id| id == definition.id), "export refers to a missing query");
+            assert!(exports.insert(definition.id.clone(), definition).is_none(), "duplicate exported query");
+        }
+        let query_catalog = wire::render(&exports.values().cloned().collect::<Vec<_>>());
+        let registry = Arc::new(registry.subscription(misa_proto::query::CATALOG, misa_reframe::derived_query([], move |_| query_catalog.clone())));
+        registry.validate().expect("invalid owner query composition");
+        for registration in command_registry.values() {
+            if let Some(event) = registration.event_kind() {
+                assert!(!registry.handlers_for(event).is_empty(), "command refers to an unhandled event");
+            }
+        }
+        misa_proto::presentation::validate_catalog(&presentations, &exports).expect("invalid installed presentation catalog");
         // Two channels, not one: a request goes out to the kernel and a report comes
         // back. The loop never awaits, and a kernel report re-enters it as an
         // ordinary event rather than as a callback from inside a transaction.
@@ -136,11 +236,17 @@ impl Runtime {
         let (kernel_events, mut kernel_reports) = mpsc::unbounded_channel::<KernelEvent>();
         let (events, _) = broadcast::channel::<Emission>(512);
         let (rev, _) = watch::channel(0u64);
+        let (closing, mut shutdown) = watch::channel(false);
+        let (stopped, stopped_rx) = watch::channel(false);
         // A kernel that reports on its own schedule — a background command finishing — needs a
         // reader that is not a request. There is exactly one such stream, so there is one task.
         let unsolicited = kernel.events();
 
+        let mut epoch = [0u8; 16];
+        getrandom::fill(&mut epoch).expect("session incarnation requires system randomness");
+        let epoch = epoch.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         let mut initial = contribution.initial_state(&id, &provider, &model, created_ms);
+        initial = misa_value::apply_one(&initial, &misa_value::Path::parse("session.incarnation").unwrap(), &misa_value::Op::Set(Value::str(&epoch))).unwrap();
         if let Some(conversation) = &conversation {
             initial = misa_value::apply_one(&initial, &misa_value::Path::parse("session.conversation").unwrap(), &misa_value::Op::Set(Value::str(conversation))).unwrap();
             initial = misa_value::apply_one(&initial, &misa_value::Path::parse("session.status").unwrap(), &misa_value::Op::Set(Value::str("loading"))).unwrap();
@@ -167,12 +273,10 @@ impl Runtime {
             sources: catalog::sources(),
         };
 
-        let mut epoch = [0u8; 16];
-        getrandom::fill(&mut epoch).expect("session incarnation requires system randomness");
-        let epoch = epoch.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-        let view = canonical::Canonical::new(state.db(), &contribution.sections, epoch);
+        let view = canonical::Canonical::new(state.db(), &contribution.sections, epoch.clone());
         let runtime = Arc::new(Runtime {
-            state: Mutex::new(State { state, view, streams: Default::default(), stream_bytes: 0 }),
+            reports: Mutex::new(Default::default()),
+            state: Mutex::new(State { operations: Default::default(), deferred: Default::default(), state, view, streams: Default::default(), stream_bytes: 0, publications: Default::default() }),
             sections: contribution.sections,
             to_kernel: to_kernel.clone(),
             rev,
@@ -183,40 +287,102 @@ impl Runtime {
             info,
             provider,
             model,
+            incarnation: epoch,
+            parent_attempt,
+            exports,
+            restricted_exports,
+            command_registry,
+            tool_bindings,
+            tool_invocations: Mutex::new(Default::default()),
+            operation_deadline: watch::channel(None).0,
+            tool_approval,
+            closed: AtomicBool::new(false),
+            started: AtomicBool::new(false),
+            closing,
+            stopped: stopped_rx,
         });
 
         if let Some(mut unsolicited) = unsolicited {
-            let reports = runtime.clone();
+            let reports = Arc::downgrade(&runtime);
             tokio::spawn(async move {
                 while let Some(report) = unsolicited.recv().await {
+                    let Some(reports) = reports.upgrade() else { break; };
                     reports.dispatch(agent::event_for(report));
                 }
             });
         }
 
         tokio::spawn(async move {
-            while let Some(request) = from_loop.recv().await {
-                let kernel = kernel.clone();
-                let out = kernel_events.clone();
-                if matches!(request, Request::Append { .. } | Request::Load { .. }) {
-                    kernel.execute(request, &out).await;
-                } else {
-                    tokio::spawn(async move { kernel.execute(request, &out).await; });
+            let mut work = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => break,
+                    _ = work.join_next(), if !work.is_empty() => {},
+                    request = from_loop.recv(), if work.len() < 64 => {
+                        let Some(request) = request else { break; };
+                        let kernel = kernel.clone();
+                        let out = kernel_events.clone();
+                        if matches!(request, Request::Append { .. } | Request::Load { .. }) {
+                            tokio::select! {
+                                _ = shutdown.changed() => break,
+                                _ = kernel.execute(request, &out) => {},
+                            }
+                        } else {
+                            work.spawn(async move { kernel.execute(request, &out).await; });
+                        }
+                    }
                 }
             }
+            work.abort_all();
+            while work.join_next().await.is_some() {}
+            kernel.close(&kernel_events).await;
+            stopped.send_replace(true);
         });
 
-        let reports = runtime.clone();
+        let reports = Arc::downgrade(&runtime);
         tokio::spawn(async move {
             while let Some(report) = kernel_reports.recv().await {
+                let Some(reports) = reports.upgrade() else { break; };
                 reports.dispatch(agent::event_for(report));
             }
         });
 
-        if let Some(conversation) = &runtime.info.conversation {
-            let _ = to_kernel.send(Request::Load { conversation: conversation.clone(), after: 0, limit: i64::MAX as usize });
-        }
+        operations::start_expiry_loop(&runtime);
         runtime
+    }
+
+    pub fn is_started(&self)->bool {self.started.load(Ordering::Acquire)}
+    pub fn activate(&self) {
+        if self.is_closed() || self.started.swap(true,Ordering::AcqRel) {return}
+        self.dispatch(Event::new("session/started"));
+        if let Some(conversation)=&self.info.conversation {
+            let _=self.to_kernel.send(Request::Load{conversation:conversation.clone(),after:0,limit:i64::MAX as usize});
+        }
+    }
+
+    pub fn is_closed(&self) -> bool { self.closed.load(Ordering::Acquire) }
+
+    /// Closing the owner invalidates existing observations even while clients
+    /// still hold Arcs. Submitted external effects cannot be rolled back.
+    pub fn shutdown(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) { return; }
+        self.closing.send_replace(true);
+        self.reports.lock().expect("report queue poisoned").clear();
+        self.tool_invocations.lock().expect("tool correlations poisoned").clear();
+        let mut state = self.state.lock().expect("session state is never poisoned");
+        self.fail_operation_checkpoints(&mut state);
+        state.publications.commit(vec![]);
+        self.rev.send_replace(state.state.rev());
+    }
+
+    /// Wait until this owner's tracked kernel futures have been dropped.
+    /// Already committed external effects remain authoritative.
+    pub async fn shutdown_complete(&self) {
+        self.shutdown();
+        let mut stopped = self.stopped.clone();
+        while !*stopped.borrow_and_update() {
+            if stopped.changed().await.is_err() { break; }
+        }
     }
 
     pub fn id(&self) -> &str {
@@ -269,44 +435,26 @@ impl Runtime {
     /// Everything that leaves this method has already committed. An effect the
     /// interpreter refused was refused *before* the commit, so a client can never
     /// observe a state that asked for something impossible.
-    pub fn dispatch(&self, mut event: Event) -> Vec<Fault> {
+    fn dispatch_once(&self, event: Event) -> Vec<Fault> {
+        if self.is_closed() { return vec![Fault::new("closed_scope", "Session owner is closed")]; }
+        if !self.is_started() {return vec![Fault::new("not_ready","Session owner has not been activated")];}
+        if let Some(faults) = self.operation_checkpoint_event(&event) { return faults; }
+        let event = if event.kind == "kernel/log.failed" && event.get("kind").and_then(Value::as_str) != Some(contribution::PATCH_KIND) {
+            Event::new("kernel/failed").with("id", event.get("conversation").cloned().unwrap_or(Value::Null))
+                .with("message", event.get("message").cloned().unwrap_or(Value::Null))
+        } else { event };
+        if let Some(faults) = self.credential_event(&event) { return faults; }
         if matches!(event.kind.as_str(), "kernel/provider.delta" | "kernel/provider.thinking") {
             self.append_stream(&event);
             return Vec::new();
         }
         let outcome = {
             let mut state = self.state.lock().expect("session state is never poisoned");
-            if matches!(event.kind.as_str(), "intent/cancel" | "intent/interrupt") {
-                if let Some(seq) = pending_seq(state.state.db()) {
-                    for (field, suffix) in [("text", "text"), ("thinking", "thinking")] {
-                        let text = state.streams.get(&format!("msg.{seq}.{suffix}")).map(|stream| stream.text.clone()).unwrap_or_default();
-                        event = event.with(field, Value::str(text));
-                    }
-                }
-            }
-            state.state.set_clock(now_ms());
-            let previous = pending_seq(state.state.db());
-            let outcome = state.state.dispatch(event);
+            let (event, restored) = operations::restore_event(event);
+            let mut outcome = self.dispatch_locked(&mut state, event);
             if outcome.committed() {
-                let State { state: loop_, view, .. } = &mut *state;
-                view.advance(loop_.db(), &outcome.changes, &self.sections, loop_.rev());
-            }
-            let current = pending_seq(state.state.db());
-            if previous != current {
-                if let Some(seq) = previous {
-                    for suffix in ["text", "thinking"] {
-                        let id = format!("msg.{seq}.{suffix}");
-                        state.streams.remove(&id);
-                        self.emit(SessionEvent::Stream { update: misa_proto::sync::StreamUpdate::End { id } });
-                    }
-                }
-                if let Some(seq) = current {
-                    for (suffix, role) in [("text", "message.assistant"), ("thinking", "message.assistant.thinking")] {
-                        let stream = misa_proto::sync::Stream { id: format!("msg.{seq}.{suffix}"), role: role.into(), text: String::new() };
-                        state.streams.insert(stream.id.clone(), stream.clone());
-                        self.emit(SessionEvent::Stream { update: misa_proto::sync::StreamUpdate::Current { stream } });
-                    }
-                }
+                if let Some(restored) = restored { state.operations = restored; state.deferred.clear(); }
+                self.queue_operation_checkpoint(&mut state, &mut outcome.effects, &mut None);
             }
             outcome
         };
@@ -322,6 +470,53 @@ impl Runtime {
         faults
     }
 
+    /// Caller holds the owner lock; publication and stream retirement share the commit.
+    fn dispatch_locked(&self, state: &mut State, mut event: Event) -> misa_reframe::Outcome {
+            if matches!(event.kind.as_str(), "intent/cancel" | "intent/interrupt") {
+                if let Some(seq) = pending_seq(state.state.db()) {
+                    for (field, suffix) in [("text", "text"), ("thinking", "thinking")] {
+                        let text = state.streams.get(&format!("msg.{seq}.{suffix}")).map(|stream| stream.text.clone()).unwrap_or_default();
+                        event = event.with(field, Value::str(text));
+                    }
+                }
+            }
+            state.state.set_clock(now_ms());
+            let previous = pending_seq(state.state.db());
+            let outcome = state.state.dispatch(event);
+            if outcome.committed() {
+                state.operations.reconcile(state.state.db());
+                self.operation_deadline.send_replace(state.operations.deadline());
+                let State { state: loop_, view, .. } = state;
+                view.advance(loop_.db(), &outcome.changes, &self.sections, loop_.rev());
+            }
+            let current = pending_seq(state.state.db());
+            let mut stream_updates = Vec::new();
+            if previous != current {
+                if let Some(seq) = previous {
+                    for suffix in ["text", "thinking"] {
+                        let id = format!("msg.{seq}.{suffix}");
+                        state.streams.remove(&id);
+                        let update = misa_proto::sync::StreamUpdate::End { id };
+                        stream_updates.push(update.clone());
+                        self.emit(SessionEvent::Stream { update });
+                    }
+                }
+                if let Some(seq) = current {
+                    for (suffix, role) in [("text", "message.assistant"), ("thinking", "message.assistant.thinking")] {
+                        let stream = misa_proto::sync::Stream { id: format!("msg.{seq}.{suffix}"), role: role.into(), text: String::new() };
+                        state.streams.insert(stream.id.clone(), stream.clone());
+                        let update = misa_proto::sync::StreamUpdate::Current { stream };
+                        stream_updates.push(update.clone());
+                        self.emit(SessionEvent::Stream { update });
+                    }
+                }
+            }
+            if outcome.committed() || !stream_updates.is_empty() {
+                state.publications.commit(stream_updates);
+            }
+            outcome
+    }
+
     fn append_stream(&self, event: &Event) {
         let mut state = self.state.lock().expect("session state is never poisoned");
         let pending = state.state.db().get("session").and_then(|session| session.get("pending"));
@@ -334,7 +529,9 @@ impl Runtime {
         let offset = stream.text.len();
         stream.text.push_str(text);
         state.stream_bytes += text.len() as u64;
-        self.emit(SessionEvent::Stream { update: misa_proto::sync::StreamUpdate::Append { id, offset, text: text.into() } });
+        let update = misa_proto::sync::StreamUpdate::Append { id, offset, text: text.into() };
+        state.publications.commit(vec![update.clone()]);
+        self.emit(SessionEvent::Stream { update });
     }
 
     pub fn streams(&self) -> Vec<misa_proto::sync::Stream> {
@@ -367,12 +564,7 @@ impl Runtime {
                     });
                 }
                 "kernel.tool.run" => {
-                    let _ = self.to_kernel.send(Request::ToolRun {
-                        id: fields::text(effect, "id"),
-                        call_id: fields::text(effect, "call_id"),
-                        name: fields::text(effect, "name"),
-                        args: fields::value(effect, "args"),
-                    });
+                    self.approve_tool(effect);
                 }
                 "kernel.log.append" => {
                     let _ = self.to_kernel.send(Request::Append {
@@ -416,9 +608,9 @@ impl Runtime {
                 "kernel.attempt.started" => {
                     let conversation = fields::text(effect, "conversation");
                     let _ = self.to_kernel.send(Request::AttemptStarted {
-                        id: fields::text(effect, "id"),
+                        id: format!("{}:{}", self.incarnation, fields::text(effect, "id")),
                         conversation: (!conversation.is_empty()).then_some(conversation),
-                        parent: None,
+                        parent: self.parent_attempt.clone(),
                         provider: fields::text(effect, "provider"),
                         model: fields::text(effect, "model"),
                         kind: fields::text(effect, "kind"),
@@ -449,7 +641,7 @@ impl Runtime {
                 }
                 "kernel.attempt.settled" => {
                     let _ = self.to_kernel.send(Request::AttemptSettled {
-                        id: fields::text(effect, "id"),
+                        id: format!("{}:{}", self.incarnation, fields::text(effect, "id")),
                         status: fields::text(effect, "status"),
                         input_tokens: fields::int(effect, "input_tokens"),
                         output_tokens: fields::int(effect, "output_tokens"),
@@ -1285,7 +1477,7 @@ mod contribution_tests {
 
     use misa_kernel::{Provider, ScriptedProvider, Store};
     use misa_proto::view::{Kind, Node};
-    use misa_reframe::{Event, FnHandler, Inputs, Subscription, Tx};
+    use misa_reframe::{Event, FnHandler, Subscription, Tx};
     use misa_value::Value;
 
     /// A handler a composition brought: it writes into the root the contribution declared.
@@ -1299,11 +1491,10 @@ mod contribution_tests {
     /// A subscription over the root that handler writes, so a test can read it the way a client
     /// would: as a query.
     fn reading() -> Subscription {
-        Subscription {
-            inputs: Inputs::Database,
-            compute: Arc::new(|db, _inputs, _query, _previous| {
+        Subscription::Read {
+            read: Arc::new(|db, _query, _previous| Ok({
                 db.get("guest").and_then(|guest| guest.get("seen")).cloned().unwrap_or(Value::Null)
-            }),
+            })),
         }
     }
 
@@ -1355,7 +1546,7 @@ mod contribution_tests {
     fn presenting(plugin: &'static str) -> views::Section {
         views::Section {
             inputs: vec![misa_value::Path::root()],
-            plugin: plugin.to_string(),
+            namespace: format!("plugin.{plugin}"),
             build: std::sync::Arc::new(|db| {
                 let mut tree = Node::section("test.widget").id("widget");
                 tree.label = Some(format!("{} bytes of state", misa_render::to_plain(&[]).len()));
@@ -1426,7 +1617,7 @@ mod contribution_tests {
         // difference between a widget that is missing and a session whose view nobody can draw.
         let broken = views::Section {
             inputs: vec![misa_value::Path::root()],
-            plugin: "test.broken".to_string(),
+            namespace: "plugin.test.broken".to_string(),
             build: std::sync::Arc::new(|_db| Err("nothing to draw".to_string())),
         };
         let runtime = session(Contribution::new().with_section(broken));
@@ -1486,11 +1677,10 @@ mod contribution_tests {
     /// A subscription over the root the acted handler writes, so a test can read it as a client
     /// would.
     fn reading_acted() -> Subscription {
-        Subscription {
-            inputs: Inputs::Database,
-            compute: Arc::new(|db, _inputs, _query, _previous| {
+        Subscription::Read {
+            read: Arc::new(|db, _query, _previous| Ok({
                 db.get("guest").and_then(|guest| guest.get("acted")).cloned().unwrap_or(Value::Null)
-            }),
+            })),
         }
     }
 
@@ -1499,9 +1689,8 @@ mod contribution_tests {
     /// `reading` answers one key inside the root, which is what most of these tests want; this
     /// answers the root itself, which is the only way to see a patch whose path *is* the root.
     fn reading_all() -> Subscription {
-        Subscription {
-            inputs: Inputs::Database,
-            compute: Arc::new(|db, _inputs, _query, _previous| db.get("guest").cloned().unwrap_or(Value::Null)),
+        Subscription::Read {
+            read: Arc::new(|db, _query, _previous| Ok(db.get("guest").cloned().unwrap_or(Value::Null))),
         }
     }
 

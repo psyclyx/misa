@@ -6,8 +6,8 @@
 //!   subscribes once and filters locally. Nothing is asked for while someone types,
 //!   which is what makes a picker feel immediate, and it works with no round trip,
 //!   no correlation, and no latency.
-//! - An **on-demand** source is an intent. It is large, dynamic, or a capability,
-//!   so a client asks for a prefix and is answered with candidates it did not have.
+//! - An **on-demand** source is a finite query with a prefix and result bound.
+//!   Reading it never starts an effect or mutates the session.
 //!
 //! What is *not* here: matching, ranking, frecency, key bindings, layout, and when to
 //! open. Those are the client's, and `misa-kit`'s picker is one implementation of
@@ -23,7 +23,7 @@
 
 use misa_proto::view::Choice;
 use misa_proto::{Fault, Query};
-use misa_reframe::{Registry, read_query};
+use misa_reframe::{Registry, read_query, try_derived_query, Inputs};
 use misa_value::Value;
 
 use crate::catalog;
@@ -105,40 +105,6 @@ pub fn subscriptions(registry: Registry) -> Registry {
             }),
         )
         .subscription(
-            // The value a client accepts is what a person would have typed, so a
-            // command's candidate carries its slash. The declaration omits it
-            // because a slash is punctuation and punctuation belongs to whoever is
-            // writing the line.
-            misa_proto::completion::COMMANDS_QUERY,
-            read_query(|_db, _query| {
-                Value::list(
-                    catalog::commands()
-                        .into_iter()
-                        .map(|command| {
-                            let args = command
-                                .args
-                                .iter()
-                                .map(|arg| arg.label.clone())
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            Value::map([
-                                ("value", Value::str(format!("/{}", command.id))),
-                                ("label", Value::str(format!("/{}", command.id))),
-                                (
-                                    "detail",
-                                    Value::str(if args.is_empty() {
-                                        command.description.clone()
-                                    } else {
-                                        format!("{} — {args}", command.description)
-                                    }),
-                                ),
-                            ])
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            }),
-        )
-        .subscription(
             // The services the kernel knows by name. The list is the *daemon's*, not the
             // client's, because which services exist is a composition decision.
             misa_proto::completion::PROVIDERS_QUERY,
@@ -172,6 +138,76 @@ pub fn subscriptions(registry: Registry) -> Registry {
             CONVERSATIONS_QUERY,
             read_query(|db, _query| db.get("conversations").cloned().unwrap_or(Value::list([]))),
         )
+        .subscription(misa_proto::preparation::SOURCES, misa_reframe::derived_query([], |_| crate::wire::render(&sources())))
+        .subscription(misa_proto::preparation::SEARCH, try_derived_query(
+            Inputs::Dynamic(std::sync::Arc::new(|query| {
+                let (source, _, _) = search_args(query)?;
+                match source_query(source) {
+                    Some(id) => Ok(vec![Query::new(id)]),
+                    None if source == misa_proto::completion::CONVERSATIONS => Ok(vec![Query::new(CONVERSATIONS_QUERY), Query::new("session.status")]),
+                    _ => Err(misa_reframe::Fault::query("Unknown completion source")),
+                }
+            })),
+            |inputs, query, _| {
+                let (source, prefix, limit) = search_args(query)?;
+                let (items, truncated) = if source == misa_proto::completion::CONVERSATIONS {
+                    let db = Value::map([("conversations", inputs[0].clone()), ("session", inputs[1].clone())]);
+                    on_demand(&db, source, prefix, limit).map_err(|fault| misa_reframe::Fault::new(fault.code, fault.message))?
+                } else {
+                    let all: Vec<Choice> = crate::wire::parse(&inputs[0]).map_err(misa_reframe::Fault::query)?;
+                    let needle = prefix.to_lowercase();
+                    let mut matches = all.into_iter().filter(|choice| choice.value.to_lowercase().contains(&needle) || choice.label.to_lowercase().contains(&needle));
+                    let items = matches.by_ref().take(limit as usize).collect();
+                    (items, matches.next().is_some())
+                };
+                Ok(crate::wire::render(&misa_proto::preparation::Candidates { items, truncated }))
+            },
+        ))
+}
+
+fn search_args(query: &Query) -> Result<(&str, &str, u32), misa_reframe::Fault> {
+    if query.args.len() != 3 { return Err(misa_reframe::Fault::query("Completion search needs source, prefix and limit")); }
+    let source = query.args[0].as_str().ok_or_else(|| misa_reframe::Fault::query("Completion source must be text"))?;
+    let prefix = query.args[1].as_str().ok_or_else(|| misa_reframe::Fault::query("Completion prefix must be text"))?;
+    let limit = query.args[2].as_i64().filter(|limit| *limit > 0 && *limit <= misa_proto::wire::DEFAULT_CANDIDATES as i64)
+        .ok_or_else(|| misa_reframe::Fault::query("Completion limit is outside its bounded range"))? as u32;
+    Ok((source, prefix, limit))
+}
+
+pub fn sources() -> Vec<misa_proto::preparation::Source> {
+    catalog::sources().into_iter().map(|source| {
+        let query = match source.kind {
+            misa_proto::wire::SourceKind::Resident => Query::new(source.query()),
+            misa_proto::wire::SourceKind::OnDemand => Query::new(misa_proto::preparation::SEARCH)
+                .arg(Value::str(&source.id)).arg(Value::str("")).arg(Value::Int(misa_proto::wire::DEFAULT_CANDIDATES as i64)),
+        };
+        misa_proto::preparation::Source { id: source.id, label: source.label, kind: source.kind,
+            member: misa_proto::observation::Member { contract: format!("{}@1", query.id), query,
+                encoding: misa_proto::observation::Encoding::Value, optional: false },
+        }
+    }).collect()
+}
+
+pub fn exports() -> Vec<misa_proto::query::Definition> {
+    use misa_proto::{query::{Definition, ResultContract}, schema::{Field, Schema}};
+    let choices = Schema::List { items: Box::new(Schema::Record {
+        fields: [("value", false), ("label", false), ("detail", true)].into_iter().map(|(name, optional)| (name.into(), Field { schema: Schema::String, optional })).collect(), allow_unknown: false,
+    }) };
+    let mut definitions = sources().into_iter().filter(|source| source.kind == misa_proto::wire::SourceKind::Resident && source.member.query.id != misa_proto::completion::COMMANDS_QUERY).map(|source| Definition {
+        id: source.member.query.id, arguments: vec![], contract: source.member.contract, result: ResultContract::Data { schema: choices.clone() },
+    }).collect::<Vec<_>>();
+    definitions.push(Definition { id: misa_proto::preparation::SEARCH.into(), arguments: vec![Schema::String, Schema::String, Schema::Int], contract: "completion.search@1".into(), result: ResultContract::Data {
+        schema: Schema::Record { fields: [("items".into(), Field { schema: choices, optional: false }), ("truncated".into(), Field { schema: Schema::Bool, optional: false })].into_iter().collect(), allow_unknown: false },
+    } });
+    definitions.push(Definition { id: misa_proto::preparation::SOURCES.into(), arguments: vec![], contract: "completion.catalog@1".into(), result: ResultContract::Data { schema: Schema::List { items: Box::new(Schema::Value) } } });
+    definitions
+}
+
+pub(crate) fn command_definition() -> misa_proto::query::Definition {
+    use misa_proto::{query::{Definition, ResultContract}, schema::{Schema, Field}};
+    Definition { id: misa_proto::completion::COMMANDS_QUERY.into(), arguments: vec![], contract: format!("{}@1", misa_proto::completion::COMMANDS_QUERY), result: ResultContract::Data { schema: Schema::List { items: Box::new(Schema::Record {
+        fields: [("value", false), ("label", false), ("detail", true)].into_iter().map(|(name, optional)| (name.into(), Field { schema: Schema::String, optional })).collect(), allow_unknown: false,
+    }) } } }
 }
 
 /// Answer an on-demand source.
@@ -290,8 +326,30 @@ mod tests {
     }
 
     fn loop_with_completions() -> Loop {
-        let registry = std::sync::Arc::new(subscriptions(Registry::new()));
+        let mut registry = subscriptions(Registry::new().subscription("session.status", read_query(|db, _| db.get("session").cloned().unwrap_or(Value::Null))));
+        for (definition, value) in crate::commands::catalogs(&crate::commands::install(&[]).unwrap(), &[]).unwrap() {
+            registry = registry.subscription(&definition.id, misa_reframe::derived_query([], move |_| value.clone()));
+        }
+        let registry = std::sync::Arc::new(registry);
         Loop::new(registry, std::sync::Arc::new(misa_reframe::AcceptsEverything), db())
+    }
+
+    #[test]
+    fn finite_search_is_bounded_and_does_not_mutate_owner_state() {
+        let mut owner = loop_with_completions();
+        let query = Query::new(misa_proto::preparation::SEARCH)
+            .arg(Value::str("conversations")).arg(Value::str("")).arg(Value::Int(1));
+        let before = owner.db().clone();
+        let value = owner.query(&query).unwrap();
+        let answer: misa_proto::preparation::Candidates = crate::wire::parse(&value).unwrap();
+        assert_eq!(answer.items.len(), 1);
+        assert!(answer.truncated);
+        assert!(before.same(owner.db()));
+        for limit in [0, -1, i64::MAX] {
+            let invalid = Query::new(misa_proto::preparation::SEARCH)
+                .arg(Value::str("models")).arg(Value::str("")).arg(Value::Int(limit));
+            assert!(owner.query(&invalid).is_err());
+        }
     }
 
     #[test]

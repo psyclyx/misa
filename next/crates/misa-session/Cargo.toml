@@ -14,6 +14,7 @@ misa-protocol.workspace = true
 misa-reframe.workspace = true
 misa-value.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

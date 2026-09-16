@@ -54,10 +54,15 @@ use crate::views;
 
 /// Every handler and subscription the shipped agent loop installs.
 pub fn registry() -> Registry {
-    views::subscriptions(Registry::new())
+    crate::completions::subscriptions(crate::usage::subscriptions(views::subscriptions(Registry::new())))
+        .on_fn("session/started", 0, "agent.discovery", on_started)
+        .on_fn("discovery/models.refresh", 0, "agent.models.refresh", |tx, _| refresh_models(tx))
+        .on_fn("discovery/usage.refresh", 0, "agent.usage.refresh", |tx, _| refresh_usage(tx))
+        .on_fn("discovery/conversations.refresh", 0, "agent.conversations.refresh", |tx, _| { refresh_conversations(tx); Ok(()) })
         .on_fn("intent/prompt", 0, "agent.prompt", on_prompt)
         .on_fn("intent/interrupt", 0, "agent.interrupt", on_interrupt)
         .on_fn("intent/cancel", 0, "agent.cancel", on_cancel)
+        .on_fn("operation/prompt.cancel", 0, "agent.prompt.cancel", on_prompt_cancel)
         .on_fn("intent/command", 0, "agent.command", on_command)
         .on_fn("clients/changed", 0, "agent.clients", on_clients_changed)
         .on_fn("intent/action", 0, "agent.action", on_action)
@@ -198,6 +203,9 @@ pub fn event_for(event: KernelEvent) -> Event {
             Event::new("kernel/failed").with("id", Value::str(id)).with("message", Value::str(message))
         }
         // Durable acknowledgment is the only point at which a fact joins canonical state.
+        KernelEvent::AppendFailed { conversation, kind, data, message } => Event::new("kernel/log.failed")
+            .with("conversation", Value::str(conversation)).with("kind", Value::str(kind))
+            .with("data", data).with("message", Value::str(message)),
         KernelEvent::Appended { conversation, seq, kind, data } => Event::new("kernel/log.appended")
             .with("conversation", Value::str(conversation)).with("seq", Value::Int(seq))
             .with("kind", Value::str(kind)).with("data", data),
@@ -222,19 +230,24 @@ fn on_interrupt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     if text.trim().is_empty() && attachments.as_list().is_none_or(|items| items.is_empty()) {
         return Err(Fault::handler("a prompt with no text or attachments"));
     }
+    let operation = crate::operations::admit_prompt(tx, event)?;
     let status = tx.text("session.status");
-    if status == "idle" { return begin_turn(tx, &text, attachments); }
+    if status == "idle" { return begin_turn(tx, &text, attachments, operation); }
     let id = next_id(tx, "session.queue_seq")?;
     let mut queue = vec![Value::map([
         ("text", Value::str(text)), ("attachments", attachments),
         ("state", Value::str("waiting")), ("id", Value::Int(id)),
-        ("interrupt", Value::Bool(true)),
+        ("interrupt", Value::Bool(true)), ("operation", operation),
     ])];
     queue.extend(tx.get("session.queue").and_then(Value::as_list).unwrap_or(&[]).iter().cloned());
     tx.set("session.queue", Value::list(queue))?;
     // A completed answer already being journalled must settle once. Its log reply
     // drains the priority prompt; cancelling it here would append a second answer.
-    if matches!(status.as_str(), "recording" | "tools") { return Ok(()); }
+    if matches!(status.as_str(), "recording" | "tools") {
+        let active = tx.get("session.operation").cloned().unwrap_or(Value::Null);
+        crate::operations::cancel_prompt_inputs(tx, &active)?;
+        return Ok(());
+    }
     let pending = tx.get("session.pending").is_some();
     on_cancel(tx, event)?;
     if !pending { tx.dispatch(Event::new("queue/next")); }
@@ -247,6 +260,7 @@ fn on_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     if text.trim().is_empty() && attachments.as_list().is_none_or(|items| items.is_empty()) {
         return Err(Fault::handler("a prompt with no text or attachments"));
     }
+    let operation = crate::operations::admit_prompt(tx, event)?;
     if tx.text("session.status") != "idle" {
         let waiting = queue_len(tx) + 1;
         let queue_id = next_id(tx, "session.queue_seq")?;
@@ -257,23 +271,27 @@ fn on_prompt(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                 ("attachments", attachments),
                 ("state", Value::str("waiting")),
                 ("id", Value::Int(queue_id)),
+                ("operation", operation),
             ]),
         )?;
         notice(tx, Level::Info, format!("queued ({waiting} waiting)"))?;
         return Ok(());
     }
-    begin_turn(tx, &text, attachments)
+    begin_turn(tx, &text, attachments, operation)
 }
 
 /// Start a turn: record the user message, mark the session thinking, ask for a step.
 ///
 /// One function because a submission and a queue drain both begin a turn, and two copies
 /// of this would be two places for the ordering to drift.
-fn begin_turn(tx: &mut Tx<'_>, text: &str, attachments: Value) -> Result<(), Fault> {
+fn begin_turn(tx: &mut Tx<'_>, text: &str, attachments: Value, operation: Value) -> Result<(), Fault> {
+    crate::operations::prompt_state(tx, &operation, "running", None)?;
+    tx.set("session.operation", operation.clone())?;
     let turn = tx.int("session.turn") + 1;
     let message = Value::map([
         ("seq", Value::Int(turn)),
         ("role", Value::str("user")),
+        ("operation", operation),
         ("text", Value::str(text)),
         ("state", Value::str("done")),
         ("attachments", attachments),
@@ -302,16 +320,15 @@ fn on_queue_next(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
         return Ok(());
     };
     let text = head.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
-    tx.delete("session.queue[0]")?;
-    // These requests interrupted the previous active turn, not the priority turn
-    // that is now starting. Keep their order, but consume their cancellation marks.
+    let mut remaining = tx.get("session.queue").and_then(Value::as_list).unwrap_or(&[]).iter().skip(1).cloned().collect::<Vec<_>>();
+    // Consume cancellation marks for the prior active turn atomically with dequeue.
     if head.get("interrupt").and_then(Value::as_bool).unwrap_or(false) {
-        for index in 0..queue_len(tx) {
-            let path = format!("session.queue[{index}].interrupt");
-            if tx.get(&path).is_some() { tx.delete(&path)?; }
+        for entry in &mut remaining {
+            if let Value::Map(fields) = entry { std::sync::Arc::make_mut(fields).remove("interrupt"); }
         }
     }
-    begin_turn(tx, &text, head.get("attachments").cloned().unwrap_or_else(|| Value::list([])))
+    tx.set("session.queue", Value::list(remaining))?;
+    begin_turn(tx, &text, head.get("attachments").cloned().unwrap_or_else(|| Value::list([])), head.get("operation").cloned().unwrap_or(Value::Null))
 }
 
 /// Take a queued prompt back into the draft.
@@ -326,6 +343,7 @@ fn on_queue_take(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     }
     let entry = tx.get(&format!("session.queue[{}]", last - 1)).cloned().unwrap_or(Value::Null);
     let text = entry.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+    crate::operations::prompt_state(tx, &entry.get("operation").cloned().unwrap_or(Value::Null), "cancelled", None)?;
     tx.delete(&format!("session.queue[{}]", last - 1))?;
     tx.fx(Effect::new("wire.event").with(
         "event",
@@ -335,6 +353,8 @@ fn on_queue_take(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
 }
 
 fn on_queue_clear(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
+    let queue = tx.get("session.queue").and_then(Value::as_list).unwrap_or(&[]).to_vec();
+    for entry in queue { crate::operations::prompt_state(tx, &entry.get("operation").cloned().unwrap_or(Value::Null), "cancelled", None)?; }
     tx.set("session.queue", Value::list([]))?;
     notice(tx, Level::Info, "queue cleared")?;
     Ok(())
@@ -377,16 +397,38 @@ fn submitted_attachments(tx: &Tx<'_>, event: &Event) -> Value {
     Value::list(out)
 }
 
+fn on_prompt_cancel(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let id = event.get("operation").cloned().unwrap_or(Value::Null);
+    if tx.get("session.operation") == Some(&id) { return on_cancel(tx, event); }
+    let queue = tx.get("session.queue").and_then(Value::as_list).unwrap_or(&[]).iter()
+        .filter(|entry| entry.get("operation") != Some(&id)).cloned().collect::<Vec<_>>();
+    tx.set("session.queue", Value::list(queue))?;
+    crate::operations::prompt_state(tx, &id, "cancelled", None)
+}
+
 fn on_cancel(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     if tx.text("session.status") == "idle" { return Ok(()) }
+    let operation = tx.get("session.operation").cloned().unwrap_or(Value::Null);
+    if let Some(index) = tx.get("prompt_operations").and_then(Value::as_list).unwrap_or(&[]).iter().position(|record| record.get("id") == Some(&operation)) {
+        let base = format!("prompt_operations[{index}]");
+        if tx.text(&format!("{base}.state")) == "cancelling" { return Ok(()); }
+        let generation = tx.int(&format!("{base}.generation")) + 1;
+        tx.set(&format!("{base}.generation"), Value::Int(generation))?;
+        crate::operations::prompt_state(tx, &operation, "cancelling", None)?;
+    }
+    crate::operations::cancel_prompt_inputs(tx, &operation)?;
     if let Some(seq) = tx.get("session.pending").and_then(|pending| pending.get("seq")).and_then(Value::as_i64) {
         tx.fx(log_effect(tx, "message", Value::map([
             ("seq", Value::Int(seq)), ("role", Value::str("assistant")), ("state", Value::str("cancelled")),
+            ("operation", tx.get("session.operation").cloned().unwrap_or(Value::Null)),
             ("text", fields::event_value(event, "text")), ("thinking", fields::event_value(event, "thinking")),
             ("calls", Value::list([])), ("attachments", Value::list([])),
         ])));
         tx.set("session.status", Value::str("recording"))?;
-    } else { tx.set("session.status", Value::str("idle"))?; }
+    } else {
+        crate::operations::settle_prompt(tx, "cancelled", None)?;
+        tx.set("session.status", Value::str("idle"))?;
+    }
     tx.delete("session.pending")?;
     tx.delete("session.compacting")?;
     tx.fx(notice_effect(Level::Warn, "cancelled"));
@@ -440,16 +482,21 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         }
         "model" => {
             let id = argument(&args, "model").unwrap_or_default();
-            let Some(model) = crate::catalog::model(id) else {
+            let known = crate::catalog::model(id);
+            let discovered = tx.get("session.catalogue")
+                .filter(|catalogue| catalogue.get("provider").and_then(Value::as_str) == Some(tx.text("session.provider").as_str()))
+                .and_then(|catalogue| catalogue.get("models")).and_then(Value::as_list)
+                .is_some_and(|models| models.iter().any(|model| model.get("id").and_then(Value::as_str) == Some(id)));
+            if known.is_none() && !discovered {
                 return Err(Fault::new("model.unknown", format!("no model named `{id}`")));
-            };
-            tx.set("session.model", Value::str(model.id))?;
+            }
+            tx.set("session.model", Value::str(id))?;
             // Effort is a property of the model, so selecting a model that does not take one
             // clears it rather than leaving a setting nothing reads.
-            if !model.effort {
+            if !known.is_some_and(|model| model.effort) {
                 tx.set("session.effort", Value::Null)?;
             }
-            notice(tx, Level::Info, format!("model: {}", model.label))?;
+            notice(tx, Level::Info, format!("model: {}", known.map(|model| model.label).unwrap_or(id)))?;
         }
         "effort" => {
             let level = argument(&args, "level").unwrap_or_default();
@@ -512,11 +559,7 @@ fn on_command(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         "models" => {
             // Asking a service for its list is one request with one answer, and the answer
             // arrives as an event rather than here: a handler does not await.
-            let provider = tx.text("session.provider");
-            tx.fx(Effect::new("kernel.models.discover")
-                .with("id", Value::str("models"))
-                .with("provider", Value::str(&provider)));
-            notice(tx, Level::Info, format!("asking `{provider}` for its models…"))?;
+            refresh_models(tx)?;
         }
         "status" => open_status(tx)?,
         "usage" => {
@@ -630,6 +673,27 @@ fn summary_request(messages: &Value) -> Value {
     ])
 }
 
+fn refresh_conversations(tx: &mut Tx<'_>) {
+    tx.fx(Effect::new("kernel.log.list").with("id", Value::str("discovery.conversations")));
+}
+fn on_started(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
+    refresh_conversations(tx);
+    if tx.text("session.provider") != "scripted" {
+        refresh_models(tx)?;
+        refresh_usage(tx)?;
+    }
+    Ok(())
+}
+fn refresh_models(tx: &mut Tx<'_>) -> Result<(), Fault> {
+    let sequence = tx.int("session.models_sequence") + 1;
+    let id = format!("models.{sequence}");
+    let provider = tx.text("session.provider");
+    tx.set("session.models_sequence", Value::Int(sequence))?;
+    tx.set("session.models_request", Value::str(&id))?;
+    tx.set("session.models_provider", Value::str(&provider))?;
+    tx.fx(Effect::new("kernel.models.discover").with("id", Value::str(id)).with("provider", Value::str(provider)));
+    Ok(())
+}
 fn refresh_usage(tx: &mut Tx<'_>) -> Result<(), Fault> {
     let sequence = tx.int("session.usage_sequence") + 1;
     let id = format!("usage.{sequence}");
@@ -646,6 +710,7 @@ fn on_usage(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     }
     tx.delete("session.usage_request")?;
     tx.set("session.usage", event.data.get("facts").cloned().unwrap_or(Value::Null))?;
+    tx.set("session.usage_provider", Value::str(fields::event_text(event, "provider")))?;
     if tx.text("panel.id") == "usage" {
         open_usage(tx, Some(fields::event_value(event, "facts")))?;
     }
@@ -997,6 +1062,10 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         tx.patch(&path.to_string(), op)?;
     }
     if kind == crate::contribution::PATCH_KIND {
+        if data.get("write").is_some() {
+            if tx.get("session.plugin_write") != Some(&data) { return Ok(()); }
+            tx.set("session.plugin_write", Value::Null)?;
+        }
         let records = data.get("patches").and_then(Value::as_list).map(<[Value]>::to_vec).unwrap_or_else(|| vec![data.clone()]);
         for record in records {
             if let Some((path, op)) = crate::contribution::recorded(&record) {
@@ -1011,6 +1080,7 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     match kind.as_str() {
         "message" => match data.get("role").and_then(Value::as_str) {
             Some("user") if interrupted => {
+                crate::operations::settle_prompt(tx, "cancelled", None)?;
                 tx.set("session.status", Value::str("idle"))?;
                 tx.dispatch(Event::new("queue/next"));
             }
@@ -1022,6 +1092,11 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                 tx.delete("session.pending")?;
                 tx.set("session.running_tools", Value::list([]))?;
                 let has_calls = data.get("calls").and_then(Value::as_list).is_some_and(|calls| !calls.is_empty());
+                let result = match data.get("state").and_then(Value::as_str) {
+                    Some("cancelled") => "cancelled", Some("failed") => "failed",
+                    _ if has_calls => "running", _ => "succeeded",
+                };
+                crate::operations::settle_prompt(tx, result, data.get("seq").and_then(Value::as_i64))?;
                 tx.set("session.status", Value::str(if has_calls { "tools" } else { "idle" }))?;
                 tx.dispatch(Event::new(if has_calls { "agent/tools" } else { "queue/next" }));
             }
@@ -1051,6 +1126,12 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 /// an unfinished turn is a fact about what happened, and nothing here re-issues it.
 fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let starting = tx.text("session.status") == "loading";
+    if let Some(restored) = event.get("restored_operations") {
+        tx.set("prompt_operations", restored.get("prompts").cloned().unwrap_or_else(|| Value::list([])))?;
+        tx.set("operations", restored.get("operations").cloned().unwrap_or_else(|| Value::list([])))?;
+        tx.set("input_requests", restored.get("requests").cloned().unwrap_or_else(|| Value::list([])))?;
+        tx.delete("session.operation")?;
+    }
     let conversation = fields::event_text(event, "conversation");
     let entries = fields::event_value(event, "entries");
     let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
@@ -1280,17 +1361,6 @@ fn on_step(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     tx.set("session.requests", Value::Int(request))?;
     let id = format!("r{request}");
 
-    // The first step of a session that has a real provider and no list yet asks that provider
-    // what it serves, so a picker opened later has the service's own answer in it. It happens
-    // once: the answer is remembered whether it worked or not, and `/models` is how somebody
-    // asks again.
-    let provider = tx.text("session.provider");
-    if provider != "scripted" && tx.get("session.catalogue").is_none() {
-        tx.fx(Effect::new("kernel.models.discover")
-            .with("id", Value::str("models"))
-            .with("provider", Value::str(&provider)));
-    }
-
     let index = message_count(tx);
     let seq = tx.int("session.turn") + 1;
     tx.set("session.turn", Value::Int(seq))?;
@@ -1327,7 +1397,7 @@ fn on_step(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
         .with("model", Value::str(&model))
         .with("settings", settings)
         .with("messages", request_messages(tx.db()))
-        .with("tools", tools()));
+        .with("tools", tx.cofx().config.get("installed_tools").cloned().unwrap_or_else(tools)));
     Ok(())
 }
 
@@ -1337,9 +1407,14 @@ fn on_step(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
 /// the session's own catalog is enrichment on top. A person asking twice gets an answer twice,
 /// because a model list changes while a daemon runs.
 fn on_models(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if tx.get("session.models_request").is_none() || tx.text("session.models_request") != fields::event_text(event, "id") {
+        return Ok(());
+    }
+    let provider = tx.text("session.models_provider");
+    tx.delete("session.models_request")?;
+    if provider != tx.text("session.provider") { return Ok(()); }
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let message = fields::event_text(event, "message");
-    let provider = tx.text("session.provider");
     if !ok {
         notice(tx, Level::Warn, format!("could not list models: {message}"))?;
         return Ok(());
@@ -1409,7 +1484,9 @@ fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         .with("input_tokens", Value::Int(input_tokens)).with("output_tokens", Value::Int(output_tokens))
         .with("cost_micros", Value::Int(cost)));
     let attempt = Value::map([
-        ("name", Value::str(&id)), ("kind", Value::str("turn")), ("provider", Value::str(&provider)),
+        ("operation", tx.get("session.operation").cloned().unwrap_or(Value::Null)),
+        ("parent", tx.cofx().config.get("parent_attempt").cloned().unwrap_or(Value::Null)),
+        ("name", Value::str(format!("{}:{id}", tx.text("session.incarnation")))), ("kind", Value::str("turn")), ("provider", Value::str(&provider)),
         ("model", Value::str(&model)), ("status", Value::str(if ok { "ok" } else { "error" })),
         ("input_tokens", Value::Int(input_tokens)), ("output_tokens", Value::Int(output_tokens)),
         ("cost_micros", Value::Int(cost)), ("finished_ms", Value::Int(now_ms())),
@@ -1417,6 +1494,7 @@ fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     let calls = if ok { normalise_calls(&fields::event_value(event, "tool_calls")) } else { vec![] };
     tx.fx(log_effect(tx, "message", Value::map([
         ("seq", Value::Int(seq)), ("role", Value::str("assistant")), ("text", Value::str(text)),
+        ("operation", tx.get("session.operation").cloned().unwrap_or(Value::Null)),
         ("state", Value::str(if ok { "done" } else { "failed" })), ("thinking", Value::str(thinking)),
         ("calls", Value::list(calls)), ("attachments", Value::list([])), ("attempt", attempt),
     ])));
@@ -1456,6 +1534,7 @@ fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
             continue;
         }
         tx.fx(Effect::new("kernel.tool.run")
+            .with("operation", tx.get("session.operation").cloned().unwrap_or(Value::Null))
             .with("id", Value::str(&call_id))
             .with("call_id", Value::str(&call_id))
             .with("name", Value::str(call.get("name").and_then(Value::as_str).unwrap_or_default()))
@@ -1464,6 +1543,7 @@ fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
     tx.set("session.running_tools", Value::list(running))?;
     if calls.iter().all(|call| matches!(call.get("status").and_then(Value::as_str), Some("ok" | "error"))) {
         let interrupted = priority_interrupt(tx);
+        if interrupted { crate::operations::settle_prompt(tx, "cancelled", None)?; }
         tx.set("session.status", Value::str(if interrupted { "idle" } else { "thinking" }))?;
         tx.dispatch(Event::new(if interrupted { "queue/next" } else { "agent/step" }));
     }
@@ -1471,6 +1551,7 @@ fn on_tools(tx: &mut Tx<'_>, _event: &Event) -> Result<(), Fault> {
 }
 
 fn on_tool_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    if event.get("operation").and_then(Value::as_str).is_some_and(|operation| tx.get("session.operation").and_then(Value::as_str)!=Some(operation)) { return Ok(()); }
     let call_id = fields::event_text(event, "call_id");
     let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let text = fields::event_text(event, "text");
@@ -1500,6 +1581,14 @@ fn on_tool_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 }
 
 fn on_kernel_failed(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
+    let id = fields::event_text(event, "id");
+    let pending = tx.get("session.pending").and_then(|value| value.get("request")).and_then(Value::as_str);
+    let running_tool = tx.get("session.running_tools").and_then(Value::as_list).unwrap_or(&[]).iter().any(|value| value.as_str() == Some(&id));
+    if id != tx.text("session.conversation") && pending != Some(id.as_str()) && !running_tool {
+        // Discovery and other unrelated requests cannot terminate a prompt.
+        return notice(tx, Level::Error, fields::event_text(event, "message"));
+    }
+    crate::operations::settle_prompt(tx, "failed", None)?;
     let message = fields::event_text(event, "message");
     tx.set("session.status", Value::str("idle"))?;
     tx.delete("session.pending")?;

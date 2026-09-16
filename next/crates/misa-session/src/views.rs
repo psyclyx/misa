@@ -63,6 +63,9 @@ pub fn initial_state(id: &str, provider: &str, model: &str, created_ms: i64) -> 
         ),
         ("messages", Value::list([])),
         ("attempts", Value::list([])),
+        ("operations", Value::list([])),
+        ("prompt_operations", Value::list([])),
+        ("input_requests", Value::list([])),
         ("notices", Value::list([])),
         // Nothing open. The root is declared anyway, because what a session may write is a
         // question about the manifest and not about the state it happens to start from.
@@ -73,6 +76,53 @@ pub fn initial_state(id: &str, provider: &str, model: &str, created_ms: i64) -> 
 /// The data queries. The view query is answered by the runtime, not here.
 pub fn subscriptions(registry: Registry) -> Registry {
     registry
+        .subscription(
+            "session.summary.base",
+            read_query(|db, _query| {
+                let session = db.get("session");
+                let text = |name: &str| session.and_then(|value| value.get(name)).and_then(Value::as_str).unwrap_or("");
+                let requests = db.get("input_requests").and_then(Value::as_list).unwrap_or(&[]).iter()
+                    .filter(|request| request.get("state").and_then(Value::as_str) == Some("awaiting_input")).cloned().collect::<Vec<_>>();
+                let running_tools = session.and_then(|session| session.get("running_tools")).and_then(Value::as_list).map_or(0, |tools| tools.len());
+                let pending_tools = requests.iter().filter(|request| request.get("kind").and_then(Value::as_str) == Some("tool_approval")).count();
+                let working = match text("status") { "idle" => false, "tools" => running_tools > pending_tools, _ => true };
+                let operations = db.get("prompt_operations").and_then(Value::as_list).unwrap_or(&[]).iter()
+                    .filter(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true))
+                    .chain(db.get("operations").and_then(Value::as_list).unwrap_or(&[]).iter().filter(|operation|
+                        matches!(operation.get("state").and_then(Value::as_str), Some("running" | "awaiting_input" | "submitting" | "cancelling"))))
+                    .map(|operation| Value::map([
+                        ("id", operation.get("id").cloned().unwrap_or(Value::Null)),
+                        ("kind", operation.get("kind").cloned().unwrap_or(Value::Null)),
+                        ("state", operation.get("state").cloned().unwrap_or(Value::Null)),
+                        ("generation", operation.get("generation").cloned().unwrap_or(Value::Int(1))),
+                    ]));
+                Value::map([
+                    ("id", Value::str(text("id"))),
+                    ("activity", Value::str(text("status"))),
+                    ("working", Value::Bool(working)),
+                    ("attention", Value::Int(requests.len() as i64)),
+                    ("operations", Value::list(operations)),
+                    ("requests", Value::list(requests)),
+                    ("provider", Value::str(text("provider"))),
+                    ("model", Value::str(text("model"))),
+                ])
+            }),
+        )
+        .subscription("session.usage.total",Subscription::Derived {
+            inputs:Inputs::Fixed(vec![Query::new("session.attempts")]),
+            compute:std::sync::Arc::new(|inputs,_,_|Ok({
+                let rows=inputs.first().and_then(Value::as_list).unwrap_or(&[]);
+                Value::map(["input_tokens","output_tokens","cost_micros"].into_iter().map(|key|(key,Value::Int(rows.iter().filter_map(|row|row.get(key).and_then(Value::as_i64)).fold(0i64,i64::saturating_add)))))
+            })),
+        })
+        .subscription(crate::observation::SUMMARY,Subscription::Derived {
+            inputs:Inputs::Fixed(vec![Query::new("session.summary.base"),Query::new("session.usage.total")]),
+            compute:std::sync::Arc::new(|inputs,_,_|Ok({
+                let mut summary=inputs.first().and_then(Value::as_map).cloned().unwrap_or_default();
+                summary.insert("usage".into(),inputs.get(1).cloned().unwrap_or(Value::Null));
+                Value::Map(std::sync::Arc::new(summary))
+            })),
+        })
         .subscription(
             "session.status",
             read_query(|db, _query| db.get("session").cloned().unwrap_or(Value::Null)),
@@ -87,9 +137,9 @@ pub fn subscriptions(registry: Registry) -> Registry {
         )
         .subscription(
             "session.spend",
-            Subscription {
+            Subscription::Derived {
                 inputs: Inputs::Fixed(vec![Query::new("session.attempts")]),
-                compute: std::sync::Arc::new(|_db, inputs, _query, _previous| {
+                compute: std::sync::Arc::new(|inputs, _query, _previous| Ok({
                     let micros: i64 = inputs
                         .first()
                         .and_then(Value::as_list)
@@ -100,7 +150,7 @@ pub fn subscriptions(registry: Registry) -> Registry {
                         })
                         .unwrap_or(0);
                     Value::Int(micros)
-                }),
+                })),
             },
         )
 }
@@ -110,8 +160,8 @@ pub fn subscriptions(registry: Registry) -> Registry {
 /// The contribution is built from session data; every client receives the same subtree.
 #[derive(Clone)]
 pub struct Section {
-    /// The plugin's id, which is also the role its tree is placed under (plugin.<id>).
-    pub plugin: String,
+    /// Stable namespace for this contribution's tree.
+    pub namespace: String,
     /// Database inputs this content builder reads. An empty path explicitly means the whole db.
     pub inputs: Vec<misa_value::Path>,
     /// Build it. A failure is a sentence in the document and not a broken tree: a plugin that
@@ -119,9 +169,34 @@ pub struct Section {
     pub build: Arc<dyn Fn(&Value) -> Result<Node, String> + Send + Sync>,
 }
 
+impl Section {
+    /// Project a named subscription into a semantic view. The query graph owns
+    /// dependencies and memoization; a section owns only the resulting tree.
+    pub fn query(
+        namespace: impl Into<String>,
+        registry: Arc<Registry>,
+        query: Query,
+        project: impl Fn(&Value) -> Result<Node, String> + Send + Sync + 'static,
+    ) -> Self {
+        let memo = std::sync::Mutex::new((misa_reframe::Scope::new(), None::<Node>));
+        Self {
+            namespace: namespace.into(), inputs: vec![misa_value::Path::root()],
+            build: Arc::new(move |db| {
+                let mut memo = memo.lock().map_err(|_| "View query scope is poisoned")?;
+                let changed = memo.0.evaluate(db, &registry, &query).map_err(|fault| fault.message)?;
+                if changed.is_some() || memo.1.is_none() {
+                    let value = memo.0.current(&query).ok_or("View query has no value")?;
+                    memo.1 = Some(project(&value)?);
+                }
+                Ok(memo.1.as_ref().unwrap().clone())
+            }),
+        }
+    }
+}
+
 impl std::fmt::Debug for Section {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Section").field("plugin", &self.plugin).finish()
+        formatter.debug_struct("Section").field("namespace", &self.namespace).finish()
     }
 }
 
@@ -135,7 +210,6 @@ pub fn document(db: &Value, sections: &[Section]) -> Node {
     let mut root = Node::section("session").id("session");
     root.label = Some(title(session));
 
-    root.children.push(header(db, session));
     root.children.push(transcript(db));
     for section in sections {
         root.children.push(section_node(section, db));
@@ -166,68 +240,6 @@ fn title(session: Option<&Value>) -> String {
 
 fn text_at<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
-}
-
-pub(crate) fn header(db: &Value, session: Option<&Value>) -> Node {
-    let spend = db
-        .get("attempts")
-        .and_then(Value::as_list)
-        .map(|rows| rows.iter().filter_map(|row| row.get("cost_micros").and_then(Value::as_i64)).sum::<i64>())
-        .unwrap_or(0);
-    let used = db
-        .get("attempts")
-        .and_then(Value::as_list)
-        .and_then(|rows| rows.last())
-        .map(|row| input_tokens(row))
-        .unwrap_or(0);
-    header_with_totals(session, spend, used)
-}
-
-pub(crate) fn header_with_totals(session: Option<&Value>, spend: i64, used: i64) -> Node {
-    let provider = session.map(|session| text_at(session, "provider")).unwrap_or_default();
-    let model = session.map(|session| text_at(session, "model")).unwrap_or_default();
-    let status = session.map(|session| text_at(session, "status")).unwrap_or("unknown");
-    let turns = session.and_then(|session| session.get("turn")).and_then(Value::as_i64).unwrap_or(0);
-    let mut node = Node::new("session.header", Kind::Status {
-        text: format!("{provider}/{model} · {status} · {turns} turns"),
-    })
-    .id("header");
-
-    // The indicators. Each one is a *fact* with a role, and no formatting: `$1.24`
-    // is the client's business, because a currency symbol, a rounding, and a
-    // thousands separator are all decisions a session should not be making. The
-    // previous system called these value-renderers and made them a catalog; here
-    // they are the node's role, so a plugin that invents `value.byte-size` gets a
-    // sensible fallback rather than an error.
-    node.children.push(
-        Node::new("value.turns", Kind::Fact { value: Value::Int(turns) }).label("turns"),
-    );
-
-    if spend > 0 {
-        node.children.push(
-            Node::new("value.spend", Kind::Fact { value: Value::Int(spend) }).label("spend"),
-        );
-    }
-
-    // How full the context window is, when a model is known. A meter rather than a
-    // fact because it is bounded, and bound is what a meter is for.
-    if let Some(model) = crate::catalog::model(model) {
-        node.children.push(Node::new(
-            "value.context",
-            Kind::Meter {
-                label: "context".into(),
-                value: used as f64,
-                max: model.context_window as f64,
-            },
-        ));
-    }
-    node
-}
-
-/// The input tokens of the most recent attempt, which is the closest thing to "how
-/// full is the window" that the ledger can answer.
-fn input_tokens(row: &Value) -> i64 {
-    row.get("input_tokens").and_then(Value::as_i64).unwrap_or(0)
 }
 
 pub(crate) fn transcript(db: &Value) -> Node {
@@ -437,9 +449,9 @@ fn is_unified_diff(text: &str) -> bool {
 /// The wrapper is the session's, so a theme can style a plugin's whole contribution by its role
 /// (plugin.<id>) and so a client can find it without knowing anything about the plugin.
 pub(crate) fn section_node(section: &Section, db: &Value) -> Node {
-    let role = format!("plugin.{}", section.plugin);
+    let role = section.namespace.clone();
     let mut wrapper = Node::section(&role).id(&role);
-    wrapper.label = Some(section.plugin.clone());
+    wrapper.label = None;
     let built = (section.build)(db).and_then(|mut tree| {
         misa_proto::view::validate(&tree).map_err(|fault| fault.to_string())?;
         misa_proto::sync::address(&mut tree);
@@ -452,7 +464,7 @@ pub(crate) fn section_node(section: &Section, db: &Value) -> Node {
         // with nothing would be a session whose view a plugin can break.
         Err(reason) => Node::new(
             "plugin.failed",
-            Kind::Status { text: format!("this plugin could not present itself: {reason}") },
+            Kind::Status { text: format!("{} could not present itself: {reason}", section.namespace) },
         )
         .id(format!("{role}.failed")),
     });
@@ -766,7 +778,7 @@ pub fn level_of(notice: &Value) -> Level {
     }
 }
 
-/// The four roots the shipped session declares, with who owns each and how long it
+/// The roots the shipped session declares, with who owns each and how long it
 /// lives.
 ///
 /// The previous system's manifest, in Rust, and checked by a test rather than only
@@ -776,6 +788,9 @@ pub const MANIFEST: &[(&str, Ownership, Lifetime)] = &[
     ("session", Ownership::Kernel, Lifetime::Ephemeral),
     ("messages", Ownership::Kernel, Lifetime::Log),
     ("attempts", Ownership::Kernel, Lifetime::Log),
+    ("operations", Ownership::Kernel, Lifetime::Log),
+    ("prompt_operations", Ownership::Kernel, Lifetime::Log),
+    ("input_requests", Ownership::Kernel, Lifetime::Log),
     ("notices", Ownership::Presentation, Lifetime::Ephemeral),
     // A panel is a report or a small form, and it is presentation: it exists to be drawn,
     // and a restart has nothing to say about whether somebody had it open.

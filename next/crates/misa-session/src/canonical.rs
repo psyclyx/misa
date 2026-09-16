@@ -25,8 +25,6 @@ pub struct Canonical {
     order: Vec<String>,
     memo: BTreeMap<String, Vec<Option<Value>>>,
     groups: Vec<(String, usize)>,
-    spend: i64,
-    context: i64,
     queue_count: usize,
     pub work: Work,
 }
@@ -34,19 +32,18 @@ pub struct Canonical {
 impl Canonical {
     pub fn new(db: &Value, sections: &[Section], epoch: String) -> Self {
         let view = views::document(db, sections);
-        let mut order = vec!["header".into(), "transcript".into()];
-        order.extend(sections.iter().map(|section| format!("plugin.{}", section.plugin)));
+        let mut order = vec!["transcript".into()];
+        order.extend(sections.iter().map(|section| section.namespace.clone()));
         order.extend(["panel", "notices", "queue", "attachments", "composer", "turn"].map(str::to_owned));
         let mut slots = BTreeMap::new();
         for child in &view.children {
-            let slot = match child.role.as_str() { "session.header" => "header", "panel" => "panel", other => other };
+            let slot = match child.role.as_str() { "panel" => "panel", other => other };
             slots.insert(slot.to_owned(), child.id.clone());
         }
         let mut state = Self { tree: IndexedTree::new(view), version: Version { epoch, rev: 0 },
             history: VecDeque::new(), slots, order, memo: BTreeMap::new(), groups: vec![],
-            spend: 0, context: 0, queue_count: db.get("session").and_then(|session| session.get("queue")).and_then(Value::as_list).map_or(0, <[Value]>::len), work: Work::default() };
+            queue_count: db.get("session").and_then(|session| session.get("queue")).and_then(Value::as_list).map_or(0, <[Value]>::len), work: Work::default() };
         state.reset_groups();
-        state.reset_totals(db);
         state
     }
 
@@ -54,12 +51,6 @@ impl Canonical {
         self.groups = self.tree.children("transcript").into_iter().filter(|id| id.starts_with("group."))
             .map(|id| { let count = self.tree.children(&id).len().saturating_sub(2); (id, count) }).collect();
     }
-    fn reset_totals(&mut self, db: &Value) {
-        let rows = db.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
-        self.spend = rows.iter().map(cost).sum();
-        self.context = rows.last().map(tokens).unwrap_or(0);
-    }
-
     fn emit(&mut self, mut op: ViewOp, out: &mut Vec<ViewOp>) {
         match &mut op { ViewOp::Insert { node, .. } | ViewOp::Replace { node, .. } => address(node), _ => {} }
         self.tree.apply(&op).expect("database owner emitted an applicable view op");
@@ -153,9 +144,6 @@ impl Canonical {
             let mut dirty = BTreeSet::new();
             let mut calls = BTreeSet::new();
             let mut messages = BTreeSet::new();
-            let mut attempts = BTreeSet::new();
-            let mut appended_attempts = false;
-            let mut reset_attempts = false;
             // Membership rewrites may move turn boundaries. They explicitly replace that
             // structural owner once; ordinary settled appends never take this path.
             let rewrite_transcript = change.patches.iter().any(|(path, op)| match path.segments() {
@@ -174,27 +162,15 @@ impl Canonical {
                         ([Seg::Index(index), ..], _) => { messages.insert(*index as usize); }
                         _ => { self.slot("transcript", Some(views::transcript(&change.after)), &mut out); self.reset_groups(); }
                     },
-                    [Seg::Key(root), tail @ ..] if root == "attempts" => {
-                        match (tail, op) {
-                            ([], Op::Append(row)) => { appended_attempts = true; self.spend += cost(row); self.context = tokens(row); }
-                            ([], Op::AppendAll(rows)) => { appended_attempts = true; self.spend += rows.iter().map(cost).sum::<i64>(); if let Some(row) = rows.last() { self.context = tokens(row); } }
-                            ([Seg::Index(_)], Op::Delete) => reset_attempts = true,
-                            ([Seg::Index(index), ..], _) => {
-                                attempts.insert(*index as usize);
-                            }
-                            _ => reset_attempts = true,
-                        }
-                        dirty.insert("header".to_owned());
-                    }
                     [Seg::Key(root), ..] if root == "panel" => { dirty.insert("panel".to_owned()); }
                     [Seg::Key(root), ..] if root == "notices" => { dirty.insert("notices".to_owned()); }
                     [Seg::Key(root), Seg::Key(key), ..] if root == "session" => match key.as_str() {
-                        "provider" | "model" | "status" | "turn" => { dirty.insert("header".to_owned()); if key == "status" { dirty.insert("turn".to_owned()); } }
+                        "status" => { dirty.insert("turn".to_owned()); }
                         "queue" => self.queue_patch(change, path, op, &mut out),
                         "attachments" => { dirty.insert("attachments".to_owned()); }
                         _ => {}
                     },
-                    [Seg::Key(root)] if root == "session" => { dirty.extend(["header", "turn", "queue", "attachments"].map(str::to_owned)); }
+                    [Seg::Key(root)] if root == "session" => { dirty.extend(["turn", "queue", "attachments"].map(str::to_owned)); }
                     _ => {}
                 }
                 for (index, section) in sections.iter().enumerate() {
@@ -202,16 +178,6 @@ impl Canonical {
                 }
             }
             let db = &change.after;
-            if reset_attempts || (appended_attempts && !attempts.is_empty()) {
-                self.reset_totals(db);
-            } else if !attempts.is_empty() {
-                let before = change.before.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
-                let after = db.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
-                for index in attempts {
-                    self.spend += after.get(index).map(cost).unwrap_or(0) - before.get(index).map(cost).unwrap_or(0);
-                }
-                self.context = after.last().map(tokens).unwrap_or(0);
-            }
             if rewrite_transcript {
                 self.slot("transcript", Some(views::transcript(db)), &mut out);
                 self.reset_groups();
@@ -238,18 +204,21 @@ impl Canonical {
             for owner in dirty {
                 if let Some(index) = owner.strip_prefix("plugin:").and_then(|index| index.parse::<usize>().ok()) {
                     let section = &sections[index];
-                    if self.changed(&owner, db, &section.inputs) { self.slot(&format!("plugin.{}", section.plugin), Some(views::section_node(section, db)), &mut out); }
+                    if self.changed(&owner, db, &section.inputs) {
+                        let node = views::section_node(section, db);
+                        if self.tree.subtree(&section.namespace).as_ref() != Some(&node) {
+                            self.slot(&section.namespace, Some(node), &mut out);
+                        }
+                    }
                     continue;
                 }
                 let inputs: &[&str] = match owner.as_str() {
-                    "header" => &["session.provider", "session.model", "session.status", "session.turn", "attempts"],
                     "turn" => &["session.status"], "panel" => &["panel"], "notices" => &["notices"],
                     "queue" => &["session.queue"], "attachments" => &["session.attachments"], _ => unreachable!(),
                 };
                 let paths = inputs.iter().map(|path| Path::parse(path).unwrap()).collect::<Vec<_>>();
                 if !self.changed(&owner, db, &paths) { continue; }
                 let node = match owner.as_str() {
-                    "header" => Some(views::header_with_totals(db.get("session"), self.spend, self.context)),
                     "turn" => views::cancel(db), "panel" => views::panel(db), "notices" => views::notices(db),
                     "queue" => views::queue(db), "attachments" => views::attachments(db), _ => unreachable!(),
                 };
@@ -286,8 +255,6 @@ impl Canonical {
 }
 
 fn overlaps(a: &Path, b: &Path) -> bool { a.segments().starts_with(b.segments()) || b.segments().starts_with(a.segments()) }
-fn cost(row: &Value) -> i64 { row.get("cost_micros").and_then(Value::as_i64).unwrap_or(0) }
-fn tokens(row: &Value) -> i64 { row.get("input_tokens").and_then(Value::as_i64).unwrap_or(0) }
 
 #[cfg(test)]
 mod tests {
@@ -313,12 +280,12 @@ mod tests {
         let mut db = views::initial_state("test", "p", "m", 0);
         let mut view = Canonical::new(&db, &[], "epoch".into());
         let original = view.version.clone();
-        for n in 0..64 { advance(&mut view, &mut db, vec![patch("session.model", Op::Set(Value::str(format!("m{n}"))))], &[]); }
+        for n in 0..64 { advance(&mut view, &mut db, vec![patch("session.status", Op::Set(Value::str(format!("m{n}"))))], &[]); }
         match view.sync(Some(&original), vec![]) {
             ViewSync::Changes { changes, version, .. } => { assert_eq!(changes.len(), 64); assert_eq!(version.rev, 64); assert_eq!(changes[0].from, original); }
             _ => panic!("retained history must catch up"),
         }
-        advance(&mut view, &mut db, vec![patch("session.model", Op::Set(Value::str("last")))], &[]);
+        advance(&mut view, &mut db, vec![patch("session.status", Op::Set(Value::str("last")))], &[]);
         for since in [original, Version { epoch: "previous process".into(), rev: 65 }] {
             assert!(matches!(view.sync(Some(&since), vec![]), ViewSync::Snapshot { version: Version {rev:65,..}, .. }));
         }
@@ -329,7 +296,7 @@ mod tests {
     fn unrelated_patches_do_not_rebuild_declared_plugin_content() {
         let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = builds.clone();
-        let sections = [Section { plugin: "counter".into(), inputs: vec![Path::parse("session.model").unwrap()], build: std::sync::Arc::new(move |_| { counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed); Ok(Node::section("counter").id("counter")) }) }];
+        let sections = [Section { namespace: "plugin.counter".into(), inputs: vec![Path::parse("session.model").unwrap()], build: std::sync::Arc::new(move |_| { counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed); Ok(Node::section("counter").id("counter")) }) }];
         let mut db = views::initial_state("test", "p", "m", 0);
         let mut view = Canonical::new(&db, &sections, "epoch".into());
         let work = view.work.clone();
@@ -379,12 +346,17 @@ mod tests {
     #[test]
     fn aggregate_updates_coalesce_repeated_row_patches_and_membership_changes() {
         let mut db = views::initial_state("test", "p", "m", 0);
-        let mut view = Canonical::new(&db, &[], "epoch".into());
+        let registry = std::sync::Arc::new(crate::indicators::subscriptions(crate::agent::registry())
+            .subscription(crate::indicators::MODEL_QUERY, crate::indicators::builtins().subscription()));
+        let sections = [crate::indicators::builtins().section(registry)];
+        let mut view = Canonical::new(&db, &sections, "epoch".into());
         let row = |cost| Value::map([("cost_micros", Value::Int(cost)), ("input_tokens", Value::Int(10))]);
-        advance(&mut view, &mut db, vec![patch("attempts", Op::AppendAll(vec![row(3), row(7)]))], &[]);
-        advance(&mut view, &mut db, vec![patch("attempts[0].cost_micros", Op::Set(Value::Int(5))), patch("attempts[0].input_tokens", Op::Set(Value::Int(20)))], &[]);
-        assert_eq!(view.spend, 12);
-        advance(&mut view, &mut db, vec![patch("attempts[0]", Op::Delete)], &[]);
-        assert_eq!(view.spend, 7);
+        advance(&mut view, &mut db, vec![patch("attempts", Op::AppendAll(vec![row(3), row(7)]))], &sections);
+        advance(&mut view, &mut db, vec![patch("attempts[0].cost_micros", Op::Set(Value::Int(5))), patch("attempts[0].input_tokens", Op::Set(Value::Int(20)))], &sections);
+        assert_eq!(view.tree.node("presentation.status.spend.value.money.0").unwrap().kind, Kind::Fact { value: Value::Int(12) });
+        assert_eq!(view.tree.node("presentation.status.session.value.tokens.0").unwrap().kind, Kind::Fact { value: Value::Int(30) });
+        advance(&mut view, &mut db, vec![patch("attempts[0]", Op::Delete)], &sections);
+        assert_eq!(view.tree.node("presentation.status.spend.value.money.0").unwrap().kind, Kind::Fact { value: Value::Int(7) });
+        assert_eq!(view.tree.node("presentation.status.session.value.tokens.0").unwrap().kind, Kind::Fact { value: Value::Int(10) });
     }
 }
