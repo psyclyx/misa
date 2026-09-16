@@ -454,6 +454,7 @@ impl Runtime {
         if self.is_closed() { return vec![Fault::new("closed_scope", "Session owner is closed")]; }
         if !self.is_started() {return vec![Fault::new("not_ready","Session owner has not been activated")];}
         if let Some(faults) = self.operation_checkpoint_event(&event) { return faults; }
+        if let Some(faults) = self.input_event(&event) { return faults; }
         let event = if event.kind == "kernel/log.failed" && event.get("kind").and_then(Value::as_str) != Some(contribution::PATCH_KIND) {
             Event::new("kernel/failed").with("id", event.get("conversation").cloned().unwrap_or(Value::Null))
                 .with("message", event.get("message").cloned().unwrap_or(Value::Null))

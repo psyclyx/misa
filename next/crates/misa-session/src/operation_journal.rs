@@ -43,7 +43,12 @@ impl Store {
             ),
             ("requests", approvals::checkpoint(self)),
             ("forms", crate::wire::render(&self.forms)),
-            ("commands", db.get(crate::command_operations::ROOT).cloned().unwrap_or_else(|| Value::list([]))),
+            (
+                "commands",
+                db.get(crate::command_operations::ROOT)
+                    .cloned()
+                    .unwrap_or_else(|| Value::list([])),
+            ),
         ])
     }
 }
@@ -88,7 +93,12 @@ impl Runtime {
             && state.operations.prompt_owners.is_empty()
             && state.operations.approvals.is_empty()
             && state.operations.forms.is_empty()
-            && state.state.db().get(crate::command_operations::ROOT).and_then(Value::as_list).is_none_or(|records| records.is_empty())
+            && state
+                .state
+                .db()
+                .get(crate::command_operations::ROOT)
+                .and_then(Value::as_list)
+                .is_none_or(|records| records.is_empty())
         {
             return;
         }
@@ -171,6 +181,7 @@ impl Runtime {
             .and_then(|data| data.get("checkpoint"))
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let mut retry = None;
         let deferred = {
             let mut state = self.state.lock().expect("session state is never poisoned");
             let Some(mut deferred) = state.deferred.pending.remove(token) else {
@@ -183,10 +194,51 @@ impl Runtime {
                     "Operation checkpoint failed; work was not replayed",
                 )]);
             }
-            if forms::acknowledged(&mut state.operations, event.get("data").unwrap_or(&Value::Null)) {
-                let changed = Event::new("operations/changed").with("summary", state.operations.summary()).with("requests", state.operations.requests());
-                self.dispatch_locked(&mut state, changed);
-                self.rev.send_replace(state.state.rev());
+            let mut candidate = state.operations.clone();
+            if forms::acknowledged(&mut candidate, event.get("data").unwrap_or(&Value::Null)) {
+                let changed = Event::new("operations/changed")
+                    .with("summary", candidate.summary())
+                    .with("requests", candidate.requests());
+                let mut publication = self.dispatch_locked(&mut state, changed);
+                if !publication.committed() {
+                    if let Some(fault) = publication
+                        .as_faults()
+                        .into_iter()
+                        .find(|fault| fault.code == "composition.busy")
+                    {
+                        // Release this checkpoint's effects once, so the pending
+                        // plugin journal write can finish. Existing automatic
+                        // report deferral will retry only the publication.
+                        state.deferred.pending.insert(
+                            token.to_owned(),
+                            Deferred {
+                                effects: vec![],
+                                request: None,
+                                operation: deferred.operation.clone(),
+                            },
+                        );
+                        retry = Some(fault);
+                    } else {
+                        // The terminal checkpoint is durable, but it must not leak
+                        // through private queries ahead of its coherent publication.
+                        let fault = Fault::new(
+                            "publication_failed",
+                            "Durable input completion could not be published; reopen the owner to reconcile",
+                        );
+                        drop(state);
+                        self.shutdown_with_fault(fault.clone());
+                        return Some(vec![fault]);
+                    }
+                } else {
+                    state.operations = candidate;
+                    self.queue_operation_checkpoint(
+                        &mut state,
+                        &mut publication.effects,
+                        &mut None,
+                    );
+                    deferred.effects.extend(publication.effects);
+                    self.rev.send_replace(state.state.rev());
+                }
             }
             let active = state
                 .state
@@ -209,19 +261,51 @@ impl Runtime {
                     deferred.request = None;
                 }
             }
-            let pending = state.state.db().get("session").and_then(|session| session.get("pending"))
-                .and_then(|pending| pending.get("request")).and_then(Value::as_str);
-            deferred.effects.retain(|effect| !matches!(effect.kind.as_str(), "kernel.provider.call" | "kernel.attempt.started")
-                || effect.data.get("id").and_then(Value::as_str) == pending);
-            let interrupted = state.state.db().get("session").and_then(|session| session.get("queue"))
-                .and_then(Value::as_list).and_then(|queue| queue.first()).and_then(|entry| entry.get("interrupt"))
-                .and_then(Value::as_bool) == Some(true);
+            let pending = state
+                .state
+                .db()
+                .get("session")
+                .and_then(|session| session.get("pending"))
+                .and_then(|pending| pending.get("request"))
+                .and_then(Value::as_str);
+            deferred.effects.retain(|effect| {
+                !matches!(
+                    effect.kind.as_str(),
+                    "kernel.provider.call" | "kernel.attempt.started"
+                ) || effect.data.get("id").and_then(Value::as_str) == pending
+            });
+            let interrupted = state
+                .state
+                .db()
+                .get("session")
+                .and_then(|session| session.get("queue"))
+                .and_then(Value::as_list)
+                .and_then(|queue| queue.first())
+                .and_then(|entry| entry.get("interrupt"))
+                .and_then(Value::as_bool)
+                == Some(true);
             if interrupted && matches!(deferred.request, Some(Request::ToolRun { .. })) {
                 if let Some(Request::ToolRun { call_id, .. }) = deferred.request.take() {
-                    let conversation = state.state.db().get("session").and_then(|session| session.get("conversation")).cloned().unwrap_or(Value::Null);
-                    deferred.effects.push(misa_reframe::Effect::new("kernel.log.append")
-                        .with("conversation", conversation).with("kind", Value::str("tool_result"))
-                        .with("data", Value::map([("call", Value::str(call_id)), ("ok", Value::Bool(false)), ("text", Value::str("Tool cancelled before execution"))])));
+                    let conversation = state
+                        .state
+                        .db()
+                        .get("session")
+                        .and_then(|session| session.get("conversation"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    deferred.effects.push(
+                        misa_reframe::Effect::new("kernel.log.append")
+                            .with("conversation", conversation)
+                            .with("kind", Value::str("tool_result"))
+                            .with(
+                                "data",
+                                Value::map([
+                                    ("call", Value::str(call_id)),
+                                    ("ok", Value::Bool(false)),
+                                    ("text", Value::str("Tool cancelled before execution")),
+                                ]),
+                            ),
+                    );
                 }
             }
             if let Some(Request::Credential { id, action }) = &deferred.request {
@@ -252,7 +336,7 @@ impl Runtime {
         if let Some(request) = deferred.request {
             let _ = self.deliver_request(request);
         }
-        Some(vec![])
+        Some(retry.into_iter().collect())
     }
 }
 pub(super) fn restore(event: Event) -> (Event, Option<Store>) {
@@ -425,8 +509,16 @@ pub(super) fn restore(event: Event) -> (Event, Option<Store>) {
     ]);
     // Checkpoints contain caller-private continuation inputs. Consume them at
     // the owner boundary, before the event reaches contributed handlers.
-    let public_entries = Value::list(entries.iter().filter(|entry| {
-        entry.get("kind").and_then(Value::as_str) != Some(KIND)
-    }).cloned());
-    (event.with("entries", public_entries).with("restored_operations", restored), Some(store))
+    let public_entries = Value::list(
+        entries
+            .iter()
+            .filter(|entry| entry.get("kind").and_then(Value::as_str) != Some(KIND))
+            .cloned(),
+    );
+    (
+        event
+            .with("entries", public_entries)
+            .with("restored_operations", restored),
+        Some(store),
+    )
 }

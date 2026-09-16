@@ -192,7 +192,8 @@ pub(super) fn cancel(runtime: &Runtime, context: &CallContext, invocation: &Invo
 pub(super) fn cancel_command() -> CommandRegistration {
     CommandRegistration::new(
         Command {
-            preparation: misa_proto::invocation::Preparation::Request, id: "input.cancel".into(),
+            preparation: misa_proto::invocation::Preparation::Request,
+            id: "input.cancel".into(),
             input: record([("request", Schema::String), ("generation", Schema::Int)]),
             result: Schema::Choice {
                 values: vec![Literal::Null],
@@ -391,14 +392,49 @@ impl Runtime {
         })
     }
     pub(crate) fn continue_input(&self, effect: &misa_reframe::Effect) {
-        let id = text(&effect.data, "operation").to_owned();
+        self.dispatch(Event::new("owner/input.continue").with_value(effect.data.clone()));
+    }
+    pub(crate) fn input_event(&self, event: &Event) -> Option<Vec<Fault>> {
+        let faults = match event.kind.as_str() {
+            "owner/input.continue" => self.continue_input_now(&event.data),
+            "owner/input.outcome" => {
+                let id = text(&event.data, "operation");
+                let outcome: Outcome =
+                    match event.get("outcome").map(crate::wire::parse).transpose() {
+                        Ok(Some(outcome)) => outcome,
+                        _ => return Some(vec![Fault::protocol("Invalid owner input outcome")]),
+                    };
+                self.publish_input_outcome(id, outcome)
+            }
+            _ => return None,
+        };
+        Some(faults)
+    }
+    fn continue_input_now(&self, effect: &Value) -> Vec<Fault> {
+        let id = text(effect, "operation").to_owned();
         let work = {
             let state = self.state.lock().unwrap();
+            if state
+                .state
+                .db()
+                .get("session")
+                .and_then(|session| session.get("plugin_write"))
+                .is_some_and(|value| *value != Value::Null)
+            {
+                return vec![Fault::new(
+                    "composition.busy",
+                    "Input continuation waits for the pending transaction",
+                )];
+            }
             state
                 .operations
                 .forms
                 .get(&id)
-                .filter(|record| record.phase == Phase::Submitting && record.child.is_none())
+                .filter(|record| {
+                    record.phase == Phase::Submitting
+                        && record.child.is_none()
+                        && record.pending_outcome.is_none()
+                })
                 .map(|record| {
                     (
                         CallContext {
@@ -410,11 +446,13 @@ impl Runtime {
                 })
         };
         let Some((context, continuation)) = work else {
-            return;
+            return vec![];
         };
         let input = effect.get("input").cloned().unwrap_or(Value::Null);
         let invocation = |command| Invocation {
-            id: self.next_call.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id: self
+                .next_call
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             scope: self.scope(),
             command,
             input: input.clone(),
@@ -427,10 +465,24 @@ impl Runtime {
                 self.execute_event_transaction(&context, &invocation(command), &event)
             }
         };
+        if let Outcome::Rejected { fault } = &outcome {
+            if fault.code == "composition.busy" {
+                return vec![fault.clone()];
+            }
+        }
         self.input_outcome(&id, outcome);
+        vec![]
     }
     fn input_outcome(&self, id: &str, outcome: Outcome) {
-        self.operation_transition(None,|store,_|{
+        self.dispatch(
+            Event::new("owner/input.outcome")
+                .with("operation", Value::str(id))
+                .with("outcome", crate::wire::render(&outcome)),
+        );
+    }
+    fn publish_input_outcome(&self, id: &str, outcome: Outcome) -> Vec<Fault> {
+        let accepted = matches!(outcome, Outcome::Accepted { .. });
+        let result = self.operation_transition(None,|store,_|{
             let record=store.forms.get_mut(id).filter(|record|record.phase==Phase::Submitting).ok_or_else(||Fault::new("stale_request","Input operation already settled"))?;
             match &outcome {
                 Outcome::Accepted{operation} if operation.scope==self.scope()=>{record.child=Some(operation.clone());},
@@ -439,7 +491,16 @@ impl Runtime {
             }
             Ok((Outcome::Completed{value:Value::Null},None))
         });
-        self.settle_input_continuations();
+        match result {
+            Outcome::Rejected { fault } if fault.code == "stale_request" => vec![],
+            Outcome::Rejected { fault } | Outcome::Indeterminate { fault } => vec![fault],
+            _ => {
+                if accepted {
+                    self.settle_input_continuations();
+                }
+                vec![]
+            }
+        }
     }
     pub(crate) fn settle_input_continuations(&self) {
         let completed = {
@@ -498,8 +559,21 @@ mod tests {
         }
     }
     fn setup() -> Arc<Runtime> {
+        setup_with_terminal_refusal(false).0
+    }
+    fn setup_with_terminal_refusal(refuse: bool) -> (Arc<Runtime>, Arc<misa_kernel::LocalKernel>) {
+        setup_with_observer(refuse, false)
+    }
+    fn setup_with_observer(
+        refuse: bool,
+        observe_all: bool,
+    ) -> (Arc<Runtime>, Arc<misa_kernel::LocalKernel>) {
         let contribution = crate::Contribution::default()
             .with_root("pet", Value::str("unknown"))
+            .unwrap()
+            .with_root("form_completed", Value::Bool(false))
+            .unwrap()
+            .with_root("form_events", Value::Int(0))
             .unwrap()
             .with_handler(
                 "pet/name",
@@ -523,19 +597,50 @@ mod tests {
                 "pet.name",
                 record([("value", Schema::Value)]),
                 "pet/name",
-            ));
-        Runtime::start_with(
+            ))
+            .with_handler(
+                "operations/changed",
+                100,
+                Arc::new(misa_reframe::FnHandler::new(
+                    "observe.terminal",
+                    move |tx: &mut Tx<'_>, event: &Event| {
+                        if observe_all {
+                            tx.set("form_events", Value::Int(tx.int("form_events") + 1))?;
+                        }
+                        if event
+                            .get("summary")
+                            .and_then(Value::as_list)
+                            .unwrap_or(&[])
+                            .iter()
+                            .any(|record| {
+                                record.get("state").and_then(Value::as_str) == Some("succeeded")
+                            })
+                        {
+                            if refuse {
+                                return Err(misa_reframe::Fault::handler(
+                                    "refused terminal publication",
+                                ));
+                            }
+                            tx.set("form_completed", Value::Bool(true))?;
+                        }
+                        Ok(())
+                    },
+                )),
+            );
+        let kernel = Arc::new(misa_kernel::LocalKernel::new(
+            misa_kernel::ScriptedProvider::always("unused"),
+        ));
+        let runtime = Runtime::start_with(
             "forms",
             "Forms",
             None,
-            Arc::new(misa_kernel::LocalKernel::new(
-                misa_kernel::ScriptedProvider::always("unused"),
-            )),
+            kernel.clone(),
             "scripted",
             "test",
             Value::Null,
             contribution,
-        )
+        );
+        (runtime, kernel)
     }
     fn begin(runtime: &Runtime) -> String {
         let Outcome::Accepted { operation } = runtime.request_input(
@@ -563,6 +668,159 @@ mod tests {
                 ("value", value),
             ]),
         }
+    }
+    #[tokio::test]
+    async fn refused_terminal_publication_closes_without_exposing_uncommitted_private_state() {
+        let (runtime, kernel) = setup_with_terminal_refusal(true);
+        let id = begin(&runtime);
+        let outcome = runtime.execute_command(
+            &context("alice"),
+            invocation(&runtime, &id, Value::map([("name", Value::str("Miso"))])),
+        );
+        assert!(matches!(outcome, Outcome::Accepted { .. }));
+        let mut changes = runtime.watch_rev();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime.is_closed() {
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(runtime.closure_fault().code, "publication_failed");
+        {
+            let state = runtime.state.lock().unwrap();
+            assert!(state.operations.forms[&id].phase == Phase::Interrupted);
+            assert_eq!(
+                state.state.db().get("pet").and_then(Value::as_str),
+                Some("Miso")
+            );
+        }
+        // The effect and terminal checkpoint already committed. Recovery uses
+        // that fact, without running the continuation or asking for input again.
+        let entries = kernel.store().load("forms", 0, 10000).unwrap();
+        let (_, restored) = crate::operations::restore_event(crate::agent::event_for(
+            misa_kernel::KernelEvent::Loaded {
+                conversation: "forms".into(),
+                entries,
+            },
+        ));
+        assert!(restored.unwrap().forms[&id].phase == Phase::Succeeded);
+        runtime.shutdown_complete().await;
+    }
+    #[tokio::test]
+    async fn terminal_publication_preserves_contributed_handlers_durable_effects() {
+        let runtime = setup();
+        let id = begin(&runtime);
+        assert!(matches!(
+            runtime.execute_command(
+                &context("alice"),
+                invocation(&runtime, &id, Value::map([("name", Value::str("Miso"))]))
+            ),
+            Outcome::Accepted { .. }
+        ));
+        let mut changes = runtime.watch_rev();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                assert!(!runtime.is_closed());
+                if runtime
+                    .state
+                    .lock()
+                    .unwrap()
+                    .state
+                    .db()
+                    .get("form_completed")
+                    == Some(&Value::Bool(true))
+                {
+                    break;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(runtime.state.lock().unwrap().operations.forms[&id].phase == Phase::Succeeded);
+        runtime.shutdown_complete().await;
+    }
+    #[tokio::test]
+    async fn input_continuation_and_outcome_wait_for_concurrent_guest_journal_writes() {
+        let (runtime, kernel) = setup_with_observer(false, true);
+        let id = begin(&runtime);
+        let mut changes = runtime.watch_rev();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let ready = {
+                    let state = runtime.state.lock().unwrap();
+                    state
+                        .state
+                        .db()
+                        .get("form_events")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                        > 0
+                        && state
+                            .state
+                            .db()
+                            .get("session")
+                            .and_then(|session| session.get("plugin_write"))
+                            .is_none_or(|value| *value == Value::Null)
+                };
+                if ready {
+                    break;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            runtime.execute_command(
+                &context("alice"),
+                invocation(&runtime, &id, Value::map([("name", Value::str("Miso"))]))
+            ),
+            Outcome::Accepted { .. }
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                assert!(!runtime.is_closed(), "{}", runtime.closure_fault().message);
+                if runtime
+                    .state
+                    .lock()
+                    .unwrap()
+                    .state
+                    .db()
+                    .get("form_completed")
+                    == Some(&Value::Bool(true))
+                {
+                    break;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let state = runtime.state.lock().unwrap();
+        assert!(state.operations.forms[&id].phase == Phase::Succeeded);
+        assert_eq!(
+            state
+                .state
+                .db()
+                .get(crate::command_operations::ROOT)
+                .and_then(Value::as_list)
+                .unwrap()
+                .len(),
+            1,
+            "continuation executes once despite publication retries"
+        );
+        drop(state);
+        assert!(
+            kernel
+                .store()
+                .load("forms", 0, 10000)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.kind == "plugin.patch")
+        );
+        runtime.shutdown_complete().await;
     }
     #[tokio::test]
     async fn private_schema_form_resolves_once_and_waits_for_durable_continuation() {
