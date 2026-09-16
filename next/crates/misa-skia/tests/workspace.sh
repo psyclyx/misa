@@ -49,9 +49,9 @@ key ctrl+a
 type '/status'
 key Return
 sleep .5
-key ctrl+c
+key ctrl+a ctrl+c
 timeout 5 xclip -selection clipboard -o >"$work/healthy-daemon-status.txt"
-rg -q 'provider: scripted' "$work/healthy-daemon-status.txt"
+rg -q '^scripted$' "$work/healthy-daemon-status.txt"
 key Escape
 type '/login anthropic'
 key Return
@@ -76,9 +76,9 @@ cp "$work/frame.png" "$work/tool-completed.png"
 type '/status'
 key Return
 sleep .5
-key ctrl+c
+key ctrl+a ctrl+c
 timeout 5 xclip -selection clipboard -o >"$work/completed-status.txt"
-rg -q 'status: idle' "$work/completed-status.txt"
+rg -q '^idle$' "$work/completed-status.txt"
 key Escape ctrl+shift+i
 click 80 84 # hide status presentation before replacement subscription
 key Escape

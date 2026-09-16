@@ -31,7 +31,7 @@ copy_text() { key ctrl+a ctrl+c; timeout 5 xclip -selection clipboard -o; }
 # Open the first daemon's management surface, then installed create form.
 click 80 513
 cp "$work/frame.png" "$work/overview.png"
-click 80 315
+click 80 446
 click 80 80
 type 'native-created'
 click 80 311
@@ -46,23 +46,29 @@ xdotool mousemove --window "$window" 850 20 click --repeat 12 --delay 20 4
 sleep .3
 click 80 625
 cp "$work/frame.png" "$work/working-overview.png"
-click 80 125 # stop native-created on this daemon only
+click 80 255 # stop native-created on this daemon only
 sleep 1
 cp "$work/frame.png" "$work/stopped-retained.png"
-click 80 194 # reopen retained local instance
+click 80 325 # reopen retained local instance
  test "$(copy_text)" = 'retained draft'
 key ctrl+o
 xdotool mousemove --window "$window" 850 20 click --repeat 12 --delay 20 4
 sleep .3
 click 80 625
-click 80 297 # finite archived conversation search
+click 80 430 # finite archived conversation search
 sleep 1
 cp "$work/frame.png" "$work/archive.png"
-click 80 365 # resume selected stored conversation
+click 80 500 # resume selected stored conversation
 cp "$work/frame.png" "$work/resume-form.png"
 click 80 145
 type 'native-resumed'
 click 80 375
 sleep 1
 cp "$work/frame.png" "$work/resumed.png"
+type '/status'
+key Return
+sleep .5
+copy_text >"$work/resumed-status.txt"
+rg -q '^native-resumed$' "$work/resumed-status.txt"
+rg -q '^idle$' "$work/resumed-status.txt"
 echo "Native lifecycle UI gate passed; inspect overview/archive/resumed artifacts: $work"
