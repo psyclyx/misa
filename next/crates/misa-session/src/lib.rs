@@ -387,7 +387,7 @@ impl Runtime {
         self.reports.lock().expect("report queue poisoned").clear();
         self.tool_invocations.lock().expect("tool correlations poisoned").clear();
         let mut state = self.state.lock().expect("session state is never poisoned");
-        self.fail_operation_checkpoints(&mut state);
+        self.interrupt_operation_checkpoints(&mut state);
         state.publications.commit(vec![]);
         self.rev.send_replace(state.state.rev());
     }
@@ -662,6 +662,11 @@ impl Runtime {
                     if let Ok(event) = wire::parse::<SessionEvent>(&fields::value(effect, "event")) {
                         self.emit(event);
                     }
+                }
+                "owner.checkpoint.failed" => {
+                    self.dispatch(Event::new("kernel/log.failed")
+                        .with("kind", Value::str("operations.checkpoint"))
+                        .with("data", Value::map([("checkpoint", fields::value(effect, "checkpoint"))])));
                 }
                 // The interpreter accepted the effect, so this arm is unreachable;
                 // doing nothing is still better than panicking a session.

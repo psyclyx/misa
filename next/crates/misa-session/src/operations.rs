@@ -1347,6 +1347,61 @@ mod tests {
         )));
     }
     #[tokio::test]
+    async fn checkpoint_failure_is_atomic_when_handlers_reject_or_have_pending_writes() {
+        use misa_reframe::{FnHandler, Tx};
+        use misa_proto::observation::{Selection, Member, Encoding, Handle, Publication};
+        for mode in ["accepted", "rejected", "busy"] {
+            let contribution = crate::Contribution::new()
+                .with_root("failure_seen", Value::Bool(false)).unwrap()
+                .with_handler("operations/persistence.failed", 100, Arc::new(FnHandler::new(
+                    "test.failure", move |tx: &mut Tx<'_>, _: &Event| {
+                        if mode == "rejected" { return Err(misa_reframe::Fault::handler("publication refused")); }
+                        tx.set("failure_seen", Value::Bool(true))
+                    },
+                )))
+                .with_handler("test/stage", 0, Arc::new(FnHandler::new(
+                    "test.stage", |tx: &mut Tx<'_>, _: &Event| tx.set("failure_seen", Value::Bool(true)),
+                )));
+            let sink = Arc::new(Sink::default());
+            let runtime = Runtime::start_with("failure", "failure", None, sink.clone(), "scripted", "scripted-1", Value::Null, contribution);
+            let id = start(&runtime, "alice", "anthropic");
+            assert!(matches!(resolve(&runtime, &context("alice"), &invocation(&runtime, "credentials.resolve", resolve_input(&id, 1))), Outcome::Accepted { .. }));
+            let token = runtime.state.lock().unwrap().deferred.tokens()[0].clone();
+            let selection = Selection { scope: runtime.scope(), members: BTreeMap::from([("operations".into(), Member {
+                query: Query::new(SUMMARY), contract: "operations.summary@1".into(), encoding: Encoding::Value, optional: false,
+            })]) };
+            let (mut observer, _) = runtime.observe(Handle { id: 9, generation: 1 }, selection.clone(), None).unwrap();
+            if mode == "busy" { assert!(runtime.dispatch(Event::new("test/stage")).is_empty()); }
+            let faults = runtime.dispatch(Event::new("kernel/log.failed")
+                .with("kind", Value::str("operations.checkpoint"))
+                .with("data", Value::map([("checkpoint", Value::str(&token))])));
+            tokio::task::yield_now().await;
+            assert!(!sink.0.lock().unwrap().iter().any(|request| matches!(request, Request::Credential { action: CredentialAction::Set { .. }, .. })));
+            assert_eq!(runtime.state.lock().unwrap().deferred.len(), 0);
+            if mode != "accepted" {
+                assert_eq!(faults[0].code, "publication_failed");
+                assert!(runtime.is_closed());
+                assert!(matches!(observer.poll(), Some(Publication::Closed { .. })));
+                assert!(runtime.read_selection(&selection).is_err());
+            } else {
+                assert_eq!(faults[0].code, "persistence_failed");
+                assert!(!runtime.is_closed());
+                assert!(matches!(observer.poll(), Some(Publication::Update { .. })));
+                assert!(runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Interrupted);
+                // The contributed state mutation remains journal-gated, and its
+                // effect must survive the failure publication's dispatch.
+                let data = sink.0.lock().unwrap().iter().find_map(|request| match request {
+                    Request::Append { kind, data, .. } if kind == crate::contribution::PATCH_KIND => Some(data.clone()),
+                    _ => None,
+                }).expect("failure handler journal effect delivered");
+                assert_eq!(runtime.state.lock().unwrap().state.db().get("failure_seen"), Some(&Value::Bool(false)));
+                runtime.dispatch(Event::new("kernel/log.appended").with("conversation", Value::str("failure")).with("kind", Value::str(crate::contribution::PATCH_KIND)).with("data", data));
+                assert_eq!(runtime.state.lock().unwrap().state.db().get("failure_seen"), Some(&Value::Bool(true)));
+            }
+            runtime.shutdown_complete().await;
+        }
+    }
+    #[tokio::test]
     async fn checkpoint_failure_discards_staged_prompt_and_credential_effects() {
         for credential in [false, true] {
             let (runtime, sink) = setup();

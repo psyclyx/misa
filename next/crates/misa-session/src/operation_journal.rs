@@ -144,13 +144,19 @@ impl Runtime {
             })
             .is_err()
         {
-            self.fail_operation_checkpoints(state);
+            effects.push(
+                misa_reframe::Effect::new("owner.checkpoint.failed")
+                    .with("checkpoint", Value::str(token)),
+            );
         }
     }
-    pub(crate) fn fail_operation_checkpoints(&self, state: &mut State) {
+    pub(crate) fn interrupt_operation_checkpoints(&self, state: &mut State) {
         state.deferred.pending.clear();
-        for record in state
-            .operations
+        Self::interrupt_operation_store(&mut state.operations);
+    }
+    fn interrupt_operation_store(store: &mut Store) {
+        store.last_checkpoint = None;
+        for record in store
             .records
             .values_mut()
             .filter(|record| !record.phase.terminal())
@@ -160,13 +166,30 @@ impl Runtime {
             record.challenge = None;
             record.expires_ms = None;
         }
-        approvals::interrupt(&mut state.operations);
-        forms::interrupt(&mut state.operations);
+        approvals::interrupt(store);
+        forms::interrupt(store);
+    }
+    fn fail_operation_checkpoints(
+        &self,
+        state: &mut State,
+    ) -> Result<misa_reframe::Outcome, Fault> {
+        // Discard gated work even when the diagnostic publication is refused.
+        state.deferred.pending.clear();
+        let mut candidate = state.operations.clone();
+        Self::interrupt_operation_store(&mut candidate);
         let event = Event::new("operations/persistence.failed")
-            .with("summary", state.operations.summary())
-            .with("requests", state.operations.requests());
-        self.dispatch_locked(state, event);
+            .with("summary", candidate.summary())
+            .with("requests", candidate.requests());
+        let outcome = self.dispatch_locked(state, event);
+        if !outcome.committed() {
+            return Err(Fault::new(
+                "publication_failed",
+                "Operation persistence failed and its failure could not be published; reopen the owner to reconcile",
+            ));
+        }
+        state.operations = candidate;
         self.rev.send_replace(state.state.rev());
+        Ok(outcome)
     }
     pub(crate) fn operation_checkpoint_event(&self, event: &Event) -> Option<Vec<Fault>> {
         if !matches!(
@@ -188,7 +211,15 @@ impl Runtime {
                 return Some(vec![]);
             };
             if event.kind == "kernel/log.failed" {
-                self.fail_operation_checkpoints(&mut state);
+                let publication = self.fail_operation_checkpoints(&mut state);
+                drop(state);
+                match publication {
+                    Ok(outcome) => self.perform(&outcome),
+                    Err(fault) => {
+                        self.shutdown_with_fault(fault.clone());
+                        return Some(vec![fault]);
+                    }
+                }
                 return Some(vec![Fault::new(
                     "persistence_failed",
                     "Operation checkpoint failed; work was not replayed",
