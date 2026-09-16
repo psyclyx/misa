@@ -553,10 +553,10 @@ impl Session for Workspace {
                 let interface=misa_client::interface::Interface::load(&owner.client,scope).await.map_err(|f|f.message)?;
                 let drafts=if let Some(id)=work {
                     let detail=misa_client::operation::detail(&owner.client,&interface,&id).await.map_err(|f|f.message)?.ok_or("Work result expired")?;
-                    std::collections::BTreeMap::from([("id".into(),id),("generation".into(),detail.generation.to_string())])
+                    std::collections::BTreeMap::from([("operation".into(),id),("generation".into(),detail.generation.to_string())])
                 }else{Default::default()};
                 let reply=if let Some(command)=command {SessionReply::DaemonForm{daemon:owner.identity().into(),scope:interface.scope.clone(),form:misa_client::form::Form::command(&interface,&command).map_err(|f|f.message)?,drafts}}
-                else {SessionReply::Report(Node::section("daemon-commands").children(interface.commands.keys().map(|id|Node::text("command",[misa_proto::view::Span::plain(format!("/daemon-command {id}"))]).id(id))))};
+                else {SessionReply::Report(Node::section("daemon-commands").children(interface.commands.keys().map(|id|Node::text("command",[misa_proto::view::Span::plain(format!("/daemon-command {}",misa_kit::intent::quote(id)))]).id(id))))};
                 Ok(LocalChange::Reply(reply))
             });return None;
         }
