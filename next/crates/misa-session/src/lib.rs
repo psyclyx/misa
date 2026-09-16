@@ -107,6 +107,7 @@ pub struct Runtime {
     operation_deadline: watch::Sender<Option<i64>>,
     tool_approval: operations::ToolApprovalPolicy,
     closed: AtomicBool,
+    closed_reason: std::sync::OnceLock<Fault>,
     started: AtomicBool,
     closing: watch::Sender<bool>,
     stopped: watch::Receiver<bool>,
@@ -303,6 +304,7 @@ impl Runtime {
             operation_deadline: watch::channel(None).0,
             tool_approval,
             closed: AtomicBool::new(false),
+            closed_reason: std::sync::OnceLock::new(),
             started: AtomicBool::new(false),
             closing,
             stopped: stopped_rx,
@@ -371,7 +373,11 @@ impl Runtime {
     /// Closing the owner invalidates existing observations even while clients
     /// still hold Arcs. Submitted external effects cannot be rolled back.
     pub fn shutdown(&self) {
-        if self.closed.swap(true, Ordering::AcqRel) { return; }
+        self.shutdown_with_fault(Fault::new("closed_scope", "Session owner is closed"));
+    }
+    pub(crate) fn shutdown_with_fault(&self, fault: Fault) {
+        if self.closed_reason.set(fault).is_err() { return; }
+        self.closed.store(true, Ordering::Release);
         self.closing.send_replace(true);
         self.reports.lock().expect("report queue poisoned").clear();
         self.tool_invocations.lock().expect("tool correlations poisoned").clear();
@@ -379,6 +385,9 @@ impl Runtime {
         self.fail_operation_checkpoints(&mut state);
         state.publications.commit(vec![]);
         self.rev.send_replace(state.state.rev());
+    }
+    pub(crate) fn closure_fault(&self) -> Fault {
+        self.closed_reason.get().cloned().unwrap_or_else(|| Fault::new("closed_scope", "Session owner is closed"))
     }
 
     /// Wait until this owner's tracked kernel futures have been dropped.
@@ -659,9 +668,10 @@ impl Runtime {
         let _ = self.events.send(Emission { event });
     }
 
-    /// Push a line to the clients without touching the transcript.
+    /// Publish an owner diagnostic through ordinary observable domain state.
     pub fn notice(&self, level: misa_proto::wire::Level, text: impl Into<String>) {
-        self.emit(SessionEvent::Notice { level, text: text.into() });
+        let faults = self.dispatch(Event::new("owner/notice").with("level", Value::str(level.as_str())).with("text", Value::str(text.into())));
+        if let Some(fault) = faults.into_iter().next() { self.shutdown_with_fault(fault); }
     }
 
     /// Interpret an intent. The only place an intent is understood.

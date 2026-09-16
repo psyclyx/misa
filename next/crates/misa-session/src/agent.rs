@@ -56,6 +56,10 @@ use crate::views;
 pub fn registry() -> Registry {
     crate::completions::subscriptions(crate::usage::subscriptions(views::subscriptions(Registry::new())))
         .on_fn("session/started", 0, "agent.discovery", on_started)
+        .on_fn("owner/notice", 0, "agent.notice", |tx, event| {
+            let level = match fields::event_text(event,"level").as_str() { "error" => Level::Error, "warn" => Level::Warn, _ => Level::Info };
+            notice(tx, level, fields::event_text(event,"text"))
+        })
         .on_fn("discovery/models.refresh", 0, "agent.models.refresh", |tx, _| refresh_models(tx))
         .on_fn("discovery/usage.refresh", 0, "agent.usage.refresh", |tx, _| refresh_usage(tx))
         .on_fn("discovery/conversations.refresh", 0, "agent.conversations.refresh", |tx, _| { refresh_conversations(tx); Ok(()) })
@@ -718,65 +722,10 @@ fn on_usage(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
 }
 fn open_usage(tx: &mut Tx<'_>, incoming: Option<Value>) -> Result<(), Fault> {
     let attempts = tx.get("attempts").and_then(Value::as_list).unwrap_or(&[]);
-    let mut rows = vec![usage_row("Calls", "value.number", Value::Int(attempts.len() as i64))];
-    for (key, label, role) in [
-        ("input_tokens", "Input tokens", "value.tokens"),
-        ("output_tokens", "Output tokens", "value.tokens"),
-        ("cost_micros", "Spend", "value.money"),
-    ] {
-        let sum = attempts.iter().map(|a| a.get(key).and_then(Value::as_i64).unwrap_or(0)).sum();
-        rows.push(usage_row(label, role, Value::Int(sum)));
-    }
-    let facts = incoming.or_else(|| tx.get("session.usage").cloned()).unwrap_or(Value::Null);
-    if let Some(plan) = facts.get("plan").filter(|v| **v != Value::Null) {
-        rows.push(usage_row("Plan", "value.text", plan.clone()));
-    }
-    if facts.get("unavailable").and_then(Value::as_bool).unwrap_or(true) {
-        rows.push(usage_row("Provider quota", "value.text", Value::str("Unavailable")));
-    }
-    for window in facts.get("windows").and_then(Value::as_list).unwrap_or(&[]) {
-        let label = window.get("label").and_then(Value::as_str).unwrap_or("Quota");
-        for (key, suffix, role) in [
-            ("used", "used", "value.number"),
-            ("limit", "limit", "value.number"),
-            ("remaining", "remaining", "value.number"),
-            ("reset", "reset", "value.datetime"),
-            ("reset_after_seconds", "reset after seconds", "value.number"),
-        ] {
-            if let Some(value) = window.get(key).filter(|v| **v != Value::Null) {
-                let role = if ["used", "limit", "remaining"].contains(&key)
-                    && window.get("unit").and_then(Value::as_str) == Some("percent")
-                {
-                    "value.percent"
-                } else {
-                    role
-                };
-                rows.push(usage_row(&format!("{label} · {suffix}"), role, value.clone()));
-            }
-        }
-    }
-    if let Some(count) = facts.get("reset_count").filter(|v| **v != Value::Null) {
-        rows.push(usage_row("Quota resets available", "value.number", count.clone()));
-    }
-    for credit in facts.get("reset_credits").and_then(Value::as_list).unwrap_or(&[]) {
-        let label = credit.get("label").and_then(Value::as_str).unwrap_or("Quota reset");
-        for key in ["status", "granted", "expires"] {
-            if let Some(value) = credit.get(key).filter(|v| **v != Value::Null) {
-                rows.push(usage_row(
-                    &format!("{label} · {key}"),
-                    if key == "status" { "value.text" } else { "value.datetime" },
-                    value.clone(),
-                ));
-            }
-        }
-    }
-    if let Some(credits) = facts.get("credits") {
-        for key in ["enabled", "currency", "limit", "used", "remaining", "unlimited", "has_credits"] {
-            if let Some(value) = credits.get(key).filter(|v| **v != Value::Null) {
-                rows.push(usage_row(&format!("Credits · {key}"), "value.number", value.clone()));
-            }
-        }
-    }
+    let report = Value::map([("session", crate::usage::ledger(attempts)),
+        ("last_request", attempts.last().cloned().unwrap_or(Value::Null)),
+        ("quota", incoming.or_else(|| tx.get("session.usage").cloned()).unwrap_or(Value::Null))]);
+    let rows = crate::usage::report_rows(&report).into_iter().map(|(label, role, value)| usage_row(&label, role, value)).collect::<Vec<_>>();
     panel(
         tx,
         "usage",
@@ -1713,7 +1662,17 @@ fn log_effect(tx: &Tx<'_>, kind: &str, data: Value) -> Effect {
 /// wait for the next view. The notice is presentation state and never journalled — the
 /// manifest says so, and a test enforces it.
 fn notice(tx: &mut Tx<'_>, level: Level, text: impl Into<String>) -> Result<(), Fault> {
-    let text = text.into();
+    // Notices are an ephemeral recent-diagnostics ring, not transcript history.
+    let mut text = text.into();
+    if text.len() > 8192 {
+        let mut end = 8192;
+        while !text.is_char_boundary(end) { end -= 1; }
+        text.truncate(end);
+    }
+    let recent = tx.get("notices").and_then(Value::as_list).unwrap_or(&[]);
+    if recent.len() >= 64 {
+        tx.set("notices", Value::list(recent[recent.len()-63..].iter().cloned()))?;
+    }
     let id = next_id(tx, "session.notice_seq")?;
     tx.push(
         "notices",

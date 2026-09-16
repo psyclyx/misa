@@ -89,7 +89,12 @@ async fn preparation_catalogs_resolve_without_shared_panel_mutation() {
     assert!(shortcuts.iter().any(|shortcut| shortcut.id == "model"));
     for shortcut in shortcuts {
         match shortcut.target {
-            misa_proto::preparation::Target::Read { member } => { read(&member.query.id, member.query.args); }
+            misa_proto::preparation::Target::Read { member } => {
+                let encoding = member.encoding;
+                let snapshot = runtime.read_selection(&Selection { scope: runtime.scope(), members: BTreeMap::from([("report".into(), member)]) }).unwrap();
+                assert!(matches!((&snapshot.members["report"], encoding),
+                    (Content::Value(_), Encoding::Value) | (Content::Document(_), Encoding::Document)));
+            }
             misa_proto::preparation::Target::Command { command } => assert!(runtime.command_registry.contains_key(&command)),
         }
     }

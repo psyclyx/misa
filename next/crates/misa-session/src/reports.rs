@@ -33,14 +33,13 @@ fn size(value: &Value) -> usize {
 impl Runtime {
     pub fn dispatch(&self, event: Event) -> Vec<Fault> {
         let faults = self.dispatch_once(event.clone());
-        let faults = if busy(&faults) && event.kind.starts_with("kernel/") {
+        let faults = if busy(&faults) && (event.kind.starts_with("kernel/") || event.kind == "owner/notice") {
             let bytes = size(&event.data).saturating_add(event.kind.len());
             let mut pending = self.reports.lock().expect("report queue poisoned");
             if pending.events.len() + usize::from(pending.draining) >= COUNT || pending.bytes.saturating_add(bytes) > BYTES {
                 pending.events.clear(); pending.bytes = 0;
                 drop(pending);
-                self.notice(misa_proto::wire::Level::Error, "Session closed: deferred report capacity exhausted");
-                self.shutdown();
+                self.shutdown_with_fault(Fault::new("report_capacity", "Session closed: deferred report capacity exhausted"));
                 return vec![Fault::new("report_capacity", "Session closed rather than dropping an authoritative report")];
             }
             pending.bytes += bytes;
@@ -89,6 +88,29 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    fn observed(runtime: &Arc<Runtime>) -> crate::observation::Observation {
+        use misa_proto::observation::{Handle, Member, Selection};
+        let definition = runtime.query_exports().into_iter().find(|definition| definition.id == "conversation.presentation").unwrap();
+        let selection = Selection {scope:runtime.scope(), members:std::collections::BTreeMap::from([("conversation".into(),Member {
+            query:misa_proto::Query::new(&definition.id),contract:definition.contract,encoding:definition.result.encoding(),optional:false,
+        })])};
+        Runtime::observe(runtime,Handle{id:1,generation:1},selection,None).unwrap().0
+    }
+
+    #[tokio::test]
+    async fn owner_notice_publishes_in_a_scoped_document_and_keeps_a_bounded_recent_ring() {
+        let runtime = Runtime::start("notices", "Notices", None,
+            Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("unused"))),
+            "scripted", "test", Value::Null);
+        let mut observation=observed(&runtime);
+        runtime.notice(misa_proto::Level::Warn,"Owner warning visible to scoped clients");
+        assert!(observation.poll().is_some());
+        assert!(format!("{:?}",runtime.view().unwrap()).contains("Owner warning visible"));
+        for _ in 0..70 {runtime.notice(misa_proto::Level::Info,"bounded notice");}
+        assert_eq!(runtime.state.lock().unwrap().state.db().get("notices").unwrap().as_list().unwrap().len(),64);
+        runtime.shutdown_complete().await;
+    }
+
     #[tokio::test]
     async fn journal_acknowledgement_releases_a_blocked_automatic_report() {
         let handler = |name| Arc::new(misa_reframe::FnHandler::new(name, |tx: &mut misa_reframe::Tx<'_>, _: &Event| {
@@ -119,10 +141,12 @@ mod tests {
         assert!(runtime.dispatch(acknowledge()).is_empty());
         assert_eq!(value(), Value::Int(2));
         assert!(runtime.dispatch(Event::new("counter/increment")).is_empty());
+        let mut observation=observed(&runtime);
         for _ in 0..COUNT { assert!(runtime.dispatch(Event::new("kernel/counter")).is_empty()); }
         let overflow = runtime.dispatch(Event::new("kernel/counter"));
         assert_eq!(overflow[0].code, "report_capacity");
         assert!(runtime.is_closed());
         assert!(runtime.reports.lock().unwrap().events.is_empty());
+        assert!(matches!(observation.poll(),Some(misa_proto::observation::Publication::Closed{reason,..}) if reason.code=="report_capacity"));
     }
 }

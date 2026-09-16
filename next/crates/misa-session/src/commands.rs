@@ -142,8 +142,8 @@ fn shortcuts(installed: &BTreeMap<String, CommandRegistration>) -> Vec<misa_prot
     crate::catalog::commands().into_iter().filter_map(|mut entry| {
         let target = match entry.id.as_str() {
             "status" | "usage" => {
-                let id = if entry.id == "status" { "session.status-report" } else { "usage.report" };
-                Target::Read { member: Member { query: Query::new(id), contract: format!("{id}@1"), encoding: Encoding::Value, optional: false } }
+                let (id, encoding) = if entry.id == "status" { ("session.status-report", Encoding::Value) } else { ("usage.presentation", Encoding::Document) };
+                Target::Read { member: Member { query: Query::new(id), contract: format!("{id}@1"), encoding, optional: false } }
             }
             other => {
                 let command = match other {

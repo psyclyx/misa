@@ -169,7 +169,7 @@ impl Runtime {
     }
 
     fn validate_selection(&self, selection: &Selection) -> Result<(), Fault> {
-        if self.is_closed() { return Err(Fault::new("closed_scope", "Session owner is closed")); }
+        if self.is_closed() { return Err(self.closure_fault()); }
         selection.validate()?;
         if selection.scope != self.scope() {
             return Err(Fault::query("Owner incarnation does not match"));
@@ -223,7 +223,7 @@ impl Observation {
         if self.ended { return None; }
         if self.runtime.is_closed() {
             self.ended = true;
-            return Some(Publication::Closed { handle: self.handle, reason: Fault::new("closed_scope", "Session owner is closed") });
+            return Some(Publication::Closed { handle: self.handle, reason: self.runtime.closure_fault() });
         }
         let runtime = self.runtime.clone();
         let mut state = runtime
