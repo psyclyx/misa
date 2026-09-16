@@ -6,3 +6,6 @@ pub mod lifecycle;
 
 pub mod membership;
 pub mod delegation;
+
+#[cfg(test)]
+mod presence_tests;

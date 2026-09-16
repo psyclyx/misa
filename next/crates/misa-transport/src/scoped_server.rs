@@ -34,6 +34,11 @@ const INVOCATIONS: usize = 8;
 const REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+struct Presence { resolver: Arc<dyn Resolver>, context: CallContext }
+impl Drop for Presence {
+    fn drop(&mut self) { self.resolver.disconnected(&self.context); }
+}
+
 pub struct Handler {
     pub daemon: String,
     pub scope: Scope,
@@ -71,6 +76,16 @@ impl ProtocolHandler for Handler {
         if !self.admission.admits(&principal) {
             return Ok(());
         }
+        let context = CallContext {
+            principal: principal.clone(),
+            connection: misa_proto::wire::RequestContext::connection(),
+        };
+        let ClientMessage::Hello { client, .. } = &hello else { unreachable!() };
+        if let Err(fault) = self.resolver.connected(&context, client) {
+            let _ = writer.send(&ServerMessage::Fault { fault }).await;
+            return Ok(());
+        }
+        let _presence = Presence { resolver: self.resolver.clone(), context: context.clone() };
         if writer
             .send(&ServerMessage::Welcome {
                 version: VERSION,
@@ -82,10 +97,6 @@ impl ProtocolHandler for Handler {
         {
             return Ok(());
         }
-        let context = CallContext {
-            principal: principal.clone(),
-            connection: misa_proto::wire::RequestContext::connection(),
-        };
         let mut router = Router::new(
             context,
             self.resolver.clone(),

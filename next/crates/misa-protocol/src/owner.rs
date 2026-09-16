@@ -30,6 +30,10 @@ pub trait Observation: Send {
 /// inaccessible scopes. Owners additionally check current incarnation on execution.
 pub trait Resolver: Send + Sync {
     fn resolve(&self, context: &CallContext, scope: &Scope) -> Result<Arc<dyn Owner>, Fault>;
+    /// An authenticated daemon connection, independent of any selected scope.
+    /// Client names are display metadata, never authority.
+    fn connected(&self, _context: &CallContext, _client: &misa_proto::ClientInfo) -> Result<(), Fault> { Ok(()) }
+    fn disconnected(&self, _context: &CallContext) {}
 }
 struct Active {
     handle: Handle,

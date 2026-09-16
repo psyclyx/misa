@@ -36,6 +36,7 @@ impl Drop for Entry {
 }
 
 struct State {
+    connections: BTreeMap<u64, Value>,
     archive: Result<Value,Fault>,
     archive_installed: bool,
     entries: BTreeMap<String, Entry>,
@@ -130,6 +131,7 @@ impl Directory {
             work_writes: tokio::sync::Mutex::new(()),
             supervisors: Mutex::new(Vec::new()),
             state: Mutex::new(State {
+                connections: BTreeMap::new(),
                 archive: Err(Fault::unsupported("Archive store is not installed")),
                 archive_installed:false,
                 entries: BTreeMap::new(),
@@ -399,11 +401,13 @@ impl Directory {
         ];
         definitions.extend(crate::delegation::definitions());
         definitions.extend(crate::archive::definitions());
+        definitions.push(connections_definition());
         definitions
     }
     fn member(&self, state: &State, member: &Member) -> Result<Content,Fault> {
         if matches!(member.query.id.as_str(),"daemon.conversations"|"completion.catalog"|"completion.search") {return match crate::archive::read(&state.archive,&member.query) {Ok(value)=>Ok(Content::Value(value)),Err(fault) if member.optional=>Ok(Content::Unavailable(fault)),Err(fault)=>Err(fault)};}
         Ok(Content::Value(match member.query.id.as_str() {
+            "daemon.connections" => Value::list(state.connections.values().cloned()),
             misa_proto::invocation::CATALOG => {
                 crate::lifecycle::encode(&crate::lifecycle::commands())
             }
@@ -777,6 +781,27 @@ impl misa_protocol::owner::Observation for Observed {
 /// Every lookup still binds the full scope incarnation, never just its label.
 pub struct Routes(pub Arc<Directory>);
 impl Resolver for Routes {
+    fn connected(&self, context: &CallContext, client: &misa_proto::ClientInfo) -> Result<(), Fault> {
+        if client.name.len() > 256 || client.version.len() > 256 {
+            return Err(Fault::protocol("Client display metadata is too long"));
+        }
+        let mut state = self.0.state.lock().unwrap();
+        if self.0.is_closed() { return Err(Fault::new("closed_scope", "Daemon is shutting down")); }
+        if state.connections.len() >= 256 { return Err(Fault::new("busy", "Daemon connection limit reached")); }
+        if state.connections.contains_key(&context.connection) { return Err(Fault::protocol("Connection identity reused")); }
+        state.connections.insert(context.connection, Value::map([
+            ("connection", Value::str(context.connection.to_string())),
+            ("principal", Value::str(&context.principal)),
+            ("name", Value::str(&client.name)),
+            ("version", Value::str(&client.version)),
+        ]));
+        publish(&mut state);
+        Ok(())
+    }
+    fn disconnected(&self, context: &CallContext) {
+        let mut state = self.0.state.lock().unwrap();
+        if state.connections.remove(&context.connection).is_some() { publish(&mut state); }
+    }
     fn resolve(&self, _: &CallContext, scope: &Scope) -> Result<Arc<dyn Owner>, Fault> {
         if *scope == self.0.scope {
             return Ok(self.0.clone());
@@ -785,6 +810,18 @@ impl Resolver for Routes {
             .session(scope)
             .map(|runtime| runtime as Arc<dyn Owner>)
             .ok_or_else(|| Fault::new("unavailable_scope", "Scope is unavailable"))
+    }
+}
+
+/// Authenticated transport connections, not clients attached to individual sessions.
+pub fn connections_definition() -> misa_proto::query::Definition {
+    use misa_proto::{query::{Definition, ResultContract}, schema::{Schema, Field}};
+    Definition {
+        id: "daemon.connections".into(), contract: "daemon.connections@1".into(), arguments: vec![],
+        result: ResultContract::Data { schema: Schema::List { items: Box::new(Schema::Record {
+            fields: ["connection", "principal", "name", "version"].into_iter().map(|name| (name.into(), Field { schema: Schema::String, optional: false })).collect(),
+            allow_unknown: false,
+        }) } },
     }
 }
 
