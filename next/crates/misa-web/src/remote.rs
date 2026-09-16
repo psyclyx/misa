@@ -396,6 +396,19 @@ mod tests {
         let form = |path: &str, fields: &str| axum::http::Request::builder().method("POST").uri(path)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(axum::body::Body::from(fields.to_owned())).unwrap();
+        for (path, expected) in [("/commands", "example.form"), ("/command?command=example.form", "field.value")] {
+            let response = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri(path).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let html = axum::body::to_bytes(response.into_body(), 65536).await.unwrap();
+            assert!(std::str::from_utf8(&html).unwrap().contains(expected));
+        }
+        assert!(form_values.lock().unwrap().is_empty(), "installed command preparation must remain local");
+        let private = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri("/command?command=credentials.resolve").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(private.status(), axum::http::StatusCode::BAD_REQUEST);
+        let private = super::super::remote_router(remote.clone()).oneshot(form("/perform", "kind=command&action_id=credentials.resolve&field.value=never-echo-this-secret")).await.unwrap();
+        assert_eq!(private.status(), axum::http::StatusCode::BAD_REQUEST);
+        let html = axum::body::to_bytes(private.into_body(), 65536).await.unwrap();
+        assert!(!std::str::from_utf8(&html).unwrap().contains("never-echo-this-secret"));
         let prepare_action = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().method("POST").uri("/intent").header("content-type", "application/x-www-form-urlencoded").header("accept", "application/json").body(axum::body::Body::from("action=example.feed")).unwrap()).await.unwrap();
         assert_eq!(prepare_action.status(), axum::http::StatusCode::OK);
         let body = axum::body::to_bytes(prepare_action.into_body(), 65536).await.unwrap();

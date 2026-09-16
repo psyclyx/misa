@@ -35,10 +35,24 @@ pub(crate) async fn list(State(remote): State<Arc<Remote>>) -> Response {
     for shortcut in &remote.interaction.shortcuts {
         html.push_str(&format!("<form method=\"get\" action=\"./command\"><input type=\"hidden\" name=\"shortcut\" value=\"{}\"><button>{}</button> {}</form>", escape(&shortcut.id), escape(&shortcut.label), escape(&shortcut.description)));
     }
+    html.push_str("<details><summary>More installed commands</summary>");
+    for id in remote.interaction.interface.commands.keys() {
+        if remote.interaction.shortcuts.iter().any(|shortcut| matches!(&shortcut.target, Target::Command { command } if command == id)) { continue; }
+        match Form::command(&remote.interaction.interface, id) {
+            Ok(_) => html.push_str(&format!("<form method=\"get\" action=\"./command\"><input type=\"hidden\" name=\"command\" value=\"{}\"><button>{}</button></form>", escape(id), escape(id))),
+            Err(fault) => html.push_str(&format!("<p><code>{}</code> · {}</p>", escape(id), escape(&fault.message))),
+        }
+    }
+    html.push_str("</details>");
     crate::requests::page(StatusCode::OK, "Commands", html)
 }
 pub(crate) async fn open(State(remote): State<Arc<Remote>>, Query(fields): Query<HashMap<String,String>>) -> Response {
-    match prepare(&remote, fields.get("shortcut").map(String::as_str).unwrap_or(""), &BTreeMap::new()).await {
+    let prepared = if let Some(command) = fields.get("command") {
+        Form::command(&remote.interaction.interface, command).map(|model| crate::actions::markup_for(&model, true, &BTreeMap::new(), &BTreeMap::new()))
+    } else {
+        prepare(&remote, fields.get("shortcut").map(String::as_str).unwrap_or(""), &BTreeMap::new()).await
+    };
+    match prepared {
         Ok(html) => crate::requests::page(StatusCode::OK, "Prepare command", format!("{html}<script src=\"./commands.js\"></script>")),
         Err(fault) => crate::requests::page(StatusCode::BAD_REQUEST, "Command unavailable", escape(&fault.message)),
     }
