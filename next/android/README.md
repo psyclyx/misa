@@ -1,28 +1,18 @@
 # misa for Android
 
-A phone frontend for a misa daemon: the same session, the same commands, the
-same transcript, reached over iroh with the same ticket or pairing code every
-other client takes.
+Android uses `misa-client` for daemon relationships, scoped observations,
+replicas, recovery, command outcomes and transfers. Kotlin owns Compose rendering,
+local session selection, drafts, dialogs and platform file pickers. The JNI seam
+adapts a bounded workspace command queue and coalesced wakeups; it is not another
+wire protocol implementation.
 
-It is a frontend and not a second implementation. The Kotlin side owns the
-surface — a `Compose` tree instead of cells, HTML, or pixels — and the protocol
-is the shared Rust client (`misa-transport`, `misa-proto`), reached
-through a small JNI seam in `native/`. One connection per session, one view
-tree, one intent vocabulary.
+One workspace can connect to several daemons and retain several session pages.
+A session is identified by authenticated daemon identity and its full owner
+scope, including incarnation. Reconnecting never silently substitutes another
+session with the same name. Phone connections use explicit tickets or pairing
+codes; desktop Unix socket discovery does not apply to Android.
 
-```
-        ┌─────────────── app (Kotlin, Compose) ───────────────┐
-        │  connect · scan the code · transcript · composer    │
-        └───────────────────────┬────────────────────────────┘
-                                │ JNI, JSON both ways
-        ┌───────────────────────┴────────────────────────────┐
-        │  native/libmisa_android.so  (misa-transport + iroh)       │
-        └───────────────────────┬────────────────────────────┘
-                                │  /misa/session/1
-                            misa-daemon
-```
-
-## Build
+## Build and verify
 
 From the repository root:
 
@@ -30,84 +20,79 @@ From the repository root:
 nix-build next -A packages.misa-android
 ```
 
-The output is `result/share/misa/misa-debug.apk`, debug-signed and containing
-`x86_64`, `arm64-v8a`, and `armeabi-v7a` native libraries. Each library is its own
-cross derivation with Rust 1.97.1 and NDK 29.0.14206865. The APK uses Gradle 9.3.1,
-build tools 37.0.0, and the pinned SDK platforms 33–37. Dependencies are fetched
-from `gradle.lock`; Gradle assembles with networking disabled.
-
-To build only a native library:
+The output contains `share/misa/misa-debug.apk` and its instrumentation APK,
+debug-signed together. The primary APK contains `x86_64`, `arm64-v8a`, and
+`armeabi-v7a` native libraries, built as separate Nix cross derivations. The
+pinned SDK, NDK, Rust and Gradle dependencies are declared in `next/nix/android.nix`.
+Gradle assembles offline and does not build Rust as a hidden pre-build task.
 
 ```sh
+# One ABI only
 nix-build next -A packages.misa-android.native.x86_64
-```
-
-To run three integration scenarios and two deterministic client checks in a
-temporary x86_64 emulator (requires KVM):
-
-```sh
+# Host-side JNI support tests
+cargo test --manifest-path next/android/native/Cargo.toml
+# Actual packaged JNI/iroh/Kotlin checks in a temporary emulator (requires KVM)
 nix-build next -A packages.misa-android.installCheck -o result-android-check
 result-android-check/bin/misa-android-check
 ```
 
-When Gradle dependencies change, regenerate `gradle.lock` with the pinned
-`gradle2nix`, running `:app:assembleDebug`, `:app:testDebugUnitTest`, and `:app:assembleDebugAndroidTest`. Gradle
-consumes the native libraries supplied by Nix; it does not discover compilers
-or build Rust as a hidden `preBuild` task.
+The emulator check starts isolated scripted daemons, installs both APKs, and
+checks incremental canonical/live rendering, persistent identity and reconnect,
+offline canonical history, verified image transfer and directed attachment save,
+owner summaries, create/close/archive/resume, two daemon identities with the same
+session name, and private credential/tool approval workflows. It cleans up only
+its own processes and temporary files. `MISA_CHECK_ARTIFACTS=/tmp/misa-android-ui`
+also saves an actual application screenshot and UI hierarchy.
+
+For the contributed typed-request fixture, build the component as described in
+`next/wit/pet/README.md`, then set `MISA_PLUGIN` to its component path when running
+the check. This adds a real installed command, invalid integer draft rejection,
+and successful owner-owned request resolution through JNI.
+
+When Gradle dependencies change, regenerate `gradle.lock` with pinned
+`gradle2nix`, including `:app:assembleDebug`, `:app:testDebugUnitTest`, and
+`:app:assembleDebugAndroidTest`.
 
 ## Run
 
-The daemon shows a code; scan it, or paste the `misa-pair:` line:
+Scan the daemon's pairing code or paste its ticket. An emulator reaches its host
+at `10.0.2.2`; replace `127.0.0.1` in a direct ticket with that address.
 
-```sh
-misa-daemon --session demo            # prints a ticket and a QR
-adb install -r result/share/misa/misa-debug.apk # then attach with the camera
-```
+The workspace chooser adds daemons, selects sessions, creates or resumes an
+archived conversation, closes an owner session, and separately detaches local
+pages. The daemon computes working, attention and usage summaries; Android does
+not open every transcript to derive them.
 
-An emulator reaches the host at `10.0.2.2`; replace `127.0.0.1` in the daemon’s
-direct ticket with that address.
+The session command palette includes declared shortcuts and installed command
+input forms. Optional presentations are selected before observation, with local
+persisted hide/auto/variant preferences. Their trees have independent identity
+spaces. Private input requests are opened locally, retain nonsecret drafts when
+hidden, and clear secret text on dismissal or submission. Operations retain their
+owner lifetime when a local dialog or page closes.
 
-## What it does today
+## Delivery and storage
 
-- attach with a ticket or a pairing code, and pair once so the key is approved;
-- the transcript, drawn from the same view tree the other frontends draw:
-  messages, thinking, tool calls, code with captures, lists, tables, fields,
-  meters, and typed facts;
-- a composer that sends a turn or a `/command`;
-- the command palette from the session's own declarations, with an argument
-  form built from what each command declared;
-- the session's own actions, including a panel's fields;
-- notices, status, and cancel;
-- verified image caching and bounded file uploads through the blob connection;
-- attachment saving through Android’s destination picker;
-- a persistent endpoint identity, draft, ticket, expanded nodes, and canonical
-  view with its version cursor. Reopening shows the saved conversation before
-  connecting and requests changes since that cursor. In-flight text remains a
-  separate overlay and is never saved as settled history. JNI forwards canonical
-  operations and stream updates directly; Kotlin updates indexed nodes along
-  their ancestor path and observes stream text separately from the transcript.
+The shared replica advances independently of rendering. JNI queues one deferred
+capture per document composition, then captures all selected documents under one
+replica lock when Kotlin polls. Kotlin applies each complete publication inside a
+Compose snapshot. Canonical nodes use indexed ancestor updates; transient streams
+retain UTF-8 byte counts and never enter saved history. Appending an immutable
+Compose string still costs proportionally to its current length.
 
-The build also produces `misa-debug-androidTest.apk`. The installation check
-starts its packaged scripted daemon with temporary credentials and tests
-persistent reconnect, image upload/fetch/decoding, and directed save through the
-actual JNI connection. It requires no ticket or pre-existing service.
+The workspace admits at most four daemon relationships, eight local session
+actors, sixteen pending session jobs and thirty-two queued JNI deliveries.
+Transfers use the shared bounded coordinator. Image decoding is off the receiver
+and UI threads, sampled to 1024 pixels, with eight simultaneous decoded images;
+missing or evicted images can be fetched again.
 
-The check removes its own daemon, emulator, and app-private test files. The save
-test writes and reads a document through Android’s content resolver, then
-removes it. To use an existing open scripted daemon instead, set `MISA_TICKET`
-to its ticket with host address `10.0.2.2`. Native storage and snapshot tests run
-with `cargo test --manifest-path next/android/native/Cargo.toml`.
+Persistent state includes a private endpoint identity, connection targets,
+per-scope drafts, presentation preferences and canonical checkpoints. Checkpoints
+are keyed by daemon identity and the full selection. They contain no transient
+streams or resumable publication cursor; reopening shows cached history as stale
+until the owner supplies a current baseline. Accepted mutations are not replayed
+automatically when the connection fails.
 
-The native incremental test sends the same 101 stream messages against histories
-of 1 and 1,000 nodes: both produce 8,676 serialized UTF-8 JSON bytes and zero
-snapshot writes. Android checks unchanged-node identity, ancestor updates, and
-UTF-8 stream offsets. These are deterministic counts, not timing measurements.
-
-The native source closure contains the JNI crate, the four normal path
-dependencies (`misa-proto`, `misa-protocol`, `misa-transport`, `misa-value`), and
-the workspace manifest needed for inherited package metadata. It uses the
-native lockfile; unrelated frontend source and the root lockfile are excluded.
-
-Live text retains its UTF-8 byte count, so checking an append offset examines
-only the new suffix. Appending still copies the current immutable string for
-Compose, so that part of the work depends on live text length.
+The JNI crate is a separate Cargo workspace with its own lockfile. Its filtered
+Nix source closure includes `misa-client`, `misa-proto`, `misa-protocol`,
+`misa-transport` and `misa-value`; it does not link the session kernel, plugin
+runtime or desktop renderers.

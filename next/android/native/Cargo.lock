@@ -1573,8 +1573,26 @@ dependencies = [
  "blake3",
  "iroh",
  "jni 0.21.1",
+ "misa-client",
  "misa-proto",
+ "misa-protocol",
  "misa-transport",
+ "misa-value",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "misa-client"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "iroh",
+ "misa-proto",
+ "misa-protocol",
+ "misa-transport",
+ "misa-value",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1595,6 +1613,7 @@ version = "0.1.0"
 dependencies = [
  "misa-proto",
  "misa-value",
+ "serde",
  "tokio",
 ]
 
@@ -1605,9 +1624,11 @@ dependencies = [
  "async-trait",
  "blake3",
  "iroh",
+ "libc",
  "misa-proto",
  "misa-protocol",
  "misa-value",
+ "serde",
  "tokio",
  "tracing",
 ]

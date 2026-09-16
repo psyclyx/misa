@@ -1,131 +1,165 @@
-//! JNI carries the same bounded operations as the wire; only canonical facts are persisted.
-use misa_proto::{SessionEvent, SessionMsg, sync::ClientView};
+//! Bounded wakeups and deferred captures avoid snapshots queued behind a paused UI.
+use misa_client::{document, driver::Observation};
+use misa_protocol::observation::{Applied, MemberChange};
 use serde_json::{Value, json};
-
-pub fn receive(
-    view: &mut ClientView,
-    message: &SessionMsg,
-    mut persist: impl FnMut(&ClientView),
-) -> Result<Option<Value>, String> {
-    if !view.receive(message)? {
-        return Ok(None);
-    }
-    let event = match message {
-        SessionMsg::View {
-            view: tree,
-            version,
-            ..
-        } => {
-            persist(view);
-            json!({"kind":"view", "view":tree, "version":version})
-        }
-        SessionMsg::Changes { changes, .. } => {
-            if !changes.is_empty() {
-                persist(view);
-            }
-            json!({"kind":"changes", "changes":changes})
-        }
-        SessionMsg::Streams { streams } => json!({"kind":"streams", "streams":streams}),
-        SessionMsg::Event {
-            event: SessionEvent::Stream { update },
-            ..
-        } => json!({"kind":"stream", "update":update}),
-        _ => return Ok(None),
-    };
-    Ok(Some(event))
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+type Pending = Box<dyn FnOnce() -> Value + Send>;
+pub struct Mailbox {
+    queue: Mutex<VecDeque<Pending>>,
+    space: tokio::sync::Notify,
+    wake: Arc<dyn Fn(Value) + Send + Sync>,
 }
-
+impl Mailbox {
+    pub fn new(wake: Arc<dyn Fn(Value) + Send + Sync>) -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            space: tokio::sync::Notify::new(),
+            wake,
+        }
+    }
+    pub async fn push(&self, pending: Pending) {
+        let mut pending = Some(pending);
+        loop {
+            let wait = self.space.notified();
+            tokio::pin!(wait);
+            wait.as_mut().enable();
+            let inserted = {
+                let mut queue = self.queue.lock().unwrap();
+                if queue.len() < 32 {
+                    let wake = queue.is_empty();
+                    queue.push_back(pending.take().unwrap());
+                    Some(wake)
+                } else {
+                    None
+                }
+            };
+            if let Some(wake) = inserted {
+                if wake {
+                    (self.wake)(json!({"kind":"wake"}));
+                }
+                return;
+            }
+            wait.await;
+        }
+    }
+    pub async fn event(&self, event: Value) {
+        self.push(Box::new(move || event)).await;
+    }
+    pub fn startup_fault(&self, message: &str) {
+        (self.wake)(json!({"kind":"fault","message":message}));
+    }
+    pub fn next(&self) -> Option<Value> {
+        let pending = self.queue.lock().unwrap().pop_front()?;
+        self.space.notify_one();
+        Some(pending())
+    }
+}
+pub struct Documents {
+    pub observation: Observation,
+    instance: String,
+    readers: Mutex<Vec<(String, document::Reader)>>,
+    queued: AtomicBool,
+    generation: u64,
+}
+impl Documents {
+    pub fn new(
+        observation: Observation,
+        instance: String,
+        generation: u64,
+        members: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            observation,
+            instance,
+            generation,
+            readers: Mutex::new(
+                members
+                    .into_iter()
+                    .map(|(slot, member)| (slot, document::Reader::new(member)))
+                    .collect(),
+            ),
+            queued: AtomicBool::new(false),
+        }
+    }
+    pub async fn notify(self: &Arc<Self>, mailbox: &Mailbox) {
+        if self.queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let feed = self.clone();
+        mailbox.push(Box::new(move || feed.capture())).await;
+    }
+    fn capture(&self) -> Value {
+        self.queued.store(false, Ordering::Release);
+        let mut readers = self.readers.lock().unwrap();
+        let updates = document::capture_many(
+            &self.observation,
+            readers
+                .iter_mut()
+                .map(|(slot, reader)| (slot.as_str(), reader)),
+        )
+        .into_iter()
+        .map(|(slot, update)| (slot, encode(update)))
+        .collect::<serde_json::Map<_, _>>();
+        json!({"kind":"transaction","instance":self.instance,"composition":self.generation,"documents":updates})
+    }
+}
+fn encode(update: document::Update) -> Value {
+    match update {
+        document::Update::Reset(document) => {
+            json!({"mode":"reset","tree":document.tree,"streams":document.streams})
+        }
+        document::Update::Changed { member, applied } => {
+            let Applied::Changed(changes) = &*applied else {
+                unreachable!()
+            };
+            let Some(MemberChange::Document {
+                tree,
+                live,
+                reset_live,
+            }) = changes.get(&member)
+            else {
+                unreachable!()
+            };
+            json!({"mode":"change","ops":tree,"live":live,"reset_live":reset_live})
+        }
+        document::Update::Unavailable(fault) => {
+            json!({"mode":"unavailable","message":fault.message})
+        }
+        document::Update::Status(status) => json!({"mode":"status","status":format!("{status:?}")}),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::{
-        Node, SubId,
-        sync::{Stream, StreamUpdate, Version},
-    };
-    fn run(history: usize) -> (Vec<usize>, usize) {
-        let tree = Node::section("root")
-            .id("root")
-            .children((0..history).map(|i| {
-                Node::text(
-                    "message.user",
-                    [misa_proto::view::Span::plain("old text".repeat(100))],
-                )
-                .id(format!("msg.{i}"))
-            }));
-        let mut view = ClientView::restore(
-            Version {
-                epoch: "epoch".into(),
-                rev: 1,
-            },
-            tree,
-        )
-        .unwrap();
-        let mut writes = 0;
-        let mut sizes = Vec::new();
-        let current = SessionMsg::Streams {
-            streams: vec![Stream {
-                id: "live.text".into(),
-                role: "message.assistant".into(),
-                text: String::new(),
-            }],
-        };
-        sizes.push(
-            receive(&mut view, &current, |_| writes += 1)
-                .unwrap()
-                .unwrap()
-                .to_string()
-                .len(),
-        );
-        for offset in 0..100 {
-            let message = SessionMsg::Event {
-                seq: offset as u64,
-                event: SessionEvent::Stream {
-                    update: StreamUpdate::Append {
-                        id: "live.text".into(),
-                        offset,
-                        text: "x".into(),
-                    },
-                },
-            };
-            sizes.push(
-                receive(&mut view, &message, |_| writes += 1)
-                    .unwrap()
-                    .unwrap()
-                    .to_string()
-                    .len(),
-            );
+    #[tokio::test]
+    async fn a_stalled_surface_bounds_queue_and_defers_materialization() {
+        let mailbox = Arc::new(Mailbox::new(Arc::new(|_| {})));
+        let captured = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for _ in 0..32 {
+            let captured = captured.clone();
+            mailbox
+                .push(Box::new(move || {
+                    captured.fetch_add(1, Ordering::Relaxed);
+                    Value::Null
+                }))
+                .await;
         }
-        (sizes, writes)
-    }
-    #[test]
-    fn stream_bytes_and_snapshot_writes_are_independent_of_history_size() {
-        let small = run(1);
-        let large = run(1000);
-        eprintln!(
-            "101 stream deliveries: {} bytes, {} snapshot writes, for both 1 and 1000 historical nodes",
-            small.0.iter().sum::<usize>(),
-            small.1
-        );
-        assert_eq!(small, large);
-        assert_eq!(small.1, 0);
-        assert!(small.0.iter().all(|bytes| *bytes < 180));
-    }
-    #[test]
-    fn canonical_snapshot_is_saved_once_and_emitted_without_an_overlay() {
-        let mut view = ClientView::default();
-        let mut writes = 0;
-        let message = SessionMsg::View {
-            id: SubId(1),
-            version: Version {
-                epoch: "epoch".into(),
-                rev: 1,
-            },
-            view: Node::section("root").id("root"),
-        };
-        let event = receive(&mut view, &message, |_| writes += 1)
-            .unwrap()
-            .unwrap();
-        assert_eq!(writes, 1);
-        assert_eq!(event["kind"], "view");
+        assert_eq!(captured.load(Ordering::Relaxed), 0);
+        let full = mailbox.clone();
+        let extra = tokio::spawn(async move {
+            full.event(Value::Null).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!extra.is_finished());
+        assert_eq!(mailbox.next(), Some(Value::Null));
+        extra.await.unwrap();
+        assert_eq!(mailbox.queue.lock().unwrap().len(), 32);
+        assert_eq!(captured.load(Ordering::Relaxed), 1);
     }
 }

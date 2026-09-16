@@ -1,92 +1,174 @@
-//! Persist exactly the canonical accumulator, never its streaming overlay.
+//! Canonical-only scoped checkpoints, never live output or owner-neutral cursors.
 use crate::files::Files;
-use misa_proto::sync::{ClientView, Version};
-use misa_proto::{Node, Ticket};
-
-pub fn name(ticket: &Ticket) -> String {
-    let endpoint = ticket.node.split('@').next().unwrap_or(&ticket.node);
+use misa_proto::observation::{Content, Selection};
+use misa_protocol::observation::Checkpoint;
+use std::{io::Read, sync::Arc};
+pub fn index_name(daemon: &str, scope: &misa_proto::observation::Scope) -> String {
     format!(
-        "view-{}.json",
-        blake3::hash(format!("{endpoint}/{}", ticket.session).as_bytes()).to_hex()
+        "saved-{}.json",
+        blake3::hash(&serde_json::to_vec(&(daemon, scope)).expect("scope serializes")).to_hex()
     )
 }
-
-pub fn load(files: &Files, name: &str) -> Result<ClientView, String> {
-    match std::fs::read(files.root.join(name)) {
-        Ok(bytes) => {
-            let (version, tree): (Version, Node) =
-                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            ClientView::restore(version, tree)
+pub async fn cached(files: Arc<Files>) -> Option<serde_json::Value> {
+    let storage = files.clone();
+    let metadata: serde_json::Value = tokio::task::spawn_blocking(move || {
+        std::fs::read(storage.root.join("selected.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    })
+    .await
+    .ok()??;
+    let daemon = metadata["daemon"].as_str()?;
+    let scope: misa_proto::observation::Scope =
+        serde_json::from_value(metadata["scope"].clone()).ok()?;
+    let index = index_name(daemon, &scope);
+    let storage = files.clone();
+    let name =
+        tokio::task::spawn_blocking(move || std::fs::read_to_string(storage.root.join(index)).ok())
+            .await
+            .ok()??;
+    if !name.starts_with("view-")
+        || !name.ends_with(".json")
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        return None;
+    }
+    let checkpoint = load(files, name).await.ok()??;
+    if checkpoint.resume.selection.scope != scope {
+        return None;
+    }
+    let mut documents = serde_json::Map::new();
+    for (id, content) in checkpoint.members {
+        if let Content::Document(document) = content {
+            misa_proto::view::validate(&document.tree).ok()?;
+            documents.insert(
+                id,
+                serde_json::json!({"mode":"reset","tree":document.tree,"streams":[]}),
+            );
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ClientView::default()),
-        Err(error) => Err(error.to_string()),
     }
+    Some(
+        serde_json::json!({"kind":"cached","daemon":daemon,"scope":scope,"title":metadata["title"],"documents":documents}),
+    )
 }
-
-pub fn save(files: &Files, name: &str, client: &ClientView) -> Result<(), String> {
-    if let Some(snapshot) = client.persisted() {
+pub fn name(daemon: &str, selection: &Selection) -> String {
+    format!(
+        "view-{}.json",
+        blake3::hash(&serde_json::to_vec(&(daemon, selection)).expect("serializable selection"))
+            .to_hex()
+    )
+}
+pub async fn load(files: Arc<Files>, name: String) -> Result<Option<Checkpoint>, String> {
+    tokio::task::spawn_blocking(move || {
+        let file = match std::fs::File::open(files.root.join(name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        let mut bytes = Vec::new();
+        file.take(64 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err("Saved checkpoint exceeds the limit".into());
+        }
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+pub async fn save(
+    files: Arc<Files>,
+    name: String,
+    mut checkpoint: Checkpoint,
+) -> Result<(), String> {
+    checkpoint.resume.publication = None;
+    for content in checkpoint.members.values_mut() {
+        if let Content::Document(document) = content {
+            document.streams.clear();
+        }
+    }
+    tokio::task::spawn_blocking(move || {
         files.write(
-            name,
-            &serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?,
-        )?;
-    }
-    Ok(())
+            &name,
+            &serde_json::to_vec(&checkpoint).map_err(|error| error.to_string())?,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::SessionMsg;
-    use misa_proto::sync::Stream;
-    #[test]
-    fn restart_restores_version_and_canonical_tree_without_streaming_text() {
-        let files = Files::new(std::env::temp_dir().join(format!(
-            "misa-snapshot-{}",
-            iroh::SecretKey::generate().public()
-        )))
-        .unwrap();
-        let version = Version {
-            epoch: "daemon-epoch".into(),
-            rev: 42,
-        };
-        let tree = Node::section("root").id("root");
-        let mut client = ClientView::restore(version.clone(), tree.clone()).unwrap();
-        client
-            .receive(&SessionMsg::Streams {
-                streams: vec![Stream {
-                    id: "inflight.text".into(),
-                    role: "message.assistant".into(),
-                    text: "unfinished text".into(),
-                }],
-            })
-            .unwrap();
-        save(&files, "view.json", &client).unwrap();
-        let loaded = load(&files, "view.json").unwrap();
-        assert_eq!(loaded.version(), Some(&version));
-        assert_eq!(loaded.canonical(), Some(tree));
-        assert!(loaded.streams().is_empty());
-        assert!(
-            !std::fs::read_to_string(files.root.join("view.json"))
-                .unwrap()
-                .contains("unfinished text")
+    use misa_proto::{
+        Node, Query,
+        observation::{Document, Encoding, Member, Resume, Scope, ScopeId},
+        sync::{Stream, Version},
+    };
+    use std::collections::BTreeMap;
+    #[tokio::test]
+    async fn persisted_checkpoint_is_canonical_and_fenced_by_owner_incarnation() {
+        let files = Arc::new(
+            Files::new(std::env::temp_dir().join(format!(
+                "misa-scoped-checkpoint-{}",
+                iroh::SecretKey::generate().public()
+            )))
+            .unwrap(),
         );
-        std::fs::remove_dir_all(files.root).unwrap();
-    }
-    #[test]
-    fn snapshot_identity_is_session_scoped_and_survives_address_changes() {
-        let first = Ticket {
-            node: "endpoint@127.0.0.1:123".into(),
-            session: "one".into(),
+        let selection = Selection {
+            scope: Scope {
+                id: ScopeId::Session { id: "same".into() },
+                incarnation: "one".into(),
+            },
+            members: BTreeMap::from([(
+                "document".into(),
+                Member {
+                    query: Query::new("conversation"),
+                    contract: "conversation@1".into(),
+                    encoding: Encoding::Document,
+                    optional: false,
+                },
+            )]),
         };
-        let moved = Ticket {
-            node: "endpoint@127.0.0.1:456".into(),
-            session: "one".into(),
+        let mut changed = selection.clone();
+        changed.scope.incarnation = "two".into();
+        assert_ne!(name("daemon", &selection), name("daemon", &changed));
+        assert_ne!(name("daemon", &selection), name("other", &selection));
+        let version = Version {
+            epoch: "epoch".into(),
+            rev: 3,
         };
-        let other = Ticket {
-            node: first.node.clone(),
-            session: "two".into(),
+        let checkpoint = Checkpoint {
+            resume: Resume {
+                selection: selection.clone(),
+                publication: Some(7),
+                documents: BTreeMap::from([("document".into(), version.clone())]),
+            },
+            members: BTreeMap::from([(
+                "document".into(),
+                Content::Document(Document {
+                    version,
+                    tree: Node::section("root").id("root"),
+                    streams: vec![Stream {
+                        id: "live".into(),
+                        role: "message".into(),
+                        text: "unfinished secret".into(),
+                    }],
+                }),
+            )]),
         };
-        assert_eq!(name(&first), name(&moved));
-        assert_ne!(name(&first), name(&other));
+        let file = name("daemon", &selection);
+        save(files.clone(), file.clone(), checkpoint).await.unwrap();
+        let loaded = load(files.clone(), file.clone()).await.unwrap().unwrap();
+        assert!(loaded.resume.publication.is_none());
+        assert!(
+            !std::fs::read_to_string(files.root.join(file))
+                .unwrap()
+                .contains("unfinished secret")
+        );
+        std::fs::remove_dir_all(&files.root).unwrap();
     }
 }

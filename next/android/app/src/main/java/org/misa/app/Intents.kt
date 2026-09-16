@@ -3,40 +3,24 @@ package org.misa.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * The four things a client may ask for, as JSON.
- *
- * This is the whole of the client's vocabulary: submit text, resolve an
- * affordance the session offered, invoke a command the session declared, or
- * cancel. Nothing here can name an effect, a model parameter, or a state path,
- * which is what makes the phone exactly as powerful as the terminal and no more
- * — and no less.
- */
+/** Local JNI input spelling. Shared Interaction validates installed contracts. */
 object Intents {
-    fun prompt(text: String, attachments: List<JSONObject> = emptyList()): String = JSONObject().put("intent", "prompt").put("text", text).put("attachments", JSONArray(attachments)).toString()
+    fun prompt(text: String, attachments: List<JSONObject> = emptyList()): String =
+        JSONObject()
+            .put("intent", "prompt")
+            .put("text", text)
+            .put("attachments", JSONArray(attachments))
+            .toString()
 
     fun cancel(): String = JSONObject().put("intent", "cancel").toString()
 
-    /**
-     * A command and its arguments.
-     *
-     * One argument is sent as a bare string, because that is what a person typed
-     * and what the session's own positional rule accepts; two or more become a
-     * named object. A client that always sent a map would work and would make the
-     * session invent a name for a single positional value.
-     */
+    /** Named inputs retain the installed schema even for zero or one fields. */
     fun command(name: String, values: List<Pair<String, String>>): String {
         val body = JSONObject().put("intent", "command").put("name", name)
         val given = values.filter { it.second.isNotEmpty() }
-        when {
-            given.isEmpty() -> Unit
-            given.size == 1 -> body.put("args", given[0].second)
-            else -> {
-                val args = JSONObject()
-                given.forEach { (key, value) -> args.put(key, value) }
-                body.put("args", args)
-            }
-        }
+        val args = JSONObject()
+        given.forEach { (key, value) -> args.put(key, value) }
+        body.put("args", args)
         return body.toString()
     }
 
@@ -53,7 +37,7 @@ object Intents {
                         .put("id", field.id)
                         .put("label", field.label)
                         .put("value", field.value)
-                        .put("kind", JSONObject().put("shape", "inline")),
+                        .put("kind", JSONObject().put("shape", "inline"))
                 )
             }
             body.put("fields", list)
@@ -114,8 +98,10 @@ object Facts {
         return when {
             millis < 1_000 -> "${millis}ms"
             millis < 60_000 -> String.format("%.1fs", millis / 1_000.0)
-            millis < 3_600_000 -> "${millis / 60_000}m${((millis % 60_000) / 1_000).toString().padStart(2, '0')}s"
-            else -> "${millis / 3_600_000}h${((millis % 3_600_000) / 60_000).toString().padStart(2, '0')}m"
+            millis < 3_600_000 ->
+                "${millis / 60_000}m${((millis % 60_000) / 1_000).toString().padStart(2, '0')}s"
+            else ->
+                "${millis / 3_600_000}h${((millis % 3_600_000) / 60_000).toString().padStart(2, '0')}m"
         }
     }
 
@@ -136,10 +122,13 @@ object Facts {
 
     private fun plain(value: Any?): String =
         when (value) {
-            null, JSONObject.NULL -> ""
+            null,
+            JSONObject.NULL -> ""
             is String -> value
             is Boolean -> if (value) "yes" else "no"
-            is Double -> if (value == kotlin.math.floor(value)) value.toLong().toString() else value.toString()
+            is Double ->
+                if (value == kotlin.math.floor(value)) value.toLong().toString()
+                else value.toString()
             else -> value.toString()
         }
 
