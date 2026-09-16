@@ -1065,6 +1065,7 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         if data.get("write").is_some() {
             if tx.get("session.plugin_write") != Some(&data) { return Ok(()); }
             tx.set("session.plugin_write", Value::Null)?;
+            crate::command_operations::settle(tx, &data, "succeeded")?;
         }
         let records = data.get("patches").and_then(Value::as_list).map(<[Value]>::to_vec).unwrap_or_else(|| vec![data.clone()]);
         for record in records {
@@ -1134,6 +1135,7 @@ fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     }
     let conversation = fields::event_text(event, "conversation");
     let entries = fields::event_value(event, "entries");
+    tx.set(crate::command_operations::ROOT, crate::command_operations::restore(entries.as_list().unwrap_or(&[])))?;
     let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
     let folded = crate::journal::fold(base, entries.as_list().unwrap_or(&[]));
     let messages = folded.get("messages").and_then(Value::as_list).unwrap_or(&[]).to_vec();

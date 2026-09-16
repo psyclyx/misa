@@ -29,7 +29,8 @@ impl CommandRegistration {
         }
     }
     /// Installation binds one declared event. No caller can select the event name.
-    /// Completion acknowledges committed event admission, not durable external work.
+    /// The accepted operation completes when its state transaction is journaled.
+    /// External effects require an explicit operation-aware handler instead.
     pub fn event(id: impl Into<String>, input: Schema, event: impl Into<String>) -> Self {
         let event = event.into();
         let event_name = event.clone();
@@ -40,13 +41,7 @@ impl CommandRegistration {
                 result: admitted(),
             },
             move |runtime, context, invocation| {
-                let event = misa_reframe::Event::new(&event)
-                    .with("command", Value::str(&invocation.command))
-                    .with("input", invocation.input.clone())
-                    .with("request", Value::str(invocation.id.to_string()))
-                    .with("principal", Value::str(&context.principal))
-                    .with("connection", Value::str(context.connection.to_string()));
-                outcome(runtime.dispatch(event))
+                runtime.execute_event_transaction(context, invocation, &event)
             },
         );
         registration.event = Some(event_name);
@@ -307,7 +302,8 @@ pub fn builtins() -> Vec<CommandRegistration> {
         ("session.usage.refresh", "discovery/usage.refresh"),
         ("session.conversations.refresh", "discovery/conversations.refresh"),
     ] {
-        registrations.push(CommandRegistration::event(id, record([]), event));
+        registrations.push(CommandRegistration::new(Command { id: id.into(), input: record([]), result: admitted() },
+            move |runtime, _, _| outcome(runtime.dispatch(misa_reframe::Event::new(event)))));
     }
     registrations
 }

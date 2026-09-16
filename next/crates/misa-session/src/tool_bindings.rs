@@ -133,10 +133,15 @@ impl Runtime {
                 );
                 return Err(Fault::new("capacity", "Too many pending tool commands"));
             }
-            pending.insert(id, (request, operation));
+            pending.insert(id, (request, operation, None));
         }
         let outcome = self.execute_command(&context, invocation);
-        if !matches!(outcome, Outcome::Accepted { .. }) {
+        if let Outcome::Accepted { operation } = &outcome {
+            if self.command_registry.get(&binding.command).is_some_and(|registration| registration.event_kind().is_some()) {
+                if let Some(pending) = self.tool_invocations.lock().expect("tool correlations poisoned").get_mut(&id) { pending.2 = Some(operation.clone()); }
+                self.settle_transaction_tools();
+            }
+        } else {
             self.complete_tool_invocation(id, outcome);
         }
         Ok(())
@@ -152,7 +157,7 @@ impl Runtime {
             .lock()
             .expect("tool correlations poisoned")
             .remove(&id);
-        if let Some((request, operation)) = request
+        if let Some((request, operation, _)) = request
             && self
                 .trusted_tool_context(&request)
                 .is_some_and(|(_, current)| current == operation)

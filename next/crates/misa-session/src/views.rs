@@ -65,6 +65,7 @@ pub fn initial_state(id: &str, provider: &str, model: &str, created_ms: i64) -> 
         ("attempts", Value::list([])),
         ("operations", Value::list([])),
         ("prompt_operations", Value::list([])),
+        ("command_operations", Value::list([])),
         ("input_requests", Value::list([])),
         ("notices", Value::list([])),
         // Nothing open. The root is declared anyway, because what a session may write is a
@@ -85,9 +86,11 @@ pub fn subscriptions(registry: Registry) -> Registry {
                     .filter(|request| request.get("state").and_then(Value::as_str) == Some("awaiting_input")).cloned().collect::<Vec<_>>();
                 let running_tools = session.and_then(|session| session.get("running_tools")).and_then(Value::as_list).map_or(0, |tools| tools.len());
                 let pending_tools = requests.iter().filter(|request| request.get("kind").and_then(Value::as_str) == Some("tool_approval")).count();
-                let working = match text("status") { "idle" => false, "tools" => running_tools > pending_tools, _ => true };
+                let transaction_work = db.get("command_operations").and_then(Value::as_list).unwrap_or(&[]).iter().any(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true));
+                let working = transaction_work || match text("status") { "idle" => false, "tools" => running_tools > pending_tools, _ => true };
                 let operations = db.get("prompt_operations").and_then(Value::as_list).unwrap_or(&[]).iter()
                     .filter(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true))
+                    .chain(db.get("command_operations").and_then(Value::as_list).unwrap_or(&[]).iter().filter(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true)))
                     .chain(db.get("operations").and_then(Value::as_list).unwrap_or(&[]).iter().filter(|operation|
                         matches!(operation.get("state").and_then(Value::as_str), Some("running" | "awaiting_input" | "submitting" | "cancelling"))))
                     .map(|operation| Value::map([
@@ -790,6 +793,7 @@ pub const MANIFEST: &[(&str, Ownership, Lifetime)] = &[
     ("attempts", Ownership::Kernel, Lifetime::Log),
     ("operations", Ownership::Kernel, Lifetime::Log),
     ("prompt_operations", Ownership::Kernel, Lifetime::Log),
+    ("command_operations", Ownership::Kernel, Lifetime::Log),
     ("input_requests", Ownership::Kernel, Lifetime::Log),
     ("notices", Ownership::Presentation, Lifetime::Ephemeral),
     // A panel is a report or a small form, and it is presentation: it exists to be drawn,

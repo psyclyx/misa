@@ -64,6 +64,7 @@ mod publication;
 mod reports;
 pub mod observation;
 pub mod commands;
+mod command_operations;
 mod tool_bindings;
 pub(crate) mod operations;
 #[cfg(test)]
@@ -92,7 +93,7 @@ pub struct Runtime {
     restricted_exports: std::collections::BTreeMap<String, observation::RestrictedQuery>,
     command_registry: std::collections::BTreeMap<String, commands::CommandRegistration>,
     tool_bindings: std::collections::BTreeMap<String,misa_proto::tool::Binding>,
-    tool_invocations: Mutex<std::collections::BTreeMap<u64,(Request,String)>>,
+    tool_invocations: Mutex<std::collections::BTreeMap<u64,(Request,String,Option<misa_proto::invocation::OperationRef>)>>,
     operation_deadline: watch::Sender<Option<i64>>,
     tool_approval: operations::ToolApprovalPolicy,
     closed: AtomicBool,
@@ -176,7 +177,7 @@ impl Runtime {
         let config=Value::Map(Arc::new(config));
         let command_catalogs = commands::catalogs(&command_registry, &contribution.bindings).expect("invalid action binding composition");
 
-        let registry = contribution.registry(operations::registry(indicators::subscriptions(agent::registry())));
+        let registry = contribution.registry(command_operations::registry(operations::registry(indicators::subscriptions(agent::registry()))));
         let mut indicators = indicators::builtins();
         for indicator in &contribution.indicators {
             indicators.register(indicator.clone()).expect("contribution validates indicator names");

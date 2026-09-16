@@ -42,6 +42,7 @@ impl Store {
                     .unwrap_or_else(|| Value::list([])),
             ),
             ("requests", approvals::checkpoint(self)),
+            ("commands", db.get(crate::command_operations::ROOT).cloned().unwrap_or_else(|| Value::list([]))),
         ])
     }
 }
@@ -85,6 +86,7 @@ impl Runtime {
             && state.operations.records.is_empty()
             && state.operations.prompt_owners.is_empty()
             && state.operations.approvals.is_empty()
+            && state.state.db().get(crate::command_operations::ROOT).and_then(Value::as_list).is_none_or(|records| records.is_empty())
         {
             return;
         }

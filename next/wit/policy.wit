@@ -115,8 +115,11 @@ interface policy-api {
         title: string,
         variants: list<presentation-variant>,
     }
-    /// A command admitting one installed event. Its result is always JSON null:
-    /// this acknowledges the transaction, never completion of external effects.
+    /// A durable state transaction. Invocation returns an ordinary operation
+    /// whose terminal success means its patches and null result are journaled.
+    /// Its command event handler may return patches only; effects are rejected
+    /// before any patch commits. Other observer events may use declared effects.
+    /// External asynchronous commands require an operation-aware host contract.
     record command-definition {
         id: string,
         input: string,

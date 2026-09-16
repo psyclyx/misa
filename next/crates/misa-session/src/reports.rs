@@ -48,6 +48,7 @@ impl Runtime {
             vec![]
         } else { faults };
         self.drain_reports();
+        self.settle_transaction_tools();
         faults
     }
 

@@ -320,7 +320,7 @@ async fn an_action_from_a_plugins_tree_reaches_the_plugin() {
     let mut invocation = Invocation { id: 1, scope: runtime.scope(), command: binding.command.clone(), input: Value::map([("confirm", Value::str("yes"))]) };
     assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation.clone()).await.outcome, Outcome::Rejected { .. }));
     invocation.input = binding.prepare(&std::collections::BTreeMap::new()).unwrap();
-    assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation).await.outcome, Outcome::Completed { value: Value::Null }));
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation).await.outcome, Outcome::Accepted { .. }));
     // Legacy node action traffic cannot invoke the installed command implicitly.
     assert!(!runtime.intent(Intent::Action { node: "plugin.policy.guest.main.guest".into(), action: "policy.guest.refresh".into(), args: Value::Null, fields: vec![] }).is_empty());
 
@@ -515,7 +515,7 @@ async fn pet_command_and_model_tool_share_state_while_presentations_are_local_ch
     let runtime=Runtime::start_with("pet-test","Pet",None,kernel,"scripted","scripted-1",Value::Null,contribution(&plugin));
     let dispatcher=Dispatcher::new(CallContext{principal:"pet-owner".into(),connection:1},8,Default::default(),Default::default());
     let call=|id,command:&str,input|Invocation{id,scope:runtime.scope(),command:command.into(),input};
-    assert!(matches!(dispatcher.dispatch(runtime.as_ref(),call(1,"pet.feed",Value::map([("amount",Value::Int(2))]))).await.outcome,Outcome::Completed{..}));
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(),call(1,"pet.feed",Value::map([("amount",Value::Int(2))]))).await.outcome,Outcome::Accepted{..}));
     let treats=||match runtime.read(&Query::new("pet.state")).unwrap(){Reading::Data(value)=>value.get("treats").and_then(Value::as_i64).unwrap(),_=>panic!()};
     tokio::time::timeout(std::time::Duration::from_secs(5),async{while treats()!=2{tokio::task::yield_now().await;}}).await.expect("admitted plugin patch becomes durable state");
     assert!(matches!(dispatcher.dispatch(runtime.as_ref(),call(2,"session.prompt",Value::map([("text",Value::str("feed pet")),("attachments",Value::list([]))]))).await.outcome,Outcome::Accepted{..}));

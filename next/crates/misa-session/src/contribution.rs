@@ -37,13 +37,17 @@ pub const PATCH_KIND: &str = "plugin.patch";
 fn stage(before: &Value, outcome: &mut misa_reframe::Outcome) -> Result<bool, Fault> {
     let journal = |effect: &Effect| effect.kind == "kernel.log.append" && effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND);
     let records: Vec<_> = outcome.effects.iter().filter(|effect| journal(effect)).collect();
-    if records.is_empty() { return Ok(false); }
     let session = before.get("session").ok_or_else(|| Fault::new("composition.state", "Missing session state"))?;
     let candidate = outcome.changes.last().map(|change| &change.after).unwrap_or(before);
+    let command = crate::command_operations::staged(candidate);
+    if records.is_empty() && command.is_none() { return Ok(false); }
+    if command.is_some() && outcome.effects.iter().any(|effect| !journal(effect) && effect.kind != "wire.event") {
+        return Err(Fault::new("command.effects", "Transaction commands cannot start external effects; install an operation-aware command handler"));
+    }
     if candidate.get("session").and_then(|session| session.get("plugin_write")).is_some_and(|value| !matches!(value, Value::Null)) {
         return Err(Fault::new("composition.busy", "A contributed state transaction is awaiting journal acknowledgement"));
     }
-    let conversation = records[0].get("conversation").cloned().unwrap_or(Value::Null);
+    let conversation = records.first().and_then(|effect| effect.get("conversation")).cloned().unwrap_or_else(|| session.get("conversation").cloned().unwrap_or(Value::Null));
     if records.iter().any(|effect| effect.get("conversation") != Some(&conversation)) {
         return Err(Fault::new("composition.transaction", "One transaction cannot journal plugin state into different conversations"));
     }
@@ -55,11 +59,12 @@ fn stage(before: &Value, outcome: &mut misa_reframe::Outcome) -> Result<bool, Fa
     }
     let sequence = session.get("plugin_sequence").and_then(Value::as_i64).unwrap_or(0).checked_add(1)
         .ok_or_else(|| Fault::new("composition.transaction", "Plugin transaction sequence exhausted"))?;
-    let data = if patches.len() == 1 {
+    let mut data = if patches.len() == 1 {
         let mut fields = patches[0].as_map().cloned().unwrap_or_default();
         fields.insert("write".into(), Value::Int(sequence));
         Value::Map(Arc::new(fields))
     } else { Value::map([("write", Value::Int(sequence)), ("patches", Value::list(patches))]) };
+    if let Some(command) = &command { data = crate::command_operations::add_completion(data, command); }
     outcome.effects.retain(|effect| !journal(effect));
     outcome.effects.push(Effect::new("kernel.log.append").with("conversation", conversation).with("kind", Value::str(PATCH_KIND)).with("data", data.clone()));
     let deferred: std::collections::BTreeSet<_> = std::mem::take(&mut outcome.deferred).into_iter().collect();
@@ -74,6 +79,7 @@ fn stage(before: &Value, outcome: &mut misa_reframe::Outcome) -> Result<bool, Fa
     let change = outcome.changes.last_mut().ok_or_else(|| Fault::new("composition.transaction", "A journal decision needs a state transaction"))?;
     change.patches.push((Path::parse("session.plugin_sequence").unwrap(), Op::Set(Value::Int(sequence))));
     change.patches.push((Path::parse("session.plugin_write").unwrap(), Op::Set(data)));
+    if command.is_some() { crate::command_operations::clear_marker(outcome); }
     Ok(true)
 }
 
@@ -403,14 +409,14 @@ impl Contribution {
         for (name, subscription) in &self.subscriptions {
             registry = registry.subscription(name.clone(), subscription.clone());
         }
-        let roots: Vec<_> = self.roots.iter().map(|(root, _)| root.clone()).collect();
-        if !roots.is_empty() {
-            registry = registry.finalize(stage);
+        registry = registry.finalize(stage);
+        {
             registry = registry.on_fn("kernel/log.failed", -100, "composition.journal.failed", |tx, event| {
                 if event.get("kind").and_then(Value::as_str) != Some(PATCH_KIND)
                     || event.get("conversation").and_then(Value::as_str) != Some(tx.text("session.conversation").as_str())
                     || event.get("data") != tx.get("session.plugin_write") { return Ok(()); }
                 tx.set("session.plugin_write", Value::Null)?;
+                crate::command_operations::settle(tx, event.get("data").unwrap(), "failed")?;
                 let message = event.get("message").and_then(Value::as_str).unwrap_or("Plugin state could not be recorded");
                 tx.fx(Effect::new("wire.event").with("event", crate::wire::render(&misa_proto::SessionEvent::Notice {
                     level: misa_proto::wire::Level::Error, text: message.into(),

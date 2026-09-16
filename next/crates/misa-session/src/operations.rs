@@ -260,6 +260,7 @@ pub(crate) fn registry(registry: Registry) -> Registry {
                                 .and_then(Value::as_list)
                                 .unwrap_or(&[]),
                         )
+                        .chain(db.get(crate::command_operations::ROOT).and_then(Value::as_list).unwrap_or(&[]))
                         .cloned(),
                 )
             }),
@@ -317,6 +318,7 @@ pub(crate) fn registry(registry: Registry) -> Registry {
             "operation.result",
             read_query(|db, query| {
                 let id = query.args.first().and_then(Value::as_str);
+                if let Some(record) = db.get(crate::command_operations::ROOT).and_then(Value::as_list).unwrap_or(&[]).iter().find(|record| record.get("id").and_then(Value::as_str) == id) { return record.clone(); }
                 if let Some(record) = db
                     .get("prompt_operations")
                     .and_then(Value::as_list)
@@ -363,6 +365,7 @@ pub(crate) fn registry(registry: Registry) -> Registry {
             0,
             "operations.persistence.failed",
             |tx, event| {
+                crate::command_operations::interrupt(tx)?;
                 tx.set(
                     "operations",
                     event
