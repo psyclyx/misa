@@ -590,7 +590,7 @@ mod scope_tests {
         let mut writer=Writer{frames:frame.clone(),changed};
         let mut screen=Screen::new(80,24);
         screen.editor.set_text("draft A");
-        screen.dialogs.update("secret".into(),1,Some(misa_client::request::Model{id:"secret".into(),generation:1,title:"Credential".into(),body:misa_proto::Node::section("request").id("request"),input:Some(misa_client::request::Input{id:"value".into(),label:"Key".into(),secret:true}),actions:vec![]}));
+        screen.dialogs.update("secret".into(),1,Some(misa_client::request::Model{form:None,id:"secret".into(),generation:1,title:"Credential".into(),body:misa_proto::Node::section("request").id("request"),input:Some(misa_client::request::Input{id:"value".into(),label:"Key".into(),secret:true}),actions:vec![]}));
         screen.dialogs.open();screen.dialogs.key(&crate::Key::Char('s'));screen.dialogs.key(&crate::Key::Escape);
         let (keys,events)=mpsc::channel(8);
         let script=async move {
