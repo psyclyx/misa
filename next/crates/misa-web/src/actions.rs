@@ -15,7 +15,11 @@ pub(crate) struct Choices {
     pub candidates: misa_proto::preparation::Candidates,
 }
 pub(crate) fn markup_for(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>) -> String {
-    let mut html = format!("<h2>{}</h2><form method=\"post\" action=\"./perform\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), if command { "command" } else { "action" }, escape(&model.title));
+    markup_at(model, command, choices, drafts, "./perform", &[])
+}
+pub(crate) fn markup_at(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>, action: &str, hidden: &[(&str, &str)]) -> String {
+    let mut html = format!("<h2>{}</h2><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), escape(action), if command { "command" } else { "action" }, escape(&model.title));
+    for (name, value) in hidden { html.push_str(&format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", escape(name), escape(value))); }
     for (id, field) in &model.fields {
         let name = escape(&format!("field.{id}"));
         let draft = drafts.get(id).map(String::as_str).unwrap_or("");

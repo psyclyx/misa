@@ -4,6 +4,7 @@
     <script src="../src/app.js"></script>
     <script src="../src/request.js"></script>
     <script src="../src/commands.js"></script>
+    <script src="../src/overview.js"></script>
     <script>
       (async function () {
         const checks = [];
@@ -394,6 +395,15 @@
           assert(copiedLocation === "/view/copy/" && JSON.parse(store.getItem("misa.preferences.new-instance")).draft === "copied thought", "copied tab redirects to independent instance and carries initial draft");
           store.setItem("misa.preferences.new-instance", '{"draft":"independent edit"}');
           assert(JSON.parse(store.getItem("misa.preferences.old-instance")).draft === "copied thought", "copied draft does not share future mutations");
+          const overviewDoc = document.implementation.createHTMLDocument("overview");
+          overviewDoc.body.innerHTML = '<input id="local-draft" value="new session name"><p id="overview-status"></p><div id="overview"></div>';
+          let overviewEvents;
+          MisaOverview.start(overviewDoc, function () { overviewEvents = this; });
+          overviewEvents.onmessage({data: '<button>Working · awaiting input</button>'});
+          overviewEvents.onerror();
+          assert(overviewDoc.querySelector("button").disabled && overviewDoc.getElementById("overview-status").textContent.includes("stale"), "overview loss marks cached summaries stale and disables old navigation");
+          overviewEvents.onmessage({data: '<button>Idle</button>'});
+          assert(!overviewDoc.querySelector("button").disabled && overviewDoc.getElementById("local-draft").value === "new session name", "coherent overview replacement preserves local lifecycle drafts");
           const closeDoc = document.implementation.createHTMLDocument("close");
           closeDoc.body.innerHTML = '<main id="main">' + region + '</main>';
           const closeClient = MisaClient.start(closeDoc, browser);

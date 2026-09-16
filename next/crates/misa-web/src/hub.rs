@@ -13,10 +13,14 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+#[path = "lifecycle.rs"]
+mod lifecycle;
 
 struct Hub {
     connections: Arc<Daemons>,
     daemons: BTreeMap<String, Arc<Daemon>>,
+    overviews: BTreeMap<String, super::overview::Feed>,
+    updates: tokio::sync::watch::Sender<u64>,
     sessions: BTreeMap<String, Instance>,
 }
 struct Instance {
@@ -26,6 +30,14 @@ struct Instance {
 const MAX_INSTANCES: usize = 64;
 const IDLE_LIFETIME: Duration = Duration::from_secs(30 * 60);
 impl Hub {
+    fn new(connections: Arc<Daemons>, daemons: BTreeMap<String, Arc<Daemon>>) -> Self {
+        let updates = tokio::sync::watch::channel(0).0;
+        let overviews = daemons.iter().map(|(id, daemon)| (id.clone(), super::overview::Feed::start(daemon.clone(), updates.clone()))).collect();
+        Self { connections, daemons, overviews, updates, sessions: BTreeMap::new() }
+    }
+    fn summaries(&self) -> String {
+        self.daemons.iter().map(|(id, _)| format!("<section><h2>{}</h2>{}</section>", super::escape(id), self.overviews.get(id).map(|feed|feed.html()).unwrap_or_default())).collect()
+    }
     fn expire(&mut self) {
         self.sessions.retain(|_, instance| {
             Arc::strong_count(&instance.remote) > 1 || instance.used.elapsed() < IDLE_LIFETIME
@@ -55,11 +67,7 @@ pub async fn serve(targets: &[String], address: std::net::SocketAddr) -> Result<
             .map_err(|fault| fault.message)?;
         daemons.insert(daemon.identity().to_owned(), daemon);
     }
-    let hub = Hub {
-        connections,
-        daemons,
-        sessions: BTreeMap::new(),
-    };
+    let hub = Hub::new(connections, daemons);
     let hub = Arc::new(Mutex::new(hub));
     let weak = Arc::downgrade(&hub);
     tokio::spawn(async move {
@@ -74,8 +82,13 @@ pub async fn serve(targets: &[String], address: std::net::SocketAddr) -> Result<
     });
     let app = Router::new()
         .route("/daemons", get(directory))
+        .route("/daemons/events", get(events))
+        .route("/overview.js", get(|| async { ([("content-type", "text/javascript")], include_str!("overview.js")) }))
         .route("/connect", post(connect))
         .route("/choose", post(choose))
+        .route("/lifecycle", get(lifecycle::open).post(lifecycle::perform))
+        .route("/archive", get(lifecycle::archive))
+        .route("/disconnect", post(lifecycle::disconnect))
         .fallback(dispatch)
         .with_state(hub);
     let listener = tokio::net::TcpListener::bind(address)
@@ -93,17 +106,14 @@ async fn directory(State(hub): State<Shared>) -> Html<String> {
     let mut html = String::from(
         "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>Misa · Daemons</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body><main><h1>Daemons</h1><form method=\"post\" action=\"/connect\"><label>Daemon address or pairing ticket <input name=\"target\" required></label><button>Connect</button></form>",
     );
-    for (id, daemon) in &hub.daemons {
-        html.push_str(&format!("<section><h2>{}</h2>", super::escape(&id[..12])));
-        let snapshot = match daemon.sessions() {
-            Ok(snapshot) => snapshot,
-            Err(_) => continue,
-        };
-        for entry in &snapshot.sessions {
-            let session = &entry.id;
-            html.push_str(&format!("<form method=\"post\" action=\"/choose\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><input type=\"hidden\" name=\"session\" value=\"{}\"><button>{}</button></form>", super::escape(id), super::escape(session), super::escape(session)));
-        }
-        html.push_str("</section>");
+    html.push_str("<p>Each daemon reports its own latest publication. Related session state carries its own freshness.</p><p id=\"overview-status\" role=\"status\"></p><div id=\"overview\">");
+    html.push_str(&hub.summaries());
+    html.push_str("</div>");
+    html.push_str("<section><h2>Manage sessions</h2><form method=\"get\" action=\"/lifecycle\"><label>Daemon <select name=\"daemon\">");
+    for id in hub.daemons.keys() { html.push_str(&format!("<option value=\"{}\">{}</option>", super::escape(id), super::escape(id))); }
+    html.push_str("</select></label><select name=\"command\"><option value=\"daemon.session.create\">Create session</option><option value=\"daemon.session.resume\">Resume conversation</option><option value=\"daemon.session.close\">Close session owner</option></select><button>Prepare</button><button formaction=\"/archive\">Browse saved conversations</button></form></section>");
+    for id in hub.daemons.keys() {
+        html.push_str(&format!("<form method=\"post\" action=\"/disconnect\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><button>Disconnect {}</button></form>", super::escape(id), super::escape(id)));
     }
     if !hub.sessions.is_empty() {
         html.push_str("<section><h2>Retained presentations</h2><p>Close unused presentations to release their observations. Session work continues.</p>");
@@ -113,8 +123,21 @@ async fn directory(State(hub): State<Shared>) -> Html<String> {
         }
         html.push_str("</section>");
     }
-    html.push_str("</main></body></html>");
+    html.push_str("</main><script src=\"/overview.js\"></script></body></html>");
     Html(html)
+}
+
+async fn events(State(hub): State<Shared>) -> Response {
+    use axum::response::{Sse, sse::{Event, KeepAlive}};
+    let changes = hub.lock().await.updates.subscribe();
+    let stream = futures::stream::unfold((hub, changes, true), |(hub, mut changes, first)| async move {
+        if !first && changes.changed().await.is_err() { return None; }
+        let html = hub.lock().await.summaries();
+        Some((Ok::<_, std::convert::Infallible>(Event::default().data(html)), (hub, changes, false)))
+    });
+    let mut response = Sse::new(stream).keep_alive(KeepAlive::default()).into_response();
+    response.headers_mut().insert(axum::http::header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
 }
 
 async fn connect(
@@ -127,10 +150,14 @@ async fn connect(
     let connections = hub.lock().await.connections.clone();
     match connections.connect_target(target).await {
         Ok((daemon, _)) => {
-            hub.lock()
-                .await
-                .daemons
-                .insert(daemon.identity().to_owned(), daemon);
+            let mut hub = hub.lock().await;
+            let id = daemon.identity().to_owned();
+            if !hub.overviews.contains_key(&id) {
+                let feed = super::overview::Feed::start(daemon.clone(), hub.updates.clone());
+                hub.overviews.insert(id.clone(), feed);
+            }
+            hub.daemons.insert(id, daemon);
+            hub.updates.send_modify(|version| *version = version.wrapping_add(1));
             Redirect::to("/daemons").into_response()
         }
         Err(error) => (axum::http::StatusCode::BAD_GATEWAY, error.message).into_response(),
@@ -147,6 +174,9 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
     };
     match super::connect_session(&daemon, session).await {
         Ok(remote) => {
+            if form.get("incarnation").is_some_and(|incarnation| incarnation != &remote.interaction.interface.scope.incarnation) {
+                return (axum::http::StatusCode::CONFLICT, "Session changed; choose its current owner from the overview").into_response();
+            }
             let key = remote.instance.clone();
             let mut hub = hub.lock().await;
             hub.expire();
@@ -288,11 +318,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let hub = Arc::new(Mutex::new(Hub {
-            connections,
-            daemons: BTreeMap::from([(id.clone(), daemon)]),
-            sessions: BTreeMap::new(),
-        }));
+        let hub = Arc::new(Mutex::new(Hub::new(connections, BTreeMap::from([(id.clone(), daemon)]))));
         let mut paths = Vec::new();
         for session in ["first", "second"] {
             let response = choose(
