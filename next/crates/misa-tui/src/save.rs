@@ -148,12 +148,12 @@ mod transport_tests {
         let router = iroh::protocol::Router::builder(endpoint.clone())
             .accept(
                 misa_proto::scoped::ALPN,
-                misa_transport::scoped_server::Handler {
-                    daemon: endpoint.id().to_string(),
-                    scope: directory.scope(),
-                    resolver: std::sync::Arc::new(misa_daemon::directory::Routes(directory)),
-                    admission: admission.clone(),
-                },
+                misa_transport::scoped_server::Handler::new(
+                    endpoint.id().to_string(),
+                    directory.scope(),
+                    std::sync::Arc::new(misa_daemon::directory::Routes(directory)),
+                    admission.clone(),
+                ),
             )
             .accept(
                 misa_proto::ALPN_BLOB,

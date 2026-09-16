@@ -34,6 +34,10 @@ const INVOCATIONS: usize = 8;
 const REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+#[cfg(test)]
+#[path = "scoped_invocation_tests.rs"]
+mod invocation_tests;
+
 struct Presence { resolver: Arc<dyn Resolver>, context: CallContext }
 impl Drop for Presence {
     fn drop(&mut self) { self.resolver.disconnected(&self.context); }
@@ -44,6 +48,12 @@ pub struct Handler {
     pub scope: Scope,
     pub resolver: Arc<dyn Resolver>,
     pub admission: Arc<Admission>,
+    invocations: crate::scoped_invocations::Invocations,
+}
+impl Handler {
+    pub fn new(daemon: String, scope: Scope, resolver: Arc<dyn Resolver>, admission: Arc<Admission>) -> Self {
+        Self { daemon, scope, resolver, admission, invocations: Default::default() }
+    }
 }
 impl std::fmt::Debug for Handler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -51,6 +61,9 @@ impl std::fmt::Debug for Handler {
     }
 }
 impl ProtocolHandler for Handler {
+    async fn shutdown(&self) {
+        self.invocations.shutdown().await;
+    }
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let principal = connection.remote_id().to_string();
         if !self.admission.admits(&principal) {
@@ -192,7 +205,22 @@ impl ProtocolHandler for Handler {
                                 });
                             }
                         }
-                        ClientMessage::Invoke { invocation } => { calls.spawn(router.invoke(invocation)); }
+                        ClientMessage::Invoke { invocation } => {
+                            let id = invocation.id;
+                            match self.invocations.spawn(router.invoke(invocation)) {
+                                Ok(reply) => { calls.spawn(async move {
+                                    reply.await.unwrap_or_else(|_| misa_proto::invocation::Reply {
+                                        id,
+                                        outcome: misa_proto::invocation::Outcome::Indeterminate {
+                                            fault: Fault::new("execution_lost", "Owner execution ended without a result; reconcile before retrying"),
+                                        },
+                                    })
+                                }); }
+                                Err(fault) => pending.push_back(ServerMessage::Reply { reply: misa_proto::invocation::Reply {
+                                    id, outcome: misa_proto::invocation::Outcome::Rejected { fault },
+                                } }),
+                            }
+                        }
                         ClientMessage::CancelObservation { handle } => {
                             if router.cancel(handle) { lanes.remove(&handle.id); }
                         }
@@ -364,12 +392,12 @@ mod tests {
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(
                 misa_proto::scoped::ALPN,
-                Handler {
-                    daemon: server.id().to_string(),
-                    scope: daemon_scope.clone(),
-                    resolver: Arc::new(Registry(vec![first.clone(), second.clone()])),
-                    admission: Arc::new(Admission::open()),
-                },
+                Handler::new(
+                    server.id().to_string(),
+                    daemon_scope.clone(),
+                    Arc::new(Registry(vec![first.clone(), second.clone()])),
+                    Arc::new(Admission::open()),
+                ),
             )
             .spawn();
         let address = crate::iroh::address_of(&crate::iroh::node_of(&server)).unwrap();
@@ -453,15 +481,15 @@ mod tests {
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(
                 misa_proto::scoped::ALPN,
-                Handler {
-                    daemon: server.id().to_string(),
-                    scope: Scope {
+                Handler::new(
+                    server.id().to_string(),
+                    Scope {
                         id: ScopeId::Daemon,
                         incarnation: "run".into(),
                     },
-                    resolver: Arc::new(Registry(vec![])),
-                    admission: admission.clone(),
-                },
+                    Arc::new(Registry(vec![])),
+                    admission.clone(),
+                ),
             )
             .spawn();
         let address = crate::iroh::address_of(&crate::iroh::node_of(&server)).unwrap();
@@ -578,15 +606,15 @@ mod tests {
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(
                 misa_proto::scoped::ALPN,
-                Handler {
-                    daemon: server.id().to_string(),
-                    scope: Scope {
+                Handler::new(
+                    server.id().to_string(),
+                    Scope {
                         id: ScopeId::Daemon,
                         incarnation: "run".into(),
                     },
-                    resolver: Arc::new(RegistryOne(Arc::new(Mixed(runtime.clone())))),
-                    admission: Arc::new(Admission::open()),
-                },
+                    Arc::new(RegistryOne(Arc::new(Mixed(runtime.clone())))),
+                    Arc::new(Admission::open()),
+                ),
             )
             .spawn();
         let address = crate::iroh::address_of(&crate::iroh::node_of(&server)).unwrap();

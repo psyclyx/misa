@@ -141,6 +141,7 @@ pub fn submitted(
             attachments: attachments.to_vec(),
         }),
         Parsed::Empty => Err("Enter a message first".into()),
+        Parsed::Invalid { message } => Err(message),
         Parsed::Unknown { name } => Err(format!("Unknown command: /{name}")),
         Parsed::Needs {
             command, argument, ..
@@ -234,12 +235,12 @@ mod tests {
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(
                 misa_proto::scoped::ALPN,
-                misa_transport::scoped_server::Handler {
-                    daemon: server.id().to_string(),
-                    scope: directory.scope(),
-                    resolver: Arc::new(misa_daemon::directory::Routes(directory)),
-                    admission: Arc::new(misa_transport::admission::Admission::open()),
-                },
+                misa_transport::scoped_server::Handler::new(
+                    server.id().to_string(),
+                    directory.scope(),
+                    Arc::new(misa_daemon::directory::Routes(directory)),
+                    Arc::new(misa_transport::admission::Admission::open()),
+                ),
             )
             .spawn();
         let daemons = misa_client::daemons::Daemons::new(

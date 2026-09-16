@@ -705,16 +705,16 @@ mod tests {
         let server = misa_transport::iroh::bind(None, false).await.unwrap();
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let counter = Counter::new();
-        let handler = misa_transport::scoped_server::Handler {
-            daemon: if wrong_identity {
+        let handler = misa_transport::scoped_server::Handler::new(
+            if wrong_identity {
                 endpoint.id().to_string()
             } else {
                 server.id().to_string()
             },
-            scope: counter.scope.clone(),
-            resolver: Arc::new(Registry(counter.clone())),
-            admission: Arc::new(misa_transport::admission::Admission::open()),
-        };
+            counter.scope.clone(),
+            Arc::new(Registry(counter.clone())),
+            Arc::new(misa_transport::admission::Admission::open()),
+        );
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(scoped::ALPN, handler)
             .spawn();
@@ -760,12 +760,12 @@ mod tests {
         let server = misa_transport::iroh::bind(None, false).await.unwrap();
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let owner = Counter::new();
-        let handler = || misa_transport::scoped_server::Handler {
-            daemon: server.id().to_string(),
-            scope: owner.scope.clone(),
-            resolver: Arc::new(Registry(owner.clone())),
-            admission: Arc::new(misa_transport::admission::Admission::open()),
-        };
+        let handler = || misa_transport::scoped_server::Handler::new(
+            server.id().to_string(),
+            owner.scope.clone(),
+            Arc::new(Registry(owner.clone())),
+            Arc::new(misa_transport::admission::Admission::open()),
+        );
         let cut = Arc::new(Notify::new());
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(
@@ -877,12 +877,12 @@ mod tests {
             } else {
                 first.clone()
             };
-            let handler = |owner: Arc<Counter>| misa_transport::scoped_server::Handler {
-                daemon: server.id().to_string(),
-                scope: owner.scope.clone(),
-                resolver: Arc::new(Registry(owner)),
-                admission: Arc::new(misa_transport::admission::Admission::open()),
-            };
+            let handler = |owner: Arc<Counter>| misa_transport::scoped_server::Handler::new(
+                server.id().to_string(),
+                owner.scope.clone(),
+                Arc::new(Registry(owner)),
+                Arc::new(misa_transport::admission::Admission::open()),
+            );
             let cut = Arc::new(Notify::new());
             let router = iroh::protocol::Router::builder(server.clone())
                 .accept(

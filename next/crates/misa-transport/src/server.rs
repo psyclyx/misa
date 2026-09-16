@@ -117,12 +117,12 @@ mod tests {
             server.clone(),
             Arc::new(KernelBlobs(Arc::new(misa_kernel::Blobs::in_memory()))),
             admission.clone(),
-            crate::scoped_server::Handler {
-                daemon: server.id().to_string(),
-                scope: scope.clone(),
-                resolver: Arc::new(Empty),
-                admission: admission.clone(),
-            },
+            crate::scoped_server::Handler::new(
+                server.id().to_string(),
+                scope.clone(),
+                Arc::new(Empty),
+                admission.clone(),
+            ),
         );
         let info = misa_proto::ClientInfo::new("test", "1");
         assert!(

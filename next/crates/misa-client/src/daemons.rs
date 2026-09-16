@@ -463,12 +463,12 @@ mod tests {
         }
     }
     fn handler(server: &Endpoint, owner: Arc<Directory>) -> misa_transport::scoped_server::Handler {
-        misa_transport::scoped_server::Handler {
-            daemon: server.id().to_string(),
-            scope: owner.scope.clone(),
-            resolver: Arc::new(Resolve(owner)),
-            admission: Arc::new(misa_transport::admission::Admission::open()),
-        }
+        misa_transport::scoped_server::Handler::new(
+            server.id().to_string(),
+            owner.scope.clone(),
+            Arc::new(Resolve(owner)),
+            Arc::new(misa_transport::admission::Admission::open()),
+        )
     }
     fn address(endpoint: &Endpoint) -> EndpointAddr {
         misa_transport::iroh::address_of(&misa_transport::iroh::node_of(endpoint)).unwrap()

@@ -77,15 +77,15 @@ async fn fixture(
     let router = iroh::protocol::Router::builder(server.clone())
         .accept(
             misa_proto::scoped::ALPN,
-            crate::scoped_server::Handler {
-                daemon: server.id().to_string(),
-                scope: Scope {
+            crate::scoped_server::Handler::new(
+                server.id().to_string(),
+                Scope {
                     id: ScopeId::Daemon,
                     incarnation: "test".into(),
                 },
-                resolver: Arc::new(Registry(runtime.clone())),
-                admission: Arc::new(Admission::open()),
-            },
+                Arc::new(Registry(runtime.clone())),
+                Arc::new(Admission::open()),
+            ),
         )
         .spawn();
     (router, endpoint, address, runtime, kernel)

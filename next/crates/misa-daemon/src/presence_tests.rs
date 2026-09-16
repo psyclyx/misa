@@ -45,12 +45,12 @@ async fn two_real_connections_are_independent_of_sessions_and_retire_on_disconne
         endpoint.clone(),
         Arc::new(EmptyBlobs),
         admission.clone(),
-        misa_transport::scoped_server::Handler {
-            daemon: endpoint.id().to_string(),
-            scope: directory.scope(),
-            resolver: Arc::new(Routes(directory.clone())),
-            admission: admission.clone(),
-        },
+        misa_transport::scoped_server::Handler::new(
+            endpoint.id().to_string(),
+            directory.scope(),
+            Arc::new(Routes(directory.clone())),
+            admission.clone(),
+        ),
     );
     let mut first = Client::connect(
         &first_endpoint,

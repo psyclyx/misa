@@ -5,6 +5,7 @@ pub mod blob;
 pub mod iroh;
 pub mod server;
 pub mod scoped_server;
+mod scoped_invocations;
 pub mod identity;
 #[cfg(unix)]
 pub mod local;

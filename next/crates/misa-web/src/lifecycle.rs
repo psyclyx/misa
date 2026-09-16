@@ -130,11 +130,12 @@ mod tests {
         let server = misa_transport::iroh::bind(None, false).await.unwrap();
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let router = iroh::protocol::Router::builder(server.clone()).accept(misa_proto::scoped::ALPN,
-            misa_transport::scoped_server::Handler {
-                daemon: server.id().to_string(), scope: directory.scope(),
-                resolver: Arc::new(misa_daemon::directory::Routes(directory.clone())),
-                admission: Arc::new(misa_transport::admission::Admission::open()),
-            }).spawn();
+            misa_transport::scoped_server::Handler::new(
+                server.id().to_string(),
+                directory.scope(),
+                Arc::new(misa_daemon::directory::Routes(directory.clone())),
+                Arc::new(misa_transport::admission::Admission::open()),
+            )).spawn();
         let connections = Arc::new(misa_client::daemons::Daemons::new(endpoint.clone(), misa_proto::ClientInfo::new("web-lifecycle", "test")));
         let daemon = connections.connect(server.addr()).await.unwrap();
         let id = daemon.identity().to_string();

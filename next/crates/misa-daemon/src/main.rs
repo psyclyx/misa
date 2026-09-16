@@ -421,12 +421,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // and it must not be on the path to answering a client on this one. A machine with no
     // route out never becomes online, so a daemon that waited first would print a ticket and
     // then ignore every peer that used it — on exactly the machine somebody tries first.
-    let scoped = misa_transport::scoped_server::Handler {
-        daemon: endpoint.id().to_string(),
-        scope: misa_protocol::invocation::CommandOwner::scope(directory.as_ref()),
-        resolver: Arc::new(misa_daemon::directory::Routes(directory.clone())),
-        admission: admission.clone(),
-    };
+    let scoped = misa_transport::scoped_server::Handler::new(
+        endpoint.id().to_string(),
+        misa_protocol::invocation::CommandOwner::scope(directory.as_ref()),
+        Arc::new(misa_daemon::directory::Routes(directory.clone())),
+        admission.clone(),
+    );
     let router = misa_transport::server::serve(endpoint.clone(), Arc::new(blobs::Store(blobs)), admission.clone(), scoped);
     #[cfg(unix)]
     let _local = misa_transport::local::advertise(&node, &options.session, admission.clone())?;

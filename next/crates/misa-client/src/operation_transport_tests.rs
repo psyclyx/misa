@@ -220,15 +220,15 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
         .accept(
             misa_proto::scoped::ALPN,
             Server {
-                handler: misa_transport::scoped_server::Handler {
-                    daemon: server.id().to_string(),
-                    scope: Scope {
+                handler: misa_transport::scoped_server::Handler::new(
+                    server.id().to_string(),
+                    Scope {
                         id: ScopeId::Daemon,
                         incarnation: "source".into(),
                     },
-                    resolver: Arc::new(Registry(owner.clone())),
-                    admission: Arc::new(misa_transport::admission::Admission::open()),
-                },
+                    Arc::new(Registry(owner.clone())),
+                    Arc::new(misa_transport::admission::Admission::open()),
+                ),
                 cut: cut.clone(),
                 connections: AtomicUsize::new(0),
             },
@@ -373,12 +373,12 @@ impl iroh::protocol::ProtocolHandler for RestartServer {
                 socket.close(1u32.into(), b"restart");
             })
         });
-        let handler = misa_transport::scoped_server::Handler {
-            daemon: self.daemon.clone(),
-            scope: owner.scope.clone(),
-            resolver: Arc::new(Registry(owner)),
-            admission: Arc::new(misa_transport::admission::Admission::open()),
-        };
+        let handler = misa_transport::scoped_server::Handler::new(
+            self.daemon.clone(),
+            owner.scope.clone(),
+            Arc::new(Registry(owner)),
+            Arc::new(misa_transport::admission::Admission::open()),
+        );
         let result = handler.accept(connection).await;
         if let Some(task) = killer {
             task.abort();
