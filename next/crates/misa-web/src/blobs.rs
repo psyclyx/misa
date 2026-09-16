@@ -4,6 +4,8 @@ use axum::{extract::{State, Form, Multipart}, response::{Response, IntoResponse,
 use misa_proto::view::BlobRef;
 use misa_value::Value;
 use crate::{Remote, escape, remote};
+const MAX_PENDING_ATTACHMENTS: usize = 32;
+static UPLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 #[cfg(test)]
 use crate::{Runtime, next_id};
 
@@ -64,7 +66,7 @@ pub(crate) async fn blob_response(source: Option<&Source>, hash: &str) -> Respon
         Ok(Some((media, bytes))) => (
             [
                 (header::CONTENT_TYPE, media),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+                (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string()),
             ],
             bytes,
         )
@@ -142,6 +144,8 @@ pub(crate) async fn upload(
     pending: &std::sync::Mutex<Vec<BlobRef>>,
     mut multipart: Multipart,
 ) -> Response {
+    let Ok(_permit) = UPLOADS.try_acquire() else { return (StatusCode::SERVICE_UNAVAILABLE, "Uploads are busy; try again shortly").into_response(); };
+    if pending.lock().expect("pending attachments").len() >= MAX_PENDING_ATTACHMENTS { return upload_fault("Send or discard pending attachments before adding more"); }
     let Some(source) = source else {
         return upload_fault("this client has nowhere to put a file");
     };
@@ -166,7 +170,11 @@ pub(crate) async fn upload(
     }
     match source.put(bytes.to_vec(), media.as_deref()).await {
         Ok(blob) => {
-            pending.lock().expect("the pending list is never poisoned").push(blob);
+            let mut pending = pending.lock().expect("the pending list is never poisoned");
+            if !pending.contains(&blob) {
+                if pending.len() >= MAX_PENDING_ATTACHMENTS { return upload_fault("Pending attachments filled while uploading; send or discard them before retrying"); }
+                pending.push(blob);
+            }
             Redirect::to("./").into_response()
         }
         Err(message) => upload_fault(&message),
@@ -180,4 +188,3 @@ fn upload_fault(message: &str) -> Response {
     )
         .into_response()
 }
-

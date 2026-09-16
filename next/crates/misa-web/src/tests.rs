@@ -2,13 +2,27 @@
 use super::*;
 use misa_proto::view::{Action, BlobRef, Capture, Field};
 
+async fn invoke(runtime: &Runtime, command: &str, input: Value) -> misa_proto::invocation::Outcome {
+    use misa_protocol::invocation::{CallContext, Dispatcher};
+    Dispatcher::new(CallContext { principal: "web-fixture".into(), connection: 1 }, 1, Default::default(), Default::default())
+        .dispatch(runtime, misa_proto::invocation::Invocation { id: next_id(), scope: runtime.scope(), command: command.into(), input }).await.outcome
+}
+fn read(runtime: &Runtime, id: &str) -> misa_proto::observation::Content {
+    use misa_proto::observation::{Member, Selection};
+    let definition = runtime.query_exports().into_iter().find(|definition| definition.id == id).expect("installed query");
+    let result = runtime.read_selection(&Selection { scope: runtime.scope(), members: std::collections::BTreeMap::from([("result".into(), Member {
+        query: misa_proto::Query::new(id), encoding: definition.result.encoding(), contract: definition.contract, optional: false,
+    })]) }).unwrap();
+    result.members["result"].clone()
+}
+
 #[tokio::test]
 async fn attachment_button_downloads_kernel_confirmed_bytes_as_a_file() {
     let kernel = Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("done")));
     let blobs = kernel.blobs().clone();
     let stored = blobs.put(PNG, Some("image/png")).unwrap();
     let runtime = Runtime::start("save", "Save", None, kernel, "scripted", "test", misa_value::Value::Null);
-    runtime.intent(misa_proto::wire::Intent::Prompt { text: "save it".into(), attachments: vec![stored.clone()] });
+    assert!(matches!(invoke(&runtime, "session.prompt", Value::map([("text", Value::str("save it")), ("attachments", serde_json::from_value(serde_json::to_value(vec![stored.clone()]).unwrap()).unwrap())])).await, misa_proto::invocation::Outcome::Accepted { .. }));
     fn target(node: &Node) -> Option<String> {
         if node.actions.iter().any(|action| action.id == "attachment.save") { return Some(node.id.clone()); }
         node.children.iter().find_map(target)
@@ -16,7 +30,8 @@ async fn attachment_button_downloads_kernel_confirmed_bytes_as_a_file() {
     let mut revision = runtime.watch_rev();
     let (tree, node) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let tree = runtime.view().unwrap();
+            let misa_proto::observation::Content::Document(document) = read(&runtime, "conversation.presentation") else { panic!("conversation is a document"); };
+            let tree = document.tree;
             if let Some(node) = target(&tree) { break (tree, node); }
             revision.changed().await.unwrap();
         }
@@ -31,8 +46,7 @@ async fn attachment_button_downloads_kernel_confirmed_bytes_as_a_file() {
 }
 
 #[tokio::test]
-async fn usage_dashboard_is_typed_and_renders_on_terminal_and_browser() {
-    use misa_proto::wire::Intent;
+async fn usage_presentation_is_a_typed_finite_document() {
     use misa_value::Value;
     let kernel = misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::new([]));
     let runtime = misa_session::Runtime::start(
@@ -44,16 +58,19 @@ async fn usage_dashboard_is_typed_and_renders_on_terminal_and_browser() {
         "test",
         Value::Null,
     );
-    assert!(runtime.intent(Intent::Command { name: "usage".into(), args: Value::Null }).is_empty());
+    assert!(matches!(invoke(&runtime, "session.usage.refresh", Value::map([] as [(&str, Value); 0])).await, misa_proto::invocation::Outcome::Completed { .. }));
     let facts = misa_kernel::usage::parse("kimi", &serde_json::json!({"usage":{"limit":100,"used":25}}));
     assert!(
         runtime
             .dispatch(
-                misa_reframe::Event::new("kernel/usage").with("id", Value::str("usage.1")).with("facts", facts)
+                misa_reframe::Event::new("kernel/usage").with("id", Value::str("usage.1")).with("provider", Value::str("scripted")).with("facts", facts)
             )
             .is_empty()
     );
-    let tree = runtime.view().unwrap();
+    let misa_proto::observation::Content::Value(value) = read(&runtime, "usage.report") else { panic!("usage report is data"); };
+    assert_eq!(value.get("session").and_then(|session| session.get("cost_micros")).and_then(Value::as_i64), Some(0));
+    let misa_proto::observation::Content::Document(document) = read(&runtime, "usage.presentation") else { panic!("usage presentation is a document"); };
+    let tree = document.tree;
     misa_proto::view::validate(&tree).unwrap();
     let html = render_main(&tree);
     let terminal = misa_render::to_plain(&misa_render::render(&tree, &misa_render::Theme::plain(), 100));
@@ -201,6 +218,7 @@ async fn a_blob_is_served_from_the_store_under_a_name_that_cannot_change() {
     // fetches nothing.
     let cache = response.headers()[header::CACHE_CONTROL].to_str().unwrap();
     assert!(cache.contains("immutable"), "{cache}");
+    assert!(cache.contains("private"), "authenticated blob bytes must not enter a shared HTTP cache");
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert_eq!(&body[..], PNG);

@@ -12,7 +12,7 @@ pub(crate) async fn prepare(remote: &Remote, shortcut: &str, drafts: &BTreeMap<S
     match &shortcut.target {
         Target::Read { member } => {
             let result = remote.daemon.client.read(Selection { scope: remote.interaction.interface.scope.clone(), members: BTreeMap::from([("report".into(), member.clone())]) }, Duration::from_secs(20)).await?;
-            Ok(crate::render_report(&shortcut.label, data(&result, "report")?))
+            crate::read_report(&shortcut.label, &result, "report")
         }
         Target::Command { command } => {
             let model = Form::command(&remote.interaction.interface, command)?;

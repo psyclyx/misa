@@ -32,6 +32,9 @@ pub(crate) use html::render_scoped;
 fn render_report(title: &str, value: &Value) -> String {
     render_scoped(&misa_client::request::report(title, value), &format!("report-{}:", next_id()))
 }
+fn read_report(title: &str, result: &misa_client::ReadValue, member: &str) -> Result<String, misa_proto::Fault> {
+    Ok(render_scoped(&misa_client::interface::report(result, member, title)?, &format!("report-{}:", next_id())))
+}
 
 fn outcome_report(outcome: &misa_proto::invocation::Outcome) -> Option<String> {
     match outcome {
@@ -276,7 +279,7 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/command", get(commands::open))
         .route("/completions", get(commands::candidates))
         .route("/commands.js", get(|| async { ([("content-type", "text/javascript")], include_str!("commands.js")) }))
-        .route("/attach", post(remote_attach))
+        .route("/attach", post(remote_attach).layer(axum::extract::DefaultBodyLimit::max(misa_proto::blob::MAX_BLOB_BYTES + 8192)))
         .route("/detach", post(remote_detach))
         .route("/blob/{hash}", get(remote_blob))
         .route("/download", post(remote_download))
@@ -326,9 +329,9 @@ async fn remote_intent(
             let title = member.query.id.clone();
             let selection = misa_proto::observation::Selection { scope: state.interaction.interface.scope.clone(), members: std::collections::BTreeMap::from([("report".into(), member)]) };
             return match state.daemon.client.read(selection, std::time::Duration::from_secs(20)).await {
-                Ok(result) => match misa_client::interface::data(&result, "report") {
-                    Ok(value) if json => axum::Json(serde_json::json!({"ok":true,"report":render_report(&title, value)})).into_response(),
-                    Ok(value) => Html(format!("<!doctype html><html><head><link rel=\"stylesheet\" href=\"./style.css\"></head><body><main>{}<a href=\"./\">Back to session</a></main></body></html>", render_report(&title, value))).into_response(),
+                Ok(result) => match read_report(&title, &result, "report") {
+                    Ok(html) if json => axum::Json(serde_json::json!({"ok":true,"report":html})).into_response(),
+                    Ok(html) => Html(format!("<!doctype html><html><head><link rel=\"stylesheet\" href=\"./style.css\"></head><body><main>{html}<a href=\"./\">Back to session</a></main></body></html>")).into_response(),
                     Err(fault) => (StatusCode::BAD_GATEWAY, fault.message).into_response(),
                 },
                 Err(fault) => (StatusCode::BAD_GATEWAY, fault.message).into_response(),
@@ -364,7 +367,13 @@ async fn remote_intent(
 
 /// One uploaded file, put in the daemon's store over the blob connection.
 async fn remote_attach(State(state): State<Arc<Remote>>, multipart: Multipart) -> Response {
-    upload(state.blobs.as_deref(), &state.pending, multipart).await
+    let mut closed = state.closed.subscribe();
+    if *closed.borrow() { return (StatusCode::GONE, "Presentation closed").into_response(); }
+    tokio::select! {
+        biased;
+        _ = closed.changed() => (StatusCode::GONE, "Presentation closed").into_response(),
+        response = upload(state.blobs.as_deref(), &state.pending, multipart) => response,
+    }
 }
 
 async fn remote_detach(State(state): State<Arc<Remote>>) -> Response {

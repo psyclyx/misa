@@ -167,8 +167,8 @@ async fn connect(
 }
 
 async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, String>>) -> Response {
-    let (Some(id), Some(session)) = (form.get("daemon"), form.get("session")) else {
-        return "Choose a daemon and session".into_response();
+    let (Some(id), Some(session), Some(incarnation)) = (form.get("daemon"), form.get("session"), form.get("incarnation")) else {
+        return (axum::http::StatusCode::BAD_REQUEST, "Choose a current daemon and session from the overview").into_response();
     };
     let daemon = hub.lock().await.daemons.get(id).cloned();
     let Some(daemon) = daemon else {
@@ -180,7 +180,7 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
     };
     match super::remote::connect_with(&daemon, session, preferences).await {
         Ok(remote) => {
-            if form.get("incarnation").is_some_and(|incarnation| incarnation != &remote.interaction.interface.scope.incarnation) {
+            if incarnation != &remote.interaction.interface.scope.incarnation {
                 return (axum::http::StatusCode::CONFLICT, "Session changed; choose its current owner from the overview").into_response();
             }
             let key = remote.instance.clone();
@@ -328,11 +328,13 @@ mod tests {
         let hub = Arc::new(Mutex::new(Hub::new(connections, BTreeMap::from([(id.clone(), daemon)]))));
         let mut paths = Vec::new();
         for session in ["first", "second"] {
+            let incarnation = hub.lock().await.daemons[&id].sessions().unwrap().sessions.into_iter().find(|entry| entry.id == session).unwrap().incarnation;
             let response = choose(
                 State(hub.clone()),
                 Form(BTreeMap::from([
                     ("daemon".into(), id.clone()),
                     ("session".into(), session.into()),
+                    ("incarnation".into(), incarnation),
                     ("preferences".into(), "{\"status\":\"hide\"}".into()),
                 ])),
             )

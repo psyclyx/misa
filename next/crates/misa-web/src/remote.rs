@@ -266,6 +266,26 @@ mod tests {
             .is_err()
         );
         use tower::ServiceExt;
+        let mut uploading = connect(&daemon, "web").await.unwrap();
+        Arc::get_mut(&mut uploading).unwrap().blobs = Some(Arc::new(Source::Local(Arc::new(misa_kernel::Blobs::in_memory()))));
+        let attachment = || axum::http::Request::builder().method("POST").uri("/attach")
+            .header("content-type", "multipart/form-data; boundary=web-upload")
+            .body(axum::body::Body::from(format!("--web-upload\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\n{}\r\n--web-upload--\r\n", "x".repeat(2 * 1024 * 1024 + 1)))).unwrap();
+        for _ in 0..2 {
+            let uploaded = super::super::remote_router(uploading.clone()).oneshot(attachment()).await.unwrap();
+            assert_eq!(uploaded.status(), axum::http::StatusCode::SEE_OTHER, "valid blobs above the HTTP framework default body limit must upload");
+        }
+        assert_eq!(uploading.pending.lock().unwrap().len(), 1, "repeated upload does not duplicate staging");
+        {
+            let mut pending = uploading.pending.lock().unwrap();
+            pending.clear();
+            pending.extend((0..32).map(|id| misa_proto::view::BlobRef { hash: format!("{id:064x}"), len: 1, media: None }));
+        }
+        assert_eq!(super::super::remote_router(uploading.clone()).oneshot(attachment()).await.unwrap().status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(uploading.pending.lock().unwrap().len(), 32);
+        uploading.close();
+        assert_eq!(super::super::remote_router(uploading.clone()).oneshot(attachment()).await.unwrap().status(), axum::http::StatusCode::GONE);
+        drop(uploading);
         let obsolete = connect_with(&daemon, "web", misa_client::composition::Preferences(BTreeMap::from([
             ("conversation".into(), misa_client::composition::Choice::Variant("removed".into())),
             ("status".into(), misa_client::composition::Choice::Hidden),
