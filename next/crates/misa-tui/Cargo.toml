@@ -14,11 +14,14 @@ async-trait.workspace = true
 base64.workspace = true
 crossterm.workspace = true
 misa-kit = { path = "../misa-kit" }
+misa-client.workspace = true
+misa-protocol.workspace = true
 misa-transport.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
 misa-value.workspace = true
 tokio.workspace = true
+serde_json.workspace = true
 
 [[bin]]
 name = "misa"
@@ -29,5 +32,7 @@ name = "misa-tui"
 path = "src/alias.rs"
 
 [dev-dependencies]
+iroh.workspace = true
+misa-daemon = { path = "../misa-daemon" }
 misa-session.workspace = true
 misa-kernel.workspace = true

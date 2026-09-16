@@ -1,30 +1,34 @@
-use misa_tui::{Remote, Session, run};
+use misa_tui::{Session, run, workspace::Workspace};
 use std::io::{BufRead, IsTerminal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut force_print = false;
     let mut positional = Vec::new();
-    for argument in std::env::args().skip(1) {
+    let mut targets = Vec::new();
+    let mut arguments = std::env::args().skip(1);
+    while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--print" | "-p" => force_print = true,
+            "--daemon" | "-d" => targets.push(arguments.next().ok_or("--daemon needs an address or pairing ticket")?),
             "--help" | "-h" => {
-                println!("usage: misa [--print|-p] misa:<endpoint id>:<session> [prompt]");
+                println!("usage: misa [--print|-p] [--daemon ADDRESS]... [misa:<endpoint>:<session>] [prompt]\nWithout an address, discovers local daemons. /daemon selects a daemon; /session selects its session.");
                 return Ok(());
             }
             _ => positional.push(argument),
         }
     }
-    if positional.is_empty() || positional.len() > 2 {
-        return Err("usage: misa [--print|-p] misa:<endpoint id>:<session> [prompt]".into());
+    if positional.first().is_some_and(|s: &String| s.starts_with("misa:") || s.starts_with("misa-pair:")) {
+        targets.push(positional.remove(0));
     }
-    let mut remote = Remote::attach(&positional[0]).await?;
+    if positional.len() > 1 { return Err("Pass the prompt as one quoted argument".into()); }
+    let mut remote = Workspace::start(&targets).await?;
     if misa_tui::print::interactive(
         force_print,
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
     ) {
-        if let Some(prompt) = positional.get(1) {
+        if let Some(prompt) = positional.first() {
             remote
                 .send(misa_proto::wire::Intent::Prompt {
                     text: prompt.clone(),
@@ -35,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         run(&mut remote).await?;
     } else {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
-        let prompt = positional.get(1).cloned();
+        let prompt = positional.first().cloned();
         std::thread::spawn(move || {
             if let Some(prompt) = prompt {
                 if sender.blocking_send(Ok(prompt)).is_err() {

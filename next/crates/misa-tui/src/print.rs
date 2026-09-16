@@ -54,11 +54,13 @@ pub async fn run(
                 };
                 if matches!(intent, Intent::Prompt { .. }) {
                     pending = Some(settled.clone());
+                    if session.turn_settled().is_some() { printed.clear(); }
                 }
                 session.send(intent).await?;
             }
         }
         tokio::select! {
+            biased;
             view = session.next() => {
                 let Some(view) = view? else { return Ok(()); };
                 ready = true;
@@ -72,7 +74,7 @@ pub async fn run(
                     printed = text;
                 }
                 latest = Some(view.clone());
-                if pending.as_ref().is_some_and(|before| settled.difference(before).next().is_some()) && !working(&view) {
+                if session.turn_settled().unwrap_or_else(|| pending.as_ref().is_some_and(|before| settled.difference(before).next().is_some()) && !working(&view)) {
                     pending = None;
                 }
             }

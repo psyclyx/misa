@@ -21,10 +21,13 @@
 //! items to hold — see [`misa_kit::picker`].
 
 pub mod print;
+pub mod workspace;
+pub mod scoped_remote;
+mod dialogs;
+pub mod presentation;
 pub mod output;
 mod event_loop;
 mod retained;
-mod remote_requests;
 mod chrome;
 pub mod clipboard;
 pub mod storage;
@@ -34,6 +37,7 @@ pub mod save;
 thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 use std::path::PathBuf;
+#[cfg(test)]
 use std::time::Duration;
 
 use misa_kit::picker::{Accept, Effect as PickerEffect, Picker};
@@ -129,6 +133,7 @@ pub struct PanelInput {
 /// What a keypress caused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOut {
+    Invoke { command: String, input: misa_value::Value },
     /// Choose a local destination, then request the attachment the session offered.
     Save(save::Request),
     /// The client handled it alone.
@@ -151,6 +156,10 @@ struct HistorySearch {
 }
 
 pub struct Screen {
+    pub dialogs: dialogs::Dialogs,
+    pub local_presentation: presentation::Local,
+    pub components: misa_render::components::Registry,
+    pub values: misa_render::fact::Registry,
     operator: Option<char>,
     history_search: Option<HistorySearch>,
     pub theme: Theme,
@@ -174,6 +183,8 @@ pub struct Screen {
     pub panel: Option<PanelInput>,
     pub commands: Vec<Command>,
     pub sources: Vec<Source>,
+    pub location: String,
+    resident: std::collections::HashMap<String, (Vec<Choice>, bool)>,
     pub scroll: usize,
     /// Whether the viewport follows new output. Scrolling away stops it, which is
     /// what lets somebody read while a model is still writing.
@@ -185,6 +196,9 @@ pub struct Screen {
 impl Screen {
     pub fn new(width: u16, height: u16) -> Screen {
         Screen {
+            local_presentation: presentation::stock(),
+            components: Default::default(),
+            values: Default::default(),
             operator: None,
             history_search: None,
             theme: Theme::dark(),
@@ -194,10 +208,13 @@ impl Screen {
             prefs: Prefs::default(),
             prefs_path: None,
             notice: None,
+            dialogs: Default::default(),
             selection: None,
             panel: None,
             commands: Vec::new(),
             sources: Vec::new(),
+            location: String::new(),
+            resident: Default::default(),
             scroll: 0,
             follow: true,
             width,
@@ -253,6 +270,8 @@ impl Screen {
     /// can do and where a value can come from, which is what makes a picker possible
     /// without asking anything.
     pub fn declare(&mut self, info: &SessionInfo) {
+        self.location = info.title.clone();
+        self.resident.clear();
         self.commands = info.commands.clone();
         self.commands.push(Command::new("save", "Save attachment", "/save [number] <local path>"));
         self.sources = info.sources.clone();
@@ -294,6 +313,9 @@ impl Screen {
 
     /// Open the picker a command's next argument needs.
     fn open_argument_picker(&mut self, command: &str, argument: &str, source: &str) {
+        if self.editor.text().trim() == format!("/{command}") || !self.editor.text().starts_with(&format!("/{command} ")) {
+            self.editor.set_text(format!("/{command} "));
+        }
         self.pending_command = Some(command.to_string());
         let accept = Accept::Argument { command: command.to_string(), argument: argument.to_string() };
         // Ranked by what this client remembers: a list that started from nothing every run
@@ -302,11 +324,15 @@ impl Screen {
             Picker::over(source, format!("/{command} {argument}"), accept)
                 .with_frecency(self.prefs.frecency()),
         );
+        if let Some((items, truncated)) = self.resident.get(source) {
+            self.picker.as_mut().unwrap().set_items(items.clone(), *truncated);
+        }
     }
 
     /// Give the picker the items a source produced.
     pub fn candidates(&mut self, source: &str, items: Vec<Choice>, truncated: bool) {
         let resident = self.is_resident(source);
+        if resident { self.resident.insert(source.into(), (items.clone(), truncated)); }
         if let Some(picker) = self.picker.as_mut()
             && picker.source.as_deref() == Some(source)
             && resident
@@ -381,6 +407,7 @@ impl Screen {
             self.panel = Some(PanelInput { panel: asking, field, text: String::new() });
         }
         Some(match key {
+            Key::Eof if self.panel.as_ref().is_some_and(|panel| panel.text.is_empty()) => KeyOut::Quit,
             Key::Escape => self.dismiss_panel(panel),
             Key::Submit => self.submit_panel(panel),
             Key::Backspace | Key::Delete => {
@@ -593,7 +620,8 @@ impl Screen {
                 self.editor.backspace();
                 KeyOut::Local
             }
-            Key::Delete => {
+            Key::Eof if self.editor.is_empty() => KeyOut::Quit,
+            Key::Delete | Key::Eof => {
                 self.editor.delete();
                 KeyOut::Local
             }
@@ -721,6 +749,8 @@ impl Screen {
     }
 
     fn open_command_picker(&mut self) -> KeyOut {
+        self.pending_command = None;
+        self.editor.set_text("/");
         // `/` on an empty line is a request for the session's commands, and the
         // promise the declaration made is that they can be listed without asking.
         let mut picker = if self.sources.iter().any(|source| source.id == "commands") {
@@ -735,6 +765,7 @@ impl Screen {
 
     /// Open the client's own actions.
     fn open_action_palette(&mut self) -> KeyOut {
+        self.editor.set_text(":");
         let mut picker = Picker::new("Actions", Accept::Run).with_frecency(self.prefs.frecency());
         picker.set_items(
             Action::ALL
@@ -755,6 +786,19 @@ impl Screen {
     }
 
     fn picker_key(&mut self, key: Key) -> KeyOut {
+        // Completing the command word moves completion to its argument while
+        // keeping the composer as the only editable text.
+        if key == Key::Char(' ') && self.pending_command.is_none() && self.editor.text().starts_with('/') {
+            let name = self.editor.text().trim_start_matches('/');
+            if self.commands.iter().any(|command| command.id == name) {
+                self.editor.type_char(' ');
+                self.picker = None;
+                return match line::parse(self.editor.text(), &self.commands) {
+                    line::Parsed::Needs { source: Some(_), .. } => self.submit(),
+                    _ => KeyOut::Local,
+                };
+            }
+        }
         let Some(picker) = self.picker.as_mut() else {
             return KeyOut::Local;
         };
@@ -769,11 +813,35 @@ impl Screen {
                 picker.move_selection(-1);
                 PickerEffect::None
             }
-            Key::Char(character) => picker.type_char(character),
-            Key::Backspace => picker.backspace(),
+            Key::Char(character) => {
+                self.editor.type_char(character);
+                picker.set_query(Self::picker_query(self.editor.text(), &picker.accept))
+            }
+            Key::Backspace | Key::Delete | Key::Eof => {
+                if key == Key::Backspace { self.editor.backspace(); } else { self.editor.delete(); }
+                if self.editor.is_empty() { picker.cancel() }
+                else { picker.set_query(Self::picker_query(self.editor.text(), &picker.accept)) }
+            }
+            Key::Motion(motion) => { self.editor.move_cursor(motion); PickerEffect::None }
+            Key::Quit => return KeyOut::Quit,
+            Key::Interrupt => picker.cancel(),
             _ => PickerEffect::None,
         };
         self.picker_effect(effect)
+    }
+
+    fn picker_query<'a>(text: &'a str, accept: &Accept) -> &'a str {
+        match accept {
+            Accept::Argument { .. } => text.split_once(char::is_whitespace).map_or("", |(_, rest)| rest),
+            _ => text.strip_prefix('/').or_else(|| text.strip_prefix(':')).unwrap_or(text),
+        }
+    }
+
+    pub fn paste(&mut self, text: &str) -> KeyOut {
+        self.editor.insert(text);
+        let effect = self.picker.as_mut().map(|picker|
+            picker.set_query(Self::picker_query(self.editor.text(), &picker.accept)));
+        effect.map_or(KeyOut::Local, |effect| self.picker_effect(effect))
     }
 
     fn picker_effect(&mut self, effect: PickerEffect) -> KeyOut {
@@ -796,6 +864,7 @@ impl Screen {
                 }
                 self.picker = None;
                 self.prefs.remembered(&accepted.value);
+                self.pending_command = None;
                 self.save();
                 // An accepted argument completes the line rather than sending it, so
                 // somebody can add the next argument or edit what they got.
@@ -932,6 +1001,7 @@ pub enum Key {
     Char(char),
     Backspace,
     Delete,
+    Eof,
     Submit,
     Tab,
     Escape,
@@ -1009,7 +1079,7 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
     let detail = format!(
         "{}{}{}",
         picker.title,
-        if picker.query.is_empty() { String::new() } else { format!(" · {}", picker.query) },
+        String::new(),
         if picker.is_truncated() { " · partial" } else { "" }
     );
     lines.push(Line { indent: 0, spans: vec![(theme.role("palette.title"), detail)], node: None });
@@ -1096,6 +1166,8 @@ fn select_highlight(line: &mut Line, from: usize, to: usize, theme: &Theme) {
 /// transport can be swapped.
 #[async_trait::async_trait]
 pub trait Session: Send {
+    /// Scoped clients correlate completion to the accepted operation.
+    fn turn_settled(&self) -> Option<bool> { None }
     /// The next view, if one changed.
     async fn next(&mut self) -> Result<Option<Node>, String>;
     /// Incremental consumers retain presentation owners between these updates.
@@ -1104,6 +1176,8 @@ pub trait Session: Send {
     }
     async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
         Some(match request {
+            SessionRequest::RefreshRequests => SessionReply::Notice("This session has no input request catalog".into()),
+            SessionRequest::Invoke { .. } => SessionReply::Notice("This session does not support installed invocations".into()),
             SessionRequest::Intent(intent) => {
                 let draft = match &intent { Intent::Prompt { text, attachments } | Intent::Interrupt { text, attachments } => Some((text.clone(), attachments.clone())), _ => None };
                 SessionReply::Sent { draft, result: self.send(intent).await }
@@ -1131,17 +1205,30 @@ pub trait Session: Send {
 }
 
 pub enum Presentation {
+    Documents(Vec<(String,misa_client::document::Update)>),
+    Activate(String),
+    Forget(String),
+    Contribution { id: String, update: misa_client::document::Update },
+    TurnOutput(Node),
+    Document(misa_client::document::Update),
+    Declaration(SessionInfo),
+    Candidates { source: String, items: Vec<Choice>, truncated: bool },
     Snapshot(Node),
     Message(misa_proto::SessionMsg),
     Reply(SessionReply),
 }
 pub enum SessionRequest {
+    RefreshRequests,
+    Invoke { command: String, input: misa_value::Value },
     Intent(Intent),
     Upload { generation: u64, bytes: Vec<u8>, media: String },
     Complete { source: String, prefix: String },
     Save { node: String, destination: String },
 }
 pub enum SessionReply {
+    Form(misa_client::form::Form),
+    Request { id: String, generation: i64, model: Option<misa_client::request::Model> },
+    Report(Node),
     Uploaded { generation: u64, result: Result<misa_proto::view::BlobRef, String> },
     Sent { draft: Option<(String, Vec<misa_proto::view::BlobRef>)>, result: Result<(), String> },
     Complete { source: String, prefix: String, result: Result<(Vec<Choice>, bool), String> },
@@ -1161,7 +1248,7 @@ fn translate(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyMo
         KeyCode::Char('q') if control => Key::Quit,
         KeyCode::Char('c') if control => Key::Interrupt,
         KeyCode::Char('t') if control => Key::Action(Action::ToggleDetail),
-        KeyCode::Char('d') if control => Key::Delete,
+        KeyCode::Char('d') if control => Key::Eof,
         KeyCode::Char('u') if control => Key::ScrollPage(-10),
         KeyCode::Char(character) => Key::Char(character),
         KeyCode::Backspace => Key::Backspace,
@@ -1216,196 +1303,6 @@ pub fn sgr(style: &misa_render::Style) -> String {
     } else {
         format!("\u{1b}[{}m", codes.join(";"))
     }
-}
-
-/// A session reached over iroh.
-pub struct Remote {
-    blobs: std::sync::Arc<misa_transport::blob::Store>,
-    dirty: bool,
-    restore_streams: bool,
-    requests: remote_requests::Pending,
-    client: misa_transport::iroh::Client,
-    view: misa_proto::sync::ClientView,
-    info: Option<SessionInfo>,
-}
-
-impl Remote {
-    // Reply waits retain one accumulator, never a queue of transcript messages.
-    async fn hold(&mut self, message: misa_proto::SessionMsg) -> Result<(), String> {
-        match self.view.receive(&message) {
-            Ok(changed) => self.dirty |= changed,
-            Err(_) => self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?,
-        }
-        if let misa_proto::SessionMsg::Welcome { session, .. } = message { self.info = Some(session); }
-        Ok(())
-    }
-    pub async fn attach(ticket: &str) -> Result<Remote, String> {
-        // A ticket, or a pairing string: whatever the daemon printed or the QR said.
-        let (ticket, code) = misa_proto::Pairing::given(ticket)?;
-        let endpoint = misa_transport::iroh::bind_for(&ticket.node).await?;
-        let address = misa_transport::iroh::address_of(&ticket.node)?;
-        if let Some(code) = &code {
-            misa_transport::iroh::Client::pair(&endpoint, address.clone(), code, "the tui").await?;
-        }
-        let info = misa_proto::ClientInfo::new("misa-tui", env!("CARGO_PKG_VERSION"));
-        let blobs = misa_transport::blob::Store::new(endpoint.clone(), address.clone());
-        let mut client = misa_transport::iroh::Client::connect(&endpoint, address, info, &ticket.session).await?;
-        client
-            .subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY))
-            .await?;
-        // Every resident source the declaration offered, held once. This is the whole
-        // cost of a picker that never asks again.
-        client
-            .subscribe(
-                misa_proto::SubId(2),
-                misa_proto::Query::new(misa_proto::completion::CONVERSATIONS_QUERY),
-            )
-            .await?;
-        if let Some(declaration) = client.session() {
-            for source in declaration.sources.iter().filter(|source| source.kind == SourceKind::Resident) {
-                client.subscribe(source_subscription(&source.id), misa_proto::Query::new(source.query())).await?;
-            }
-        }
-        let info = client.session();
-        Ok(Remote { client, view: Default::default(), info, blobs, dirty: false, restore_streams: false, requests: Default::default() })
-    }
-}
-
-/// A subscription id per source, derived so two clients agree without negotiating.
-fn source_subscription(source: &str) -> misa_proto::SubId {
-    let hash = source.bytes().fold(0u32, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte as u32));
-    misa_proto::SubId(1000 + hash % 1000)
-}
-
-#[async_trait::async_trait]
-impl Session for Remote {
-    async fn upload(&mut self, bytes: Vec<u8>, media: &str) -> Result<misa_proto::view::BlobRef, String> {
-        self.blobs.share(bytes, Some(media)).await
-    }
-    async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
-        self.submit_request(request).await
-    }
-    async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
-        if self.dirty {
-            self.dirty = false;
-            self.restore_streams = true;
-            return Ok(self.view.persisted().map(|(version, view)| Presentation::Message(misa_proto::SessionMsg::View { id: misa_proto::SubId(1), version, view })));
-        }
-        if self.restore_streams {
-            self.restore_streams = false;
-            return Ok(Some(Presentation::Message(misa_proto::SessionMsg::Streams { streams: self.view.streams() })));
-        }
-        loop {
-            let deadline = self.requests.deadline();
-            let message = tokio::select! {
-                incoming = self.client.next() => incoming?,
-                reply = self.requests.transfers.join_next(), if !self.requests.transfers.is_empty() => {
-                    return Ok(Some(Presentation::Reply(reply.unwrap().unwrap_or_else(|error| SessionReply::Notice(error.to_string())))));
-                }
-                _ = tokio::time::sleep_until(deadline), if !self.requests.is_empty() => {
-                    return Ok(Some(Presentation::Reply(self.requests.expire())));
-                }
-            };
-            let Some(message) = message else { return Ok(None); };
-            if let Some(reply) = self.request_reply(&message) { return Ok(Some(Presentation::Reply(reply))); }
-            match self.view.receive(&message) {
-                Ok(true) => return Ok(Some(Presentation::Message(message))),
-                Err(_) => self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?,
-                Ok(false) => {},
-            }
-            match message {
-                misa_proto::SessionMsg::Welcome { session, .. } => self.info = Some(session),
-                misa_proto::SessionMsg::Fault { id: Some(_), fault } => return Ok(Some(Presentation::Reply(SessionReply::Notice(fault.message)))),
-                misa_proto::SessionMsg::Fault { fault, .. } => return Err(fault.message),
-                _ => {},
-            }
-        }
-    }
-    async fn next(&mut self) -> Result<Option<Node>, String> {
-        loop {
-            if self.dirty {
-                self.dirty = false;
-                if let Some(view) = self.view.rendered() { return Ok(Some(view)); }
-            }
-            let message = self.client.next().await?;
-            let Some(message) = message else { return Ok(None) };
-            match self.view.receive(&message) {
-                Ok(true) => if let Some(view) = self.view.rendered() { return Ok(Some(view)); },
-                Err(_) => { self.client.subscribe(misa_proto::SubId(1), misa_proto::Query::new(misa_proto::VIEW_QUERY)).await?; }
-                Ok(false) => {}
-            }
-            match message {
-                misa_proto::SessionMsg::Welcome { session, .. } => self.info = Some(session),
-                misa_proto::SessionMsg::Fault { fault, .. } => return Err(fault.message),
-                _ => {}
-
-            }
-        }
-    }
-
-    async fn send(&mut self, intent: Intent) -> Result<(), String> {
-        self.client.intent(next_intent_id(), intent).await
-    }
-
-    async fn save_attachment(&mut self, node: &str, destination: &str) -> Result<(), String> {
-        let id = next_intent_id();
-        self.client.intent(id, Intent::Action { node: node.into(), action: "attachment.save".into(), args: misa_value::Value::Null, fields: vec![] }).await?;
-        let download = tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                match self.client.next().await? {
-                    Some(misa_proto::SessionMsg::Download { id: reply, download }) if reply == id => return Ok(download),
-                    Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => return Err(fault.message),
-                    Some(message) => self.hold(message).await?,
-                    None => return Err("The session disconnected before the save request finished".into()),
-                }
-            }
-        }).await.map_err(|_| "The session did not answer the save request")??;
-        let reference = download.blob.ok_or(download.error)?;
-        let blob = self.blobs.get(&reference.hash).await?.ok_or("This attachment is no longer available")?;
-        if blob.hash != reference.hash || blob.bytes.len() as u64 != reference.len { return Err("The attachment bytes do not match the offered file".into()); }
-        save::write_new(destination, &blob.bytes)
-    }
-
-    async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String> {
-        // A picker's ask is an intent with a reply, so it is sent and waited for.
-        let id = next_intent_id();
-        self.client
-            .intent(
-                id,
-                Intent::Complete {
-                    source: source.to_string(),
-                    prefix: prefix.to_string(),
-                    limit: None,
-                },
-            )
-            .await?;
-        loop {
-            match self.client.next().await? {
-                Some(misa_proto::SessionMsg::Completion { id: reply, candidates, truncated, .. })
-                    if reply == id =>
-                {
-                    return Ok((candidates, truncated));
-                }
-                Some(misa_proto::SessionMsg::Fault { id: Some(reply), fault }) if reply == id => {
-                    return Err(fault.message);
-                }
-                Some(message) => self.hold(message).await?,
-                None => return Err("the session closed".into()),
-            }
-        }
-    }
-
-    fn info(&self) -> Option<SessionInfo> {
-        self.info.clone()
-    }
-}
-
-
-
-fn next_intent_id() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// What the composer's field is called.
@@ -1636,6 +1533,36 @@ mod tests {
         assert_eq!(picker.items().len(), 4);
         assert!(picker.items().iter().any(|item| item.value == "/save"));
         assert!(picker.items().iter().any(|item| item.value == "/model"));
+    }
+
+    #[test]
+    fn completion_edits_the_composer_and_resident_candidates_survive_closed_pickers() {
+        let mut screen = screen();
+        screen.candidates("models", vec![Choice { value: "chosen".into(), label: "Chosen".into(), detail: None }], false);
+        type_text(&mut screen, "/model ");
+        assert_eq!(screen.editor.text(), "/model ");
+        assert_eq!(screen.picker.as_ref().unwrap().source.as_deref(), Some("models"));
+        assert_eq!(screen.picker.as_ref().unwrap().items()[0].value, "chosen");
+        screen.paste("cho");
+        assert_eq!(screen.editor.text(), "/model cho");
+        assert_eq!(screen.picker.as_ref().unwrap().query, "cho");
+        screen.key(Key::Backspace);
+        assert_eq!(screen.editor.text(), "/model ch");
+        assert_eq!(screen.picker.as_ref().unwrap().query, "ch");
+        assert_eq!(screen.key(Key::Quit), KeyOut::Quit);
+    }
+
+    #[test]
+    fn control_d_is_eof_only_on_an_empty_composer() {
+        let mut screen = screen();
+        assert_eq!(screen.key(Key::Eof), KeyOut::Quit);
+        screen.editor.set_text("éx");
+        screen.key(Key::Motion(ed::Motion::LineStart));
+        assert_eq!(screen.key(Key::Eof), KeyOut::Local);
+        assert_eq!(screen.editor.text(), "x");
+        screen.key(Key::Motion(ed::Motion::LineEnd));
+        assert_eq!(screen.key(Key::Eof), KeyOut::Local);
+        assert_eq!(screen.editor.text(), "x");
     }
 
     #[test]

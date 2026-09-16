@@ -9,7 +9,7 @@ use crate::Screen;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Work { pub formatted_nodes: usize, pub appended_bytes: usize, pub copied_rows: usize, pub index_steps: usize }
-struct Owner { lines: Vec<Line>, members: Vec<String>, depth: usize, level: usize, branch: bool }
+struct Owner { lines: Vec<Line>, members: Vec<String>, depth: usize, level: usize, branch: bool, footer: bool }
 struct Live { stream: Stream, lines: Vec<Line>, column: usize, last_nonblank: usize }
 #[derive(Clone)]
 enum Segment { Owner(String), Live(String) }
@@ -61,13 +61,14 @@ pub struct Retained {
     width: u16,
     theme: String,
     opened: Vec<String>,
+    components: misa_render::components::Settings,
     pub work: Work,
 }
 impl Retained {
     pub fn new(view: Node, screen: &Screen) -> Self {
         let tree = IndexedTree::new(view);
         let view = tree.snapshot();
-        let mut out = Self { tree, owners: HashMap::new(), membership: HashMap::new(), order: vec![], live: HashMap::new(), segments: vec![], live_positions: HashMap::new(), rows: Rows::default(), lengths: vec![], attachments: 0, panel: None, selection_body: None, width: screen.width, theme: screen.theme.name.clone(), opened: screen.prefs.opened.clone(), work: Work::default() };
+        let mut out = Self { tree, owners: HashMap::new(), membership: HashMap::new(), order: vec![], live: HashMap::new(), segments: vec![], live_positions: HashMap::new(), rows: Rows::default(), lengths: vec![], attachments: 0, panel: None, selection_body: None, width: screen.width, theme: screen.theme.name.clone(), opened: screen.prefs.opened.clone(), components: screen.prefs.components.clone(), work: Work::default() };
         out.order = out.build(view, 0, 0, screen);
         out.reindex();
         out
@@ -104,7 +105,10 @@ impl Retained {
     }
     fn build(&mut self, mut node: Node, depth: usize, level: usize, screen: &Screen) -> Vec<String> {
         let id = node.id.clone();
-        let branch = matches!(node.kind, Kind::Section) || matches!(node.kind, Kind::Collapsible { .. }) && screen.prefs.is_open(&id);
+        let context = misa_render::components::Context { theme: &screen.theme, columns: screen.width as usize, settings: &screen.prefs.components, values: &screen.values };
+        let component = screen.components.render(&screen.local_presentation.model(&node, screen), &context);
+        let footer = screen.components.placement(&node.role, &screen.prefs.components) == misa_render::components::Placement::Footer;
+        let branch = component.is_none() && (matches!(node.kind, Kind::Section) || matches!(node.kind, Kind::Collapsible { .. }) && screen.prefs.is_open(&id));
         let children = if branch { std::mem::take(&mut node.children) } else { vec![] };
         let resolved = screen.resolve(&node);
         let mut members = vec![];
@@ -117,8 +121,8 @@ impl Retained {
         self.work.formatted_nodes += members.len();
         for member in &members { self.membership.insert(member.clone(), id.clone()); }
         let child_depth = depth + usize::from(screen.theme.rail(&node.role).is_some());
-        let lines = misa_render::lines::render_block(&resolved, &screen.theme, screen.width as usize, depth);
-        self.owners.insert(id.clone(), Owner { lines, members, depth, level, branch });
+        let lines = component.unwrap_or_else(|| misa_render::lines::render_block(&resolved, &screen.theme, screen.width as usize, depth));
+        self.owners.insert(id.clone(), Owner { lines, members, depth, level, branch, footer });
         let mut order = vec![id];
         for child in children { order.extend(self.build(child, child_depth, level + 1, screen)); }
         order
@@ -175,7 +179,7 @@ impl Retained {
         streams.sort();
         for i in 0..=self.order.len() {
             if i == insert { for id in &streams { self.live_positions.insert(id.clone(), self.segments.len()); self.segments.push(Segment::Live(id.clone())); } }
-            if let Some(id) = self.order.get(i) && !self.owners[id].lines.is_empty() { self.segments.push(Segment::Owner(id.clone())); }
+            if let Some(id) = self.order.get(i) && !self.owners[id].footer && !self.owners[id].lines.is_empty() { self.segments.push(Segment::Owner(id.clone())); }
         }
         self.lengths = self.segments.iter().map(|segment| self.lines(segment).len()).collect();
         for index in (0..self.segments.len()).rev() {
@@ -217,8 +221,50 @@ impl Retained {
         }
         Ok(())
     }
+    /// Apply a complete shared-client document transaction to derived render
+    /// caches. Protocol cursors and recovery remain owned by the shared replica.
+    pub fn observed(&mut self, update: &misa_client::document::Update, screen: &Screen) -> Result<(), String> {
+        use misa_client::document::Update;
+        use misa_protocol::observation::{Applied, MemberChange};
+        match update {
+            Update::Reset(document) => {
+                *self = Self::new(document.tree.clone(), screen);
+                for stream in &document.streams { self.current(stream.clone(), screen); }
+                self.reindex();
+            }
+            Update::Changed { member, applied } => {
+                let Applied::Changed(members) = applied.as_ref() else { return Err("Expected document transaction".into()); };
+                let Some(MemberChange::Document { tree, live, reset_live }) = members.get(member) else { return Err("Expected document member changes".into()); };
+                let mut structural = !tree.is_empty() || *reset_live;
+                for op in tree { self.op(op, screen)?; }
+                if *reset_live { self.live.clear(); }
+                for update in live {
+                    match update {
+                        StreamUpdate::Current { stream } => { self.current(stream.clone(), screen); structural = true; }
+                        StreamUpdate::End { id } => { self.live.remove(id); structural = true; }
+                        StreamUpdate::Append { id, offset, text } => {
+                            let live = self.live.get_mut(id).ok_or("Missing rendered stream")?;
+                            if live.stream.text.len() != *offset { return Err("Rendered stream offset gap".into()); }
+                            live.append(text, screen);
+                            self.work.appended_bytes += text.len();
+                            if !structural {
+                                if let Some(&index) = self.live_positions.get(id) {
+                                    let new = if self.rows.total() == self.rows.prefix(index + 1) { live.last_nonblank } else { live.lines.len() };
+                                    self.work.index_steps += self.rows.change(index, self.lengths[index], new);
+                                    self.lengths[index] = new;
+                                }
+                            }
+                        }
+                    }
+                }
+                if structural { self.reindex(); }
+            }
+            Update::Unavailable(_) | Update::Status(_) => {},
+        }
+        Ok(())
+    }
     pub fn local(&mut self, screen: &Screen) {
-        if self.width != screen.width || self.theme != screen.theme.name || self.opened != screen.prefs.opened {
+        if self.width != screen.width || self.theme != screen.theme.name || self.opened != screen.prefs.opened || self.components != screen.prefs.components {
             let streams: Vec<_> = self.live.values().map(|live| live.stream.clone()).collect();
             *self = Self::new(self.tree.snapshot(), screen);
             for stream in streams { self.current(stream, screen); }
@@ -232,9 +278,25 @@ impl Retained {
     pub fn draw(&mut self, screen: &Screen) -> Vec<Line> {
         self.frame(screen, None).lines
     }
+    #[cfg(test)]
     pub fn frame(&mut self, screen: &Screen, staging: Option<&str>) -> crate::chrome::Frame {
+        self.frame_with(screen, staging, &[], &[])
+    }
+    /// Independent documents share placement and components, never node identity.
+    pub fn placed_lines(&self, limit: usize) -> (Vec<Line>, Vec<Line>) {
+        let document = self.segments.iter().enumerate().flat_map(|(index, segment)| self.lines(segment)[..self.lengths[index]].iter().cloned()).take(limit).collect();
+        let footer = self.order.iter().filter_map(|id| self.owners.get(id)).filter(|owner| owner.footer).flat_map(|owner| owner.lines.iter().cloned()).take(limit).collect();
+        (document, footer)
+    }
+    pub fn frame_with(&mut self, screen: &Screen, staging: Option<&str>, extra_document: &[Line], extra_footer: &[Line]) -> crate::chrome::Frame {
         let chrome = crate::chrome::frame(screen, self.attachments, staging);
-        let room = (screen.height as usize).saturating_sub(chrome.lines.len());
+        let available = (screen.height as usize).saturating_sub(chrome.lines.len());
+        let footer: Vec<_> = self.order.iter().filter_map(|id| self.owners.get(id)).filter(|owner| owner.footer)
+            .flat_map(|owner| owner.lines.iter().cloned()).take(available).collect();
+        let remaining = available.saturating_sub(footer.len());
+        let extra_footer = &extra_footer[..extra_footer.len().min(remaining)];
+        let extra_document = &extra_document[..extra_document.len().min(remaining.saturating_sub(extra_footer.len()))];
+        let room = remaining.saturating_sub(extra_footer.len() + extra_document.len());
         let total = self.rows.total();
         let start = if screen.follow { total.saturating_sub(room) } else { screen.scroll.min(total.saturating_sub(1)) };
         let (mut segment, mut offset, steps) = self.rows.locate(start);
@@ -255,6 +317,9 @@ impl Retained {
             }
             for (i, line) in lines.iter_mut().enumerate() { if let Some((from, to)) = selection.on_row(self.selection_body.as_ref().unwrap(), start + i) { crate::select_highlight(line, from, to, &screen.theme); } }
         }
+        lines.extend_from_slice(extra_document);
+        lines.extend(footer);
+        lines.extend_from_slice(extra_footer);
         let cursor_row = lines.len() + chrome.cursor_row;
         lines.extend(chrome.lines);
         crate::chrome::Frame { lines, cursor_row, cursor_column: chrome.cursor_column }
@@ -278,6 +343,23 @@ impl Live {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn independent_documents_keep_their_own_node_identities_and_placement() {
+        let screen = crate::Screen::new(80, 20);
+        let make = |text: &str| misa_proto::Node::text("notice", [misa_proto::view::Span::plain(text)]).id("same");
+        let mut left = super::Retained::new(make("left"), &screen);
+        let right = super::Retained::new(make("right"), &screen);
+        left.op(&misa_proto::sync::ViewOp::Replace { id: "same".into(), node: make("changed") }, &screen).unwrap();
+        left.reindex();
+        assert!(left.placed_lines(20).0.iter().any(|line| line.text().contains("changed")));
+        assert!(right.placed_lines(20).0.iter().any(|line| line.text().contains("right")));
+        let mut main = super::Retained::new(make("conversation"), &screen);
+        let extras = left.placed_lines(20).0.into_iter().chain(right.placed_lines(20).0).collect::<Vec<_>>();
+        let frame = main.frame_with(&screen, None, &extras, &[]);
+        assert!(frame.lines.iter().any(|line| line.text().contains("conversation")));
+        assert!(frame.lines.iter().any(|line| line.text().contains("changed")));
+        assert!(frame.lines.iter().any(|line| line.text().contains("right")));
+    }
     use super::*;
     use misa_proto::view::Span;
     fn text(id: &str, value: &str) -> Node { Node::text("assistant", [Span::plain(value)]).id(id) }
@@ -293,6 +375,30 @@ mod tests {
     }
     fn oracle(retained: &Retained, screen: &Screen) {
         assert_eq!(all(retained), misa_render::render(&screen.resolve(&retained.tree.snapshot()), &screen.theme, screen.width as usize));
+    }
+    #[test]
+    fn shared_document_updates_keep_token_work_incremental_and_settle_atomically() {
+        use misa_client::document::Update;
+        use misa_protocol::observation::{Applied, MemberChange};
+        let update = |tree, live| Update::Changed { member: "body".into(), applied: std::sync::Arc::new(Applied::Changed(std::collections::BTreeMap::from([
+            ("body".into(), MemberChange::Document { tree, live, reset_live: false }),
+        ]))) };
+        for history in [100, 1000] {
+            let screen = Screen::new(40, 16);
+            let mut retained = Retained::new(document(history), &screen);
+            retained.current(Stream { id: "new.body".into(), role: "assistant".into(), text: String::new() }, &screen);
+            retained.reindex();
+            retained.work = Work::default();
+            retained.observed(&update(vec![], vec![StreamUpdate::Append { id: "new.body".into(), offset: 0, text: "é🙂".into() }]), &screen).unwrap();
+            assert_eq!(retained.work.formatted_nodes, 0);
+            assert_eq!(retained.work.appended_bytes, 6);
+            assert!(retained.work.index_steps <= 24);
+            retained.observed(&update(vec![ViewOp::Insert { parent: "transcript".into(), before: None, node: text("new", "é🙂") }],
+                vec![StreamUpdate::End { id: "new.body".into() }]), &screen).unwrap();
+            assert!(retained.live.is_empty());
+            assert!(retained.tree.contains("new"));
+            oracle(&retained, &screen);
+        }
     }
     #[test]
     fn canonical_operations_match_full_render_after_every_operation() {

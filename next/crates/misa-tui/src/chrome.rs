@@ -43,7 +43,7 @@ pub fn composer(screen: &Screen) -> Frame {
 }
 /// Split all chrome into physical rows so a pasted newline or a long notice
 /// cannot scroll the terminal behind the retained row writer.
-fn physical(lines: Vec<Line>, width: usize) -> Vec<Line> {
+pub(crate) fn physical(lines: Vec<Line>, width: usize) -> Vec<Line> {
     let mut out = vec![];
     let width = width.max(1);
     for line in lines {
@@ -70,6 +70,7 @@ fn physical(lines: Vec<Line>, width: usize) -> Vec<Line> {
 }
 pub fn frame(screen: &Screen, attachments: usize, staging: Option<&str>) -> Frame {
     let mut top = vec![];
+    top.extend(screen.dialogs.lines(&screen.theme, screen.width as usize));
     if let Some(picker) = &screen.picker { top.extend(crate::picker_lines(screen, picker)); }
     if attachments > 0 { top.push(Line { indent: 0, node: None, spans: vec![(screen.theme.role("notice"), format!("{attachments} attachments · /save [1–{attachments}] <local path> · latest by default"))] }); }
     if let Some(notice) = &screen.notice { top.push(Line { indent: 0, node: None, spans: vec![(screen.theme.role("notice"), notice.clone())] }); }

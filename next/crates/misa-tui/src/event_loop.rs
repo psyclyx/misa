@@ -8,6 +8,17 @@ use crate::{KeyOut, Screen, Session};
 use crate::{SessionRequest as Request, SessionReply};
 
 struct Terminal;
+fn offered_actions(view:&misa_proto::Node,contributions:&std::collections::BTreeMap<String,crate::retained::Retained>)->std::collections::BTreeMap<String,(String,String,String)> {
+    fn visit(node:&misa_proto::Node,origin:&str,actions:&mut std::collections::BTreeMap<String,(String,String,String)>){
+        for action in &node.actions {actions.insert(action.id.clone(),(node.id.clone(),action.label.clone().unwrap_or_else(||action.id.clone()),origin.into()));}
+        for child in &node.children{visit(child,origin,actions);}
+        if let misa_proto::view::Kind::List{items,..}=&node.kind {for item in items{for child in item{visit(child,origin,actions);}}}
+    }
+    let mut actions=std::collections::BTreeMap::new();
+    visit(view,"Conversation",&mut actions);
+    for (id,document) in contributions{visit(&document.interaction(),id,&mut actions);}
+    actions
+}
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = crossterm::execute!(std::io::stdout(), event::DisableBracketedPaste,
@@ -65,9 +76,12 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
     mut events: mpsc::Receiver<Result<Event, String>>, writer: &mut impl Write,
     clipboard: &mut dyn crate::clipboard::Source) -> Result<(), String> {
     let mut retained = crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen);
+    let mut contributions = std::collections::BTreeMap::<String, crate::retained::Retained>::new();
     let mut pending = Vec::<misa_proto::view::BlobRef>::new();
     let mut uploads = 0usize;
     let mut generation = 0u64;
+    let mut scope = String::new();
+    let mut parked = std::collections::BTreeMap::new();
     let (commands, requests) = mpsc::channel(16);
     let (updates, mut incoming) = mpsc::channel(1);
     let driver = requests_loop(session, requests, updates);
@@ -78,7 +92,14 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
     let mut frame = 0usize;
     loop {
         let staging = (!pending.is_empty() || uploads > 0).then(|| format!("{} clipboard attachments · {uploads} uploading · Ctrl-Alt-V discards", pending.len()));
-        let rendered = retained.frame(screen, staging.as_deref());
+        let mut extra_document = vec![];
+        let mut extra_footer = vec![];
+        for contribution in contributions.values_mut() {
+            contribution.local(screen);
+            let (document, footer) = contribution.placed_lines(screen.height as usize);
+            extra_document.extend(document); extra_footer.extend(footer);
+        }
+        let rendered = retained.frame_with(screen, staging.as_deref(), &extra_document, &extra_footer);
         let mut lines = rendered.lines;
         if retained.has_turn() {
             const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
@@ -93,8 +114,66 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
             result = &mut driver => return result,
             update = incoming.recv() => {
                 match update {
+                    Some(Update::View(crate::Presentation::Forget(id)))=>{
+                        parked.remove(&id);
+                        if scope==id {scope.clear();screen.editor.set_text("");screen.dialogs=Default::default();screen.picker=None;screen.pending_command=None;screen.panel=None;screen.selection=None;contributions.clear();pending.clear();uploads=0;}
+                    },
+                    Some(Update::View(crate::Presentation::Documents(documents))) => {
+                        for (id,update) in documents {
+                            if id.is_empty() {
+                                retained.observed(&update,screen)?;
+                            } else if let misa_client::document::Update::Unavailable(fault)=&update {
+                                contributions.remove(&id);screen.notice=Some(format!("{id}: {}",fault.message));
+                            } else {
+                                let contribution=contributions.entry(id).or_insert_with(||crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"),screen));
+                                contribution.observed(&update,screen)?;
+                            }
+                        }
+                    },
+                    Some(Update::View(crate::Presentation::Activate(next))) => {
+                        if scope.is_empty() {scope=next;} else if scope != next {
+                            let old = (
+                                std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen)),
+                                std::mem::take(&mut contributions), std::mem::take(&mut screen.dialogs),
+                                std::mem::replace(&mut screen.editor, crate::ed::Editor::new()),
+                                screen.picker.take(), screen.pending_command.take(), screen.panel.take(),
+                                screen.selection.take(), screen.scroll, screen.follow,
+                                std::mem::take(&mut pending), uploads, generation,
+                            );
+                            if !scope.is_empty() { parked.insert(scope,old); }
+                            if let Some((r,c,d,e,p,command,panel,selection,scroll,follow,attachments,upload_count,epoch))=parked.remove(&next) {
+                                retained=r;contributions=c;screen.dialogs=d;screen.editor=e;screen.picker=p;screen.pending_command=command;screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;
+                            } else { screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
+                            scope=next;
+                        }
+                    },
+                    Some(Update::View(crate::Presentation::Contribution { id, update })) => {
+                        match &update {
+                            misa_client::document::Update::Unavailable(fault) => { contributions.remove(&id); screen.notice = Some(format!("{id}: {}", fault.message)); },
+                            _ => {
+                                let contribution = contributions.entry(id).or_insert_with(|| crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"), screen));
+                                contribution.observed(&update, screen)?;
+                            },
+                        }
+                    },
+                    Some(Update::View(crate::Presentation::Reply(SessionReply::Request { id, generation, model }))) => screen.dialogs.update(id, generation, model),
+                    Some(Update::View(crate::Presentation::Reply(SessionReply::Report(report)))) => screen.dialogs.report(report),
+                    Some(Update::View(crate::Presentation::Reply(SessionReply::Form(form)))) => screen.dialogs.form(form),
+                    Some(Update::View(crate::Presentation::TurnOutput(_))) => {},
+                    Some(Update::View(crate::Presentation::Declaration(info))) => {
+                        screen.declare(&info);
+                    }
+                    Some(Update::View(crate::Presentation::Candidates { source, items, truncated })) => screen.candidates(&source, items, truncated),
                     Some(Update::View(crate::Presentation::Snapshot(next))) => retained = crate::retained::Retained::new(next, screen),
                     Some(Update::View(crate::Presentation::Message(message))) => retained.receive(&message, screen)?,
+                    Some(Update::View(crate::Presentation::Document(update))) => {
+                        match &update {
+                            misa_client::document::Update::Unavailable(fault) => screen.notice = Some(fault.message.clone()),
+                            misa_client::document::Update::Status(status) => screen.notice = Some(format!("Session: {status:?}")),
+                            _ => {},
+                        }
+                        retained.observed(&update, screen)?;
+                    }
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Complete { source, prefix, result }))) => match result {
                         Ok((items, truncated)) => {
                             if let Some(picker) = screen.picker.as_mut()
@@ -135,9 +214,9 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
         let out = match event {
             Event::Resize(width, height) => { screen.width = width; screen.height = height; retained.local(screen); output.invalidate(); continue; }
             Event::Paste(text) => {
-                if crate::panel_of(&view).is_some() {
+                if screen.dialogs.paste(&text) {} else if crate::panel_of(&view).is_some() {
                     for character in text.chars() { screen.panel_key(&view, &crate::Key::Char(character)); }
-                } else { screen.editor.insert(&text); }
+                } else { paste(screen, &text, &commands); }
                 retained.local(screen); continue;
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -147,11 +226,11 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                     }
                     match clipboard.read() {
                         Ok(crate::clipboard::Contents::Text(text)) => {
-                            if crate::panel_of(&view).is_some() { for character in text.chars() { screen.panel_key(&view, &crate::Key::Char(character)); } }
-                            else { screen.editor.insert(&text); }
+                            if screen.dialogs.paste(&text) {} else if crate::panel_of(&view).is_some() { for character in text.chars() { screen.panel_key(&view, &crate::Key::Char(character)); } }
+                            else { paste(screen, &text, &commands); }
                         }
                         Ok(crate::clipboard::Contents::Image { width, height, rgba }) => {
-                            if crate::panel_of(&view).is_some() { screen.notice = Some("Close the panel to attach an image to the prompt".into()); continue; }
+                            if screen.dialogs.focused() || crate::panel_of(&view).is_some() { screen.notice = Some("Close the input form to attach an image to the prompt".into()); continue; }
                             if pending.len() + uploads >= 16 { screen.notice = Some("Send or discard staged attachments before adding more".into()); continue; }
                             match crate::clipboard::png(width, height, rgba) {
                                 Ok(bytes) => { if enqueue(&commands, Request::Upload { generation, bytes, media: "image/png".into() }, screen) { uploads += 1; } }
@@ -162,15 +241,16 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                     }
                     retained.local(screen); continue;
                 }
-                if key.code == event::KeyCode::Enter && !key.modifiers.contains(event::KeyModifiers::SHIFT) && uploads > 0 {
+                if key.code == event::KeyCode::Enter && !screen.dialogs.focused() && !key.modifiers.contains(event::KeyModifiers::SHIFT) && uploads > 0 {
                     screen.notice = Some("Wait for the attachment upload before sending".into()); continue;
                 }
-                if key.code == event::KeyCode::Enter && screen.editor.text().is_empty() && !pending.is_empty() && crate::panel_of(&view).is_none() && !key.modifiers.contains(event::KeyModifiers::SHIFT) {
+                if key.code == event::KeyCode::Enter && !screen.dialogs.focused() && screen.editor.text().is_empty() && !pending.is_empty() && crate::panel_of(&view).is_none() && !key.modifiers.contains(event::KeyModifiers::SHIFT) {
                     if key.modifiers.contains(event::KeyModifiers::ALT) { KeyOut::Intent(misa_proto::Intent::Interrupt { text: String::new(), attachments: vec![] }) }
                     else { KeyOut::Intent(misa_proto::Intent::Prompt { text: String::new(), attachments: vec![] }) }
                 } else {
                 let Some(key) = crate::translate(key.code, key.modifiers) else { continue; };
-                retained.selection_key(screen, &key)
+                screen.dialogs.key(&key)
+                    .or_else(|| retained.selection_key(screen, &key))
                     .or_else(|| screen.panel_key(&view, &key))
                     .unwrap_or_else(|| screen.key(key))
                 }
@@ -178,9 +258,23 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
             _ => continue,
         };
         match out {
+            KeyOut::Invoke { command, input } => { enqueue(&commands, Request::Invoke { command, input }, screen); },
             KeyOut::Local => {},
             KeyOut::Quit => return Ok(()),
             KeyOut::Intent(mut intent) => {
+                if matches!(&intent,misa_proto::Intent::Command{name,..} if name=="actions") {
+                    let actions=offered_actions(&view,&contributions);
+                    let mut picker=crate::Picker::new("Document actions",crate::Accept::Run);
+                    picker.set_items(actions.iter().map(|(id,(_,label,origin))|misa_proto::view::Choice{value:format!("/action {id}"),label:label.clone(),detail:Some(origin.clone())}).collect(),false);
+                    screen.editor.set_text(":");screen.picker=Some(picker);continue;
+                }
+                if let misa_proto::Intent::Command{name,args}=&intent && name=="action" {
+                    let actions=offered_actions(&view,&contributions);
+                    let id=args.get("action").and_then(misa_value::Value::as_str).unwrap_or("");
+                    let Some((node,_,_))=actions.get(id) else {screen.notice=Some("Action is no longer offered by a visible document".into());continue;};
+                    intent=misa_proto::Intent::Action{node:node.clone(),action:id.into(),args:misa_value::Value::Null,fields:vec![]};
+                }
+                if matches!(&intent, misa_proto::Intent::Command { name, .. } if name == "operations") { screen.dialogs.open(); enqueue(&commands, Request::RefreshRequests, screen); continue; }
                 let draft = match &mut intent {
                     misa_proto::Intent::Prompt { text, attachments } | misa_proto::Intent::Interrupt { text, attachments } => { attachments.extend(pending.iter().cloned()); Some(text.clone()) }, _ => None,
                 };
@@ -207,6 +301,11 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
 // queue is bounded, and dropping the drive future cancels outstanding UI waits.
 enum Update {
     View(crate::Presentation),
+}
+fn paste(screen: &mut Screen, text: &str, commands: &mpsc::Sender<Request>) {
+    if let KeyOut::Complete { source, prefix } = screen.paste(text) {
+        enqueue(commands, Request::Complete { source, prefix }, screen);
+    }
 }
 fn enqueue(sender: &mpsc::Sender<Request>, request: Request, screen: &mut Screen) -> bool {
     if sender.try_send(request).is_err() {
@@ -456,5 +555,99 @@ mod save_liveness_test {
             let (result, ()) = tokio::join!(drive(&mut session, &mut screen, receiver, &mut writer), input); result.unwrap();
         }).await.expect("save wait blocked keyboard");
         assert_eq!(screen.editor.text(), "still editing"); assert_eq!((screen.width, screen.height), (90, 30));
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    struct SurfaceSession {updates:mpsc::Receiver<crate::Presentation>,received:mpsc::Sender<usize>,frames:Arc<std::sync::atomic::AtomicUsize>,sent:Option<mpsc::Sender<misa_proto::Intent>>}
+    #[async_trait::async_trait]
+    impl Session for SurfaceSession {
+        fn info(&self)->Option<misa_proto::SessionInfo>{None}
+        async fn complete(&mut self,_source:&str,_prefix:&str)->Result<(Vec<misa_proto::view::Choice>,bool),String>{Ok((vec![],false))}
+        async fn next_presentation(&mut self)->Result<Option<crate::Presentation>,String>{
+            let next=self.updates.recv().await;
+            if next.is_some(){let _=self.received.send(self.frames.load(Ordering::SeqCst)).await;}
+            Ok(next)
+        }
+        async fn next(&mut self)->Result<Option<misa_proto::Node>,String>{std::future::pending().await}
+        async fn send(&mut self,intent:misa_proto::Intent)->Result<(),String>{if let Some(sent)=&self.sent {sent.send(intent).await.unwrap();}Ok(())}
+    }
+    struct Writer{frames:Arc<std::sync::atomic::AtomicUsize>,changed:tokio::sync::watch::Sender<usize>}
+    impl Write for Writer{
+        fn write(&mut self,bytes:&[u8])->std::io::Result<usize>{Ok(bytes.len())}
+        fn flush(&mut self)->std::io::Result<()>{self.changed.send_replace(self.frames.fetch_add(1,Ordering::SeqCst)+1);Ok(())}
+    }
+    async fn painted(frames:&mut tokio::sync::watch::Receiver<usize>,after:usize){while *frames.borrow_and_update()<=after{frames.changed().await.unwrap();}}
+    #[tokio::test]
+    async fn scope_switch_preserves_composer_and_hidden_private_draft(){
+        let frame=Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (changed,mut frames)=tokio::sync::watch::channel(0);
+        let (updates,receive_updates)=mpsc::channel(8);
+        let (received,mut receipts)=mpsc::channel(8);
+        let mut session=SurfaceSession{updates:receive_updates,received,frames:frame.clone(),sent:None};
+        let mut writer=Writer{frames:frame.clone(),changed};
+        let mut screen=Screen::new(80,24);
+        screen.editor.set_text("draft A");
+        screen.dialogs.update("secret".into(),1,Some(misa_client::request::Model{id:"secret".into(),generation:1,title:"Credential".into(),body:misa_proto::Node::section("request").id("request"),input:Some(misa_client::request::Input{id:"value".into(),label:"Key".into(),secret:true}),actions:vec![]}));
+        screen.dialogs.open();screen.dialogs.key(&crate::Key::Char('s'));screen.dialogs.key(&crate::Key::Escape);
+        let (keys,events)=mpsc::channel(8);
+        let script=async move {
+            for scope in ["A","B"] {
+                updates.send(crate::Presentation::Activate(scope.into())).await.unwrap();
+                painted(&mut frames,receipts.recv().await.unwrap()).await;
+            }
+            let before=frame.load(Ordering::SeqCst);
+            keys.send(Ok(Event::Paste("draft B".into()))).await.unwrap();
+            painted(&mut frames,before).await;
+            updates.send(crate::Presentation::Activate("A".into())).await.unwrap();
+            painted(&mut frames,receipts.recv().await.unwrap()).await;
+            keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'),event::KeyModifiers::CONTROL)))).await.unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(3),async {let (result,())=tokio::join!(drive(&mut session,&mut screen,events,&mut writer),script);result.unwrap();}).await.unwrap();
+        assert_eq!(screen.editor.text(),"draft A");
+        screen.dialogs.open();screen.dialogs.key(&crate::Key::Char('t'));
+        let text=misa_render::to_plain(&screen.dialogs.lines(&screen.theme,80));
+        assert!(text.contains("••"),"hidden secret draft was lost: {text}");
+    }
+    #[test]
+    fn optional_documents_contribute_portable_actions_without_merging_node_spaces(){
+        let screen=Screen::new(80,24);
+        let root=misa_proto::Node::section("conversation").id("same");
+        let mut pet=misa_proto::Node::section("pet").id("same");
+        pet.actions.push(misa_proto::view::Action{id:"pet.feed".into(),label:Some("Feed pet".into()),on:Default::default(),args:misa_value::Value::Null});
+        let mut documents=std::collections::BTreeMap::from([("plugin.pet.companion".into(),crate::retained::Retained::new(pet,&screen))]);
+        let actions=offered_actions(&root,&documents);
+        assert_eq!(actions["pet.feed"],("same".into(),"Feed pet".into(),"plugin.pet.companion".into()));
+        documents.clear();
+        assert!(!offered_actions(&root,&documents).contains_key("pet.feed"),"hidden documents cannot leave active action candidates");
+    }
+    #[tokio::test]
+    async fn optional_document_action_chooser_invokes_its_offered_binding(){
+        let frame=Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (changed,mut frames)=tokio::sync::watch::channel(0);
+        let (updates,receive_updates)=mpsc::channel(8);
+        let (received,mut receipts)=mpsc::channel(8);
+        let (sent,mut intents)=mpsc::channel(8);
+        let mut session=SurfaceSession{updates:receive_updates,received,frames:frame.clone(),sent:Some(sent)};
+        let mut writer=Writer{frames:frame.clone(),changed};
+        let mut screen=Screen::new(80,24);
+        screen.commands=vec![misa_proto::wire::Command::new("actions","Actions","Actions"),misa_proto::wire::Command::new("action","Action","Action").arg(misa_proto::wire::Arg::new("action","Action").required())];
+        screen.editor.set_text("/actions");
+        let mut pet=misa_proto::Node::section("pet").id("pet");
+        pet.actions.push(misa_proto::view::Action{id:"pet.feed".into(),label:Some("Feed pet".into()),on:Default::default(),args:misa_value::Value::Null});
+        let (keys,events)=mpsc::channel(8);
+        let script=async move {
+            updates.send(crate::Presentation::Documents(vec![("plugin.pet.companion".into(),misa_client::document::Update::Reset(misa_proto::observation::Document{version:misa_proto::sync::Version{epoch:"pet".into(),rev:0},tree:pet,streams:vec![]}))])).await.unwrap();
+            painted(&mut frames,receipts.recv().await.unwrap()).await;
+            let before=frame.load(Ordering::SeqCst);
+            keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Enter,event::KeyModifiers::NONE)))).await.unwrap();
+            painted(&mut frames,before).await;
+            keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Enter,event::KeyModifiers::NONE)))).await.unwrap();
+            assert!(matches!(intents.recv().await.unwrap(),misa_proto::Intent::Action{node,action,..} if node=="pet" && action=="pet.feed"));
+            keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'),event::KeyModifiers::CONTROL)))).await.unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(3),async {let (result,())=tokio::join!(drive(&mut session,&mut screen,events,&mut writer),script);result.unwrap();}).await.expect("optional document action was not usable");
     }
 }
