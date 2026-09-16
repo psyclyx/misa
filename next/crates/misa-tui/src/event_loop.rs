@@ -36,7 +36,7 @@ impl Drop for Reader {
 
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     let mut screen = Screen::durable();
-    if let Some(info) = session.info() { screen.declare(&info); }
+    screen.declare(&session.catalog()); screen.location = session.location();
     if let Ok((width, height)) = crossterm::terminal::size() { screen.width = width; screen.height = height; }
     crossterm::terminal::enable_raw_mode().map_err(|error| error.to_string())?;
     let _terminal = Terminal;
@@ -160,8 +160,8 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Report(report)))) => screen.dialogs.report(report),
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Form(form)))) => screen.dialogs.form(form),
                     Some(Update::View(crate::Presentation::TurnOutput(_))) => {},
-                    Some(Update::View(crate::Presentation::Declaration(info))) => {
-                        screen.declare(&info);
+                    Some(Update::View(crate::Presentation::Declaration{catalog,location})) => {
+                        screen.declare(&catalog); screen.location = location;
                     }
                     Some(Update::View(crate::Presentation::Candidates { source, items, truncated })) => screen.candidates(&source, items, truncated),
                     Some(Update::View(crate::Presentation::Snapshot(next))) => retained = crate::retained::Retained::new(next, screen),
@@ -335,7 +335,7 @@ async fn requests_loop(session: &mut dyn Session, mut requests: mpsc::Receiver<R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::{Node, Intent, SessionInfo};
+    use misa_proto::{Node, Intent};
     use misa_proto::view::Choice;
     struct Idle { first: bool }
     #[async_trait::async_trait]
@@ -346,7 +346,6 @@ mod tests {
         }
         async fn send(&mut self, _: Intent) -> Result<(), String> { Ok(()) }
         async fn complete(&mut self, _: &str, _: &str) -> Result<(Vec<Choice>, bool), String> { Ok((vec![], false)) }
-        fn info(&self) -> Option<SessionInfo> { None }
     }
     #[tokio::test]
     async fn an_idle_session_still_accepts_paste_resize_and_quit() {
@@ -376,16 +375,15 @@ mod tests {
             self.started.notify_one();
             std::future::pending().await
         }
-        fn info(&self) -> Option<SessionInfo> { None }
     }
     #[tokio::test]
     async fn a_slow_completion_keeps_paste_resize_and_quit_live() {
         let started = Arc::new(tokio::sync::Notify::new());
         let mut session = Waiting { started: started.clone() };
         let mut screen = Screen::new(80, 24);
-        screen.commands = vec![misa_proto::wire::Command::new("model", "Model", "choose")
-            .arg(misa_proto::wire::Arg::new("model", "Model").required().from("models"))];
-        screen.sources = vec![misa_proto::wire::Source::resident("models", "Models")];
+        screen.commands = vec![misa_kit::intent::Command::new("model", "Model", "choose")
+            .arg(misa_proto::preparation::Arg::new("model", "Model").required().from("models"))];
+        screen.sources = vec![misa_kit::intent::Source::resident("models", "Models")];
         screen.editor.set_text("/model");
         let (sender, receiver) = mpsc::channel(64);
         sender.try_send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Tab, event::KeyModifiers::NONE)))).unwrap();
@@ -418,7 +416,7 @@ mod tests {
 #[cfg(test)]
 mod clipboard_tests {
     use super::*;
-    use misa_proto::{Node, Intent, SessionInfo};
+    use misa_proto::{Node, Intent};
     use misa_proto::view::{BlobRef, Choice};
     use std::sync::atomic::AtomicUsize;
     struct ImageClipboard;
@@ -450,7 +448,6 @@ mod clipboard_tests {
             Ok(BlobRef { hash: format!("blob-{}", self.uploads), len: bytes.len() as u64, media: Some(media.into()) })
         }
         async fn complete(&mut self, _: &str, _: &str) -> Result<(Vec<Choice>, bool), String> { Ok((vec![], false)) }
-        fn info(&self) -> Option<SessionInfo> { None }
     }
     fn key(code: event::KeyCode, modifiers: event::KeyModifiers) -> Result<Event, String> { Ok(Event::Key(event::KeyEvent::new(code, modifiers))) }
     async fn acknowledged(receipts: &mut mpsc::Receiver<usize>, frames: &mut tokio::sync::watch::Receiver<usize>) {
@@ -513,7 +510,7 @@ mod clipboard_tests {
 #[cfg(test)]
 mod save_liveness_test {
     use super::*;
-    use misa_proto::{Intent, Node, SessionInfo};
+    use misa_proto::{Intent, Node};
     use misa_proto::view::{Action, ActionOn, Choice};
     struct Saving { first: bool, started: Arc<tokio::sync::Notify> }
     #[async_trait::async_trait]
@@ -525,7 +522,6 @@ mod save_liveness_test {
         async fn send(&mut self, _: Intent) -> Result<(), String> { Ok(()) }
         async fn save_attachment(&mut self, node: &str, _: &str) -> Result<(), String> { assert_eq!(node, "file"); self.started.notify_one(); std::future::pending().await }
         async fn complete(&mut self, _: &str, _: &str) -> Result<(Vec<Choice>, bool), String> { Ok((vec![], false)) }
-        fn info(&self) -> Option<SessionInfo> { None }
     }
     struct Observed { bytes: Vec<u8>, ready: Arc<tokio::sync::Notify> }
     impl Write for Observed {
@@ -564,7 +560,6 @@ mod scope_tests {
     struct SurfaceSession {updates:mpsc::Receiver<crate::Presentation>,received:mpsc::Sender<usize>,frames:Arc<std::sync::atomic::AtomicUsize>,sent:Option<mpsc::Sender<misa_proto::Intent>>}
     #[async_trait::async_trait]
     impl Session for SurfaceSession {
-        fn info(&self)->Option<misa_proto::SessionInfo>{None}
         async fn complete(&mut self,_source:&str,_prefix:&str)->Result<(Vec<misa_proto::view::Choice>,bool),String>{Ok((vec![],false))}
         async fn next_presentation(&mut self)->Result<Option<crate::Presentation>,String>{
             let next=self.updates.recv().await;
@@ -633,7 +628,7 @@ mod scope_tests {
         let mut session=SurfaceSession{updates:receive_updates,received,frames:frame.clone(),sent:Some(sent)};
         let mut writer=Writer{frames:frame.clone(),changed};
         let mut screen=Screen::new(80,24);
-        screen.commands=vec![misa_proto::wire::Command::new("actions","Actions","Actions"),misa_proto::wire::Command::new("action","Action","Action").arg(misa_proto::wire::Arg::new("action","Action").required())];
+        screen.commands=vec![misa_kit::intent::Command::new("actions","Actions","Actions"),misa_kit::intent::Command::new("action","Action","Action").arg(misa_proto::preparation::Arg::new("action","Action").required())];
         screen.editor.set_text("/actions");
         let mut pet=misa_proto::Node::section("pet").id("pet");
         pet.actions.push(misa_proto::view::Action{id:"pet.feed".into(),label:Some("Feed pet".into()),on:Default::default(),args:misa_value::Value::Null});

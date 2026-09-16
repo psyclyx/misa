@@ -1,9 +1,8 @@
 //! The terminal frontend.
 //!
-//! It draws lines from the semantic tree, owns a theme, and sends intents. It
-//! decides no agent behaviour: every key either moves the cursor, edits the line the
-//! client owns, changes what the client is showing, or is turned into one of the four
-//! things a client may say.
+//! It renders observed semantic documents and owns local themes and drafts.
+//! Shared client catalogs prepare reads and invocations; owners validate and
+//! execute them. Daemon relationships remain independent of the selected session.
 //!
 //! # Two palettes, and why they are different things
 //!
@@ -37,14 +36,15 @@ pub mod save;
 thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 use std::path::PathBuf;
-#[cfg(test)]
-use std::time::Duration;
 
 use misa_kit::picker::{Accept, Effect as PickerEffect, Picker};
 use misa_kit::prefs::Prefs;
 use misa_kit::{editor as ed, intent as line, select};
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
-use misa_proto::wire::{Command, Intent, SessionInfo, Source, SourceKind};
+use misa_kit::intent::Command;
+use misa_proto::preparation::SourceKind;
+use misa_proto::wire::Intent;
+use misa_kit::intent::Source;
 use misa_render::{Line, Theme};
 
 /// One action this program can take on its own display.
@@ -264,13 +264,9 @@ impl Screen {
     }
 
 
-    /// Take the session's declarations.
-    ///
-    /// Called once, from the welcome. After this the client knows what the session
-    /// can do and where a value can come from, which is what makes a picker possible
-    /// without asking anything.
-    pub fn declare(&mut self, info: &SessionInfo) {
-        self.location = info.title.clone();
+    /// Replace local composer declarations after the selected scope's catalogs load.
+    /// Owner metadata and connection status are supplied independently.
+    pub fn declare(&mut self, info: &Catalog) {
         self.resident.clear();
         self.commands = info.commands.clone();
         self.commands.push(Command::new("save", "Save attachment", "/save [number] <local path>"));
@@ -1201,8 +1197,13 @@ pub trait Session: Send {
     }
     /// Candidates a session holds, for a source this client asked about.
     async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String>;
-    fn info(&self) -> Option<SessionInfo>;
+    fn catalog(&self) -> Catalog { Catalog::default() }
+    fn location(&self) -> String { "Session".into() }
+    fn selected(&self) -> Option<misa_proto::directory::Entry> { None }
 }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Catalog { pub commands: Vec<Command>, pub sources: Vec<Source> }
 
 pub enum Presentation {
     Documents(Vec<(String,misa_client::document::Update)>),
@@ -1211,7 +1212,7 @@ pub enum Presentation {
     Contribution { id: String, update: misa_client::document::Update },
     TurnOutput(Node),
     Document(misa_client::document::Update),
-    Declaration(SessionInfo),
+    Declaration { catalog: Catalog, location: String },
     Candidates { source: String, items: Vec<Choice>, truncated: bool },
     Snapshot(Node),
     Message(misa_proto::SessionMsg),
@@ -1318,69 +1319,13 @@ pub fn prompt_field(view: &Node) -> Option<&Field> {
     view.children.iter().find_map(prompt_field)
 }
 
-/// A session this binary can drive with no network, for tests.
-#[cfg(test)]
-pub struct Local {
-    pub runtime: std::sync::Arc<misa_session::Runtime>,
-    pub seen: u64,
-    pub info: Option<SessionInfo>,
-}
-
-#[cfg(test)]
-impl Local {
-    pub fn new(runtime: std::sync::Arc<misa_session::Runtime>) -> Local {
-        let info = Some(runtime.info());
-        Local { runtime, seen: 0, info }
-    }
-}
-
-#[cfg(test)]
-#[async_trait::async_trait]
-impl Session for Local {
-    async fn next(&mut self) -> Result<Option<Node>, String> {
-        // A view is read whenever the revision moved, which is what a transport
-        // watching a revision would do.
-        if self.runtime.rev() == self.seen {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-            return Ok(None);
-        }
-        self.seen = self.runtime.rev();
-        match self.runtime.view() {
-            Ok(view) => Ok(Some(view)),
-            Err(fault) => Err(fault.message),
-        }
-    }
-
-    async fn send(&mut self, intent: Intent) -> Result<(), String> {
-        let faults = self.runtime.intent(intent);
-        match faults.first() {
-            Some(fault) => Err(fault.message.clone()),
-            None => Ok(()),
-        }
-    }
-
-    async fn complete(&mut self, source: &str, prefix: &str) -> Result<(Vec<Choice>, bool), String> {
-        self.runtime.complete(source, prefix, None).map_err(|fault| fault.message)
-    }
-
-    fn info(&self) -> Option<SessionInfo> {
-        self.info.clone()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::wire::{Arg, SessionInfo};
+    use misa_proto::preparation::Arg;
 
-    fn declaration() -> SessionInfo {
-        SessionInfo {
-            id: "demo".into(),
-            title: "a demo".into(),
-            conversation: None,
-            created_ms: 0,
-            policy: Vec::new(),
-            queries: Vec::new(),
+    fn declaration() -> Catalog {
+        Catalog {
             commands: vec![
                 Command::new("clear", "Clear", "forget this branch"),
                 Command::new("model", "Model", "choose a model")
@@ -1964,4 +1909,10 @@ mod tests {
         assert_eq!(translate(KeyCode::Char('r'), KeyModifiers::CONTROL), Some(Key::HistorySearch));
     }
 
+}
+
+#[cfg(test)]
+fn test_unique_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

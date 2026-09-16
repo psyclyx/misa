@@ -39,7 +39,7 @@ pub async fn run(
                     continue;
                 }
 
-                let commands = session.info().map(|info| info.commands).unwrap_or_default();
+                let commands = session.catalog().commands;
                 let intent = match parse(&line, &commands) {
                     Parsed::Prompt(text) => Intent::Prompt {
                         text,
@@ -117,7 +117,6 @@ mod tests {
     use super::*;
     use misa_proto::{
         view::{Choice, Node},
-        wire::SessionInfo,
     };
     struct Fake {
         views: std::collections::VecDeque<Node>,
@@ -151,9 +150,6 @@ mod tests {
         }
         async fn complete(&mut self, _: &str, _: &str) -> Result<(Vec<Choice>, bool), String> {
             unreachable!()
-        }
-        fn info(&self) -> Option<SessionInfo> {
-            None
         }
     }
     #[test]

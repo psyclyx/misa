@@ -1,8 +1,10 @@
 //! A client's daemon directory and current session, independently owned.
 use crate::{Presentation, Session, SessionReply, SessionRequest};
 use misa_proto::view::Choice;
-use misa_proto::wire::{Arg, Command, Source};
-use misa_proto::{ClientInfo, Intent, Node, SessionInfo};
+use misa_kit::intent::Command;
+use misa_proto::preparation::Arg;
+use misa_kit::intent::Source;
+use misa_proto::{ClientInfo, Intent, Node};
 use std::collections::VecDeque;
 
 pub struct Workspace {
@@ -175,21 +177,8 @@ impl Workspace {
         Ok(())
     }
 
-    fn declaration(&self) -> SessionInfo {
-        let mut info = self
-            .active
-            .as_ref()
-            .and_then(Session::info)
-            .unwrap_or(SessionInfo {
-                id: String::new(),
-                title: "Daemons".into(),
-                conversation: None,
-                created_ms: 0,
-                policy: vec![],
-                queries: vec![],
-                commands: vec![],
-                sources: vec![],
-            });
+    fn declaration(&self) -> crate::Catalog {
+        let mut info = self.active.as_ref().map(Session::catalog).unwrap_or_default();
         info.commands.extend([
             Command::new("new","New session","Create a daemon-owned session").arg(Arg::new("id","Session ID").required()).arg(Arg::new("title","Title")).arg(Arg::new("provider","Provider")).arg(Arg::new("model","Model")),
             Command::new("resume","Resume conversation","Mount a stored conversation as a live session").arg(Arg::new("id","Session ID").required()).arg(Arg::new("conversation","Conversation").required().from("client.conversations")).arg(Arg::new("title","Title")).arg(Arg::new("provider","Provider")).arg(Arg::new("model","Model")),
@@ -252,22 +241,6 @@ impl Workspace {
                 "Search the daemon archive",
             ),
         ]);
-        if let Some(id) = self
-            .active
-            .as_ref()
-            .map(|remote| remote.daemon_identity())
-            .or(self.selected.as_deref())
-        {
-            info.title = format!(
-                "{} / {}",
-                &id[..12],
-                if info.id.is_empty() {
-                    "sessions"
-                } else {
-                    &info.id
-                }
-            );
-        }
         info
     }
 
@@ -324,7 +297,7 @@ impl Workspace {
                 .unwrap_or_else(|| "directory".into()),
         ));
         self.updates
-            .push_back(Presentation::Declaration(self.declaration()));
+            .push_back(Presentation::Declaration {catalog:self.declaration(),location:self.location()});
         if self.active.is_none() {
             let mut view = Node::section("session").id("session");
             view.children.push(
@@ -484,9 +457,9 @@ impl Session for Workspace {
     fn turn_settled(&self) -> Option<bool> {
         self.active.as_ref().and_then(Session::turn_settled)
     }
-    fn info(&self) -> Option<SessionInfo> {
-        Some(self.declaration())
-    }
+    fn catalog(&self) -> crate::Catalog { self.declaration() }
+    fn location(&self) -> String { self.active.as_ref().map(Session::location).unwrap_or_else(|| "Daemons".into()) }
+    fn selected(&self) -> Option<misa_proto::directory::Entry> { self.active.as_ref().and_then(Session::selected) }
     async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
         loop {
             if let Some(update) = self.updates.pop_front() {
@@ -494,7 +467,7 @@ impl Session for Workspace {
             }
             tokio::select! {
                 update = async { match self.active.as_mut() { Some(remote) => remote.next_presentation().await, None => std::future::pending().await } } => return match update? {
-                    Some(Presentation::Declaration(_)) => Ok(Some(Presentation::Declaration(self.declaration()))), update => Ok(update),
+                    Some(Presentation::Declaration{..}) => Ok(Some(Presentation::Declaration {catalog:self.declaration(),location:self.location()})), update => Ok(update),
                 },
                 changed = self.directory_changes.changed() => {
                     changed.map_err(|_| "Directory updates closed")?;
@@ -510,7 +483,7 @@ impl Session for Workspace {
                         },
                         Ok(LocalChange::Completion(generation,source,prefix,result))=>{if generation==self.selection_generation {self.updates.push_back(Presentation::Reply(SessionReply::Complete{source,prefix,result}));}},
                         Ok(LocalChange::Closed(identity))=>{if self.active.as_ref().is_some_and(|remote|remote.identity()==identity){self.active=None;}self.parked.remove(&identity);self.refresh();self.updates.push_front(Presentation::Forget(identity));self.updates.push_back(Presentation::Reply(SessionReply::Notice("Daemon session closed; conversation remains stored".into())));},
-                        Ok(LocalChange::Opened(generation,remote))=>{let id=remote.info().map(|info|info.id).unwrap_or_default();if generation==self.selection_generation {if let Err(error)=self.activate(remote){self.updates.push_back(Presentation::Reply(SessionReply::Notice(error)));}else{self.refresh();}}self.updates.push_back(Presentation::Reply(SessionReply::Notice(format!("Session opened: {id}"))));},
+                        Ok(LocalChange::Opened(generation,remote))=>{let id=remote.selected().map(|entry|entry.id).unwrap_or_default();if generation==self.selection_generation {if let Err(error)=self.activate(remote){self.updates.push_back(Presentation::Reply(SessionReply::Notice(error)));}else{self.refresh();}}self.updates.push_back(Presentation::Reply(SessionReply::Notice(format!("Session opened: {id}"))));},
                         Ok(LocalChange::Attached(generation, remote)) if generation == self.selection_generation => { if let Err(error)=self.activate(remote) {self.updates.push_back(Presentation::Reply(SessionReply::Notice(error)));} else {self.refresh();} },
                         Ok(_) => {},
                         Err(error) => self.updates.push_back(Presentation::Reply(SessionReply::Notice(error))),

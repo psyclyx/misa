@@ -6,8 +6,8 @@ use misa_client::{
     interface::{self, Interface},
 };
 use misa_proto::{
-    Intent, Node, SessionInfo, invocation::Outcome, observation::Selection, view::Choice,
-    wire::SourceKind,
+    Intent, Node, invocation::Outcome, observation::Selection, view::Choice,
+    preparation::SourceKind,
 };
 use misa_protocol::observation::MemberState;
 use misa_value::Value;
@@ -34,7 +34,8 @@ pub struct ScopedRemote {
     turn_settled: bool,
     turn_failure: Option<String>,
     updates: VecDeque<Presentation>,
-    info: SessionInfo,
+    catalog: crate::Catalog,
+    entry: misa_proto::directory::Entry,
 }
 struct Replacement {
     unavailable: BTreeMap<String, misa_proto::Fault>,
@@ -272,17 +273,11 @@ impl ScopedRemote {
             .observe(selection.clone(), None)
             .await
             .map_err(|fault| fault.message)?;
-        let info = SessionInfo {
-            id: entry.id,
-            title: entry.title,
-            conversation: None,
-            created_ms: 0,
-            policy: vec![],
-            queries: interaction.interface.queries.keys().cloned().collect(),
+        let catalog = crate::Catalog {
             commands: interaction
                 .shortcuts
                 .iter()
-                .map(|shortcut| misa_proto::wire::Command {
+                .map(|shortcut| misa_kit::intent::Command {
                     id: shortcut.id.clone(),
                     label: shortcut.label.clone(),
                     description: shortcut.description.clone(),
@@ -292,7 +287,7 @@ impl ScopedRemote {
             sources: interaction
                 .sources
                 .iter()
-                .map(|source| misa_proto::wire::Source {
+                .map(|source| misa_kit::intent::Source {
                     id: source.id.clone(),
                     label: source.label.clone(),
                     kind: source.kind.clone(),
@@ -317,12 +312,13 @@ impl ScopedRemote {
             operations: misa_client::operation::Tracker::new(32),
             turn_settled: true,
             turn_failure: None,
-            updates: std::iter::once(Presentation::Declaration(info.clone()))
+            updates: std::iter::once(Presentation::Declaration{catalog:catalog.clone(),location:entry.title.clone()})
                 .chain(composition.unavailable.into_iter().map(|(id, fault)| {
                     Presentation::Reply(SessionReply::Notice(format!("{id}: {}", fault.message)))
                 }))
                 .collect(),
-            info,
+            catalog,
+            entry,
         })
     }
     fn collect(&mut self) {
@@ -350,7 +346,7 @@ impl ScopedRemote {
                         sources.insert(source.into(), value.clone());
                         updates.push_back(Presentation::Candidates {
                             source: source.into(),
-                            items: misa_proto::wire::candidates(value),
+                            items: misa_proto::preparation::candidates(value),
                             truncated: false,
                         });
                     }
@@ -539,10 +535,7 @@ async fn execute(
                 .await
                 .map_err(|fault| fault.message)?;
             Ok((
-                Some(SessionReply::Report(misa_client::request::report(
-                    "Report",
-                    interface::data(&result, "result").map_err(|fault| fault.message)?,
-                ))),
+                Some(SessionReply::Report(interface::report(&result, "result", "Report").map_err(|fault| fault.message)?)),
                 None,
             ))
         }
@@ -555,7 +548,7 @@ async fn complete(
     prefix: &str,
 ) -> Result<(Vec<Choice>, bool), String> {
     let member = interaction
-        .complete(source, prefix, misa_proto::wire::DEFAULT_CANDIDATES)
+        .complete(source, prefix, misa_proto::preparation::DEFAULT_CANDIDATES)
         .map_err(|fault| fault.message)?;
     let result = client
         .read(
@@ -615,9 +608,9 @@ impl Session for ScopedRemote {
     fn turn_settled(&self) -> Option<bool> {
         Some(self.turn_settled)
     }
-    fn info(&self) -> Option<SessionInfo> {
-        Some(self.info.clone())
-    }
+    fn catalog(&self) -> crate::Catalog { self.catalog.clone() }
+    fn location(&self) -> String { self.entry.title.clone() }
+    fn selected(&self) -> Option<misa_proto::directory::Entry> { Some(self.entry.clone()) }
     async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
         loop {
             self.collect();
@@ -953,8 +946,7 @@ mod tests {
         assert!(remote.presentations.contains_key("status"));
         assert!(
             remote
-                .info()
-                .unwrap()
+                .catalog()
                 .commands
                 .iter()
                 .any(|command| command.id == "model")
@@ -969,7 +961,7 @@ mod tests {
         assert!(models.iter().any(|choice| choice.value == "scripted-1"));
         let preference_path = std::env::temp_dir().join(format!(
             "misa-presentation-test-{}.json",
-            misa_proto::wire::RequestContext::connection()
+            crate::test_unique_id()
         ));
         remote.preference_path = preference_path.clone();
         misa_client::preference_store::Store::new(preference_path.clone()).update("another-window".into(),misa_client::composition::Choice::Hidden).unwrap();
@@ -1013,7 +1005,7 @@ mod tests {
         let old = remote.observation.id();
         let blocked = std::env::temp_dir().join(format!(
             "misa-presentation-blocked-{}",
-            misa_proto::wire::RequestContext::connection()
+            crate::test_unique_id()
         ));
         std::fs::write(&blocked, b"not a directory").unwrap();
         remote.preference_path = blocked.join("preferences.json");
@@ -1282,11 +1274,11 @@ mod tests {
         .await
         .expect("parked accepted result was retained");
         workspace.send(Intent::Command{name:"new".into(),args:Value::map([("id",Value::str("created-from-tui")),("title",Value::str("Local create"))])}).await.unwrap();
-        assert_eq!(workspace.info().unwrap().id,"created-from-tui");
+        assert_eq!(workspace.selected().unwrap().id,"created-from-tui");
         workspace.send(Intent::Command{name:"close".into(),args:Value::map([])}).await.unwrap();
-        assert!(workspace.info().unwrap().id.is_empty());
+        assert!(workspace.selected().is_none());
         workspace.send(Intent::Command{name:"resume".into(),args:Value::map([("id",Value::str("resumed-from-tui")),("conversation",Value::str("stored-conversation"))])}).await.unwrap();
-        assert_eq!(workspace.info().unwrap().id,"resumed-from-tui");
+        assert_eq!(workspace.selected().unwrap().id,"resumed-from-tui");
         workspace.send(Intent::Command{name:"close".into(),args:Value::map([])}).await.unwrap();
         drop(workspace);
         daemons.disconnect(&server.id().to_string()).await;

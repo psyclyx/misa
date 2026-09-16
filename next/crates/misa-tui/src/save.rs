@@ -95,7 +95,7 @@ mod tests {
         let destination = std::env::temp_dir().join(format!(
             "misa-save-{}-{}.bin",
             std::process::id(),
-            misa_proto::wire::RequestContext::connection()
+            crate::test_unique_id()
         ));
         let path = destination.to_str().unwrap();
         write_new(path, b"received bytes").unwrap();
@@ -189,7 +189,7 @@ mod transport_tests {
         let destination = std::env::temp_dir().join(format!(
             "misa-download-{}-{}.txt",
             std::process::id(),
-            misa_proto::wire::RequestContext::connection()
+            crate::test_unique_id()
         ));
         let request = Request {
             number: None,
