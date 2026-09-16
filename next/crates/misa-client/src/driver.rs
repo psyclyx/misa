@@ -606,6 +606,7 @@ mod tests {
         }
         fn command(&self, _: &CallContext, id: &str) -> Option<Definition> {
             (id == "increment").then(|| Definition {
+                preparation: Default::default(),
                 id: id.into(),
                 input: Schema::Int,
                 result: Schema::Int,
@@ -891,6 +892,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let definition = Definition {
+                preparation: Default::default(),
                 id: "increment".into(),
                 input: Schema::Int,
                 result: Schema::Int,

@@ -233,7 +233,7 @@ mod tests {
         assert!(install(&[binding.clone()], &BTreeMap::new()).is_err());
         let command = CommandRegistration::new(
             misa_proto::invocation::Command {
-                id: binding.command.clone(),
+                preparation: Default::default(), id: binding.command.clone(),
                 input: Schema::Bytes,
                 result: Schema::String,
             },
@@ -260,7 +260,7 @@ mod tests {
             let contribution = crate::Contribution::new()
                 .with_command(CommandRegistration::new(
                     misa_proto::invocation::Command {
-                        id: "test.defer".into(),
+                        preparation: Default::default(), id: "test.defer".into(),
                         input: Schema::Record {
                             fields: BTreeMap::new(),
                             allow_unknown: false,

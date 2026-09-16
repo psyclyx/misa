@@ -540,7 +540,7 @@ mod action_form_tests {
             commands: BTreeMap::from([(
                 "change".into(),
                 Command {
-                    id: "change".into(),
+                    preparation: Default::default(), id: "change".into(),
                     input: Schema::Record {
                         fields: BTreeMap::from([
                             (

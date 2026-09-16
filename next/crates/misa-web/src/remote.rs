@@ -192,7 +192,7 @@ mod tests {
         let actions = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = actions.clone();
         let contribution = misa_session::Contribution::new().with_command(misa_session::commands::CommandRegistration::new(
-            Command { id: "example.feed".into(), input: Schema::Record { fields: BTreeMap::from([
+            Command { preparation: Default::default(), id: "example.feed".into(), input: Schema::Record { fields: BTreeMap::from([
                 ("amount".into(), Field { schema: Schema::Int, optional: false }),
                 ("label".into(), Field { schema: Schema::String, optional: false }),
                 ("pet".into(), Field { schema: Schema::String, optional: false }),
@@ -203,7 +203,7 @@ mod tests {
         let collected = form_values.clone();
         let form_schema = Schema::Record { fields: BTreeMap::from([("count".into(), Field { schema: Schema::Int, optional: false })]), allow_unknown: false };
         let contribution = contribution.with_command(misa_session::commands::CommandRegistration::new(
-            Command { id: "example.form".into(), input: Schema::Record { fields: BTreeMap::from([("value".into(), Field { schema: form_schema.clone(), optional: false })]), allow_unknown: false }, result: Schema::Value },
+            Command { preparation: Default::default(), id: "example.form".into(), input: Schema::Record { fields: BTreeMap::from([("value".into(), Field { schema: form_schema.clone(), optional: false })]), allow_unknown: false }, result: Schema::Value },
             move |_, _, invocation| { collected.lock().unwrap().push(invocation.input.clone()); Outcome::Completed { value: Value::Null } },
         ));
         let runtime = misa_session::Runtime::start_with(

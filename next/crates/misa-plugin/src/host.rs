@@ -86,7 +86,7 @@ pub struct Descriptor {
 pub struct CommandDefinition { pub id: String, pub input: Schema, pub event: String, pub request: Option<misa_proto::input::Form> }
 impl CommandDefinition {
     pub fn export(&self) -> misa_proto::invocation::Command {
-        misa_proto::invocation::Command { id: self.id.clone(), input: self.input.clone(),
+        misa_proto::invocation::Command { preparation: Default::default(), id: self.id.clone(), input: self.input.clone(),
             result: Schema::Choice { values: vec![misa_proto::schema::Literal::Null] } }
     }
 }

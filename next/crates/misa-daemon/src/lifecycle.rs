@@ -52,7 +52,7 @@ pub fn commands() -> Vec<Command> {
     let result = record([("id", false), ("incarnation", false)]);
     let mut commands = vec![
         Command {
-            id: "daemon.session.create".into(),
+            preparation: Default::default(), id: "daemon.session.create".into(),
             input: record([
                 ("id", false),
                 ("title", true),
@@ -62,7 +62,7 @@ pub fn commands() -> Vec<Command> {
             result: result.clone(),
         },
         Command {
-            id: "daemon.session.resume".into(),
+            preparation: Default::default(), id: "daemon.session.resume".into(),
             input: record([
                 ("id", false),
                 ("conversation", false),
@@ -73,12 +73,12 @@ pub fn commands() -> Vec<Command> {
             result,
         },
         Command {
-            id: "daemon.session.close".into(),
+            preparation: Default::default(), id: "daemon.session.close".into(),
             input: record([("id", false), ("incarnation", false)]),
             result: Schema::Value,
         },
         Command {
-            id: "operation.cancel".into(),
+            preparation: Default::default(), id: "operation.cancel".into(),
             input: Schema::Record {
                 fields: [
                     (

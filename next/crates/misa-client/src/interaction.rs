@@ -252,7 +252,7 @@ mod tests {
                 commands: BTreeMap::from([(
                     "model.select".into(),
                     Command {
-                        id: "model.select".into(),
+                        preparation: Default::default(), id: "model.select".into(),
                         input: Schema::String,
                         result: Schema::Value,
                     },

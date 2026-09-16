@@ -260,7 +260,7 @@ mod tests {
         fn command(&self, context: &CallContext, _: &str) -> Option<Command> {
             assert_eq!(context.principal, "trusted");
             Some(Command {
-                id: "run".into(),
+                preparation: Default::default(), id: "run".into(),
                 input: Schema::Bool,
                 result: Schema::Bool,
             })

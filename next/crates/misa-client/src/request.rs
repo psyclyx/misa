@@ -298,7 +298,7 @@ mod tests {
             allow_unknown: false,
         };
         let command = misa_proto::invocation::Command {
-            id: "input.resolve".into(),
+            preparation: misa_proto::invocation::Preparation::Request, id: "input.resolve".into(),
             input: record(BTreeMap::from([
                 (
                     "request".into(),

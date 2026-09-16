@@ -122,7 +122,7 @@ pub(super) fn detail(state: &State, id: &str, context: &CallContext) -> Result<V
 pub(super) fn command() -> CommandRegistration {
     CommandRegistration::new(
         Command {
-            id: "input.resolve".into(),
+            preparation: misa_proto::invocation::Preparation::Request, id: "input.resolve".into(),
             input: {
                 let mut schema = record([
                 ("request", Schema::String),

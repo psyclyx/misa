@@ -192,7 +192,7 @@ pub(super) fn cancel(runtime: &Runtime, context: &CallContext, invocation: &Invo
 pub(super) fn cancel_command() -> CommandRegistration {
     CommandRegistration::new(
         Command {
-            id: "input.cancel".into(),
+            preparation: misa_proto::invocation::Preparation::Request, id: "input.cancel".into(),
             input: record([("request", Schema::String), ("generation", Schema::Int)]),
             result: Schema::Choice {
                 values: vec![Literal::Null],

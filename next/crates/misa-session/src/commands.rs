@@ -36,7 +36,7 @@ impl CommandRegistration {
         let event_name = event.clone();
         let mut registration = Self::new(
             Command {
-                id: id.into(),
+                preparation: Default::default(), id: id.into(),
                 input,
                 result: admitted(),
             },
@@ -55,7 +55,7 @@ impl CommandRegistration {
         form.validate()?;
         let event = event.into();
         let event_name = event.clone();
-        let mut registration = Self::new(Command { id: id.into(), input, result: admitted() }, move |runtime, context, invocation| runtime.request_transaction_input(context, invocation, form.clone(), &event));
+        let mut registration = Self::new(Command { preparation: Default::default(), id: id.into(), input, result: admitted() }, move |runtime, context, invocation| runtime.request_transaction_input(context, invocation, form.clone(), &event));
         registration.event = Some(event_name);
         Ok(registration)
     }
@@ -197,7 +197,7 @@ fn intent_registration(
 ) -> CommandRegistration {
     CommandRegistration::new(
         Command {
-            id: id.into(),
+            preparation: Default::default(), id: id.into(),
             input,
             result: admitted(),
         },
@@ -232,7 +232,7 @@ pub fn builtins() -> Vec<CommandRegistration> {
     };
     let mut registrations = vec![
         CommandRegistration::new(Command {
-            id: "session.attachment.resolve".into(),
+            preparation: Default::default(), id: "session.attachment.resolve".into(),
             input: record([("node", Schema::String, false)]),
             result: record([("hash", Schema::String, false), ("len", Schema::Int, false), ("media", Schema::Nullable { inner: Box::new(Schema::String) }, true)]),
         }, |runtime, _, invocation| {
@@ -246,9 +246,9 @@ pub fn builtins() -> Vec<CommandRegistration> {
             };
             Outcome::Completed { value: crate::wire::render(blob) }
         }),
-        CommandRegistration::new(Command { id: "session.prompt".into(), input: prompt(), result: admitted() },
+        CommandRegistration::new(Command { preparation: Default::default(), id: "session.prompt".into(), input: prompt(), result: admitted() },
             |runtime, context, invocation| crate::operations::prompt(runtime, context, invocation, false)),
-        CommandRegistration::new(Command { id: "session.interrupt".into(), input: prompt(), result: admitted() },
+        CommandRegistration::new(Command { preparation: Default::default(), id: "session.interrupt".into(), input: prompt(), result: admitted() },
             |runtime, context, invocation| crate::operations::prompt(runtime, context, invocation, true)),
         intent_registration(
             "session.cancel",
@@ -305,7 +305,7 @@ pub fn builtins() -> Vec<CommandRegistration> {
         ("session.usage.refresh", "discovery/usage.refresh"),
         ("session.conversations.refresh", "discovery/conversations.refresh"),
     ] {
-        registrations.push(CommandRegistration::new(Command { id: id.into(), input: record([]), result: admitted() },
+        registrations.push(CommandRegistration::new(Command { preparation: Default::default(), id: id.into(), input: record([]), result: admitted() },
             move |runtime, _, _| outcome(runtime.dispatch(misa_reframe::Event::new(event)))));
     }
     registrations
@@ -380,7 +380,7 @@ mod tests {
         let contribution = crate::Contribution::new()
             .with_command(CommandRegistration::new(
                 Command {
-                    id: "test.increment".into(),
+                    preparation: Default::default(), id: "test.increment".into(),
                     input: Schema::Int,
                     result: Schema::Int,
                 },
@@ -393,7 +393,7 @@ mod tests {
             ))
             .with_command(CommandRegistration::new(
                 Command {
-                    id: "test.invalid-result".into(),
+                    preparation: Default::default(), id: "test.invalid-result".into(),
                     input: Schema::Int,
                     result: Schema::Int,
                 },

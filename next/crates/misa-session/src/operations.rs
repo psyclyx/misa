@@ -512,7 +512,7 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
         forms::cancel_command(),
         CommandRegistration::new(
             Command {
-                id: "credentials.authorize".into(),
+                preparation: Default::default(), id: "credentials.authorize".into(),
                 input: record([("provider", Schema::String)]),
                 result: null(),
             },
@@ -520,7 +520,7 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
         ),
         CommandRegistration::new(
             Command {
-                id: "credentials.resolve".into(),
+                preparation: misa_proto::invocation::Preparation::Request, id: "credentials.resolve".into(),
                 input: record([
                     ("request", Schema::String),
                     ("generation", Schema::Int),
@@ -532,7 +532,7 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
         ),
         CommandRegistration::new(
             Command {
-                id: "operation.cancel".into(),
+                preparation: Default::default(), id: "operation.cancel".into(),
                 input: record([("operation", Schema::String), ("generation", Schema::Int)]),
                 result: null(),
             },
@@ -958,6 +958,16 @@ pub(crate) fn start_expiry_loop(runtime: &Arc<Runtime>) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn private_responses_are_declared_request_preparation_without_hiding_their_schemas() {
+        let (runtime, _) = setup();
+        for id in ["credentials.resolve", "input.resolve", "input.cancel"] {
+            assert_eq!(runtime.command_registry[id].definition.preparation, misa_proto::invocation::Preparation::Request);
+            runtime.command_registry[id].definition.validate().unwrap();
+        }
+        assert_eq!(runtime.command_registry["credentials.authorize"].definition.preparation, misa_proto::invocation::Preparation::Direct);
+        runtime.shutdown_complete().await;
+    }
     use super::*;
     use misa_kernel::{Kernel, KernelEvent};
     use std::{future::Future, pin::Pin, sync::Mutex};

@@ -13,6 +13,7 @@ pub struct Form {
     pub fields: Vec<(String, Field)>,
     binding: ActionBinding,
     command: Command,
+    direct_value: bool,
 }
 impl Form {
     pub fn command(interface: &Interface, id: &str) -> Result<Self, Fault> {
@@ -21,8 +22,29 @@ impl Form {
             .get(id)
             .ok_or_else(|| Fault::query("Unknown command"))?
             .clone();
+        if command.preparation == misa_proto::invocation::Preparation::Request {
+            return Err(Fault::unsupported(
+                "Use the owner-provided private request form",
+            ));
+        }
         let Schema::Record { fields, .. } = &command.input else {
-            return Err(Fault::unsupported("Command form requires record input"));
+            return Ok(Self {
+                title: id.into(),
+                fields: vec![(
+                    "value".into(),
+                    Field {
+                        schema: command.input.clone(),
+                        optional: false,
+                    },
+                )],
+                binding: ActionBinding {
+                    command: id.into(),
+                    bound: BTreeMap::new(),
+                    inputs: BTreeMap::new(),
+                },
+                command,
+                direct_value: true,
+            });
         };
         let binding = ActionBinding {
             command: id.into(),
@@ -38,6 +60,7 @@ impl Form {
                 .collect(),
             binding,
             command,
+            direct_value: false,
         })
     }
 
@@ -53,6 +76,11 @@ impl Form {
             .get(&binding.command)
             .ok_or_else(|| Fault::query("Unknown command"))?
             .clone();
+        if command.preparation == misa_proto::invocation::Preparation::Request {
+            return Err(Fault::unsupported(
+                "Use the owner-provided private request form",
+            ));
+        }
         binding.validate_for(&command)?;
         let Schema::Record { fields, .. } = &command.input else {
             return Err(Fault::query("Action requires record input"));
@@ -67,11 +95,18 @@ impl Form {
             fields,
             binding,
             command,
+            direct_value: false,
         })
     }
     pub fn prepare(&self, drafts: &BTreeMap<String, String>) -> Result<(String, Value), Fault> {
-        let values = parse_fields(&self.fields, drafts)?;
-        let input = self.binding.prepare(&values)?;
+        let mut values = parse_fields(&self.fields, drafts)?;
+        let input = if self.direct_value {
+            values
+                .remove("value")
+                .ok_or_else(|| Fault::query("Command requires a value"))?
+        } else {
+            self.binding.prepare(&values)?
+        };
         self.command
             .input
             .validate(&input)
@@ -158,8 +193,70 @@ fn typed(schema: &Schema, value: Value) -> Result<Value, Fault> {
 mod tests {
     use super::*;
     #[test]
+    fn direct_scalar_commands_are_typed_and_private_responders_never_get_generic_forms() {
+        use misa_proto::invocation::{Binding, Preparation};
+        let command = Command {
+            preparation: Preparation::Direct,
+            id: "scalar".into(),
+            input: Schema::List {
+                items: Box::new(Schema::Int),
+            },
+            result: Schema::Value,
+        };
+        let mut interface = Interface {
+            scope: misa_proto::observation::Scope {
+                id: misa_proto::observation::ScopeId::Daemon,
+                incarnation: "run".into(),
+            },
+            queries: BTreeMap::new(),
+            commands: BTreeMap::from([("scalar".into(), command)]),
+            actions: BTreeMap::new(),
+            presentations: vec![],
+        };
+        let form = Form::command(&interface, "scalar").unwrap();
+        assert_eq!(form.fields[0].0, "value");
+        let (_, input) = form
+            .prepare(&BTreeMap::from([("value".into(), "[1,2]".into())]))
+            .unwrap();
+        assert_eq!(input, Value::list([Value::Int(1), Value::Int(2)]));
+        assert!(
+            form.prepare(&BTreeMap::from([("value".into(), "[\"bad\"]".into())]))
+                .is_err()
+        );
+        let private = Command {
+            preparation: Preparation::Request,
+            id: "credential".into(),
+            input: Schema::Record {
+                fields: BTreeMap::from([(
+                    "secret".into(),
+                    Field {
+                        schema: Schema::String,
+                        optional: false,
+                    },
+                )]),
+                allow_unknown: false,
+            },
+            result: Schema::Value,
+        };
+        interface.commands.insert(private.id.clone(), private);
+        interface.actions.insert(
+            "generic".into(),
+            Binding {
+                id: "generic".into(),
+                binding: ActionBinding {
+                    command: "credential".into(),
+                    bound: BTreeMap::new(),
+                    inputs: BTreeMap::from([("secret".into(), "secret".into())]),
+                },
+            },
+        );
+        assert!(Form::command(&interface, "credential").is_err());
+        assert!(Form::action(&interface, "generic").is_err());
+    }
+    #[test]
     fn typed_fields_validate_without_overwriting_bound_context() {
         let command = Command {
+            preparation: Default::default(),
             id: "feed".into(),
             input: Schema::Record {
                 fields: BTreeMap::from([
@@ -185,6 +282,7 @@ mod tests {
             },
         };
         let form = Form {
+            direct_value: false,
             title: "Feed".into(),
             fields: vec![(
                 "quantity".into(),

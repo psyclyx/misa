@@ -620,7 +620,7 @@ mod tests {
     }
     fn command() -> Command {
         Command {
-            id: "increment".into(),
+            preparation: Default::default(), id: "increment".into(),
             input: Schema::Int,
             result: Schema::Int,
         }

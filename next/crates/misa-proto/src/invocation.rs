@@ -14,6 +14,18 @@ pub struct Command {
     pub id: String,
     pub input: Schema,
     pub result: Schema,
+    /// Preparation affordance, not caller authorization. Request responses need
+    /// their private schema/binding and specialized secret-value presentation.
+    #[serde(default)]
+    pub preparation: Preparation,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Preparation {
+    #[default]
+    Direct,
+    Request,
 }
 impl Command {
     pub fn validate(&self) -> Result<(), Fault> {
@@ -108,7 +120,7 @@ pub fn catalog_definition() -> crate::query::Definition {
     crate::query::Definition {
         id: CATALOG.into(),
         arguments: vec![],
-        contract: "commands.catalog@1".into(),
+        contract: "commands.catalog@2".into(),
         result: crate::query::ResultContract::Data {
             schema: Schema::List {
                 items: Box::new(Schema::Record {
@@ -116,6 +128,7 @@ pub fn catalog_definition() -> crate::query::Definition {
                         ("id", Schema::String),
                         ("input", Schema::Value),
                         ("result", Schema::Value),
+                        ("preparation", Schema::Choice { values: vec![crate::schema::Literal::String("direct".into()), crate::schema::Literal::String("request".into())] }),
                     ]
                     .into_iter()
                     .map(|(name, schema)| {
@@ -224,6 +237,22 @@ impl ActionBinding {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preparation_roundtrips_and_omitted_metadata_defaults_to_direct() {
+        let command = super::Command { id: "respond".into(), input: crate::schema::Schema::Bool,
+            result: crate::schema::Schema::Bool, preparation: super::Preparation::Request };
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&command, &mut bytes).unwrap();
+        let decoded: super::Command = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(decoded, command);
+        let mut value: misa_value::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        let misa_value::Value::Map(fields) = &mut value else { panic!() };
+        std::sync::Arc::make_mut(fields).remove("preparation");
+        bytes.clear();
+        ciborium::ser::into_writer(&value, &mut bytes).unwrap();
+        let decoded: super::Command = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.preparation, super::Preparation::Direct);
+    }
     use super::*;
     use crate::{observation::ScopeId, schema::Field};
     fn scope() -> Scope {
@@ -270,7 +299,7 @@ mod tests {
     #[test]
     fn input_validation_does_not_echo_secret_values() {
         let command = Command {
-            id: "answer".into(),
+            preparation: Default::default(), id: "answer".into(),
             input: Schema::Record {
                 fields: BTreeMap::from([(
                     "answer".into(),
@@ -326,7 +355,7 @@ mod tests {
         assert!(
             call.validate(
                 &Command {
-                    id: "x".into(),
+                    preparation: Default::default(), id: "x".into(),
                     input: Schema::Bool,
                     result: Schema::Bool
                 },
