@@ -227,7 +227,7 @@ mod tests {
         observation::{Scope, ScopeId},
         query::{Definition, ResultContract},
         schema::Schema,
-        wire::{Arg, SourceKind},
+        preparation::{Arg, SourceKind},
     };
 
     fn interaction() -> Interaction {

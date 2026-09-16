@@ -9,6 +9,7 @@ use misa_value::Value;
 use std::collections::BTreeMap;
 #[derive(Clone, Debug)]
 pub struct Form {
+    pub scope: misa_proto::observation::Scope,
     pub title: String,
     pub fields: Vec<(String, Field)>,
     binding: ActionBinding,
@@ -29,6 +30,7 @@ impl Form {
         }
         let Schema::Record { fields, .. } = &command.input else {
             return Ok(Self {
+            scope: interface.scope.clone(),
                 title: id.into(),
                 fields: vec![(
                     "value".into(),
@@ -53,6 +55,7 @@ impl Form {
         };
         binding.validate_for(&command)?;
         Ok(Self {
+            scope: interface.scope.clone(),
             title: id.into(),
             fields: fields
                 .iter()
@@ -91,6 +94,7 @@ impl Form {
             .map(|(id, parameter)| (id.clone(), fields[parameter].clone()))
             .collect();
         Ok(Self {
+            scope: interface.scope.clone(),
             title: id.into(),
             fields,
             binding,
@@ -282,6 +286,7 @@ mod tests {
             },
         };
         let form = Form {
+            scope: misa_proto::observation::Scope {id:misa_proto::observation::ScopeId::Daemon,incarnation:"test".into()},
             direct_value: false,
             title: "Feed".into(),
             fields: vec![(
