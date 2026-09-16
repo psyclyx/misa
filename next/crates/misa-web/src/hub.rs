@@ -183,7 +183,7 @@ async fn dispatch(State(hub): State<Shared>, mut request: Request) -> Response {
     };
     if suffix == "close" && request.method() == axum::http::Method::POST {
         if let Some(instance) = hub.lock().await.sessions.remove(key) {
-            instance.remote.task.abort();
+            instance.remote.close();
         }
         return Redirect::to("/daemons").into_response();
     }
@@ -374,7 +374,15 @@ mod tests {
                 "idle tab expires but SSE retains its own instance"
             );
         }
-        drop(events);
+        let closed = dispatch(
+            State(hub.clone()),
+            Request::builder().method("POST").uri(format!("{}close", paths[0]))
+                .body(Body::empty()).unwrap(),
+        ).await;
+        assert_eq!(closed.status(), StatusCode::SEE_OTHER);
+        let body = tokio::time::timeout(Duration::from_secs(2), axum::body::to_bytes(events.into_body(), 1024 * 1024)).await
+            .expect("closing a presentation must end its existing SSE lease").unwrap();
+        assert!(std::str::from_utf8(&body).unwrap().contains("Presentation closed; session work continues"));
         hub.lock().await.expire();
         assert!(hub.lock().await.sessions.is_empty());
         drop(hub);

@@ -62,8 +62,18 @@ pub(crate) async fn events(State(remote): State<Arc<Remote>>, Query(fields): Que
     let observation = match remote.daemon.client.observe(Selection { scope: remote.interaction.interface.scope.clone(), members: BTreeMap::from([("request".into(), member)]) }, None).await {
         Ok(observation) => observation, Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
-    let stream = futures::stream::unfold((observation, true, remote), move |(mut observation, first, remote)| async move {
-        if !first && observation.changed().await.is_err() { return None; }
+    let closed = remote.closed.subscribe();
+    let stream = futures::stream::unfold((observation, true, remote, closed, false), move |(mut observation, first, remote, mut closed, ended)| async move {
+        if ended { return None; }
+        if !first && !*closed.borrow() {
+            tokio::select! {
+                result = observation.changed() => { if result.is_err() { return None; } }
+                _ = closed.changed() => {}
+            }
+        }
+        if *closed.borrow() {
+            return Some((Ok::<_, std::convert::Infallible>(Event::default().data("unavailable")), (observation, false, remote, closed, true)));
+        }
         let status = observation.inspect(|replica, _| {
             use misa_protocol::observation::{MemberState, Status};
             match replica.status() {
@@ -77,7 +87,7 @@ pub(crate) async fn events(State(remote): State<Arc<Remote>>, Query(fields): Que
                 _ => "unavailable",
             }
         }).unwrap_or("unavailable");
-        Some((Ok::<_, std::convert::Infallible>(Event::default().data(status)), (observation, false, remote)))
+        Some((Ok::<_, std::convert::Infallible>(Event::default().data(status)), (observation, false, remote, closed, false)))
     });
     let mut response = Sse::new(stream).keep_alive(KeepAlive::default()).into_response();
     response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());

@@ -984,6 +984,7 @@ pub use updates::Region;
 
 /// A session reached over iroh, with no kernel in this process.
 pub struct Remote {
+    closed: tokio::sync::watch::Sender<bool>,
     activity: activity::Activity,
     claimed: std::sync::atomic::AtomicBool,
     presentation_changes: tokio::sync::mpsc::Sender<presentations::Change>,
@@ -998,7 +999,15 @@ pub struct Remote {
     blobs: Option<Arc<Source>>,
     pending: Arc<std::sync::Mutex<Vec<BlobRef>>>,
 }
-impl Drop for Remote { fn drop(&mut self) { self.task.abort(); } }
+impl Remote {
+    fn close(&self) {
+        self.closed.send_replace(true);
+        self.task.abort();
+        self.activity.close();
+        self.region.close();
+    }
+}
+impl Drop for Remote { fn drop(&mut self) { self.close(); } }
 
 /// A correlation id for an intent this process sends.
 fn next_id() -> u64 {

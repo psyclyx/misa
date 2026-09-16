@@ -97,6 +97,7 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
         }
     });
     Ok(Arc::new(Remote {
+        closed: tokio::sync::watch::channel(false).0,
         activity,
         claimed: std::sync::atomic::AtomicBool::new(false),
         presentation_changes,
@@ -163,6 +164,7 @@ pub fn submitted(
 }
 
 pub async fn invoke(remote: &Remote, prepared: Prepared) -> Result<Outcome, String> {
+    if *remote.closed.borrow() { return Ok(Outcome::Rejected { fault: misa_proto::Fault::new("closed", "Presentation instance closed") }); }
     let Prepared::Invoke { command, input } = prepared else {
         return Err("This action is a read-only report".into());
     };

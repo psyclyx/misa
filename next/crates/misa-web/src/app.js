@@ -382,6 +382,7 @@
       notice.hidden = !text;
     }
     var recoveryFocus = null;
+    var presentationClosed = false, eventStream = null;
     function invalidate() {
       var draft = composer();
       if (!invalid && draft && doc.activeElement === draft)
@@ -390,6 +391,15 @@
       main.hidden = true;
     }
     function transaction(messages) {
+      if (presentationClosed) return;
+      var closed = messages.find(function (message) { return message.kind === "closed"; });
+      if (closed) {
+        presentationClosed = true;
+        if (eventStream) eventStream.close();
+        connectionStatus(closed.data);
+        doc.querySelectorAll("form button, form input, form select, form textarea").forEach(function (control) { control.disabled = true; });
+        return;
+      }
       try {
         // Work summaries are an independent observation. They neither repair
         // nor invalidate the selected document replica.
@@ -478,7 +488,8 @@
     }
     if (browser.EventSource) {
       function connect() {
-        var stream = new browser.EventSource("./events");
+        if (presentationClosed) return;
+        var stream = eventStream = new browser.EventSource("./events");
         stream.addEventListener("transaction", function (message) {
           try { transaction(JSON.parse(message.data)); }
           catch (_) {

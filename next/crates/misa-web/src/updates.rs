@@ -22,6 +22,7 @@ struct Batch {
 }
 #[derive(Default)]
 struct State {
+    closed: bool,
     activity: String,
     documents: BTreeMap<String, State>,
     valid: bool,
@@ -45,6 +46,7 @@ impl Region {
     pub(crate) fn activity_html(&self) -> String { self.state.lock().unwrap().activity.clone() }
     pub(crate) fn activity(&self, html: String) {
         let mut state = self.state.lock().unwrap();
+        if state.closed { return; }
         if state.activity == html { return; }
         state.activity = html.clone();
         self.publish(&mut state, vec![Message { name: Some("activity"), data: html }]);
@@ -59,6 +61,7 @@ impl Region {
     /// Compatibility for static regions and fixtures.
     pub fn set(&self, html: String) {
         let mut state = self.state.lock().unwrap();
+        if state.closed { return; }
         state.documents.clear();
         state.tree = None;
         state.streams.clear();
@@ -83,6 +86,7 @@ impl Region {
     }
     pub fn observed(&self, update: &misa_client::document::Update) -> Result<bool, String> {
         let mut state = self.state.lock().unwrap();
+        if state.closed { return Err("Presentation is closed".into()); }
         let messages = apply_document(&mut state, update, "")?;
         if messages.is_empty() { return Ok(false); }
         self.publish(&mut state, messages);
@@ -93,6 +97,7 @@ impl Region {
     /// call. No selected member is published until every cache update succeeds.
     pub fn observed_documents(&self, updates: Vec<(String, misa_client::document::Update)>) -> Result<bool, String> {
         let mut state = self.state.lock().unwrap();
+        if state.closed { return Err("Presentation is closed".into()); }
         if !state.valid && !state.documents.is_empty() && !state.documents.keys().all(|id| updates.iter().any(|(member, update)| member == id && matches!(update, misa_client::document::Update::Reset(_)))) {
             return Err("Selected document caches require a complete replacement".into());
         }
@@ -123,6 +128,7 @@ impl Region {
         let snapshot = candidate.snapshot();
         let mut replacement = std::mem::take(&mut *candidate.state.lock().unwrap());
         let mut state = self.state.lock().unwrap();
+        if state.closed { return Err("Presentation is closed".into()); }
         replacement.sequence = state.sequence;
         replacement.activity = state.activity.clone();
         *state = replacement;
@@ -189,6 +195,7 @@ impl Region {
     }
     fn snapshot(&self) -> Batch {
         let state = self.state.lock().unwrap();
+        if state.closed { return Batch { sequence: state.sequence, messages: vec![Message { name: Some("closed"), data: "Presentation closed; session work continues".into() }] }; }
         if !state.documents.is_empty() && state.valid {
             return Batch {
                 sequence: state.sequence,
@@ -233,6 +240,7 @@ impl Region {
             receiver,
             sequence: snapshot.sequence,
             pending: snapshot.messages.into(),
+            ended: false,
         }
     }
     pub fn events(
@@ -259,6 +267,12 @@ impl Region {
             },
         );
         Sse::new(stream).keep_alive(KeepAlive::default())
+    }
+    pub(crate) fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.closed { return; }
+        state.closed = true;
+        self.publish(&mut state, vec![Message { name: Some("closed"), data: "Presentation closed; session work continues".into() }]);
     }
 }
 fn apply_document(state: &mut State, update: &misa_client::document::Update, prefix: &str) -> Result<Vec<Message>, String> {
@@ -412,6 +426,7 @@ fn document_message(id: &str, prefix: &str, messages: Vec<Message>) -> serde_jso
     serde_json::json!({"id":id,"prefix":prefix,"messages":messages.into_iter().map(|message| serde_json::json!({"kind":message.name.unwrap_or("snapshot"),"data":message.data})).collect::<Vec<_>>()})
 }
 struct Subscription {
+    ended: bool,
     region: Region,
     receiver: broadcast::Receiver<Batch>,
     sequence: u64,
@@ -428,7 +443,9 @@ impl Subscription {
     }
     async fn next(&mut self) -> Option<Message> {
         loop {
+            if self.ended { return None; }
             if let Some(message) = self.pending.pop_front() {
+                if message.name == Some("closed") { self.ended = true; }
                 return Some(message);
             }
             let batch = match self.receiver.recv().await {
@@ -454,6 +471,21 @@ mod tests {
         sync::{Change, Stream, StreamUpdate, Version},
         view::{Node, Span},
     };
+    #[tokio::test]
+    async fn closing_presentation_ends_existing_and_future_subscriptions() {
+        let region = Region::new();
+        let mut existing = region.subscribe();
+        existing.next_batch().await.unwrap();
+        region.close();
+        region.activity("late work summary".into());
+        let batch = existing.next_batch().await.unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].name, Some("closed"));
+        assert!(existing.next_batch().await.is_none());
+        let mut late = region.subscribe();
+        assert_eq!(late.next_batch().await.unwrap()[0].name, Some("closed"));
+        assert!(late.next_batch().await.is_none());
+    }
     #[tokio::test]
     async fn selected_documents_publish_together_and_failure_hides_partial_cache() {
         use misa_client::document::Update;

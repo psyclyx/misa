@@ -394,6 +394,15 @@
           assert(copiedLocation === "/view/copy/" && JSON.parse(store.getItem("misa.preferences.new-instance")).draft === "copied thought", "copied tab redirects to independent instance and carries initial draft");
           store.setItem("misa.preferences.new-instance", '{"draft":"independent edit"}');
           assert(JSON.parse(store.getItem("misa.preferences.old-instance")).draft === "copied thought", "copied draft does not share future mutations");
+          const closeDoc = document.implementation.createHTMLDocument("close");
+          closeDoc.body.innerHTML = '<main id="main">' + region + '</main>';
+          const closeClient = MisaClient.start(closeDoc, browser);
+          closeDoc.querySelector("textarea").value = "retained thought";
+          closeClient.transaction([{kind: "closed", data: "Presentation closed; session work continues"}]);
+          assert(closeDoc.querySelector("textarea").disabled, "closed presentation disables mutation controls");
+          assert(closeDoc.querySelector("textarea").value === "retained thought", "closing preserves the local draft");
+          closeClient.transaction([{kind: "snapshot", data: "late replacement"}]);
+          assert(closeDoc.querySelector("textarea").value === "retained thought", "late publications cannot revive a closed presentation");
           document.body.dataset.result = "passed";
           document.body.append(checks.length + " browser checks passed");
         } catch (error) {

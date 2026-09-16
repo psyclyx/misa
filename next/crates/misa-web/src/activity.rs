@@ -21,6 +21,7 @@ pub(crate) struct Activity {
     task: tokio::task::AbortHandle,
 }
 impl Drop for Activity { fn drop(&mut self) { self.task.abort(); } }
+impl Activity { pub(crate) fn close(&self) { self.capacity.close(); self.task.abort(); } }
 
 pub(crate) async fn start(client: &Client, interface: &Interface, region: Region) -> Result<Activity, Fault> {
     let members = ["operations.summary", "requests.summary"].into_iter()
