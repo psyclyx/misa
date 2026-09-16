@@ -217,7 +217,7 @@ pub(super) async fn run(
                             let interface=Interface::load(&daemon.client,scope).await.map_err(|f|f.message)?;
                             let detail=misa_client::operation::detail(&daemon.client,&interface,&id).await.map_err(|f|f.message)?.ok_or("Work result expired")?;
                             let form=misa_client::form::Form::command(&interface,&command).map_err(|f|f.message)?;
-                            Ok(Job::Form(identity,form,BTreeMap::from([("id".into(),id),("generation".into(),detail.generation.to_string())])))
+                            Ok(Job::Form(identity,form,BTreeMap::from([("operation".into(),id),("generation".into(),detail.generation.to_string())])))
                         });
                     },
                     Command::Archive{daemon:identity,prefix}=>{
