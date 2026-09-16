@@ -107,7 +107,7 @@ pub fn document_with(session: &SessionInfo, region: &str, lead: &str) -> String 
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
 <title>{title}</title>\n<link rel=\"stylesheet\" href=\"./style.css\">\n\
 </head>\n<body data-session=\"{session_id}\">\n<nav><a href=\"/daemons\">Daemons and sessions</a></nav>{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
-<script src=\"./app.js\" defer></script>\n</body>\n</html>\n",
+<script src=\"./commands.js\" defer></script><script src=\"./app.js\" defer></script>\n</body>\n</html>\n",
         title = escape(&session.title),
         session_id = escape(&session.id),
         toolbar = toolbar(),
@@ -976,6 +976,7 @@ mod presentations;
 mod requests;
 mod activity;
 mod actions;
+mod commands;
 use remote::connect as connect_session;
 
 mod updates;
@@ -1024,6 +1025,10 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/actions", get(actions::list))
         .route("/action", post(actions::open))
         .route("/perform", post(actions::perform))
+        .route("/commands", get(commands::list))
+        .route("/command", get(commands::open))
+        .route("/completions", get(commands::candidates))
+        .route("/commands.js", get(|| async { ([("content-type", "text/javascript")], include_str!("commands.js")) }))
         .route("/attach", post(remote_attach))
         .route("/detach", post(remote_detach))
         .route("/blob/{hash}", get(remote_blob))
@@ -1048,6 +1053,16 @@ async fn remote_intent(
         (StatusCode::BAD_REQUEST, Html(format!("<!doctype html><html><body><p role=\"alert\">{}</p><textarea readonly>{}</textarea><a href=\"./\">Back to session</a></body></html>", escape(&error), escape(form.get("prompt").map(String::as_str).unwrap_or(""))))).into_response()
     };
     let submitted = state.pending.lock().expect("pending attachments").clone();
+    if form.get("action").map(String::as_str) == Some(COMPOSER) {
+        let declarations = state.session.as_ref().map(|session| session.commands.as_slice()).unwrap_or(&[]);
+        if let misa_kit::intent::Parsed::Needs { command, given, .. } = misa_kit::intent::parse(form.get("prompt").map(String::as_str).unwrap_or(""), declarations) {
+            return match commands::prepare(&state, &command, &given.into_iter().collect()).await {
+                Ok(html) if json => axum::Json(serde_json::json!({"ok":true,"preparation":true,"report":html})).into_response(),
+                Ok(html) => requests::page(StatusCode::OK, "Prepare command", format!("{html}<script src=\"./commands.js\"></script>")),
+                Err(fault) => refused(fault.message),
+            };
+        }
+    }
     if let Some(id) = form.get("action").filter(|id| id.as_str() != COMPOSER) {
         if let Ok(model) = misa_client::form::Form::action(&state.interaction.interface, id) {
             if model.fields.iter().any(|(id, field)| !field.optional && !form.contains_key(id)) {

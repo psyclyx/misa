@@ -7,15 +7,34 @@ use misa_proto::{invocation::Outcome, schema::{Literal, Schema}};
 use crate::{Remote, escape};
 
 pub(crate) fn markup(model: &ActionForm) -> String {
-    let mut html = format!("<h2>{}</h2><form method=\"post\" action=\"./perform\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), escape(&model.title));
+    markup_for(model, false, &BTreeMap::new(), &BTreeMap::new())
+}
+
+pub(crate) struct Choices {
+    pub source: String,
+    pub candidates: misa_proto::preparation::Candidates,
+}
+pub(crate) fn markup_for(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>) -> String {
+    let mut html = format!("<h2>{}</h2><form method=\"post\" action=\"./perform\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), if command { "command" } else { "action" }, escape(&model.title));
     for (id, field) in &model.fields {
         let name = escape(&format!("field.{id}"));
+        let draft = drafts.get(id).map(String::as_str).unwrap_or("");
+        let value = escape(draft);
         let required = if field.optional { "" } else { " required" };
         html.push_str(&format!("<label>{}{} ", escape(id), if field.optional { " (optional)" } else { "" }));
         match &field.schema {
-            Schema::String => html.push_str(&format!("<input name=\"{name}\"{required}>")),
-            Schema::Int | Schema::Number => html.push_str(&format!("<input name=\"{name}\" type=\"number\" step=\"{}\"{required}>", if field.schema == Schema::Int { "1" } else { "any" })),
-            Schema::Bool => html.push_str(&format!("<select name=\"{name}\"{required}><option value=\"\">Choose…</option><option value=\"true\">Yes</option><option value=\"false\">No</option></select>")),
+            Schema::String => {
+                if let Some(choices) = choices.get(id) {
+                    let list = format!("choices-{}", crate::next_id());
+                    html.push_str(&format!("<input name=\"{name}\" value=\"{value}\"{required} list=\"{list}\" data-source=\"{}\" aria-describedby=\"{list}-status\"><datalist id=\"{list}\">", escape(&choices.source)));
+                    for choice in &choices.candidates.items {
+                        html.push_str(&format!("<option value=\"{}\">{}{}</option>", escape(&choice.value), escape(&choice.label), choice.detail.as_ref().map(|detail| format!(" · {}", escape(detail))).unwrap_or_default()));
+                    }
+                    html.push_str(&format!("</datalist><small id=\"{list}-status\">{}</small>", if choices.candidates.truncated { "More matches available; type to filter." } else { "" }));
+                } else { html.push_str(&format!("<input name=\"{name}\" value=\"{value}\"{required}>")); }
+            },
+            Schema::Int | Schema::Number => html.push_str(&format!("<input name=\"{name}\" value=\"{value}\" type=\"number\" step=\"{}\"{required}>", if field.schema == Schema::Int { "1" } else { "any" })),
+            Schema::Bool => html.push_str(&format!("<select name=\"{name}\"{required}><option value=\"\">Choose…</option><option value=\"true\"{}>Yes</option><option value=\"false\"{}>No</option></select>", if draft == "true" { " selected" } else { "" }, if draft == "false" { " selected" } else { "" })),
             Schema::Choice { values } => {
                 html.push_str(&format!("<select name=\"{name}\"{required}><option value=\"\">Choose…</option>"));
                 for value in values {
@@ -25,11 +44,11 @@ pub(crate) fn markup(model: &ActionForm) -> String {
                         Literal::Int(value) => (value.to_string(), value.to_string()),
                         Literal::String(value) => (serde_json::to_string(value).unwrap(), value.clone()),
                     };
-                    html.push_str(&format!("<option value=\"{}\">{}</option>", escape(&value), escape(&label)));
+                    html.push_str(&format!("<option value=\"{}\"{}>{}</option>", escape(&value), if draft == value { " selected" } else { "" }, escape(&label)));
                 }
                 html.push_str("</select>");
             }
-            _ => html.push_str(&format!("<textarea name=\"{name}\"{required} aria-label=\"{} as JSON\"></textarea><small>Enter a JSON value. Bytes use an array of numbers from 0 to 255.</small>", escape(id))),
+            _ => html.push_str(&format!("<textarea name=\"{name}\"{required} aria-label=\"{} as JSON\">{value}</textarea><small>Enter a JSON value. Bytes use an array of numbers from 0 to 255.</small>", escape(id))),
         }
         html.push_str("</label>");
     }
@@ -58,7 +77,12 @@ pub(crate) async fn perform(State(remote): State<Arc<Remote>>, headers: HeaderMa
         else { crate::requests::page(status, title, escape(message)) }
     };
     let prepared = (|| {
-        let model = ActionForm::action(&remote.interaction.interface, fields.get("action_id").map(String::as_str).unwrap_or(""))?;
+        let id = fields.get("action_id").map(String::as_str).unwrap_or("");
+        let model = match fields.get("kind").map(String::as_str) {
+            None | Some("action") => ActionForm::action(&remote.interaction.interface, id)?,
+            Some("command") => ActionForm::command(&remote.interaction.interface, id)?,
+            _ => return Err(misa_proto::Fault::protocol("Unknown form kind")),
+        };
         let drafts = fields.iter().filter_map(|(key,value)| key.strip_prefix("field.").map(|id| (id.into(), value.clone()))).collect::<BTreeMap<_, _>>();
         let (command, input) = model.prepare(&drafts)?;
         remote.interaction.invoke(&command, input)

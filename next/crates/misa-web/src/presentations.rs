@@ -16,7 +16,7 @@ pub(crate) struct Change {
 
 pub(crate) fn controls(remote: &Remote) -> String {
     let preferences = remote.preferences.lock().unwrap();
-    let mut html = String::from("<p><a href=\"./requests\">Pending requests</a> · <a href=\"./actions\">Actions</a></p><details><summary>Presentations</summary>");
+    let mut html = String::from("<p><a href=\"./commands\">Commands</a> · <a href=\"./requests\">Pending requests</a> · <a href=\"./actions\">Actions</a></p><details><summary>Presentations</summary>");
     for presentation in &remote.interaction.interface.presentations {
         let default = if ["conversation", "status"].contains(&presentation.id.as_str()) { Choice::Auto } else { Choice::Hidden };
         let current = preferences.0.get(&presentation.id).unwrap_or(&default);

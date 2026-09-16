@@ -150,8 +150,10 @@
       });
       main.before(panel);
     }
-    function report(html) {
+    var preparationDrafts = new WeakMap();
+    function report(html, preparation) {
       var dialog = doc.createElement("dialog");
+      if (preparation) preparationDrafts.set(dialog, preparation);
       var content = doc.createElement("section");
       content.innerHTML = html;
       var close = doc.createElement("button");
@@ -167,9 +169,12 @@
     }
     doc.addEventListener("submit", async function (event) {
       var form = event.target;
-      if (!browser.fetch || (!form.action.endsWith("/intent") && !form.action.endsWith("/perform"))) return;
+      // A control named "action" shadows HTMLFormElement.action. Read the DOM
+      // attribute, not named form properties, for the transport destination.
+      var destination = new URL(form.getAttribute("action") || "", doc.baseURI).href;
+      if (!browser.fetch || (!destination.endsWith("/intent") && !destination.endsWith("/perform"))) return;
       event.preventDefault();
-      var key = form.id || form.action;
+      var key = form.getAttribute("id") || destination;
       if (pendingForms.has(key) || pendingForms.size >= 16) return;
       var draft = composer();
       var isComposer = draft && form.contains(draft);
@@ -184,12 +189,12 @@
       form.setAttribute("aria-busy", "true");
       try {
         var fields = new FormData(form, event.submitter || undefined);
-        var response = await browser.fetch(form.action, { method: "POST", headers: { "Accept": "application/json" }, body: new URLSearchParams(fields) });
+        var response = await browser.fetch(destination, { method: "POST", headers: { "Accept": "application/json" }, body: new URLSearchParams(fields) });
         var result = await response.json();
         if (!response.ok || result.ok !== true) throw Error(result.error || "Submission was not confirmed");
         if (saved) {
           prefs.state.recoveries = prefs.state.recoveries.filter(function (entry) { return entry.id !== saved.id; });
-          if (draftVersion === version) {
+          if (draftVersion === version && !result.preparation) {
             prefs.state.draft = "";
             var current = composer();
             if (current) current.value = "";
@@ -197,8 +202,14 @@
           prefs.save();
           recoveryPanel();
         }
-        if (form.closest("dialog")) { var dialog = form.closest("dialog"); dialog.close(); dialog.remove(); }
-        if (result.report) report(result.report);
+        if (form.closest("dialog")) {
+          var dialog = form.closest("dialog"), preparation = preparationDrafts.get(dialog);
+          if (preparation && draftVersion === preparation.version) {
+            prefs.state.draft = ""; var current = composer(); if (current) current.value = ""; prefs.save();
+          }
+          dialog.close(); dialog.remove();
+        }
+        if (result.report) report(result.report, result.preparation ? { version: version } : null);
         submissionStatus("");
       } catch (error) {
         var reason = (error.message || "Reply lost; execution may have occurred.") + " Check the session before retrying.";

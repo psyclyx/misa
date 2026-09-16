@@ -6,6 +6,7 @@ use misa_client::{
     interface::Interface,
 };
 use misa_proto::{Intent, invocation::Outcome, observation::Selection};
+#[cfg(test)]
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -288,6 +289,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+        let prepare_model = super::super::remote_router(remote.clone()).oneshot(request("%2Fmodel")).await.unwrap();
+        let status = prepare_model.status();
+        let body = axum::body::to_bytes(prepare_model.into_body(), 65536).await.unwrap();
+        assert_eq!(status, axum::http::StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let prepared: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(prepared["preparation"], true);
+        let html = prepared["report"].as_str().unwrap();
+        assert!(html.contains("field.model") && html.contains("scripted-1") && html.contains("data-source=\"models\""));
+        let providers = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri("/command?shortcut=login").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(providers.status(), axum::http::StatusCode::OK);
+        let html = String::from_utf8(axum::body::to_bytes(providers.into_body(), 65536).await.unwrap().to_vec()).unwrap();
+        assert!(html.contains("field.provider") && html.contains("groq"));
+        let filtered = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri("/completions?source=providers&q=groq").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(filtered.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(filtered.into_body(), 65536).await.unwrap();
+        let candidates: misa_proto::preparation::Candidates = serde_json::from_slice(&body).unwrap();
+        assert_eq!(candidates.items.len(), 1);
+        assert_eq!(candidates.items[0].value, "groq");
+        assert!(!remote.region.get().contains("scoped web reply"), "preparation does not execute a prompt");
         let accepted = super::super::remote_router(remote.clone())
             .oneshot(request("hello"))
             .await
@@ -338,8 +358,11 @@ mod tests {
         assert!(remote.region.get().contains("data-presentation=\"status\""));
         // Credential detail is a private finite read; visibility and drafts are
         // local, while resolution updates every observer of the shared work.
-        let login = remote.interaction.invoke("credentials.authorize", Value::map([("provider", Value::str("groq"))])).unwrap();
-        let Outcome::Accepted { operation: credential } = invoke(&remote, login).await.unwrap() else { panic!("credential operation must be accepted"); };
+        let login = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().method("POST").uri("/perform").header("content-type", "application/x-www-form-urlencoded").header("accept", "application/json").body(axum::body::Body::from("kind=command&action_id=credentials.authorize&field.provider=groq")).unwrap()).await.unwrap();
+        assert_eq!(login.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(login.into_body(), 65536).await.unwrap();
+        let login: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let Outcome::Accepted { operation: credential } = serde_json::from_value(login["outcome"].clone()).unwrap() else { panic!("credential operation must be accepted"); };
         tokio::time::timeout(Duration::from_secs(5), async {
             while !remote.region.activity_html().contains("Respond") || !other.region.activity_html().contains("Respond") {
                 tokio::time::sleep(Duration::from_millis(2)).await;

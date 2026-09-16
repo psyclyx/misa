@@ -281,4 +281,6 @@ Actions now use shared schema-derived forms: strings, numeric values, booleans, 
 
 ## Incremental implementation commits
 
+Web command preparation now uses declared command schemas and finite completion sources. `/model` and `/login` open local forms with candidates before any prompt; typed candidate searches are bounded and reject stale replies. Opening preparation preserves the composer; selecting a command preserves any newer typing. Real HTTP tests verify startup model/provider enumeration, filtered providers, and the prepared credential invocation. Chromium covers stale completion, local preparation and newer draft preservation. The realistic composer fixture exposed an HTML named-property collision (`name="action"` shadows `form.action`); submission now reads the action attribute. Web34 tests and Chromium checks pass.
+
 The user authorized commits as work proceeds. The reviewed plan, shared client foundation, protocol/query/publication foundation, session operation machinery, kernel ownership/teardown, daemon lifecycle/delegation and real-WASM contribution contracts are now committed as coherent subsystem changes. The coordinated cutover remains unfinished: normal-path legacy removal, final client migrations, both lockfiles/source closures, and packaged artifact verification are still required.

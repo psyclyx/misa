@@ -3,6 +3,7 @@
   <body>
     <script src="../src/app.js"></script>
     <script src="../src/request.js"></script>
+    <script src="../src/commands.js"></script>
     <script>
       (async function () {
         const checks = [];
@@ -320,6 +321,39 @@
           actionForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
           await new Promise(function (resolve) { setTimeout(resolve, 0); });
           assert(!actionDoc.querySelector("dialog") && actionCalls === 2, "confirmed generic action closes only its local form");
+          const searchFrame = document.createElement("iframe"); document.body.appendChild(searchFrame);
+          const searchDoc = searchFrame.contentDocument;
+          searchDoc.body.innerHTML = '<input data-source="providers" list="provider-choices" aria-describedby="provider-status"><datalist id="provider-choices"></datalist><small id="provider-status"></small>';
+          const searches = [];
+          MisaCommands.start(searchDoc, { fetch: function (url) { return new Promise(function (resolve) { searches.push({ url, resolve }); }); } });
+          const searchField = searchDoc.querySelector("input");
+          searchField.value = "g"; searchField.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 150); });
+          searchField.value = "gr"; searchField.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 150); });
+          assert(searches.length === 2 && searches[1].url.includes("q=gr"), "completion reads the command field's current text");
+          searches[1].resolve({ ok: true, json: async function () { return { items: [{ value: "groq", label: "Groq" }], truncated: false }; } });
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          searches[0].resolve({ ok: true, json: async function () { return { items: [{ value: "obsolete", label: "Obsolete" }], truncated: true }; } });
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(searchDoc.querySelector("option").value === "groq" && searchField.value === "gr", "late completion cannot replace newer choices or edit the field");
+          const prepareFrame = document.createElement("iframe"); document.body.appendChild(prepareFrame);
+          const prepareDoc = prepareFrame.contentDocument;
+          prepareDoc.body.innerHTML = '<main id="main"><form id="composer" action="./intent"><input type="hidden" name="action" value="composer.submit"><textarea name="prompt"></textarea><button>Send</button></form></main>';
+          let preparationCalls = 0, invocationCalls = 0;
+          const prepareClient = MisaClient.start(prepareDoc, { localStorage: storage(), scrollY: 0, innerHeight: 800, scrollTo() {}, fetch: async function (url) {
+            if (url.endsWith("/perform")) { invocationCalls++; return { ok: true, json: async function () { return { ok: true }; } }; }
+            preparationCalls++; return { ok: true, json: async function () { return { ok: true, preparation: true, report: '<form action="./perform"><input name="field.model" value="chosen"><button>Select</button></form>' }; } };
+          } });
+          const prepareComposer = prepareDoc.querySelector("textarea");
+          prepareComposer.value = "/model"; prepareComposer.dispatchEvent(new Event("input", { bubbles: true }));
+          prepareDoc.querySelector("#composer").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(prepareComposer.value === "/model" && invocationCalls === 0 && prepareClient.prefs.state.recoveries.length === 0, "opening command preparation preserves the composer without claiming a pending invocation");
+          prepareComposer.value = "newer thought"; prepareComposer.dispatchEvent(new Event("input", { bubbles: true }));
+          prepareDoc.querySelector("dialog form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(invocationCalls === 1 && preparationCalls === 1 && prepareComposer.value === "newer thought" && !prepareDoc.querySelector("dialog"), "choosing a prepared command preserves newer composer input");
           const prefFrame = document.createElement("iframe");
           document.body.appendChild(prefFrame);
           const prefDoc = prefFrame.contentDocument;
