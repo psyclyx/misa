@@ -16,7 +16,7 @@
 //!
 //! # The four boundaries, and where each is enforced
 //!
-//! - **A plugin declares; it does not register.** [`Plugin::describe`] is called once, at
+//! - **A plugin declares; it does not register.** The guest's `describe` is called once, at
 //!   load, and [`Plugin::validate`] compares those declarations against the composition
 //!   before anything runs. Nothing a plugin does later adds a handler.
 //! - **A plugin never sees a secret.** Nothing in the world can express one: the data that
@@ -42,4 +42,5 @@ mod handler;
 mod host;
 
 pub use handler::{PLUGIN_PRIORITY, PluginHandler};
-pub use host::{Descriptor, Patch, Plugin, PluginFault};
+pub use host::{Descriptor, Patch, Plugin, PluginFault, QueryDefinition, QuerySource, QueryResultContract, Presentation, PresentationVariant};
+pub use host::CommandDefinition;

@@ -14,6 +14,8 @@ serde_json.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+misa-client.workspace = true
+misa-protocol.workspace = true
 # The fixture test encodes `wit/guest`'s module into a component in process, which is the
 # same thing `wasm-tools component new` does — so the test needs no binary of its own.
 wit-component.workspace = true

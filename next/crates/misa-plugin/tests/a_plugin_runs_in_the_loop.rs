@@ -19,7 +19,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
-use misa_plugin::{Descriptor, PLUGIN_PRIORITY, Plugin, PluginFault};
+use misa_plugin::{ PLUGIN_PRIORITY, Plugin, PluginFault};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Query, Registry};
 use misa_proto::wire::Intent;
 use misa_session::{Reading, Runtime};
@@ -45,15 +45,15 @@ fn component() -> Vec<u8> {
     if let Ok(path) = std::env::var("MISA_PLUGIN_FIXTURE") {
         return std::fs::read(&path).expect("the component MISA_PLUGIN_FIXTURE names");
     }
-    {
-        // (the build below is the fallback, and it is what the shell is for)
-    }
+    build_component("guest")
+}
+fn build_component(package:&str)->Vec<u8> {
     let next = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
         .expect("the workspace root")
         .to_path_buf();
-    let guest = next.join("wit/guest");
+    let guest = next.join("wit").join(package);
     let target = std::env::temp_dir().join(format!("misa-guest-fixture-{}", std::process::id()));
     // The guest is built the way the README says, with the outer build's target settings taken
     // out of the environment: a `CARGO_TARGET_DIR` or a `RUSTFLAGS` meant for a host build is
@@ -71,7 +71,7 @@ fn component() -> Vec<u8> {
         .expect("cargo, and a rustc with the wasm32-unknown-unknown target: run this from the shell");
     assert!(status.success(), "the fixture did not build");
     let module = std::fs::read(
-        target.join("wasm32-unknown-unknown/release/policy_guest.wasm"),
+        target.join(format!("wasm32-unknown-unknown/release/policy_{package}.wasm")),
     )
     .expect("the module the guest built");
 
@@ -99,18 +99,11 @@ fn loaded() -> Arc<Plugin> {
 fn a_plugin_tells_the_host_what_it_is_before_it_runs() {
     let plugin = loaded();
     let descriptor = plugin.descriptor();
-    assert_eq!(
-        descriptor,
-        &Descriptor {
-            id: "policy.guest".into(),
-            version: "0.1.0".into(),
-            events: vec!["intent/prompt".into(), "intent/action".into(), "intent/cancel".into()],
-            queries: vec!["policy.guest.turns".into(), "policy.guest.state".into()],
-            effects: vec!["kernel.log.append".into()],
-            actions: vec!["refresh".into()],
-            roots: vec!["guest".into()],
-        }
-    );
+    assert_eq!(descriptor.id, "policy.guest");
+    assert_eq!(descriptor.version, "0.2.0");
+    assert_eq!(descriptor.queries.len(), 4);
+    assert_eq!(descriptor.presentations.len(), 1);
+    assert_eq!(descriptor.presentations[0].select(&[]).unwrap().member.query.id, "policy.guest.document");
     // The root it declared is the one it writes into: the composition makes it, and that is
     // what makes its patch land.
     assert_eq!(plugin.descriptor().roots, vec!["guest".to_string()]);
@@ -217,7 +210,7 @@ fn a_plugin_that_refuses_an_event_rolls_its_transaction_back() {
 fn a_query_is_a_subscription_the_loop_can_read() {
     let plugin = loaded();
     let db = Value::map([("session", Value::map([("id", Value::str("demo"))]))]);
-    let answered = plugin.query("policy.guest.turns", &[Value::Int(1)], &[], &db, None).expect("an answer");
+    let answered = plugin.query("policy.guest.turns", &[], &[], None, None).expect("an answer");
     assert_eq!(answered.get("answered").and_then(Value::as_str), Some("policy.guest.turns"));
 
     // The same call through the loop, which is how a client would reach it: a subscription
@@ -232,10 +225,47 @@ fn a_query_is_a_subscription_the_loop_can_read() {
 }
 
 #[test]
+fn read_contracts_isolate_data_and_derived_queries_receive_only_dependencies() {
+    let plugin = loaded();
+    assert!(plugin.authorize_reads(&[]).is_err());
+    plugin.authorize_reads(plugin.roots()).unwrap();
+    let db = Value::map([
+        ("guest", Value::map([("count", Value::Int(3))])),
+        ("private", Value::str("must not cross query boundary")),
+    ]);
+    let mut registry = Registry::new();
+    for (id, definition) in plugin.subscriptions() { registry = registry.subscription(id, definition); }
+    registry.validate().unwrap();
+    let mut scope = misa_reframe::Scope::new();
+    let result = scope.evaluate(&db, &registry, &Query::new("policy.guest.copy")).unwrap().unwrap();
+    assert_eq!(result, Value::map([("guest", Value::map([("count", Value::Int(3))]))]));
+    assert!(plugin.query("policy.guest.turns", &[Value::Int(1)], &[], None, None).is_err());
+    assert!(plugin.query("policy.guest.copy", &[], &[], Some(&db), None).is_err());
+    assert!(plugin.query("undeclared", &[], &[], None, None).is_err());
+    let invalid = Value::map([("guest", Value::Int(3))]);
+    assert!(plugin.query("policy.guest.state", &[], &[], Some(&invalid), None).is_err());
+}
+
+#[test]
+fn guest_query_faults_remain_faults_through_the_scope() {
+    let plugin = loaded();
+    let mut registry = Registry::new();
+    for (id, definition) in plugin.subscriptions() { registry = registry.subscription(id, definition); }
+    let mut scope = misa_reframe::Scope::new();
+    let query = Query::new("policy.guest.document");
+    let refusing = Value::map([("guest", Value::map([("refuse", Value::Bool(true))]))]);
+    let fault = scope.evaluate(&refusing, &registry, &query).unwrap_err();
+    assert_eq!(fault.code, "policy.guest.no-view");
+    assert!(scope.current(&query).is_none());
+    assert!(scope.evaluate(&Value::map([]), &registry, &query).unwrap().is_some());
+}
+
+#[test]
 fn a_view_is_built_the_way_any_other_tree_is() {
     let plugin = loaded();
     let db = Value::Null;
-    let tree = plugin.view(&db).expect("a tree");
+    let value = plugin.query("policy.guest.document", &[], &[], Some(&db), None).expect("document query");
+    let tree = plugin.document(&value).expect("a tree");
     assert_eq!(tree.id, "guest");
     assert_eq!(tree.role, "guest.panel");
     assert_eq!(tree.children.len(), 1);
@@ -254,28 +284,23 @@ fn a_component_that_is_not_a_policy_plugin_is_refused_rather_than_run() {
 }
 
 #[tokio::test]
-async fn a_plugin_presents_a_section_a_session_places() {
-    // The whole of a plugin's presentation: it returns a tree, the session places it in the
-    // document under a role built from the plugin's id, and every frontend draws it — with no
-    // frontend code, which is the point of putting it in the document rather than in a query each
-    // client would have to know about.
+async fn a_plugin_presentation_is_selected_and_placed_by_a_client() {
+    // A client discovers the plugin document through the catalog and chooses its
+    // baseline variant independently of the canonical conversation.
     let plugin = loaded();
     let (runtime, _kernel) = session(contribution(&plugin));
     let node = view(&runtime);
     misa_proto::view::validate(&node).expect("a tree a client may be sent");
 
-    let section = misa_proto::view::find(&node, "plugin.policy.guest").expect("the plugin's section");
-    assert_eq!(section.role, "plugin.policy.guest");
-    assert_eq!(section.label.as_deref(), Some("policy.guest"));
+    assert!(misa_proto::view::find(&runtime.view().unwrap(), "guest").is_none(), "plugin leaked into canonical conversation");
 
-    // The plugin's own ids are inside the session's namespace, and its affordance is on the node it
-    // put it on — with the plugin's own action id, not a mangled one.
-    let root = misa_proto::view::find(&node, "plugin.policy.guest.guest").expect("the plugin's root, namespaced");
+    // Each selected document keeps its own node identity space and bindings.
+    let root = misa_proto::view::find(&node, "guest").expect("the plugin document root");
     assert_eq!(root.actions.len(), 1);
-    assert_eq!(root.actions[0].id, "refresh");
+    assert_eq!(root.actions[0].id, "policy.guest.refresh");
     assert_eq!(root.actions[0].label.as_deref(), Some("Refresh"));
 
-    // The plugin receives the complete semantic database independently of the client.
+    // The plugin receives only its declared read data independently of the client.
     let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
     assert!(text.contains("drawn for"), "{text}");
     assert!(text.contains("semantic"), "semantic plugin view: {text}");
@@ -283,20 +308,21 @@ async fn a_plugin_presents_a_section_a_session_places() {
 
 #[tokio::test]
 async fn an_action_from_a_plugins_tree_reaches_the_plugin() {
-    // No router anywhere: the client's action is the loop's own intent/action event, the session
-    // does not fault for it because the plugin declared it, and the plugin — which declared that
-    // event kind — does the work.
+    // Bindings prepare inputs; the owner independently validates the invocation.
     let plugin = loaded();
     let (runtime, _kernel) = session(contribution(&plugin));
     let _ = view(&runtime);
 
-    let faults = runtime.intent(Intent::Action {
-        node: "plugin.policy.guest.guest".into(),
-        action: "refresh".into(),
-        args: Value::Null,
-        fields: Vec::new(),
-    });
-    assert!(faults.is_empty(), "{faults:?}");
+    use misa_proto::invocation::{Invocation, Outcome};
+    use misa_protocol::invocation::{CallContext, Dispatcher};
+    let dispatcher = Dispatcher::new(CallContext { principal: "paired-test".into(), connection: 1 }, 4, Default::default(), Default::default());
+    let binding = &plugin.descriptor().bindings[0].binding;
+    let mut invocation = Invocation { id: 1, scope: runtime.scope(), command: binding.command.clone(), input: Value::map([("confirm", Value::str("yes"))]) };
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation.clone()).await.outcome, Outcome::Rejected { .. }));
+    invocation.input = binding.prepare(&std::collections::BTreeMap::new()).unwrap();
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation).await.outcome, Outcome::Completed { value: Value::Null }));
+    // Legacy node action traffic cannot invoke the installed command implicitly.
+    assert!(!runtime.intent(Intent::Action { node: "plugin.policy.guest.main.guest".into(), action: "policy.guest.refresh".into(), args: Value::Null, fields: vec![] }).is_empty());
 
     wait_for_guest(&runtime, "acted").await;
 
@@ -317,7 +343,8 @@ async fn a_plugin_that_runs_away_is_stopped_by_its_budget_and_the_session_still_
     // about. The budget is fuel, so it costs no threads and no timers, and what a person sees is a
     // sentence where the widget was.
     let plugin = loaded();
-    let contribution = contribution(&plugin).with_root("spin", Value::Bool(true)).expect("a root");
+    let mut contribution = contribution(&plugin);
+    contribution.roots.iter_mut().find(|(name, _)| name == "guest").unwrap().1 = Value::map([("spin", Value::Bool(true))]);
     let (runtime, _kernel) = session(contribution);
     let node = view(&runtime);
     misa_proto::view::validate(&node).expect("a tree a client may be sent");
@@ -333,7 +360,8 @@ async fn a_plugin_that_runs_away_is_stopped_by_its_budget_and_the_session_still_
 #[tokio::test]
 async fn a_plugin_that_refuses_to_present_is_a_sentence_too() {
     let plugin = loaded();
-    let contribution = contribution(&plugin).with_root("refuse", Value::Bool(true)).expect("a root");
+    let mut contribution = contribution(&plugin);
+    contribution.roots.iter_mut().find(|(name, _)| name == "guest").unwrap().1 = Value::map([("refuse", Value::Bool(true))]);
     let (runtime, _kernel) = session(contribution);
     let node = view(&runtime);
     let text = misa_render::to_plain(&misa_render::render(&node, &misa_render::Theme::plain(), 100));
@@ -347,17 +375,13 @@ async fn a_plugin_that_refuses_to_present_is_a_sentence_too() {
 /// runtime is one thread that blocks is a test that starves the writer it is waiting for.
 async fn wait_for_entries(kernel: &misa_kernel::LocalKernel, conversation: &str) -> Vec<misa_kernel::LogEntry> {
     for _ in 0..200 {
-        let entries = kernel
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.conversation == conversation)
-            .collect::<Vec<_>>();
+        let entries = kernel.store().load(conversation,0,100_000).expect("read the requested log directly");
         if !entries.is_empty() {
             return entries;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("no entry arrived for `{conversation}`");
+    panic!("no entry arrived for `{conversation}`; recorded entries: {:?}",kernel.entries());
 }
 
 /// Wire a plugin the way a daemon does: handlers, queries, affordances, presentation, and the
@@ -370,17 +394,20 @@ fn contribution(plugin: &Arc<Plugin>) -> misa_session::Contribution {
     for (name, subscription) in plugin.subscriptions() {
         contribution = contribution.with_subscription(name, subscription);
     }
-    for action in &plugin.descriptor().actions {
-        contribution = contribution.with_action(action).expect("an affordance the session does not have");
+    for definition in &plugin.descriptor().queries {
+        contribution = contribution.export_query(definition.export());
     }
-    let presenting = plugin.clone();
-    contribution = contribution.with_section(misa_session::views::Section {
-        inputs: vec![misa_value::Path::root()],
-        plugin: plugin.descriptor().id.clone(),
-        build: Arc::new(move |db| {
-            presenting.view(db).map_err(|fault| fault.message)
-        }),
-    });
+    for command in &plugin.descriptor().commands {
+        contribution = contribution.with_command(misa_session::commands::CommandRegistration::event(
+            &command.id, command.input.clone(), &command.event,
+        ));
+    }
+    for tool in &plugin.descriptor().tools { contribution=contribution.with_tool(tool.clone()); }
+    for binding in &plugin.descriptor().bindings { contribution = contribution.with_binding(binding.clone()); }
+    plugin.authorize_reads(plugin.roots()).expect("granted own roots");
+    for presentation in &plugin.descriptor().presentations {
+        contribution = contribution.with_presentation(presentation.clone());
+    }
     for root in plugin.roots() {
         contribution = contribution.with_root(root, Value::map([])).expect("a root of its own");
     }
@@ -406,10 +433,24 @@ fn session(contribution: misa_session::Contribution) -> (Arc<Runtime>, Arc<Local
 
 /// The view a client would draw.
 fn view(runtime: &Runtime) -> misa_proto::view::Node {
-    match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).expect("a view") {
-        Reading::View(node) => node,
-        Reading::Data(_) => panic!("the view query answered with data"),
+    use misa_proto::observation::{Selection, Content};
+    let Reading::Data(value) = runtime.read(&Query::new(misa_proto::presentation::CATALOG)).unwrap() else { panic!() };
+    let catalog: Vec<misa_proto::presentation::Presentation> = serde_json::from_value(serde_json::to_value(value).unwrap()).unwrap();
+    let members = catalog.into_iter().filter(|presentation| presentation.id != "status").map(|presentation| {
+        let mut member = presentation.select(&[]).unwrap().member.clone();
+        member.optional = presentation.id != "conversation";
+        (presentation.id, member)
+    }).collect();
+    let snapshot = runtime.read_selection(&Selection { scope: runtime.scope(), members }).unwrap();
+    let mut root = misa_proto::Node::section("client.composition").id("client.composition");
+    for (id, content) in snapshot.members {
+        match content {
+            Content::Document(document) => root.children.push(document.tree),
+            Content::Unavailable(fault) => root.children.push(misa_proto::Node::new("error", misa_proto::view::Kind::Status { text: format!("{id}: {}", fault.message) }).id(id)),
+            _ => panic!("presentation must be a document"),
+        }
     }
+    root
 }
 
 /// A session spawns the tasks that carry kernel reports back, so this one is async like the
@@ -460,4 +501,37 @@ async fn wait_for_guest(runtime: &Runtime, key: &str) {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("durable plugin patch {key} was not acknowledged");
+}
+
+#[tokio::test]
+async fn pet_command_and_model_tool_share_state_while_presentations_are_local_choices() {
+    use misa_proto::{invocation::{Invocation,Outcome},observation::{Content,Selection}};
+    use misa_protocol::invocation::{CallContext,Dispatcher};
+    let plugin=Arc::new(Plugin::load(&build_component("pet")).unwrap());
+    plugin.validate(&misa_session::AcceptedEffects).unwrap();
+    let kernel=Arc::new(LocalKernel::new(ScriptedProvider::new([
+        misa_kernel::Turn::call("pet_feed",Value::map([("amount",Value::Int(3))]),misa_kernel::Turn::say("Pet fed")),
+    ])));
+    let runtime=Runtime::start_with("pet-test","Pet",None,kernel,"scripted","scripted-1",Value::Null,contribution(&plugin));
+    let dispatcher=Dispatcher::new(CallContext{principal:"pet-owner".into(),connection:1},8,Default::default(),Default::default());
+    let call=|id,command:&str,input|Invocation{id,scope:runtime.scope(),command:command.into(),input};
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(),call(1,"pet.feed",Value::map([("amount",Value::Int(2))]))).await.outcome,Outcome::Completed{..}));
+    let treats=||match runtime.read(&Query::new("pet.state")).unwrap(){Reading::Data(value)=>value.get("treats").and_then(Value::as_i64).unwrap(),_=>panic!()};
+    tokio::time::timeout(std::time::Duration::from_secs(5),async{while treats()!=2{tokio::task::yield_now().await;}}).await.expect("admitted plugin patch becomes durable state");
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(),call(2,"session.prompt",Value::map([("text",Value::str("feed pet")),("attachments",Value::list([]))]))).await.outcome,Outcome::Accepted{..}));
+    tokio::time::timeout(std::time::Duration::from_secs(5),async{while treats()!=5{tokio::task::yield_now().await;}}).await.unwrap();
+    let presentation=&plugin.descriptor().presentations[0];
+    assert_eq!(presentation.select(&[]).unwrap().id,"portable");
+    assert_eq!(presentation.select(&["semantic.meter@1".into()]).unwrap().id,"rich");
+    let preferences=misa_client::composition::Preferences::default();
+    assert!(preferences.resolve(&plugin.descriptor().presentations,&[],&[]).unwrap().is_empty());
+    let mut preferences=preferences;
+    preferences.set(&plugin.descriptor().presentations,&[],&presentation.id,misa_client::composition::Choice::Auto).unwrap();
+    let selected=preferences.resolve(&plugin.descriptor().presentations,&[],&[]).unwrap();
+    let snapshot=runtime.read_selection(&Selection{scope:runtime.scope(),members:selected}).unwrap();
+    let Content::Document(document)=&snapshot.members[&presentation.id] else{panic!()};
+    assert!(misa_render::to_plain(&misa_render::render(&document.tree,&misa_render::Theme::plain(),80)).contains("5 treats"));
+    assert!(misa_proto::view::find(&runtime.view().unwrap(),"pet").is_none());
+    preferences.set(&plugin.descriptor().presentations,&[],&presentation.id,misa_client::composition::Choice::Hidden).unwrap();
+    assert!(preferences.resolve(&plugin.descriptor().presentations,&[],&[]).unwrap().is_empty());
 }

@@ -1,4 +1,4 @@
-// A policy plugin, as a guest sees it: five functions, all of them data.
+// A policy plugin, as a guest sees it: four functions, all of them data.
 //
 // The shapes are generated from `../policy.wit`, so this file is also the check on it: a
 // record with a field the wit does not have, a variant arm that is not there, or a signature
@@ -14,7 +14,9 @@ wit_bindgen::generate!({
 });
 
 use exports::misa::policy::policy_api::{
-    Action, Descriptor, Effect, Event, Fault, Guest, Node, Op, OptionValue, Patch, QueryRequest, ViewTree,
+    Descriptor, Effect, Event, Fault, Guest, Op, OptionValue, Patch, QueryRequest,
+    QueryDefinition, QuerySource, ReadContract, Presentation, PresentationVariant,
+    CommandDefinition, ActionBinding,
 };
 
 struct Shell;
@@ -24,20 +26,53 @@ impl Guest for Shell {
     /// may ask for, told to the host once, at install.
     fn describe() -> Descriptor {
         Descriptor {
+            tools: vec![],
             id: "policy.guest".to_string(),
-            version: "0.1.0".to_string(),
-            // Three kinds, and every one of them is the loop's own vocabulary. `intent/action`
-            // is how this plugin is acted on: an affordance in a tree it presented comes back as
-            // that event, and nothing on this side has to know where the session filed it.
+            version: "0.2.0".to_string(),
+            // Commands use explicitly installed plugin events.
             events: vec![
                 "intent/prompt".to_string(),
-                "intent/action".to_string(),
+                "plugin.policy.guest.refresh".to_string(),
                 "intent/cancel".to_string(),
             ],
             // What its views offer. A tree that offers anything else is refused when it is
             // presented.
-            actions: vec!["refresh".to_string()],
-            queries: vec!["policy.guest.turns".to_string(), "policy.guest.state".to_string()],
+            commands: vec![CommandDefinition {
+                id: "policy.guest.refresh".into(), event: "plugin.policy.guest.refresh".into(),
+                input: r#"{"type":"record","fields":{"confirm":{"schema":{"type":"bool"}}}}"#.into(),
+            }],
+            bindings: vec![ActionBinding { id: "policy.guest.refresh".into(), command: "policy.guest.refresh".into(),
+                bound: r#"{"confirm":true}"#.into(), inputs: "{}".into(),
+            }],
+            queries: vec![
+                QueryDefinition {
+                    id: "policy.guest.turns".into(), contract: "policy.guest.turns@1".into(), arguments: vec![],
+                    output: r#"{"kind":"data","schema":{"type":"record","fields":{"answered":{"schema":{"type":"string"}}}}}"#.into(),
+                    source: QuerySource::Derived(vec![]),
+                },
+                QueryDefinition {
+                    id: "policy.guest.state".into(), contract: "policy.guest.state@1".into(), arguments: vec![],
+                    output: r#"{"kind":"data","schema":{"type":"record","fields":{},"allow_unknown":true}}"#.into(),
+                    source: QuerySource::Read(ReadContract {
+                        roots: vec!["guest".into()],
+                        schema: r#"{"type":"record","fields":{"guest":{"optional":true,"schema":{"type":"record","fields":{},"allow_unknown":true}}}}"#.into(),
+                    }),
+                },
+                QueryDefinition {
+                    id: "policy.guest.copy".into(), contract: "policy.guest.copy@1".into(), arguments: vec![],
+                    output: r#"{"kind":"data","schema":{"type":"record","fields":{},"allow_unknown":true}}"#.into(),
+                    source: QuerySource::Derived(vec![QueryRequest { id: "policy.guest.state".into(), args: vec![] }]),
+                },
+                QueryDefinition {
+                    id: "policy.guest.document".into(), contract: "policy.guest.document@1".into(), arguments: vec![], output: r#"{"kind":"document"}"#.into(),
+                    source: QuerySource::Read(ReadContract { roots: vec!["guest".into()],
+                        schema: r#"{"type":"record","fields":{"guest":{"optional":true,"schema":{"type":"record","fields":{},"allow_unknown":true}}}}"#.into(),
+                    }),
+                },
+            ],
+            presentations: vec![Presentation { id: "main".into(), title: "Guest".into(), variants: vec![PresentationVariant {
+                id: "semantic".into(), query: QueryRequest { id: "policy.guest.document".into(), args: vec![] }, requirements: vec![],
+            }] }],
             // An effect the session's interpreter accepts, and whose data is json: wire.event
             // is the one kind a plugin may not ask for, and the host refuses it at install.
             effects: vec!["kernel.log.append".to_string()],
@@ -54,9 +89,8 @@ impl Guest for Shell {
     /// One event in, patches and effects out — validated by the host *before* anything
     /// commits, which is why an unknown event is a fault and not a `panic!`.
     fn handle(event: Event, db: String) -> Result<(Vec<Patch>, Vec<Effect>), Fault> {
-        // An affordance from a tree this plugin presented comes back as the loop's own action
-        // event, with the action id, the node, and whatever fields the client sent.
-        if event.kind == "intent/action" {
+        // The host validated the command before dispatching its installed event.
+        if event.kind == "plugin.policy.guest.refresh" {
             return Ok((
                 vec![Patch {
                     path: "guest.acted".to_string(),
@@ -90,77 +124,34 @@ impl Guest for Shell {
     /// A query's answer, as json. `previous` is a hint: the same inputs must produce the same
     /// answer with or without it.
     ///
-    /// `policy.guest.state` answers with the database it was handed, verbatim: a guest has no
-    /// parser here, and handing back what it was given is the one thing that shows a caller
-    /// what this plugin could see.
+    /// `policy.guest.state` echoes only its declared read data, making isolation observable.
     fn query(
         request: QueryRequest,
-        _inputs: Vec<String>,
-        db: String,
+        inputs: Vec<String>,
+        read_data: Option<String>,
         _previous: Option<String>,
     ) -> Result<String, Fault> {
+        if request.id == "policy.guest.document" { return document(read_data.unwrap()); }
         if request.id == "policy.guest.state" {
-            return Ok(db);
+            return Ok(read_data.unwrap());
+        }
+        if read_data.is_some() {
+            return Err(Fault { code: "guest.unexpected-data".into(), message: "derived query received database data".into(), event: None });
+        }
+        if request.id == "policy.guest.copy" {
+            return Ok(inputs[0].clone());
         }
         Ok(format!("{{ \"answered\": \"{}\" }}", request.id))
     }
 
-    /// A tree, as a flat list: a plugin cannot present, so it says what the nodes *are*.
-    ///
-    /// The ids are the plugin's own — a client remembers which nodes it opened by id — and the
-    /// action is the plugin's own too: the session routes it back here because the node it sits
-    /// on is one this plugin offered. The database is checked for `spin`, which is a switch a
-    /// test flips to prove that a runaway guest is stopped by its budget rather than by anybody
-    /// noticing.
-    fn view(db: String) -> Result<ViewTree, Fault> {
-        if db.contains("\"spin\"") {
-            let mut turns: u64 = 0;
-            loop {
-                turns = turns.wrapping_add(1);
-                std::hint::black_box(turns);
-            }
-        }
-        if db.contains("\"refuse\"") {
-            return Err(Fault {
-                code: "policy.guest.no-view".to_string(),
-                message: "this plugin cannot draw that".to_string(),
-                event: None,
-            });
-        }
-        Ok(ViewTree {
-            nodes: vec![
-                Node {
-                    id: "guest".to_string(),
-                    role: "guest.panel".to_string(),
-                    kind: "section".to_string(),
-                    data: None,
-                    parent: None,
-                    actions: vec![Action {
-                        id: "refresh".to_string(),
-                        label: Some("Refresh".to_string()),
-                        on_submit: false,
-                        args: None,
-                    }],
-                    state: None,
-                },
-                Node {
-                    id: "guest.summary".to_string(),
-                    role: "guest.summary".to_string(),
-                    kind: "status".to_string(),
-                    // A semantic report of the state the session supplied.
-                    data: Some(format!(
-                        "{{\"text\":\"{} bytes of state, drawn for {}\"}}",
-                        db.len(),
-                        "semantic",
-                    )),
-                    parent: Some(0),
-                    actions: Vec::new(),
-                    state: None,
-                },
-            ],
-            root: 0,
-        })
+}
+
+fn document(db: String) -> Result<String, Fault> {
+    if db.contains("\"spin\"") { loop { std::hint::black_box(1); } }
+    if db.contains("\"refuse\"") {
+        return Err(Fault { code: "policy.guest.no-view".into(), message: "this plugin cannot draw that".into(), event: None });
     }
+    Ok(format!(r#"{{"id":"guest","role":"guest.panel","kind":{{"shape":"section"}},"actions":[{{"id":"policy.guest.refresh","label":"Refresh"}}],"children":[{{"id":"guest.summary","role":"guest.summary","kind":{{"shape":"status","text":"{} bytes of state, drawn for semantic"}}}}]}}"#, db.len()))
 }
 
 export!(Shell);

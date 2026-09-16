@@ -1,4 +1,4 @@
-// The policy plugin interface, as designed and not yet hosted.
+// The installed policy plugin interface. No compatibility shim for the previous ABI.
 //
 // A plugin is a wasm component that reacts to events and answers queries — the same
 // two things every handler in `misa-reframe` already does. The interfaces below are
@@ -20,7 +20,7 @@
 //  * A plugin **may fail**. Every call returns a `fault`, and a fault rolls the
 //    plugin's transaction back and is reported. It does not take the session down.
 
-package misa:policy@0.1.0;
+package misa:policy@0.2.0;
 
 interface types {
     /// A contained failure. `code` is stable; `message` is for a person.
@@ -64,48 +64,6 @@ interface types {
         data: option<string>,  // json
     }
 
-    /// A view: a tree, as a flat list in document order.
-    ///
-    /// Named `view-tree` rather than `view` because a type and a function share one
-    /// namespace in an interface, and the function is the one that has to keep the
-    /// name the loop already uses.
-    ///
-    /// A tree cannot be a *record* that contains itself — the component model has no
-    /// value recursion, which is the second thing `wasm-tools` refused about this
-    /// file. The flat shape is the better one regardless: a plugin's depth is bounded
-    /// by a number the host checks (`misa_proto::view::MAX_DEPTH`) rather than by
-    /// whatever its allocator allowed, and the host's conversion to `view::Node` is
-    /// one pass over the list rather than a recursion over a hostile tree.
-    record view-tree {
-        /// Every node, parents before children, in document order.
-        nodes: list<node>,
-        /// The index of the root, which is what a client draws.
-        root: u32,
-    }
-
-    /// One node: a role, a kind, and a place in the list.
-    ///
-    /// `role` is an open, dotted, lowercase name — the one part of the vocabulary a
-    /// plugin extends, because a plugin that adds a tool needs to name the thing it
-    /// added. `kind` is one of the structural shapes the protocol defines.
-    record node {
-        id: string,
-        role: string,
-        kind: string,
-        data: option<string>,   // json: the kind's own fields
-        /// The index of this node's parent in the same list; `none` for the root.
-        parent: option<u32>,
-        actions: list<action>,
-        state: option<string>,
-    }
-
-    record action {
-        id: string,
-        label: option<string>,
-        on-submit: bool,
-        args: option<string>,   // json
-    }
-
     /// An event, as a handler receives it: a kind and its data.
     record event {
         kind: string,
@@ -124,33 +82,66 @@ interface types {
 
 /// What every policy plugin exports.
 interface policy-api {
-    use types.{action, effect, event, fault, node, op, patch, query-request, view-tree};
+    use types.{effect, event, fault, op, patch, query-request};
 
     /// Called once, at install. What this plugin contributes and what it needs.
     ///
     /// The host validates the whole composition from these declarations and then
     /// seals it, so a running session cannot be changed underneath itself.
+    /// Read data is a map containing only these explicitly selected roots.
+    record read-contract {
+        roots: list<string>,
+        schema: string,
+    }
+    variant query-source {
+        read(read-contract),
+        derived(list<query-request>),
+    }
+    /// Schemas use misa-proto's bounded data-contract JSON representation.
+    record query-definition {
+        id: string,
+        contract: string,
+        arguments: list<string>,
+        output: string,
+        source: query-source,
+    }
+    record presentation-variant {
+        id: string,
+        query: query-request,
+        requirements: list<string>,
+    }
+    record presentation {
+        id: string,
+        title: string,
+        variants: list<presentation-variant>,
+    }
+    /// A command admitting one installed event. Its result is always JSON null:
+    /// this acknowledges the transaction, never completion of external effects.
+    record command-definition {
+        id: string,
+        input: string,
+        event: string,
+    }
+    record action-binding {
+        id: string,
+        command: string,
+        bound: string,
+        inputs: string,
+    }
+
     record descriptor {
         id: string,
         version: string,
         /// Event kinds this plugin handles.
         events: list<string>,
         /// Query names this plugin answers.
-        queries: list<string>,
+        queries: list<query-definition>,
+        presentations: list<presentation>,
+        commands: list<command-definition>,
+        tools: list<tool-binding>,
+        bindings: list<action-binding>,
         /// Effect kinds this plugin may ask for.
         effects: list<string>,
-        /// The affordances this plugin's views offer, by the action id a client sends back.
-        ///
-        /// Declared for two reasons, and neither is routing: the loop routes an action as the
-        /// `intent/action` event, through the registry, like every other event. A declaration is
-        /// what lets the session answer "there is no action named that" when there genuinely is
-        /// not one — and what lets it *refuse a tree that offers an action nobody declared*, when
-        /// the plugin presents it, rather than failing in somebody's click later.
-        ///
-        /// An action is the loop's own vocabulary: a plugin that wants to be acted on declares
-        /// `intent/action` among the events it handles, and receives the action id, the node, and
-        /// any fields the client sent.
-        actions: list<string>,
         /// The state roots this plugin writes into, as plain names.
         ///
         /// Declared for the same reason the event kinds are: a patch may only create the
@@ -159,6 +150,11 @@ interface policy-api {
         /// brackets — because a root is a top-level name; the paths inside it are the
         /// plugin's own business.
         roots: list<string>,
+    }
+    record tool-binding {
+        name: string,
+        description: string,
+        command: string,
     }
 
     /// Options from the composition, in order.
@@ -183,16 +179,8 @@ interface policy-api {
     /// `previous` is the value this plugin produced last time, if the host still
     /// holds it. It is a hint and may be absent, so a computation must produce the
     /// same result without it.
-    query: func(request: query-request, inputs: list<string>, db: string, previous: option<string>) -> result<string, fault>;
+    query: func(request: query-request, inputs: list<string>, read-data: option<string>, previous: option<string>) -> result<string, fault>;
 
-    /// Build a semantic view from the session database. Every client receives the same tree.
-    ///
-    /// There is no role argument, and the plugin decides nothing about *where* its tree goes: the
-    /// session places what it returns under a role of its own (`plugin.<id>`), mints the identity
-    /// of every node in it, and routes an action from it back to this plugin. A plugin decides the
-    /// structure beneath its root, and every node in that structure needs an id — a client
-    /// remembers which nodes it opened by id.
-    view: func(db: string) -> result<view-tree, fault>;
 }
 
 world policy {

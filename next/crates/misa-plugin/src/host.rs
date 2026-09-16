@@ -2,9 +2,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use misa_proto::view::{Action as ViewAction, ActionOn, Kind, MAX_DEPTH, Node, State};
-use misa_reframe::{Effect, Event, Inputs, Interpreter, Subscription};
+use misa_proto::view::Node;
+use misa_reframe::{Effect, Event, Interpreter, Subscription};
 use misa_value::{Op, Value};
+use misa_proto::{Query, schema::Schema};
+pub use misa_proto::query::ResultContract as QueryResultContract;
 use wasmtime::component::{Component, Linker};
 use wasmtime::Store;
 
@@ -20,8 +22,8 @@ wasmtime::component::bindgen!({
 });
 
 use exports::misa::policy::policy_api::{
-    Effect as GuestEffect, Event as GuestEvent, Fault as GuestFault, Node as GuestNode,
-    Op as GuestOp, OptionValue, Patch as GuestPatch, QueryRequest, ViewTree,
+    Effect as GuestEffect, Event as GuestEvent, Fault as GuestFault,
+    Op as GuestOp, OptionValue, Patch as GuestPatch, QueryRequest,
 };
 
 /// The engine every plugin in this process shares.
@@ -58,24 +60,112 @@ fn fuelled(store: &mut Store<()>) -> Result<(), PluginFault> {
 const CALL_FUEL: u64 = 100_000_000;
 
 /// What a plugin said it is, at load.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Descriptor {
+    pub tools: Vec<misa_proto::tool::Binding>,
+    pub commands: Vec<CommandDefinition>,
+    pub bindings: Vec<misa_proto::invocation::Binding>,
+    pub presentations: Vec<Presentation>,
     pub id: String,
     pub version: String,
     /// Event kinds it handles, one handler each.
     pub events: Vec<String>,
     /// Query names it answers, one subscription each.
-    pub queries: Vec<String>,
+    pub queries: Vec<QueryDefinition>,
     /// Effect kinds it may ask for.
     pub effects: Vec<String>,
-    /// Affordances its views offer, by the action id a client sends back.
-    pub actions: Vec<String>,
     /// State roots it writes into, as plain names.
     ///
     /// The composition makes these before the first event arrives, because a patch may only
     /// create the *last* key of its path: a plugin whose root nobody made is a fault in
     /// somebody's transaction, and a declaration is what stops that being a surprise.
     pub roots: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandDefinition { pub id: String, pub input: Schema, pub event: String }
+impl CommandDefinition {
+    pub fn export(&self) -> misa_proto::invocation::Command {
+        misa_proto::invocation::Command { id: self.id.clone(), input: self.input.clone(),
+            result: Schema::Choice { values: vec![misa_proto::schema::Literal::Null] } }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryDefinition {
+    pub id: String,
+    pub contract: String,
+    pub arguments: Vec<Schema>,
+    pub result: QueryResultContract,
+    pub source: QuerySource,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum QuerySource {
+    Read { roots: Vec<String>, schema: Schema },
+    Derived { inputs: Vec<Query> },
+}
+
+impl QueryDefinition {
+    pub fn export(&self) -> misa_proto::query::Definition {
+        misa_proto::query::Definition { id: self.id.clone(), contract: self.contract.clone(), arguments: self.arguments.clone(), result: self.result.clone() }
+    }
+}
+pub use misa_proto::presentation::{Presentation, Variant as PresentationVariant};
+
+fn result_contract(text: &str) -> Result<QueryResultContract, PluginFault> {
+    let contract: QueryResultContract = serde_json::from_str(text).map_err(|error| PluginFault::refused(format!("invalid result contract: {error}")))?;
+    if let QueryResultContract::Data { schema } = &contract { schema.check().map_err(|error| PluginFault::refused(error.to_string()))?; }
+    Ok(contract)
+}
+
+fn schema(text: &str) -> Result<Schema, PluginFault> {
+    let schema: Schema = serde_json::from_str(text).map_err(|error| PluginFault::refused(format!("invalid query schema: {error}")))?;
+    schema.check().map_err(|error| PluginFault::refused(error.to_string()))?;
+    Ok(schema)
+}
+
+fn query_definition(definition: exports::misa::policy::policy_api::QueryDefinition) -> Result<QueryDefinition, PluginFault> {
+    use exports::misa::policy::policy_api::QuerySource as Source;
+    Ok(QueryDefinition {
+        id: definition.id,
+        contract: definition.contract,
+        arguments: definition.arguments.iter().map(|text| schema(text)).collect::<Result<_, _>>()?,
+        result: result_contract(&definition.output)?,
+        source: match definition.source {
+            Source::Read(contract) => QuerySource::Read { roots: contract.roots, schema: schema(&contract.schema)? },
+            Source::Derived(inputs) => QuerySource::Derived { inputs: inputs.into_iter().map(|query| Ok(Query {
+                id: query.id, args: query.args.iter().map(|arg| from_json(arg, "query dependency argument")).collect::<Result<_, _>>()?,
+            })).collect::<Result<_, PluginFault>>()? },
+        },
+    })
+}
+
+fn validate_arguments(definition: &QueryDefinition, args: &[Value]) -> Result<(), PluginFault> {
+    if definition.arguments.len() != args.len() {
+        return Err(PluginFault::refused(format!("`{}` expects {} arguments", definition.id, definition.arguments.len())));
+    }
+    for (schema, value) in definition.arguments.iter().zip(args) {
+        schema.validate(value).map_err(|error| PluginFault::refused(error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn validate_local_graph(queries: &[QueryDefinition]) -> Result<(), PluginFault> {
+    fn visit(id: &str, queries: &[QueryDefinition], active: &mut Vec<String>, done: &mut std::collections::BTreeSet<String>) -> Result<(), PluginFault> {
+        if active.iter().any(|entry| entry == id) { return Err(PluginFault::refused(format!("query dependency cycle at `{id}`"))); }
+        if done.contains(id) { return Ok(()); }
+        // External dependencies are resolved by the complete owner registry.
+        let Some(query) = queries.iter().find(|query| query.id == id) else { return Ok(()); };
+        if active.len() >= 64 { return Err(PluginFault::refused("query dependencies too deep")); }
+        active.push(id.into());
+        if let QuerySource::Derived { inputs } = &query.source {
+            for input in inputs { visit(&input.id, queries, active, done)?; }
+        }
+        active.pop(); done.insert(id.into()); Ok(())
+    }
+    let mut done = std::collections::BTreeSet::new();
+    for query in queries { visit(&query.id, queries, &mut vec![], &mut done)?; }
+    Ok(())
 }
 
 /// One patch a plugin asked for: a path, and what to do at it.
@@ -178,13 +268,35 @@ impl Plugin {
             .interface0
             .call_describe(&mut store)
             .map_err(|error| PluginFault::host(format!("`describe` did not answer: {error}")))?;
+        let queries: Vec<QueryDefinition> = declared.queries.into_iter().map(query_definition).collect::<Result<_, _>>()?;
         let descriptor = Descriptor {
+            tools: declared.tools.into_iter().map(|tool|misa_proto::tool::Binding{name:tool.name,description:tool.description,command:tool.command}).collect(),
+            commands: declared.commands.into_iter().map(|command| Ok(CommandDefinition {
+                id: command.id, input: schema(&command.input)?, event: command.event,
+            })).collect::<Result<_, PluginFault>>()?,
+            bindings: declared.bindings.into_iter().map(|binding| Ok(misa_proto::invocation::Binding {
+                id: binding.id, binding: misa_proto::invocation::ActionBinding {
+                    command: binding.command,
+                    bound: serde_json::from_str(&binding.bound).map_err(|error| PluginFault::refused(format!("invalid bound arguments: {error}")))?,
+                    inputs: serde_json::from_str(&binding.inputs).map_err(|error| PluginFault::refused(format!("invalid binding inputs: {error}")))?,
+                },
+            })).collect::<Result<_, PluginFault>>()?,
+            presentations: declared.presentations.into_iter().map(|presentation| Ok(Presentation {
+                id: format!("plugin.{}.{}", declared.id, presentation.id), title: presentation.title,
+                variants: presentation.variants.into_iter().map(|variant| Ok(PresentationVariant {
+                    id: variant.id, requirements: variant.requirements,
+                    member: misa_proto::observation::Member {
+                        contract: queries.iter().find(|query| query.id == variant.query.id).ok_or_else(|| PluginFault::refused("presentation names undeclared query"))?.contract.clone(),
+                        query: Query { id: variant.query.id, args: variant.query.args.iter().map(|arg| from_json(arg, "presentation query argument")).collect::<Result<_, _>>()? },
+                        encoding: misa_proto::observation::Encoding::Document, optional: false,
+                    },
+                })).collect::<Result<_, PluginFault>>()?,
+            })).collect::<Result<_, PluginFault>>()?,
             id: declared.id,
             version: declared.version,
             events: declared.events,
-            queries: declared.queries,
+            queries,
             effects: declared.effects,
-            actions: declared.actions,
             roots: declared.roots,
         };
         if !plain_id(&descriptor.id) {
@@ -241,7 +353,7 @@ impl Plugin {
                 ))
             })?;
         }
-        for kind in self.descriptor.events.iter().chain(&self.descriptor.queries) {
+        for kind in &self.descriptor.events {
             if kind.is_empty() {
                 return Err(PluginFault::refused(format!(
                     "`{}` declares an unnamed event or query",
@@ -249,7 +361,65 @@ impl Plugin {
                 )));
             }
         }
+        let mut ids = std::collections::BTreeSet::new();
+        for query in &self.descriptor.queries {
+            query.export().check().map_err(|fault| PluginFault::refused(fault.message))?;
+            if !plain_id(&query.id) || !ids.insert(&query.id) {
+                return Err(PluginFault::refused(format!("Invalid or duplicate query `{}`", query.id)));
+            }
+            if let QuerySource::Read { roots, .. } = &query.source {
+                plain_roots(&query.id, roots)?;
+            }
+            if let QuerySource::Derived { inputs } = &query.source {
+                for input in inputs {
+                    if !plain_id(&input.id) { return Err(PluginFault::refused("Invalid dependency name")); }
+                    if let Some(target) = self.descriptor.queries.iter().find(|target| target.id == input.id) {
+                        validate_arguments(target, &input.args)?;
+                    }
+                }
+            }
+        }
+        validate_local_graph(&self.descriptor.queries)?;
+        let prefix = format!("{}.", self.descriptor.id);
+        let event_prefix = format!("plugin.{}.", self.descriptor.id);
+        let mut commands = std::collections::BTreeSet::new();
+        for command in &self.descriptor.commands {
+            if !plain_id(&command.id) || !command.id.starts_with(&prefix) || !commands.insert(&command.id)
+                || !command.event.starts_with(&event_prefix) || !self.descriptor.events.contains(&command.event) {
+                return Err(PluginFault::refused("Invalid command or undeclared command event"));
+            }
+            command.export().validate().map_err(|fault| PluginFault::refused(fault.message))?;
+        }
+        let mut bindings = std::collections::BTreeSet::new();
+        let mut tools=std::collections::BTreeSet::new();
+        for tool in &self.descriptor.tools {
+            if tool.name.len()>64 || !tool.name.starts_with(&format!("{}_",self.descriptor.id.replace('.',"_"))) || !tool.name.bytes().all(|byte|byte.is_ascii_alphanumeric() || b"_-".contains(&byte)) || tool.description.is_empty() || !tools.insert(&tool.name) || !commands.contains(&tool.command) {
+                return Err(PluginFault::refused("Invalid tool or undeclared tool command"));
+            }
+        }
+        for binding in &self.descriptor.bindings {
+            if !plain_id(&binding.id) || !binding.id.starts_with(&prefix) || !bindings.insert(&binding.id) || !commands.contains(&binding.binding.command) {
+                return Err(PluginFault::refused("Invalid binding or undeclared bound command"));
+            }
+            let command = self.descriptor.commands.iter().find(|command| command.id == binding.binding.command).expect("declared command was checked");
+            binding.binding.validate_for(&command.export()).map_err(|fault| PluginFault::refused(fault.message))?;
+        }
+        let exports = self.descriptor.queries.iter().map(|query| (query.id.clone(), query.export())).collect();
+        misa_proto::presentation::validate_catalog(&self.descriptor.presentations, &exports)
+            .map_err(|fault| PluginFault::refused(fault.message))?;
         plain_roots(&self.descriptor.id, &self.descriptor.roots)
+    }
+
+    /// The installing composition grants reads separately from the guest's requests.
+    pub fn authorize_reads(&self, allowed_roots: &[String]) -> Result<(), PluginFault> {
+        for query in &self.descriptor.queries {
+            if let QuerySource::Read { roots, .. } = &query.source {
+                for root in roots {
+                    if !allowed_roots.contains(root) { return Err(PluginFault::refused(format!("query `{}` has no read grant for `{root}`", query.id))); }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// One handler per event kind the plugin declared, ready for a [`misa_reframe::Registry`].
@@ -272,32 +442,25 @@ impl Plugin {
 
     /// One subscription per query the plugin declared.
     ///
-    /// A subscription cannot fail — the loop's `compute` has no `Result` — so a plugin that
-    /// cannot answer returns a value that says so rather than nothing. A client that
-    /// subscribed sees the failure instead of an empty list it would have to interpret.
+    /// Guest failures remain query faults, never successful values with another schema.
     pub fn subscriptions(self: &Arc<Self>) -> Vec<(String, Subscription)> {
         self.descriptor
             .queries
             .iter()
-            .map(|name| {
+            .map(|definition| {
                 let plugin = self.clone();
-                let query_name = name.clone();
-                let subscription = Subscription {
-                    // The database, because a plugin is handed the database: naming every path
-                    // it might read would be a list the host does not know.
-                    inputs: Inputs::Database,
-                    compute: Arc::new(move |db, inputs, query, previous| {
-                        match plugin.query(&query_name, &query.args, inputs, db, previous) {
-                            Ok(value) => value,
-                            Err(fault) => Value::map([
-                                ("plugin", Value::str(&plugin.descriptor.id)),
-                                ("code", Value::str(&fault.code)),
-                                ("error", Value::str(&fault.message)),
-                            ]),
-                        }
+                let query_name = definition.id.clone();
+                let subscription = match &definition.source {
+                    QuerySource::Read { .. } => misa_reframe::try_read_query(move |db, query, previous| {
+                        plugin.query(&query_name, &query.args, &[], Some(db), previous)
+                            .map_err(|fault| misa_reframe::Fault::new(fault.code, fault.message))
+                    }),
+                    QuerySource::Derived { inputs } => misa_reframe::try_derived_query(misa_reframe::Inputs::Fixed(inputs.clone()), move |inputs, query, previous| {
+                        plugin.query(&query_name, &query.args, inputs, None, previous)
+                            .map_err(|fault| misa_reframe::Fault::new(fault.code, fault.message))
                     }),
                 };
-                (name.clone(), subscription)
+                (definition.id.clone(), subscription)
             })
             .collect()
     }
@@ -330,9 +493,25 @@ impl Plugin {
         id: &str,
         args: &[Value],
         inputs: &[Value],
-        db: &Value,
+        db: Option<&Value>,
         previous: Option<&Value>,
     ) -> Result<Value, PluginFault> {
+        let definition = self.descriptor.queries.iter().find(|definition| definition.id == id)
+            .ok_or_else(|| PluginFault::refused(format!("undeclared query `{id}`")))?;
+        validate_arguments(definition, args)?;
+        let read_data = match &definition.source {
+            QuerySource::Read { roots, schema } => {
+                if !inputs.is_empty() { return Err(PluginFault::refused("read query cannot receive derived inputs")); }
+                let db = db.ok_or_else(|| PluginFault::refused("read query requires its data contract"))?;
+                let selected = Value::Map(Arc::new(roots.iter().filter_map(|root| db.get(root).map(|value| (root.clone(), value.clone()))).collect()));
+                schema.validate(&selected).map_err(|error| PluginFault::refused(error.to_string()))?;
+                Some(to_json(&selected, "declared read data")?)
+            }
+            QuerySource::Derived { inputs: declared } => {
+                if db.is_some() || inputs.len() != declared.len() { return Err(PluginFault::refused("derived query requires only its declared inputs")); }
+                None
+            }
+        };
         let request = QueryRequest {
             id: id.to_string(),
             args: args.iter().map(|arg| to_json(arg, "a query argument")).collect::<Result<Vec<_>, _>>()?,
@@ -341,7 +520,6 @@ impl Plugin {
             .iter()
             .map(|input| to_json(input, "a query input"))
             .collect::<Result<Vec<_>, _>>()?;
-        let db = to_json(db, "this session's state")?;
         let previous = match previous {
             Some(value) => optional_json(value, "the previous answer")?,
             None => None,
@@ -351,10 +529,15 @@ impl Plugin {
         fuelled(store)?;
         let answered = bindings
             .interface0
-            .call_query(store, &request, &inputs, &db, previous.as_deref())
+            .call_query(store, &request, &inputs, read_data.as_deref(), previous.as_deref())
             .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
             .map_err(|fault| PluginFault::guest(&fault))?;
-        from_json(&answered, "a query answer")
+        let value = from_json(&answered, "a query answer")?;
+        match &definition.result {
+            QueryResultContract::Data { schema } => schema.validate(&value).map_err(|error| PluginFault::refused(format!("query `{id}` result: {error}")))?,
+            QueryResultContract::Document {} => { self.document(&value)?; }
+        }
+        Ok(value)
     }
 
     /// A view tree, converted and validated.
@@ -362,19 +545,11 @@ impl Plugin {
     /// The validation is [`misa_proto::view::validate`] — the same function a session's own
     /// view is held to — so a plugin's tree is not merely *its* tree: it is a tree every
     /// client may assume things about, or it is a fault.
-    pub fn view(&self, db: &Value) -> Result<Node, PluginFault> {
-        let db = to_json(db, "this session's state")?;
-        let mut inner = self.lock()?;
-        let Guest { store, bindings } = &mut *inner;
-        fuelled(store)?;
-        let tree = bindings
-            .interface0
-            .call_view(store, &db)
-            .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
-            .map_err(|fault| PluginFault::guest(&fault))?;
-        let node = tree_of(&tree)?;
+    pub fn document(&self, value: &Value) -> Result<Node, PluginFault> {
+        let node: Node = serde_json::from_str(&to_json(value, "semantic document")?)
+            .map_err(|error| PluginFault::refused(format!("invalid semantic document: {error}")))?;
         named(&node)?;
-        offered(&self.descriptor.id, &node, &self.descriptor.actions)?;
+        offered(&self.descriptor.id, &node, &self.descriptor.bindings.iter().map(|binding| binding.id.clone()).collect::<Vec<_>>())?;
         misa_proto::view::validate(&node).map_err(|fault| {
             PluginFault::host(format!("the plugin's view is not one a client may be sent: {fault}"))
         })?;
@@ -557,188 +732,48 @@ fn effects_of(effects: &[GuestEffect]) -> Result<Vec<Effect>, PluginFault> {
         .collect()
 }
 
-/// A flat view tree, as the nested one the protocol defines.
-///
-/// The list is in document order with parents first, which is what makes this a loop rather
-/// than a recursion: walking it backwards builds every child before its parent, and the depth a
-/// plugin may produce is checked against [`MAX_DEPTH`] *here* rather than left to
-/// [`misa_proto::view::validate`] — which recurses, and would overflow the stack on a
-/// ten-thousand-deep tree before it could say no.
-///
-/// Two rules make the shape a tree rather than a graph or a forest, and both are refused
-/// rather than repaired: a node's parent must come *before* it in the list, and only the root
-/// may have no parent. Together they mean every node is reachable, which is why nothing here
-/// counts them.
-fn tree_of(tree: &ViewTree) -> Result<Node, PluginFault> {
-    if tree.nodes.is_empty() {
-        return Err(PluginFault::host("a view with no nodes has no root"));
-    }
-    let root = tree.root as usize;
-    if root >= tree.nodes.len() {
-        return Err(PluginFault::host(format!(
-            "a view's root is node {root}, and there are {} nodes",
-            tree.nodes.len()
-        )));
-    }
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); tree.nodes.len()];
-    for (index, node) in tree.nodes.iter().enumerate() {
-        match node.parent {
-            Some(parent) if (parent as usize) < index => children[parent as usize].push(index),
-            Some(parent) => {
-                return Err(PluginFault::host(format!(
-                    "node {index} names parent {parent}, and a view is in document order with \
-                     parents first"
-                )));
-            }
-            None if index == root => {}
-            None => {
-                return Err(PluginFault::host(format!(
-                    "node {index} has no parent and is not the root"
-                )));
-            }
-        }
-    }
-    let mut built: Vec<Option<Node>> = (0..tree.nodes.len()).map(|_| None).collect();
-    let mut depth: Vec<usize> = vec![1; tree.nodes.len()];
-    for index in (0..tree.nodes.len()).rev() {
-        let mut child_nodes = Vec::with_capacity(children[index].len());
-        let mut deepest = 0;
-        for child in &children[index] {
-            let node = built[*child].take().ok_or_else(|| {
-                PluginFault::host(format!("node {child} is not reachable in document order"))
-            })?;
-            deepest = deepest.max(depth[*child]);
-            child_nodes.push(node);
-        }
-        depth[index] = deepest + 1;
-        if depth[index] > MAX_DEPTH {
-            return Err(PluginFault::host(format!(
-                "the view is {} nodes deep, and a client may only be sent {MAX_DEPTH}",
-                depth[index]
-            )));
-        }
-        built[index] = Some(node_of(&tree.nodes[index], child_nodes)?);
-    }
-    // Every node was built exactly once, and only the root may have no parent, so the root is
-    // still here: a node nobody points at, or a second root, is refused above.
-    built[root].take().ok_or_else(|| PluginFault::host("a view with no root, which cannot happen"))
-}
-
-fn node_of(node: &GuestNode, children: Vec<Node>) -> Result<Node, PluginFault> {
-    let state = match &node.state {
-        Some(name) => Some(state_of(name)?),
-        None => None,
-    };
-    let actions = node.actions.iter().map(action_of).collect::<Result<Vec<_>, _>>()?;
-    Ok(Node {
-        id: node.id.clone(),
-        role: node.role.clone(),
-        kind: kind_of(&node.kind, node.data.as_deref())?,
-        label: None,
-        state,
-        actions,
-        children,
-    })
-}
-
-fn state_of(name: &str) -> Result<State, PluginFault> {
-    serde_json::from_value::<State>(serde_json::Value::String(name.to_string()))
-        .map_err(|_| PluginFault::host(format!("`{name}` is not a state this protocol has")))
-}
-
-/// The node's kind, assembled from the two fields the world splits it into.
-///
-/// The protocol encodes a kind as a tagged object (`{"shape": "text", "spans": [...]}`), which
-/// is exactly `kind` plus `data`, so the plugin's two fields are put back together here and
-/// decoded by the same `Deserialize` every other reader of this protocol uses. `shape` wins
-/// over anything `data` said, because the kind is the field the world separates out.
-fn kind_of(shape: &str, data: Option<&str>) -> Result<Kind, PluginFault> {
-    let mut object: serde_json::Map<String, serde_json::Value> = match data {
-        Some(text) => match serde_json::from_str(text) {
-            Ok(serde_json::Value::Object(object)) => object,
-            Ok(serde_json::Value::Null) => Default::default(),
-            Ok(_) => return Err(PluginFault::host("a node's data must be a json object")),
-            Err(error) => {
-                return Err(PluginFault::host(format!(
-                    "a node's data is not json this host can read: {error}"
-                )));
-            }
-        },
-        None => Default::default(),
-    };
-    object.insert("shape".to_string(), serde_json::Value::String(shape.to_string()));
-    serde_json::from_value(serde_json::Value::Object(object))
-        .map_err(|error| PluginFault::host(format!("`{shape}` is not a kind of node a client can be sent: {error}")))
-}
-
-fn action_of(action: &exports::misa::policy::policy_api::Action) -> Result<ViewAction, PluginFault> {
-    let args = match &action.args {
-        Some(text) => from_json(text, "an action's args")?,
-        None => Value::Null,
-    };
-    Ok(ViewAction {
-        id: action.id.clone(),
-        on: if action.on_submit { ActionOn::Submit } else { ActionOn::Click },
-        label: action.label.clone(),
-        args,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exports::misa::policy::policy_api::{Action as GuestAction, Node as GuestNode, Op as GuestOp, Patch as GuestPatch};
+    use exports::misa::policy::policy_api::{Op as GuestOp, Patch as GuestPatch};
 
-    /// A node, as a plugin writes one: a kind and the json its kind needs.
-    fn node(id: &str, shape: &str, data: Option<&str>, parent: Option<u32>) -> GuestNode {
-        GuestNode {
-            id: id.to_string(),
-            role: "plugin.thing".to_string(),
-            kind: shape.to_string(),
-            data: data.map(str::to_string),
-            parent,
-            actions: Vec::new(),
-            state: None,
-        }
+    #[test]
+    fn result_contracts_and_argument_schemas_are_validated() {
+        assert!(result_contract(r#"{"kind":"document"}"#).is_ok());
+        assert!(result_contract(r#"{"kind":"data","schema":{"type":"choice","values":[]}}"#).is_err());
+        assert!(result_contract(r#"{"kind":"document","schema":{"type":"int"}}"#).is_err());
+        let query = QueryDefinition { id: "test".into(), contract: "test@1".into(), arguments: vec![Schema::Int], result: QueryResultContract::Document {},
+            source: QuerySource::Derived { inputs: vec![] } };
+        assert!(validate_arguments(&query, &[]).is_err());
+        assert!(validate_arguments(&query, &[Value::str("1")]).is_err());
+        assert!(validate_arguments(&query, &[Value::Int(1)]).is_ok());
     }
 
     #[test]
-    fn a_node_kind_is_the_protocol_encoding_of_the_two_fields_the_world_splits_it_into() {
-        // `kind` plus `data` is exactly what the protocol writes as `{"shape": …, …}`. The
-        // world splits it because a plugin cannot import the protocol's own types, and this is
-        // where the two halves are put back together — through the same `Deserialize` every
-        // other reader of the protocol uses, so a kind is decoded once.
-        match kind_of("text", Some(r#"{"spans":[{"text":"hi"}]}"#)).unwrap() {
-            Kind::Text { spans } => {
-                assert_eq!(spans.len(), 1);
-                assert_eq!(spans[0].text, "hi");
-            }
-            other => panic!("expected text, got {other:?}"),
-        }
-        assert_eq!(kind_of("section", None).unwrap(), Kind::Section);
-        // The `kind` field wins over anything `data` claims to be: it is the one the world
-        // separated out, so it is the one that means it.
-        assert_eq!(kind_of("section", Some(r#"{"shape":"rule"}"#)).unwrap(), Kind::Section);
+    fn presentation_variants_use_declared_preference_order_and_exact_capabilities() {
+        let variant = |id: &str, requirements: Vec<String>| PresentationVariant {
+            id: id.into(), requirements, member: misa_proto::observation::Member {
+                query: Query::new(format!("test.{id}")), contract: "test@1".into(), encoding: misa_proto::observation::Encoding::Document, optional: false,
+            },
+        };
+        let presentation = Presentation { id: "test".into(), title: "Test".into(), variants: vec![
+            variant("rich", vec!["images@1".into()]), variant("basic", vec![]),
+        ] };
+        assert_eq!(presentation.select(&[]).unwrap().id, "basic");
+        assert_eq!(presentation.select(&["images@1".into()]).unwrap().id, "rich");
+        assert_eq!(presentation.select(&["images@2".into()]).unwrap().id, "basic");
     }
 
     #[test]
-    fn a_kind_a_client_cannot_be_sent_is_a_fault_rather_than_a_tree() {
-        let fault = kind_of("nonsense", None).unwrap_err();
-        assert_eq!(fault.code, "plugin.host");
-        assert!(fault.message.contains("nonsense"), "{}", fault.message);
-        // A kind is more than its tag: `text` without spans is not a text node, and the
-        // decoder is the one that says so.
-        assert!(kind_of("text", Some("{}")).is_err());
-        assert!(kind_of("text", Some("[1,2]")).is_err(), "a node's data is an object or nothing");
-        assert!(kind_of("text", Some("not json at all")).is_err());
-    }
-
-    #[test]
-    fn a_state_a_client_does_not_have_is_a_fault() {
-        assert_eq!(state_of("streaming").unwrap(), State::Streaming);
-        assert_eq!(state_of("done").unwrap(), State::Done);
-        let fault = state_of("nearly").unwrap_err();
-        assert!(fault.message.contains("nearly"), "{}", fault.message);
+    fn local_dependency_cycles_fail_before_running_a_guest() {
+        let query = |id: &str, dependency: &str| QueryDefinition {
+            id: id.into(), contract: format!("{id}@1"), arguments: vec![],
+            result: QueryResultContract::Data { schema: Schema::Int },
+            source: QuerySource::Derived { inputs: vec![Query::new(dependency)] },
+        };
+        assert!(validate_local_graph(&[query("a", "b"), query("b", "a")]).unwrap_err().message.contains("cycle"));
+        // External names are checked once the installing owner has composed all definitions.
+        assert!(validate_local_graph(&[query("a", "external")]).is_ok());
     }
 
     #[test]
@@ -797,76 +832,6 @@ mod tests {
         // Data that is not json is the plugin's mistake, and it is a fault rather than an
         // effect the interpreter would refuse for a reason about the wrong thing.
         assert!(effects_of(&[GuestEffect { kind: "k".into(), data: Some("nope".into()) }]).is_err());
-    }
-
-    #[test]
-    fn a_flat_tree_becomes_the_nested_one_a_client_draws() {
-        let tree = ViewTree {
-            nodes: vec![
-                node("root", "section", None, None),
-                node("a", "status", Some(r#"{"text":"one"}"#), Some(0)),
-                node("b", "section", None, Some(0)),
-                node("b.1", "fact", Some(r#"{"value":7}"#), Some(2)),
-            ],
-            root: 0,
-        };
-        let built = tree_of(&tree).unwrap();
-        assert_eq!(built.id, "root");
-        assert_eq!(built.children.len(), 2);
-        assert_eq!(built.children[0].id, "a");
-        assert_eq!(built.children[1].children[0].id, "b.1");
-        // And it is a tree a client may be sent, by the same validator a session's own view
-        // answers to.
-        misa_proto::view::validate(&built).expect("valid");
-    }
-
-    #[test]
-    fn a_tree_the_protocol_would_refuse_is_refused_here_first() {
-        // No nodes at all.
-        assert!(tree_of(&ViewTree { nodes: vec![], root: 0 }).is_err());
-        // A root that is not a node.
-        assert!(tree_of(&ViewTree { nodes: vec![node("a", "section", None, None)], root: 7 }).is_err());
-        // A node with no parent that is not the root.
-        assert!(
-            tree_of(&ViewTree {
-                nodes: vec![node("a", "section", None, None), node("orphan", "section", None, None)],
-                root: 0,
-            })
-            .is_err()
-        );
-        // A child before its parent.
-        assert!(
-            tree_of(&ViewTree {
-                nodes: vec![node("child", "section", None, Some(1)), node("root", "section", None, None)],
-                root: 1,
-            })
-            .is_err()
-        );
-        // A second root, which is a forest rather than a tree.
-        assert!(
-            tree_of(&ViewTree {
-                nodes: vec![
-                    node("root", "section", None, None),
-                    node("also-root", "section", None, None),
-                ],
-                root: 0,
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn a_tree_deeper_than_a_client_may_be_sent_is_refused_without_recursing() {
-        // The check is here rather than left to `view::validate` because that one recurses: a
-        // guest could ask for a stack overflow with a hundred thousand nodes, and a guest does
-        // not get to decide how this process dies.
-        let deep = MAX_DEPTH + 2;
-        let mut nodes = vec![node("n0", "section", None, None)];
-        for index in 1..deep {
-            nodes.push(node(&format!("n{index}"), "section", None, Some((index - 1) as u32)));
-        }
-        let fault = tree_of(&ViewTree { nodes, root: 0 }).unwrap_err();
-        assert!(fault.message.contains("deep"), "{}", fault.message);
     }
 
     #[test]
@@ -959,37 +924,4 @@ mod tests {
         assert_eq!(optional_json(&Value::Null, "nothing").unwrap(), None);
     }
 
-    #[test]
-    fn an_actions_args_are_json_and_its_kind_is_the_protocols() {
-        let click = action_of(&GuestAction {
-            id: "guest.close".into(),
-            label: Some("Close".into()),
-            on_submit: false,
-            args: None,
-        })
-        .unwrap();
-        assert_eq!(click.on, ActionOn::Click);
-        assert_eq!(click.label.as_deref(), Some("Close"));
-        assert_eq!(click.args, Value::Null);
-
-        let submit = action_of(&GuestAction {
-            id: "guest.send".into(),
-            label: None,
-            on_submit: true,
-            args: Some(r#"{"value":"typed"}"#.into()),
-        })
-        .unwrap();
-        assert_eq!(submit.on, ActionOn::Submit);
-        assert_eq!(submit.args.get("value").and_then(Value::as_str), Some("typed"));
-        // Args the host cannot read are a fault, not an action with nothing in it.
-        assert!(
-            action_of(&GuestAction {
-                id: "guest.send".into(),
-                label: None,
-                on_submit: true,
-                args: Some("not json".into()),
-            })
-            .is_err()
-        );
-    }
 }
