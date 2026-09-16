@@ -308,11 +308,11 @@ impl Directory {
         let mut desired = self.desired.lock().unwrap().clone();
         desired.insert(spec.id.clone(), spec);
         if let Err(fault) = self.save_desired(&desired).await {
-            runtime.shutdown();
+            runtime.shutdown_complete().await;
             return Err(fault);
         }
         if let Err(fault) = self.insert_inner(runtime.clone()) {
-            runtime.shutdown();
+            runtime.shutdown_complete().await;
             let previous = self.desired.lock().unwrap().clone();
             self.save_desired(&previous).await?;
             return Err(fault);
@@ -333,28 +333,11 @@ impl Directory {
         runtime.shutdown_complete().await;
         Ok(self.remove(scope))
     }
-    /// Process shutdown preserves desired membership for the next incarnation.
-    pub fn shutdown(&self) {
-        self.closed
-            .store(true, std::sync::atomic::Ordering::Release);
-        publish(&mut self.state.lock().unwrap());
-        let runtimes = self
-            .state
-            .lock()
-            .unwrap()
-            .entries
-            .values()
-            .map(|entry| entry.runtime.clone())
-            .collect::<Vec<_>>();
-        for runtime in runtimes {
-            runtime.shutdown();
-            self.remove(&runtime.scope());
-        }
-    }
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
     /// Fence admission, then await all owner capabilities and child supervisors.
+    /// Desired membership is preserved for the next incarnation.
     pub async fn shutdown_complete(&self) {
         self.closed
             .store(true, std::sync::atomic::Ordering::Release);

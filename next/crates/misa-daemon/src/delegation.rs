@@ -523,7 +523,7 @@ mod tests {
                 .iter()
                 .any(|attempt| Some(&attempt.name) == child.parent.as_ref())
         );
-        directory.shutdown();
+        directory.shutdown_complete().await;
     }
     #[tokio::test]
     async fn authenticated_cancel_closes_bound_child_waiting_for_approval() {
@@ -635,7 +635,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(directory.sessions().len(), 1);
-        directory.shutdown();
+        directory.shutdown_complete().await;
     }
     #[tokio::test]
     async fn restart_retains_relationship_but_never_replays_pending_child() {
@@ -750,7 +750,7 @@ mod tests {
         .unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
         assert_eq!(directory.sessions().len(), 1);
-        directory.shutdown();
+        directory.shutdown_complete().await;
         std::fs::remove_file(path).unwrap();
     }
     #[tokio::test]
@@ -877,7 +877,7 @@ mod tests {
         .unwrap();
         assert!(child.is_closed());
         assert!(directory.sessions().is_empty());
-        directory.shutdown();
+        directory.shutdown_complete().await;
     }
     #[test]
     fn overview_deduplicates_attention_and_preserves_cycles_and_unavailability() {

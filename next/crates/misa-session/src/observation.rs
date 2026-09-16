@@ -230,6 +230,12 @@ impl Observation {
             .state
             .lock()
             .expect("session state is never poisoned");
+        // Closure may have won while this capture waited for the owner lock.
+        // Never evaluate private state interrupted by shutdown as current data.
+        if runtime.is_closed() {
+            self.ended = true;
+            return Some(Publication::Closed { handle: self.handle, reason: runtime.closure_fault() });
+        }
         let position = state.publications.position();
         if !opening && self.examined == Some(position) {
             return None;
@@ -556,6 +562,7 @@ fn snapshot(
     selection: &Selection,
     context: Option<&CallContext>,
 ) -> Result<Snapshot, Fault> {
+    if runtime.is_closed() { return Err(runtime.closure_fault()); }
     let evaluated = evaluate(runtime, state, selection, &BTreeMap::new(), true, context)?;
     let values = evaluated
         .into_iter()
@@ -565,4 +572,24 @@ fn snapshot(
         position: state.publications.position(),
         members: complete_contents(state, selection, values),
     })
+}
+
+#[cfg(test)]
+mod closing_tests {
+    use super::*;
+    #[tokio::test]
+    async fn closure_after_preflight_never_materializes_a_current_snapshot() {
+        let runtime = Runtime::start("closing-read", "Closing", None,
+            Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("unused"))),
+            "scripted", "test", Value::Null);
+        let definition = runtime.query_exports().into_iter().find(|query| query.id == SUMMARY).unwrap();
+        let selection = Selection { scope: runtime.scope(), members: BTreeMap::from([
+            ("summary".into(), definition.member(vec![]).unwrap())]) };
+        runtime.validate_selection(&selection).unwrap();
+        // Model a read that passed preflight, then waited behind shutdown's owner
+        // transaction. Materialization must recheck while holding that same lock.
+        runtime.shutdown_complete().await;
+        let mut state = runtime.state.lock().unwrap();
+        assert_eq!(snapshot(&runtime, &mut state, &selection, None).unwrap_err().code, "closed_scope");
+    }
 }

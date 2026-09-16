@@ -276,7 +276,7 @@ mod tests {
                 .code,
             "conversation_busy"
         );
-        first.shutdown();
+        first.shutdown_complete().await;
         assert!(runtime.is_closed());
         assert_eq!(storage.load().unwrap().len(), 1);
         let second = directory();
@@ -297,6 +297,55 @@ mod tests {
         }
         fn save(&self, _: &[SessionSpec]) -> Result<(), Fault> {
             Err(Fault::new("storage", "failed"))
+        }
+    }
+    #[derive(Default)]
+    struct ClosingKernel {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        closed: std::sync::atomic::AtomicBool,
+    }
+    impl misa_kernel::Kernel for ClosingKernel {
+        fn execute<'a, 'b, 'f>(&'a self, _: misa_kernel::Request,
+            _: &'b tokio::sync::mpsc::UnboundedSender<misa_kernel::KernelEvent>)
+            -> Pin<Box<dyn Future<Output = ()> + Send + 'f>>
+            where 'a: 'f, 'b: 'f, Self: 'f { Box::pin(async {}) }
+        fn close<'a, 'b, 'f>(&'a self,
+            _: &'b tokio::sync::mpsc::UnboundedSender<misa_kernel::KernelEvent>)
+            -> Pin<Box<dyn Future<Output = ()> + Send + 'f>>
+            where 'a: 'f, 'b: 'f, Self: 'f {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release.notified().await;
+                self.closed.store(true, std::sync::atomic::Ordering::Release);
+            })
+        }
+    }
+    #[tokio::test]
+    async fn failed_creation_and_shutdown_await_kernel_release() {
+        for failure in [true, false] {
+            let directory = Directory::fresh().unwrap();
+            let kernel = Arc::new(ClosingKernel::default());
+            let installed = kernel.clone();
+            directory.install_factory(Arc::new(move |_, spec| {
+                let kernel = installed.clone();
+                Box::pin(async move { Ok(Runtime::prepare_with(spec.id, spec.title, spec.conversation,
+                    kernel, "scripted", "test", Value::Null, misa_session::Contribution::default())) })
+            })).unwrap();
+            if failure { directory.install_membership(Arc::new(Failing)).await.unwrap(); }
+            else { directory.open(&context(), spec("one", None)).await.unwrap(); }
+            let task_owner = directory.clone();
+            let task = tokio::spawn(async move {
+                if failure { assert!(task_owner.open(&context(), spec("one", None)).await.is_err()); }
+                else { task_owner.shutdown_complete().await; }
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(1), kernel.entered.notified()).await.unwrap();
+            assert!(!task.is_finished(), "lifecycle cannot finish before kernel capabilities are released");
+            kernel.release.notify_one();
+            tokio::time::timeout(std::time::Duration::from_secs(1), task).await.unwrap().unwrap();
+            assert!(kernel.closed.load(std::sync::atomic::Ordering::Acquire));
+            assert!(directory.sessions().is_empty());
+            directory.shutdown_complete().await;
         }
     }
     #[tokio::test]
