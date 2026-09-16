@@ -275,6 +275,10 @@ Private request pages use authorized detail reads and declared shared response b
 
 The real scoped HTTP fixture exercises credential opening, stale-generation rejection without secret echo, cancellation by another view, private observation resolution, tool approval and duplicate-response rejection, and exact accepted prompt output in recent outcomes. All34 web tests and Chromium checks pass; session138 tests also pass with explicit terminal facts in credential/approval summaries. Generic mapped action forms, provider/model preparation, overview/lifecycle controls and initial browser preferences before observing content remain outstanding. This is not a full web completion claim.
 
+## Web generic action preparation
+
+Actions now use shared schema-derived forms: strings, numeric values, booleans, scalar choices and structured JSON values prepare through the same binding validation as other clients. Opening a required-input action displays a local form without invoking the owner. Invalid fields remain editable in browser dialogs, confirmed responses close only that local dialog, and non-null completed results become directed reports. The real scoped HTTP fixture verifies integer/string mapping and that submitted fields cannot overwrite bound context. Web34 library tests and Chromium checks pass. The web download fixture also now uses the scoped dispatcher instead of the legacy transport Session export.
+
 ## Incremental implementation commits
 
 The user authorized commits as work proceeds. The reviewed plan, shared client foundation, protocol/query/publication foundation, session operation machinery, kernel ownership/teardown, daemon lifecycle/delegation and real-WASM contribution contracts are now committed as coherent subsystem changes. The coordinated cutover remains unfinished: normal-path legacy removal, final client migrations, both lockfiles/source closures, and packaged artifact verification are still required.

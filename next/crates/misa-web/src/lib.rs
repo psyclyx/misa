@@ -83,6 +83,13 @@ fn render_report(title: &str, value: &Value) -> String {
     render_scoped(&misa_client::request::report(title, value), &format!("report-{}:", next_id()))
 }
 
+fn outcome_report(outcome: &misa_proto::invocation::Outcome) -> Option<String> {
+    match outcome {
+        misa_proto::invocation::Outcome::Completed { value } if *value != Value::Null => Some(render_report("Result", value)),
+        _ => None,
+    }
+}
+
 /// A document a browser can open directly, with or without JavaScript.
 pub fn document(session: &SessionInfo, view: &Node) -> String {
     document_with(session, &render_main(view), "")
@@ -668,16 +675,6 @@ async fn blob_response(source: Option<&Source>, hash: &str) -> Response {
     }
 }
 
-#[cfg(test)]
-fn save_intent(node: String) -> misa_proto::wire::Intent {
-    misa_proto::wire::Intent::Action {
-        node,
-        action: "attachment.save".into(),
-        args: misa_value::Value::Null,
-        fields: vec![],
-    }
-}
-
 async fn download_response(source: Option<&Source>, download: misa_proto::wire::Download) -> Response {
     let Some(blob) = download.blob else {
         return (StatusCode::NOT_FOUND, download.error).into_response();
@@ -704,32 +701,28 @@ async fn local_download(
     State(app): State<Arc<App>>,
     Form(fields): Form<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let mut connection = misa_transport::Session::new(app.runtime.clone());
-    connection.handle(misa_proto::ClientMsg::Hello {
-        version: misa_proto::PROTOCOL_VERSION,
-        client: misa_proto::ClientInfo::new("web-test", "1"),
-    });
-    let id = next_id();
-    let mut events = connection.take_replies().unwrap();
-    let replies = connection.handle(misa_proto::ClientMsg::Intent {
-        id, intent: save_intent(fields.get("node").cloned().unwrap_or_default()),
-    });
-    if let Some(misa_proto::SessionMsg::Fault {fault, ..}) = replies.iter().find(|reply| matches!(reply, misa_proto::SessionMsg::Fault { .. })) {
-        return (StatusCode::BAD_REQUEST, fault.message.clone()).into_response();
+    use misa_protocol::invocation::{CallContext, Dispatcher};
+    let dispatcher = Dispatcher::new(CallContext { principal: "web-test".into(), connection: next_id() }, 1, misa_proto::schema::Limits::default(), misa_proto::schema::Limits::default());
+    let reply = dispatcher.dispatch(app.runtime.as_ref(), misa_proto::invocation::Invocation {
+        id: next_id(), scope: app.runtime.scope(), command: "session.attachment.resolve".into(),
+        input: Value::map([("node", Value::str(fields.get("node").map(String::as_str).unwrap_or("")))]),
+    }).await;
+    match reply.outcome {
+        misa_proto::invocation::Outcome::Completed { value } => match misa_client::interface::decode::<BlobRef>(&value) {
+            Ok(blob) => download_response(app.blobs.as_deref(), misa_proto::wire::Download { name: attachment_name(&blob), blob: Some(blob), error: String::new() }).await,
+            Err(fault) => (StatusCode::BAD_GATEWAY, fault.message).into_response(),
+        },
+        misa_proto::invocation::Outcome::Rejected { fault } => (StatusCode::BAD_REQUEST, fault.message).into_response(),
+        _ => StatusCode::BAD_GATEWAY.into_response(),
     }
-    let answer = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        while let Some(emission) = events.recv().await {
-            if let misa_proto::wire::SessionEvent::DownloadReady { id: reply, download } = emission.event {
-                if reply == id { return Some(download); }
-            }
-        }
-        None
-    })
-    .await;
-    match answer {
-        Ok(Some(download)) => download_response(app.blobs.as_deref(), download).await,
-        _ => (StatusCode::GATEWAY_TIMEOUT, "The session did not answer the save request").into_response(),
-    }
+}
+
+fn attachment_name(blob: &BlobRef) -> String {
+    let extension = match blob.media.as_deref() {
+        Some("image/png") => "png", Some("image/jpeg") => "jpg", Some("image/webp") => "webp",
+        Some("image/gif") => "gif", Some("application/pdf") => "pdf", Some("text/plain") => "txt", _ => "bin",
+    };
+    format!("{}.{extension}", blob.hash)
 }
 
 async fn remote_download(
@@ -748,7 +741,7 @@ async fn remote_download(
         misa_client::interface::decode::<BlobRef>(&value).map_err(|fault| fault.message)
     }.await;
     match result {
-        Ok(blob) => download_response(state.blobs.as_deref(), misa_proto::wire::Download { blob: Some(blob), name: "attachment.bin".into(), error: String::new() }).await,
+        Ok(blob) => download_response(state.blobs.as_deref(), misa_proto::wire::Download { name: attachment_name(&blob), blob: Some(blob), error: String::new() }).await,
         Err(error) => (StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
@@ -982,6 +975,7 @@ mod remote;
 mod presentations;
 mod requests;
 mod activity;
+mod actions;
 use remote::connect as connect_session;
 
 mod updates;
@@ -1027,6 +1021,9 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/request/events", get(requests::events))
         .route("/request.js", get(|| async { ([("content-type", "text/javascript")], include_str!("request.js")) }))
         .route("/respond", post(requests::respond))
+        .route("/actions", get(actions::list))
+        .route("/action", post(actions::open))
+        .route("/perform", post(actions::perform))
         .route("/attach", post(remote_attach))
         .route("/detach", post(remote_detach))
         .route("/blob/{hash}", get(remote_blob))
@@ -1051,6 +1048,15 @@ async fn remote_intent(
         (StatusCode::BAD_REQUEST, Html(format!("<!doctype html><html><body><p role=\"alert\">{}</p><textarea readonly>{}</textarea><a href=\"./\">Back to session</a></body></html>", escape(&error), escape(form.get("prompt").map(String::as_str).unwrap_or(""))))).into_response()
     };
     let submitted = state.pending.lock().expect("pending attachments").clone();
+    if let Some(id) = form.get("action").filter(|id| id.as_str() != COMPOSER) {
+        if let Ok(model) = misa_client::form::Form::action(&state.interaction.interface, id) {
+            if model.fields.iter().any(|(id, field)| !field.optional && !form.contains_key(id)) {
+                let html = actions::markup(&model);
+                return if json { axum::Json(serde_json::json!({"ok":true,"report":html})).into_response() }
+                    else { requests::page(StatusCode::OK, &model.title, html) };
+            }
+        }
+    }
     let intent = match remote::submitted(&state, &form, &submitted) { Ok(intent) => intent, Err(error) => return refused(error) };
     let spent = spent(&intent);
     let result = match remote::prepare(&state.interaction, intent) {
@@ -1072,7 +1078,10 @@ async fn remote_intent(
     match result {
         Ok(outcome @ (misa_proto::invocation::Outcome::Completed { .. } | misa_proto::invocation::Outcome::Accepted { .. })) => {
             if spent { state.pending.lock().expect("pending attachments").retain(|blob| !submitted.contains(blob)); }
-            if json { axum::Json(serde_json::json!({"ok":true,"outcome":outcome})).into_response() } else { Redirect::to("./").into_response() }
+            let report = outcome_report(&outcome);
+            if json { axum::Json(serde_json::json!({"ok":true,"outcome":outcome,"report":report})).into_response() }
+            else if let Some(report) = report { requests::page(StatusCode::OK, "Result", report) }
+            else { Redirect::to("./").into_response() }
         },
         Ok(outcome) => {
             let (status, message) = match &outcome {

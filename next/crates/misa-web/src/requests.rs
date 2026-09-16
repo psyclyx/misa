@@ -7,7 +7,7 @@ use misa_proto::{observation::Selection, invocation::Outcome};
 use misa_value::Value;
 use crate::{Remote, escape};
 
-fn page(status: StatusCode, title: &str, body: String) -> Response {
+pub(crate) fn page(status: StatusCode, title: &str, body: String) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")], Html(format!("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>{}</title><link rel=\"stylesheet\" href=\"./style.css\"></head><body><main><h1>{}</h1>{}<p><a href=\"./\">Return to session</a> · <a href=\"./requests\">Pending requests</a></p></main></body></html>", escape(title), escape(title), body))).into_response()
 }
 async fn read(remote: &Remote, query: &str, arguments: Vec<Value>) -> Result<Value, String> {

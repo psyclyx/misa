@@ -165,9 +165,9 @@
       doc.body.appendChild(dialog);
       dialog.showModal();
     }
-    main.addEventListener("submit", async function (event) {
+    doc.addEventListener("submit", async function (event) {
       var form = event.target;
-      if (!browser.fetch || !form.action.endsWith("/intent")) return;
+      if (!browser.fetch || (!form.action.endsWith("/intent") && !form.action.endsWith("/perform"))) return;
       event.preventDefault();
       var key = form.id || form.action;
       if (pendingForms.has(key) || pendingForms.size >= 16) return;
@@ -197,6 +197,7 @@
           prefs.save();
           recoveryPanel();
         }
+        if (form.closest("dialog")) { var dialog = form.closest("dialog"); dialog.close(); dialog.remove(); }
         if (result.report) report(result.report);
         submissionStatus("");
       } catch (error) {
