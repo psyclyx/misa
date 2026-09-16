@@ -240,6 +240,7 @@ pub struct Tx<'a> {
     db: &'a Value,
     cofx: &'a Coeffects,
     patches: Vec<(Path, Op)>,
+    deferred: Vec<usize>,
     effects: Vec<Effect>,
     dispatches: Vec<Event>,
 }
@@ -285,8 +286,11 @@ impl<'a> Tx<'a> {
         &self.patches
     }
 
-    /// Transfer pending patches to an owner that must durably record them before applying.
-    pub fn take_patches_from(&mut self, index: usize) -> Vec<(Path, Op)> { self.patches.split_off(index) }
+    /// Keep these writes visible to subsequent handlers, but require owner
+    /// finalization to decide their publication at the end of dispatch.
+    pub fn defer_patches_from(&mut self, index: usize) {
+        self.deferred.extend(index..self.patches.len());
+    }
 
     /// Queue a patch. Order is preserved, and a later patch sees an earlier one.
     pub fn patch(&mut self, path: &str, op: Op) -> Result<(), Fault> {
@@ -371,18 +375,16 @@ where
     }
 }
 
-/// `(db, inputs, query, previous) -> value`.
-///
-/// The database is passed because a subscription is a query *over the database*,
-/// not a closed computation; `inputs` are its declared dependencies, already
-/// evaluated; `previous` is a hint that may be absent.
-pub type Compute = Arc<dyn Fn(&Value, &[Value], &Query, Option<&Value>) -> Value + Send + Sync>;
+/// A derived query can access only its declared inputs. The previous result is
+/// an optional immutable optimization hint, never a correctness dependency.
+pub type Compute = Arc<dyn Fn(&[Value], &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync>;
+pub type Read = Arc<dyn Fn(&Value, &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync>;
 
 /// A pure query with declared inputs.
 #[derive(Clone)]
-pub struct Subscription {
-    pub inputs: Inputs,
-    pub compute: Compute,
+pub enum Subscription {
+    Read { read: Read },
+    Derived { inputs: Inputs, compute: Compute },
 }
 
 /// A subscription that reads the database directly.
@@ -391,26 +393,34 @@ pub struct Subscription {
 /// touches would be a lie, so it names the database, and the scope invalidates it
 /// on the database's identity rather than on a list of paths.
 pub fn read_query(compute: impl Fn(&Value, &Query) -> Value + Send + Sync + 'static) -> Subscription {
-    Subscription {
-        inputs: Inputs::Database,
-        compute: Arc::new(move |db, _inputs, query, _previous| compute(db, query)),
+    try_read_query(move |db, query, _previous| Ok(compute(db, query)))
+}
+
+pub fn try_read_query(compute: impl Fn(&Value, &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync + 'static) -> Subscription {
+    Subscription::Read { read: Arc::new(compute) }
+}
+
+/// A pure projection of named query results, independent of any consumer.
+pub fn derived_query(
+    inputs: impl IntoIterator<Item = Query>,
+    compute: impl Fn(&[Value]) -> Value + Send + Sync + 'static,
+) -> Subscription {
+    Subscription::Derived {
+        inputs: Inputs::Fixed(inputs.into_iter().collect()),
+        compute: Arc::new(move |inputs, _, _| Ok(compute(inputs))),
     }
+}
+
+pub fn try_derived_query(inputs: Inputs, compute: impl Fn(&[Value], &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync + 'static) -> Subscription {
+    Subscription::Derived { inputs, compute: Arc::new(compute) }
 }
 
 /// What a query depends on.
 #[derive(Clone)]
 pub enum Inputs {
-    /// Dependencies that never change, so the query is computed once.
-    ///
-    /// For a formula, a version, or installed configuration. A query that *reads
-    /// the database* must not use this: it would be computed once and then never
-    /// again, which is the most confusing bug this design can produce.
+    /// A fixed list of dependency queries; their values may change. An empty
+    /// list describes a constant computation. Database reads use Subscription::Read.
     Fixed(Vec<Query>),
-    /// Depends on the database as a whole, and is recomputed whenever the database
-    /// is a different value. Because a patch rebuilds only the path it wrote, that
-    /// comparison is a pointer test for everything the last transaction left
-    /// alone — which is why reading the whole database is affordable here.
-    Database,
     /// Dependencies that depend on the query's own arguments.
     Dynamic(Arc<dyn Fn(&Query) -> Result<Vec<Query>, Fault> + Send + Sync>),
 }
@@ -424,9 +434,19 @@ pub enum Inputs {
 pub struct Registry {
     handlers: BTreeMap<String, Vec<(i32, Arc<dyn Handler>)>>,
     subscriptions: BTreeMap<String, Arc<Subscription>>,
+    installation_faults: Vec<Fault>,
+    finalizers: Vec<Arc<dyn Fn(&Value, &mut Outcome) -> Result<bool, Fault> + Send + Sync>>,
 }
 
 impl Registry {
+    /// Owner policy applied after the complete handler chain, before publication
+    /// or effects. Any failure rolls back the entire dispatch.
+    /// Return true after changing patches or effects so the loop rebuilds the
+    /// committed changes and validates the final effects before publication.
+    pub fn finalize(mut self, finalize: impl Fn(&Value, &mut Outcome) -> Result<bool, Fault> + Send + Sync + 'static) -> Self {
+        self.finalizers.push(Arc::new(finalize));
+        self
+    }
     pub fn new() -> Self {
         Registry::default()
     }
@@ -452,8 +472,35 @@ impl Registry {
     }
 
     pub fn subscription(mut self, id: impl Into<String>, subscription: Subscription) -> Self {
-        self.subscriptions.insert(id.into(), Arc::new(subscription));
+        let id = id.into();
+        if id.is_empty() || self.subscriptions.contains_key(&id) {
+            self.installation_faults.push(Fault::query(format!("invalid or duplicate subscription `{id}`")));
+        } else {
+            self.subscriptions.insert(id, Arc::new(subscription));
+        }
         self
+    }
+
+    /// Validate the closed composition before its owner starts. Dynamic dependencies
+    /// are checked when their query arguments are available.
+    pub fn validate(&self) -> Result<(), Fault> {
+        if let Some(fault) = self.installation_faults.first() { return Err(fault.clone()); }
+        fn visit(registry: &Registry, id: &str, active: &mut Vec<String>, done: &mut std::collections::BTreeSet<String>) -> Result<(), Fault> {
+            if active.iter().any(|entry| entry == id) { return Err(Fault::query(format!("subscription dependency cycle at `{id}`"))); }
+            if done.contains(id) { return Ok(()); }
+            let definition = registry.definition(id).ok_or_else(|| Fault::query(format!("no subscription named `{id}`")))?;
+            if active.len() >= scope::DEFAULT_DEPTH { return Err(Fault::query("subscription dependencies are too deep")); }
+            active.push(id.into());
+            if let Subscription::Derived { inputs: Inputs::Fixed(inputs), .. } = definition.as_ref() {
+                for query in inputs { visit(registry, &query.id, active, done)?; }
+            }
+            active.pop();
+            done.insert(id.into());
+            Ok(())
+        }
+        let mut done = std::collections::BTreeSet::new();
+        for id in self.subscriptions.keys() { visit(self, id, &mut Vec::new(), &mut done)?; }
+        Ok(())
     }
 
     pub fn handlers_for(&self, kind: &str) -> &[(i32, Arc<dyn Handler>)] {
@@ -505,6 +552,8 @@ pub struct Change {
 /// What one dispatch did.
 #[derive(Clone, Debug, Default)]
 pub struct Outcome {
+    /// (change, patch) positions awaiting owner finalization.
+    pub deferred: Vec<(usize, usize)>,
     /// Successful event transactions in this atomic dispatch, in application order.
     pub changes: Vec<Change>,
     /// Effects to execute, in the order their handlers asked for them.
@@ -570,6 +619,7 @@ pub struct Loop {
 
 impl Loop {
     pub fn new(registry: Arc<Registry>, interpreter: Arc<dyn Interpreter>, db: Value) -> Self {
+        registry.validate().expect("invalid owner query composition");
         Loop {
             db,
             registry,
@@ -681,7 +731,8 @@ impl Loop {
             chain += 1;
             outcome.handled.push(event.kind.clone());
             match self.dispatch_one(&event) {
-                Ok((effects, next, change)) => {
+                Ok((effects, next, change, deferred)) => {
+                    outcome.deferred.extend(deferred.into_iter().map(|patch| (outcome.changes.len(), patch)));
                     if let Some(change) = change { outcome.changes.push(change); }
                     outcome.effects.extend(effects);
                     queue.extend(next);
@@ -693,6 +744,34 @@ impl Loop {
             }
         }
 
+        if outcome.committed() && !self.registry.finalizers.is_empty() {
+            let mut finalized = false;
+            for finalize in &self.registry.finalizers {
+                match finalize(&before, &mut outcome) {
+                    Ok(changed) => finalized |= changed,
+                    Err(fault) => { outcome.faults.push(fault); break; }
+                }
+            }
+            if outcome.committed() && finalized {
+                let mut working = before.clone();
+                for change in &mut outcome.changes {
+                    change.before = working.clone();
+                    match misa_value::apply(&working, &change.patches) {
+                        Ok(value) => { working = value; change.after = working.clone(); }
+                        Err(error) => { outcome.faults.push(Fault::patch(error.to_string())); break; }
+                    }
+                }
+                if outcome.committed() {
+                    for effect in &outcome.effects {
+                        if let Err(error) = self.interpreter.accepts(effect) { outcome.faults.push(Fault::effect(error)); break; }
+                    }
+                }
+                if outcome.committed() { self.db = working; }
+            }
+        }
+        if outcome.committed() && !outcome.deferred.is_empty() {
+            outcome.faults.push(Fault::new("transaction.unfinalized", "Owner did not finalize deferred writes"));
+        }
         if outcome.committed() {
             self.rev += 1;
             outcome.rev = self.rev;
@@ -700,21 +779,23 @@ impl Loop {
             self.db = before;
             outcome.effects.clear();
             outcome.changes.clear();
+            outcome.deferred.clear();
         }
         outcome
     }
 
     /// One event, one transaction, one commit.
-    fn dispatch_one(&mut self, event: &Event) -> Result<(Vec<Effect>, Vec<Event>, Option<Change>), Vec<Fault>> {
+    fn dispatch_one(&mut self, event: &Event) -> Result<(Vec<Effect>, Vec<Event>, Option<Change>, Vec<usize>), Vec<Fault>> {
         let handlers = self.registry.handlers_for(&event.kind).to_vec();
         if handlers.is_empty() {
             // An event nothing reacts to is not an error: a policy observes what
             // it cares about, and a session is a composition of several policies.
-            return Ok((Vec::new(), Vec::new(), None));
+            return Ok((Vec::new(), Vec::new(), None, Vec::new()));
         }
 
         let mut working = self.db.clone();
         let mut committed_patches = Vec::new();
+        let mut deferred = Vec::new();
         let mut effects = Vec::new();
         let mut dispatches = Vec::new();
         let mut faults = Vec::new();
@@ -724,6 +805,7 @@ impl Loop {
                 db: &working,
                 cofx: &self.cofx,
                 patches: Vec::new(),
+                deferred: Vec::new(),
                 effects: Vec::new(),
                 dispatches: Vec::new(),
             };
@@ -734,7 +816,7 @@ impl Loop {
                 break;
             }
 
-            let (patches, asked, next) = tx.into_parts();
+            let (patches, asked, next, held) = tx.into_parts();
 
             let mut applied = working.clone();
             let mut failed = None;
@@ -775,6 +857,7 @@ impl Loop {
             }
 
             working = applied;
+            deferred.extend(held.into_iter().map(|index| committed_patches.len() + index));
             committed_patches.extend(patches);
             effects.extend(asked);
             dispatches.extend(next);
@@ -788,13 +871,13 @@ impl Loop {
             before: self.db.clone(), after: working.clone(), patches: committed_patches,
         });
         self.db = working;
-        Ok((effects, dispatches, change))
+        Ok((effects, dispatches, change, deferred))
     }
 }
 
 impl<'a> Tx<'a> {
-    fn into_parts(self) -> (Vec<(Path, Op)>, Vec<Effect>, Vec<Event>) {
-        (self.patches, self.effects, self.dispatches)
+    fn into_parts(self) -> (Vec<(Path, Op)>, Vec<Effect>, Vec<Event>, Vec<usize>) {
+        (self.patches, self.effects, self.dispatches, self.deferred)
     }
 }
 
@@ -813,6 +896,22 @@ mod tests {
 
     /// Only `announce` may run. Everything else must be refused before the commit.
     struct OnlyAnnounce;
+
+    #[test]
+    fn deferred_writes_require_finalization_and_rollback_effects() {
+        let registry = Registry::new().on_fn("write", 0, "staged", |tx, _| {
+            tx.set("count", Value::Int(1))?;
+            tx.defer_patches_from(0);
+            tx.fx(Effect::new("announce"));
+            Ok(())
+        });
+        let mut owner = Loop::new(Arc::new(registry), Arc::new(OnlyAnnounce), base());
+        let result = owner.dispatch(Event::new("write"));
+        assert!(!result.committed());
+        assert_eq!(result.faults[0].code, "transaction.unfinalized");
+        assert_eq!(owner.db(), &base());
+        assert!(result.effects.is_empty() && result.changes.is_empty());
+    }
 
     impl Interpreter for OnlyAnnounce {
         fn accepts(&self, effect: &Effect) -> Result<(), String> {
@@ -855,11 +954,11 @@ mod tests {
                 )
                 .subscription(
                     "log.length",
-                    Subscription {
+                    Subscription::Derived {
                         inputs: Inputs::Fixed(vec![Query::new("log")]),
-                        compute: Arc::new(|_db, inputs, _query, _previous| {
+                        compute: Arc::new(|inputs, _query, _previous| Ok({
                             Value::Int(inputs[0].as_list().map(<[Value]>::len).unwrap_or(0) as i64)
-                        }),
+                        })),
                     },
                 ),
         )
@@ -1023,12 +1122,12 @@ mod tests {
                 )
                 .subscription(
                     "log.length",
-                    Subscription {
+                    Subscription::Derived {
                         inputs: Inputs::Fixed(vec![Query::new("log")]),
-                        compute: Arc::new(move |_db, _inputs, _query, _previous| {
+                        compute: Arc::new(move |_inputs, _query, _previous| Ok({
                             counter.fetch_add(1, Ordering::SeqCst);
                             Value::Int(0)
-                        }),
+                        })),
                     },
                 ),
         );

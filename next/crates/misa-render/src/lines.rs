@@ -92,6 +92,10 @@ struct Renderer<'a> {
 
 impl<'a> Renderer<'a> {
     fn node(&self, node: &Node, depth: usize, out: &mut Vec<Line>) {
+        if let Some(lines) = crate::components::render_default(node, self.theme, self.columns) {
+            out.extend(lines);
+            return;
+        }
         let indent = (depth as u8).saturating_mul(2);
         let style = self.theme.role(&node.role);
         match &node.kind {

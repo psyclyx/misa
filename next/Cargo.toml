@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.91"
 
 [workspace.dependencies]
+misa-client = { path = "crates/misa-client" }
 misa-proto = { path = "crates/misa-proto" }
 misa-value = { path = "crates/misa-value" }
 misa-reframe = { path = "crates/misa-reframe" }

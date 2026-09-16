@@ -149,6 +149,20 @@ impl Theme {
         set("error.rail", Style::fg(hex(0xe06c75)));
         set("status", Style::fg(hex(0x7f8690)).dim());
         set("composer", Style::fg(hex(0xe6e8ea)));
+        set("mode.insert", Style::fg(hex(0x64b5a0)).bold());
+        set("mode.normal", Style::fg(hex(0xc9a227)).bold());
+        set("palette.title", Style::fg(hex(0x64b5a0)).bold());
+        set("palette.item.selected", Style::fg(hex(0xe6e8ea)).on(hex(0x39415a)).bold());
+        set("palette.item", Style::fg(hex(0xb9bec6)));
+        set("palette.hint", Style::fg(hex(0x8a8f98)));
+        set("value.context", Style::fg(hex(0x64b5a0)));
+        set("value.spend", Style::fg(hex(0xc9a227)));
+        set("turn", Style::fg(hex(0x64b5a0)));
+        set("indicator", Style::fg(hex(0x84919c)));
+        set("indicator.activity", Style::fg(hex(0x81bdb5)));
+        set("indicator.model", Style::fg(hex(0x8dafd2)));
+        set("indicator.context", Style::fg(hex(0x93b99a)));
+        set("status.separator", Style::fg(hex(0x84919c)));
         set("dialog", Style::fg(hex(0xe6e8ea)));
         set("dialog.title", Style::fg(hex(0xe6e8ea)).bold());
         // A reader's selection. A background rather than a foreground, because it has
@@ -363,4 +377,3 @@ mod tests {
         assert_eq!(theme.role("message.handoff.detail"), Style::fg(hex(0xaa00aa)).bold());
     }
 }
-

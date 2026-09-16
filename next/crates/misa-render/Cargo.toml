@@ -9,3 +9,4 @@ rust-version.workspace = true
 misa-proto.workspace = true
 misa-value.workspace = true
 unicode-width.workspace = true
+serde.workspace = true

@@ -39,7 +39,16 @@
 //! clients with different tastes both get to be right.
 
 pub mod blob;
+pub mod tool;
 pub mod chunk;
+pub mod observation;
+pub mod query;
+pub mod directory;
+pub mod presentation;
+pub mod preparation;
+pub mod schema;
+pub mod invocation;
+pub mod scoped;
 pub mod frame;
 pub mod view;
 pub mod sync;

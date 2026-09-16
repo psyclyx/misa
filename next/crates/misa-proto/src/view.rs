@@ -330,7 +330,7 @@ pub enum ActionOn {
 }
 
 /// A reference to content too large or too binary to inline.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobRef {
     /// Lowercase hex of the content hash.
     pub hash: String,

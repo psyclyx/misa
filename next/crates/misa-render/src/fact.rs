@@ -15,6 +15,20 @@
 //! frontend and not here: how the text is then drawn.
 
 use misa_value::Value;
+use std::{collections::BTreeMap, sync::Arc};
+
+pub type Formatter = Arc<dyn Fn(&Value) -> String + Send + Sync>;
+#[derive(Clone, Default)]
+pub struct Registry { formats: BTreeMap<String, Formatter> }
+impl Registry {
+    pub fn register(&mut self, role: &str, formatter: Formatter) -> Result<(), String> {
+        if role.is_empty() || self.formats.contains_key(role) { return Err(format!("Duplicate or empty value renderer `{role}`")); }
+        self.formats.insert(role.into(), formatter); Ok(())
+    }
+    pub fn format(&self, role: &str, value: &Value) -> String {
+        self.formats.get(role).map(|format| format(value)).unwrap_or_else(|| format(role, value))
+    }
+}
 
 /// Render a fact, given the role it was sent under.
 pub fn format(role: &str, value: &Value) -> String {

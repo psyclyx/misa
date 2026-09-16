@@ -17,6 +17,7 @@
 //! `(tree, theme, width)`.
 
 pub mod fact;
+pub mod components;
 pub mod lines;
 pub mod text;
 pub mod theme;

@@ -9,4 +9,5 @@ rust-version.workspace = true
 [dependencies]
 misa-proto.workspace = true
 misa-value.workspace = true
+serde.workspace = true
 tokio.workspace = true

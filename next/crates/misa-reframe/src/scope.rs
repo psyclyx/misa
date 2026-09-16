@@ -15,7 +15,7 @@ use std::collections::{HashMap, VecDeque};
 use misa_proto::Query;
 use misa_value::Value;
 
-use crate::{Fault, Inputs, Registry};
+use crate::{Fault, Inputs, Registry, Subscription};
 
 /// The cache size a scope starts with.
 pub const DEFAULT_CAPACITY: usize = 512;
@@ -92,7 +92,7 @@ impl Scope {
         registry: &Registry,
         query: &Query,
     ) -> Result<Option<Value>, Fault> {
-        self.eval(db, registry, query, 0)
+        self.eval(db, registry, query, &mut Vec::new())
     }
 
     fn eval(
@@ -100,9 +100,9 @@ impl Scope {
         db: &Value,
         registry: &Registry,
         query: &Query,
-        depth: usize,
+        active: &mut Vec<String>,
     ) -> Result<Option<Value>, Fault> {
-        if depth > self.depth_limit {
+        if active.len() >= self.depth_limit || active.contains(&query.key()) {
             return Err(Fault::query(format!(
                 "`{}` is more than {} dependencies deep, which is a cycle or a mistake",
                 query.id, self.depth_limit
@@ -113,15 +113,17 @@ impl Scope {
             .ok_or_else(|| Fault::query(format!("no subscription named `{}`", query.id)))?
             .clone();
 
-        let inputs = match &subscription.inputs {
+        active.push(query.key());
+        let result = (|| {
+        let inputs = match subscription.as_ref() {
             // A read is invalidated by the database's own identity. Because a
             // patch reuses every branch it did not write, that comparison is a
             // pointer test for everything the last transaction left alone.
-            Inputs::Database => vec![db.clone()],
-            Inputs::Fixed(fixed) => self.evaluate_dependencies(db, registry, fixed, depth, query)?,
-            Inputs::Dynamic(build) => {
+            Subscription::Read { .. } => vec![db.clone()],
+            Subscription::Derived { inputs: Inputs::Fixed(fixed), .. } => self.evaluate_dependencies(db, registry, fixed, active, query)?,
+            Subscription::Derived { inputs: Inputs::Dynamic(build), .. } => {
                 let fixed = build(query)?;
-                self.evaluate_dependencies(db, registry, &fixed, depth, query)?
+                self.evaluate_dependencies(db, registry, &fixed, active, query)?
             }
         };
         let key = query.key();
@@ -132,14 +134,27 @@ impl Scope {
                 return Ok(None);
             }
             let previous = entry.value.clone();
-            let value = (subscription.compute)(db, &inputs, query, Some(&previous));
+            let value = match subscription.as_ref() {
+                Subscription::Read { read } => read(db, query, Some(&previous))?,
+                Subscription::Derived { compute, .. } => compute(&inputs, query, Some(&previous))?,
+            };
+            if previous.same(&value) {
+                self.insert(key, Entry { value: previous, inputs });
+                return Ok(None);
+            }
             self.insert(key, Entry { value: value.clone(), inputs });
             return Ok(Some(value));
         }
 
-        let value = (subscription.compute)(db, &inputs, query, None);
+        let value = match subscription.as_ref() {
+            Subscription::Read { read } => read(db, query, None)?,
+            Subscription::Derived { compute, .. } => compute(&inputs, query, None)?,
+        };
         self.insert(key, Entry { value: value.clone(), inputs });
         Ok(Some(value))
+        })();
+        active.pop();
+        result
     }
 
     /// Evaluate each declared dependency and collect its current value.
@@ -154,7 +169,7 @@ impl Scope {
         db: &Value,
         registry: &Registry,
         dependencies: &[Query],
-        depth: usize,
+        active: &mut Vec<String>,
         query: &Query,
     ) -> Result<Vec<Value>, Fault> {
         let mut inputs = Vec::with_capacity(dependencies.len());
@@ -165,7 +180,7 @@ impl Scope {
                     query.id
                 )));
             }
-            self.eval(db, registry, dependency, depth + 1)?;
+            self.eval(db, registry, dependency, active)?;
             inputs.push(
                 self.current(dependency)
                     .ok_or_else(|| Fault::query(format!("`{}` has no value", dependency.id)))?,
@@ -196,6 +211,58 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn recomputation_preserves_equal_output_allocation_and_suppresses_delivery() {
+        let registry = Registry::new().subscription("constant", read_query(|_, _| Value::list([Value::Int(7)])));
+        let mut scope = Scope::new();
+        let query = Query::new("constant");
+        let first = scope.evaluate(&Value::Int(1), &registry, &query).unwrap().unwrap();
+        assert!(scope.evaluate(&Value::Int(2), &registry, &query).unwrap().is_none());
+        let current = scope.current(&query).unwrap();
+        match (first, current) {
+            (Value::List(a), Value::List(b)) => assert!(Arc::ptr_eq(&a, &b)),
+            _ => panic!("expected lists"),
+        }
+    }
+
+    #[test]
+    fn query_faults_propagate_and_can_recover_without_caching_a_false_value() {
+        let registry = Registry::new()
+            .subscription("input", crate::try_read_query(|db, _, _| {
+                if db.is_null() { Err(Fault::query("temporarily missing")) } else { Ok(db.clone()) }
+            }))
+            .subscription("output", crate::derived_query([Query::new("input")], |inputs| inputs[0].clone()));
+        registry.validate().unwrap();
+        let mut scope = Scope::new();
+        let query = Query::new("output");
+        assert!(scope.evaluate(&Value::Null, &registry, &query).unwrap_err().message.contains("temporarily missing"));
+        assert!(scope.current(&query).is_none());
+        assert_eq!(scope.evaluate(&Value::Int(4), &registry, &query).unwrap(), Some(Value::Int(4)));
+    }
+
+    #[test]
+    fn installation_rejects_duplicate_missing_and_cyclic_definitions() {
+        let duplicate = Registry::new().subscription("x", read_query(|_, _| Value::Null))
+            .subscription("x", read_query(|_, _| Value::Int(1)));
+        assert!(duplicate.validate().unwrap_err().message.contains("duplicate"));
+        let missing = Registry::new().subscription("x", crate::derived_query([Query::new("missing")], |_| Value::Null));
+        assert!(missing.validate().unwrap_err().message.contains("missing"));
+        let cycle = Registry::new().subscription("x", crate::derived_query([Query::new("y")], |_| Value::Null))
+            .subscription("y", crate::derived_query([Query::new("x")], |_| Value::Null));
+        assert!(cycle.validate().unwrap_err().message.contains("cycle"));
+    }
+
+    #[test]
+    fn dynamic_cycles_fail_at_evaluation_and_do_not_poison_the_scope() {
+        let registry = Registry::new().subscription("x", crate::try_derived_query(
+            Inputs::Dynamic(Arc::new(|query| Ok(if query.args.is_empty() { vec![query.clone()] } else { vec![] }))),
+            |_, _, _| Ok(Value::Int(1))));
+        registry.validate().unwrap();
+        let mut scope = Scope::new();
+        assert!(scope.evaluate(&Value::Null, &registry, &Query::new("x")).is_err());
+        assert_eq!(scope.evaluate(&Value::Null, &registry, &Query::new("x").arg(Value::Int(1))).unwrap(), Some(Value::Int(1)));
+    }
+
     fn db() -> Value {
         Value::map([("items", Value::list([Value::Int(1), Value::Int(2)]))])
     }
@@ -208,33 +275,33 @@ mod tests {
             )
             .subscription(
                 "items.count",
-                Subscription {
+                Subscription::Derived {
                     inputs: Inputs::Fixed(vec![Query::new("items")]),
-                    compute: Arc::new(move |_db, inputs, _query, _previous| {
+                    compute: Arc::new(move |inputs, _query, _previous| Ok({
                         calls.fetch_add(1, Ordering::SeqCst);
                         Value::Int(inputs[0].as_list().map(<[Value]>::len).unwrap_or(0) as i64)
-                    }),
+                    })),
                 },
             )
             .subscription(
                 "broken",
-                Subscription {
+                Subscription::Derived {
                     inputs: Inputs::Fixed(vec![]),
-                    compute: Arc::new(|_db, _inputs, _query, _previous| Value::Null),
+                    compute: Arc::new(|_inputs, _query, _previous| Ok(Value::Null)),
                 },
             )
             .subscription(
                 "self",
-                Subscription {
+                Subscription::Derived {
                     inputs: Inputs::Fixed(vec![Query::new("self")]),
-                    compute: Arc::new(|_db, _inputs, _query, _previous| Value::Null),
+                    compute: Arc::new(|_inputs, _query, _previous| Ok(Value::Null)),
                 },
             )
             .subscription(
                 "dynamic",
-                Subscription {
+                Subscription::Derived {
                     inputs: Inputs::Dynamic(Arc::new(|query| Ok(vec![Query::new("items").arg(query.args[0].clone())]))),
-                    compute: Arc::new(|_db, _inputs, _query, _previous| Value::Str(Arc::from("dynamic"))),
+                    compute: Arc::new(|_inputs, _query, _previous| Ok(Value::Str(Arc::from("dynamic")))),
                 },
             )
     }

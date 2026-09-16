@@ -15,12 +15,35 @@ pub use crate::frame::decode;
 pub const MAX_CHUNK: usize = 64 * 1024;
 const MORE: u32 = 1 << 31;
 
+/// Count framed bytes without allocating the payload, for transport admission.
+pub fn encoded_size_with_limit<T: Serialize>(value: &T, limit: usize) -> Result<usize, FrameError> {
+    struct Count { bytes: usize, limit: usize }
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes) { return Err(io::Error::other("Logical message exceeds byte limit")); }
+            self.bytes += bytes.len(); Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    let mut count = Count { bytes: 0, limit };
+    ciborium::ser::into_writer(value, &mut count).map_err(|error| FrameError::Codec(error.to_string()))?;
+    count.bytes.checked_add(count.bytes.div_ceil(MAX_CHUNK).max(1) * 4)
+        .ok_or_else(|| FrameError::Codec("Logical message size overflow".into()))
+}
+
 /// Serialize directly into framed chunks, without first making a second whole payload.
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, FrameError> {
+    encode_with_limit(value, usize::MAX)
+}
+
+/// Bound total logical serialization as well as each wire chunk.
+pub fn encode_with_limit<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>, FrameError> {
     let mut writer = Encoder {
         bytes: vec![0; 4],
         header: 0,
         length: 0,
+        limit,
+        written: 0,
     };
     ciborium::ser::into_writer(value, &mut writer)
         .map_err(|error| FrameError::Codec(error.to_string()))?;
@@ -32,6 +55,8 @@ struct Encoder {
     bytes: Vec<u8>,
     header: usize,
     length: usize,
+    limit: usize,
+    written: usize,
 }
 impl Encoder {
     fn finish(&mut self, more: bool) {
@@ -42,6 +67,10 @@ impl Encoder {
 impl Write for Encoder {
     fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
         let written = bytes.len();
+        if written > self.limit.saturating_sub(self.written) {
+            return Err(io::Error::other("Logical message exceeds byte limit"));
+        }
+        self.written += written;
         while !bytes.is_empty() {
             if self.length == MAX_CHUNK {
                 self.finish(true);
