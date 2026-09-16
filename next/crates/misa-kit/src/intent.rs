@@ -3,7 +3,7 @@
 //! Shortcut metadata names arguments and completion sources. Parsing only prepares
 //! local input; the installed command catalog and owner validate invocations.
 
-use misa_proto::wire::Intent;
+
 pub use misa_proto::preparation::Arg;
 use serde::{Serialize, Deserialize};
 
@@ -250,3 +250,74 @@ impl Source {
     }
 
 }
+
+/// A local editor action. This is never a wire request or owner command.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "intent", rename_all = "snake_case")]
+pub enum Intent {
+    /// Interrupt the current turn and submit this prompt before queued prompts.
+    Interrupt {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<misa_proto::view::BlobRef>,
+    },
+    /// Submit a turn.
+    Prompt {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<misa_proto::view::BlobRef>,
+    },
+    /// Resolve an action a view node offered.
+    Action {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        node: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        args: Value,
+        /// Field values from the node, for an action with
+        /// [`ActionOn::Submit`](misa_proto::view::ActionOn).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<misa_proto::view::Field>,
+    },
+    /// Invoke a declared command by name.
+    Command {
+        name: String,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        args: Value,
+    },
+    /// Cancel the named work, or everything in flight when unnamed.
+    Cancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
+    /// Ask a session for candidates for a prefix.
+    ///
+    /// Only for a source declared `OnDemand`, and only when a client has decided it
+    /// needs them: matching, ranking, and deciding *when* to show a picker are the
+    /// client's, because they are cheap, local, and different on every platform.
+    /// Answering "which models are there" or "which files are under this prefix" is
+    /// not.
+    ///
+    /// The local adapter resolves this through an exported finite read.
+    Complete {
+        source: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        prefix: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+}
+
+impl Intent {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Intent::Interrupt { .. } => "interrupt",
+            Intent::Prompt { .. } => "prompt",
+            Intent::Action { .. } => "action",
+            Intent::Command { .. } => "command",
+            Intent::Cancel { .. } => "cancel",
+            Intent::Complete { .. } => "complete",
+        }
+    }
+}
+
