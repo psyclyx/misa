@@ -13,11 +13,12 @@
 //! on a machine with no display, and diffed against last week's. A window is a second
 //! consumer of the same scene and needs nothing new from a session.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
+use misa_proto::observation::Selection;
 use misa_proto::view::Node;
-use misa_proto::{Query, SessionMsg, SubId};
+use misa_protocol::observation::{MemberState, Status};
 
 fn usage() -> String {
     "usage: misa-skia (--ticket misa:<endpoint id>:<session> | --view view.json) [--window] [--out frame.png] [--every-ms N] [--columns N]"
@@ -41,12 +42,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--view" | "-v" => view_file = arguments.next(),
             "--out" | "-o" => out = arguments.next(),
             "--every-ms" => every_ms = arguments.next().and_then(|value| value.parse().ok()),
-            "--columns" => columns = arguments.next().and_then(|value| value.parse().ok()).unwrap_or(columns),
-            "--rows" => rows = arguments.next().and_then(|value| value.parse().ok()).unwrap_or(rows),
+            "--columns" => {
+                columns = arguments
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(columns)
+            }
+            "--rows" => {
+                rows = arguments
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(rows)
+            }
             other => return Err(format!("unknown argument `{other}`").into()),
         }
     }
-    if ticket.is_none() && view_file.is_none() {
+    if ticket.is_none() && view_file.is_none() && out.is_some() && !window {
         return Err(usage().into());
     }
 
@@ -60,7 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if window || out.is_none() {
         let view = first.take().unwrap_or_else(|| Node::section("connecting"));
-        misa_skia::window::run(view, ticket, out)?;
+        let live=ticket.is_some()||view_file.is_none();
+        misa_skia::window::run(view, ticket, out, live)?;
         return Ok(());
     }
     let out = out.expect("PNG output selected");
@@ -77,46 +89,120 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     // A ticket, or a pairing string: whatever the daemon printed or the QR said.
-    let (parsed, code) = misa_proto::Pairing::given(&ticket)?;
-    let endpoint = misa_transport::iroh::bind_for(&parsed.node).await?;
-    let target = misa_transport::iroh::address_of(&parsed.node)?;
-    if let Some(code) = &code {
-        let message = misa_transport::iroh::Client::pair(&endpoint, target.clone(), code, "the pixel frontend").await?;
-        eprintln!("[paired] {message}");
-    }
+    let (parsed, _) = misa_proto::Pairing::given(&ticket)?;
+    let identity =
+        misa_transport::identity::load(&misa_transport::identity::client_path("misa-skia")?)?;
+    let endpoint = misa_transport::iroh::bind(
+        Some(identity),
+        !misa_transport::iroh::names_only_this_machine(&parsed.node),
+    )
+    .await?;
     let info = misa_proto::ClientInfo::new("misa-skia", env!("CARGO_PKG_VERSION"));
-    // `Arc` because a reconnect needs the endpoint again; there is exactly one here and
-    // the client takes it by reference.
-    let endpoint = Arc::new(endpoint);
-    let mut client = misa_transport::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
-    client
-        .subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY))
-        .await?;
-
-    let mut current = misa_proto::sync::ClientView::default();
-    loop {
-        let Some(message) = client.next().await? else { return Ok(()) };
-        match current.receive(&message) {
-            Ok(true) => if let Some(view) = current.rendered() {
-                write_frame(&view, columns, rows, &out)?;
-                println!("wrote {out}");
-                if every_ms.is_none() { return Ok(()); }
+    let daemons = misa_client::daemons::Daemons::new(endpoint, info);
+    let (daemon, hint) = daemons
+        .connect_target(&ticket)
+        .await
+        .map_err(|fault| fault.message)?;
+    let mut directory = daemon.watch();
+    let scope = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let snapshot = daemon.sessions().map_err(|fault| fault.message)?;
+            if matches!(snapshot.status, Status::Current) {
+                let selected =
+                    match &hint {
+                        Some(id) => snapshot.sessions.iter().find(|entry| &entry.id == id),
+                        None if snapshot.sessions.len() == 1 => snapshot.sessions.first(),
+                        None => return Err(
+                            "Choose a session in the ticket when the daemon has several sessions"
+                                .to_owned(),
+                        ),
+                    };
+                return selected
+                    .map(|entry| entry.scope())
+                    .ok_or_else(|| "The selected session is no longer available".to_owned());
+            }
+            if let Status::Closed(fault) = snapshot.status {
+                return Err(fault.message);
+            }
+            directory
+                .changed()
+                .await
+                .map_err(|_| "Daemon directory closed".to_owned())?;
+        }
+    })
+    .await
+    .map_err(|_| "Timed out reading daemon sessions")??;
+    let interface = misa_client::interface::Interface::load(&daemon.client, scope.clone())
+        .await
+        .map_err(|fault| fault.message)?;
+    let member = interface
+        .presentation("conversation", &[])
+        .map_err(|fault| fault.message)?;
+    let mut observation = daemon
+        .client
+        .observe(
+            Selection {
+                scope,
+                members: BTreeMap::from([("conversation".into(), member)]),
             },
-            Err(_) => client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?,
-            Ok(false) => if let SessionMsg::Fault { fault, .. } = message { eprintln!("[{}] {}", fault.code, fault.message); },
+            None,
+        )
+        .await
+        .map_err(|fault| fault.message)?;
+    let mut painted = None;
+    loop {
+        let frame = observation
+            .inspect(|replica, notice| {
+                if let Status::Closed(fault) = replica.status() {
+                    return Err(fault.message.clone());
+                }
+                let Some(notice) = notice else {
+                    return Ok(None);
+                };
+                if painted == Some(notice.sequence) || !matches!(replica.status(), Status::Current)
+                {
+                    return Ok(None);
+                }
+                let Some(MemberState::Document(document)) = replica
+                    .current()
+                    .and_then(|members| members.get("conversation"))
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    notice.sequence,
+                    misa_client::document::rendered(document),
+                )))
+            })
+            .ok_or("Presentation observation closed")??;
+        if let Some((sequence, view)) = frame {
+            write_frame(&view, columns, rows, &out)?;
+            painted = Some(sequence);
+            println!("wrote {out}");
+            if every_ms.is_none() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(every_ms.unwrap().max(16))).await;
         }
-        if let Some(every) = every_ms {
-            // A frame is a snapshot: the loop waits for the next change rather than
-            // burning a core redrawing an identical scene.
-            tokio::time::sleep(Duration::from_millis(every.max(16))).await;
-        }
+        observation.changed().await.map_err(|fault| fault.message)?;
     }
 }
 
 /// Paint a scene to a file.
-fn write_frame(view: &Node, columns: u32, rows: u32, out: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_frame(
+    view: &Node,
+    columns: u32,
+    rows: u32,
+    out: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let theme = misa_render::Theme::dark();
-    let scene = misa_skia::scene(view, &theme, columns as usize, rows as usize, misa_skia::Layout::default());
+    let scene = misa_skia::scene(
+        view,
+        &theme,
+        columns as usize,
+        rows as usize,
+        misa_skia::Layout::default(),
+    );
     let png = misa_skia::paint::png(&scene, misa_render::Color::Rgb(20, 22, 26))?;
     std::fs::write(out, png)?;
     Ok(())

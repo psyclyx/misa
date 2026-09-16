@@ -124,6 +124,8 @@ fn rail(line: &Line, theme: &Theme, scene: &mut Scene, layout: Layout, y: f32) {
 pub mod app;
 pub mod connection;
 pub mod window;
+pub mod workspace;
+mod preferences;
 
 pub mod paint {
     use super::{Op, Scene};

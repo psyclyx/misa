@@ -6,14 +6,44 @@ use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
 use misa_proto::wire::{Intent, SessionInfo};
 use misa_render::{Color, Style, Theme};
+use misa_value::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Intent(Intent),
-    Save { node: String, destination: String },
+    Save {
+        node: String,
+        destination: String,
+    },
+    LoadImage(misa_proto::view::BlobRef),
+    Connect(String),
+    Discover,
+    Presentation {
+        id: String,
+        choice: misa_client::composition::Choice,
+    },
+    Disconnect(String),
+    CloseInstance {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+    },
+    Select {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+    },
+    Request {
+        id: String,
+        generation: i64,
+        action: String,
+        fields: BTreeMap<String, Value>,
+    },
     Copy(String),
+    Form {
+        action: String,
+        drafts: BTreeMap<String, String>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -24,6 +54,7 @@ pub enum Control {
     SaveConfirm,
     SaveCancel,
     Text(usize),
+    LoadImage(misa_proto::view::BlobRef),
 }
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -88,6 +119,7 @@ pub struct App {
     drafts: BTreeMap<(String, String), Editor>,
     save: Option<(String, Editor)>,
     picker: Option<misa_kit::picker::Picker>,
+    report: Option<Report>,
     selection: Option<((usize, usize), (usize, usize))>,
     rows: Vec<TextRow>,
     replace_selection: bool,
@@ -95,6 +127,48 @@ pub struct App {
     follow: bool,
     content_height: f32,
     viewport_height: f32,
+}
+struct Report {
+    title: String,
+    entries: Vec<String>,
+    offset: usize,
+    columns: usize,
+    lines: Vec<String>,
+}
+impl Report {
+    fn collect(value: &Value, path: &str, entries: &mut Vec<String>) {
+        match value {
+            Value::Map(fields) if !fields.is_empty() => {
+                for (key, value) in fields.iter() {
+                    let label = key.replace('_', " ");
+                    let path = if path.is_empty() {
+                        label
+                    } else {
+                        format!("{path} / {label}")
+                    };
+                    Self::collect(value, &path, entries);
+                }
+            }
+            Value::List(values) if !values.is_empty() => {
+                for (index, value) in values.iter().enumerate() {
+                    Self::collect(value, &format!("{path} / {}", index + 1), entries);
+                }
+            }
+            _ => {
+                let content = match value {
+                    Value::Null => "Unavailable".into(),
+                    Value::Map(_) | Value::List(_) => "None".into(),
+                    Value::Bytes(bytes) => format!("{} bytes", bytes.len()),
+                    _ => misa_render::fact::format("value.text", value),
+                };
+                entries.push(if path.is_empty() {
+                    content
+                } else {
+                    format!("{path}: {content}")
+                });
+            }
+        }
+    }
 }
 impl App {
     pub fn new(view: Node) -> Self {
@@ -115,6 +189,7 @@ impl App {
             drafts: BTreeMap::new(),
             save: None,
             picker: None,
+            report: None,
             selection: None,
             rows: vec![],
             replace_selection: false,
@@ -126,10 +201,47 @@ impl App {
         app.set_view(view);
         app
     }
+    pub fn report(&mut self, title: String, value: Value) {
+        let mut entries = Vec::new();
+        Report::collect(&value, "", &mut entries);
+        self.picker = None;
+        self.report = Some(Report {
+            title,
+            entries,
+            offset: 0,
+            columns: 0,
+            lines: vec![],
+        });
+    }
+    pub fn clear_secret_drafts(&mut self) {
+        for ((node, field), edit) in &mut self.drafts {
+            if self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && value.secret))) { edit.set_text(""); }
+        }
+        self.cache.clear();
+    }
+    pub fn reject_prompt(&mut self, text: String, reason: String) {
+        let target = self
+            .drafts
+            .keys()
+            .find(|(_, field)| field == "prompt")
+            .cloned();
+        if let Some(key) = target.filter(|key| self.drafts[key].text().is_empty()) {
+            self.drafts.get_mut(&key).unwrap().set_text(text);
+            self.invalidate(&key.0);
+        } else {
+            // Keep newer typing intact. The separate local report can be copied
+            // even if the original composer was removed by a scope update.
+            self.report("Unsent prompt · Copy to recover".into(), Value::str(text));
+        }
+        self.notice = reason;
+    }
     pub fn set_view(&mut self, mut view: Node) {
         misa_proto::sync::address(&mut view);
         self.cache.clear();
         self.streams.clear();
+        let mut references = BTreeSet::new();
+        image_hashes(&view, &mut references);
+        self.images.retain(|hash, _| references.contains(hash));
         fn fields(node: &Node, keys: &mut Vec<(String, misa_proto::view::Field)>) {
             if let Kind::Fields { fields } = &node.kind {
                 for field in fields {
@@ -219,6 +331,17 @@ impl App {
         self.invalidate(&parent);
     }
     fn forget_subtree(&mut self, id: &str) {
+        if let Some(node) = self.tree.node(id) {
+            let mut references = BTreeSet::new();
+            image_hashes(node, &mut references);
+            let mut removed = false;
+            for hash in references {
+                removed |= self.images.remove(&hash).is_some();
+            }
+            if removed {
+                self.cache.clear();
+            }
+        }
         for child in self.tree.children(id) {
             self.forget_subtree(&child);
         }
@@ -255,105 +378,192 @@ impl App {
             self.refresh_fields(child);
         }
     }
+    fn apply_tree<'a>(
+        &mut self,
+        operations: impl IntoIterator<Item = &'a ViewOp>,
+    ) -> Result<(), String> {
+        for op in operations {
+            match op {
+                ViewOp::Insert { parent, node, .. } => {
+                    self.invalidate(parent);
+                    self.tree.apply(op)?;
+                    self.refresh_fields(node);
+                }
+                ViewOp::Remove { id } | ViewOp::Replace { id, .. } => {
+                    self.invalidate(id);
+                    self.forget_subtree(id);
+                    self.tree.apply(op)?;
+                    if let ViewOp::Replace { node, .. } = op {
+                        self.refresh_fields(node);
+                    }
+                }
+            }
+        }
+        self.drafts.retain(|(id,field),_|self.tree.node(id).is_some_and(|node|matches!(&node.kind,Kind::Fields {fields} if fields.iter().any(|value|&value.id==field && !value.read_only))));
+        if matches!(&self.focus,Some(Control::Field {node,field}) if !self.drafts.contains_key(&(node.clone(),field.clone())))
+        {
+            self.focus = None;
+        }
+        if self.focus.is_none() && self.save.is_none() {
+            self.focus = self
+                .drafts
+                .keys()
+                .next_back()
+                .map(|(node, field)| Control::Field {
+                    node: node.clone(),
+                    field: field.clone(),
+                });
+        }
+        Ok(())
+    }
+    fn reset_streams(&mut self, streams: &[misa_proto::sync::Stream]) {
+        for id in self.streams.keys() {
+            self.cache.remove(id);
+        }
+        self.streams.clear();
+        for stream in streams {
+            self.streams.insert(
+                stream.id.clone(),
+                Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
+                    .id(&stream.id)
+                    .state(misa_proto::view::State::Streaming),
+            );
+        }
+        self.invalidate_streams();
+    }
+    fn apply_stream(&mut self, update: &StreamUpdate) {
+        match update {
+            StreamUpdate::Current { stream } => {
+                self.cache.remove(&stream.id);
+                self.streams.insert(
+                    stream.id.clone(),
+                    Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
+                        .id(&stream.id)
+                        .state(misa_proto::view::State::Streaming),
+                );
+            }
+            StreamUpdate::Append { id, text, .. } => {
+                self.cache.remove(id);
+                if let Some(Node {
+                    kind: Kind::Text { spans },
+                    ..
+                }) = self.streams.get_mut(id)
+                {
+                    if let Some(span) = spans.first_mut() {
+                        span.text.push_str(text);
+                    }
+                }
+            }
+            StreamUpdate::End { id } => {
+                self.cache.remove(id);
+                self.streams.remove(id);
+            }
+        }
+        self.invalidate_streams();
+    }
+    /// One already-validated replica transaction. The window paints only after
+    /// canonical changes and live retirement have both reached its derived cache.
+    pub fn observed(&mut self, update: &misa_client::document::Update) -> Result<(), String> {
+        use misa_client::document::Update;
+        use misa_protocol::observation::{Applied, MemberChange, Status};
+        match update {
+            Update::Reset(document) => {
+                self.set_view(document.tree.clone());
+                self.reset_streams(&document.streams);
+            }
+            Update::Changed { member, applied } => {
+                if let Applied::Changed(members) = applied.as_ref() {
+                    if let Some(MemberChange::Document {
+                        tree,
+                        live,
+                        reset_live,
+                    }) = members.get(member)
+                    {
+                        if !tree.is_empty() {
+                            self.apply_tree(tree)?;
+                        }
+                        if *reset_live {
+                            self.reset_streams(&[]);
+                        }
+                        for update in live {
+                            self.apply_stream(update);
+                        }
+                    }
+                }
+            }
+            Update::Unavailable(fault) => self.notice = fault.message.clone(),
+            Update::Status(status) => {
+                self.notice = match status {
+                    Status::Awaiting => "Loading session…".into(),
+                    Status::Current => String::new(),
+                    Status::Recovering(_) => "Refreshing session…".into(),
+                    Status::Stale(fault) | Status::Closed(fault) => fault.message.clone(),
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn receive(&mut self, message: &misa_proto::SessionMsg) -> Result<(), String> {
         use misa_proto::{SessionEvent, SessionMsg};
         match message {
             SessionMsg::View { view, .. } => self.set_view(view.clone()),
             SessionMsg::Changes { changes, .. } => {
-                for op in changes.iter().flat_map(|change| &change.ops) {
-                    match op {
-                        ViewOp::Insert { parent, node, .. } => {
-                            self.invalidate(parent);
-                            self.tree.apply(op)?;
-                            self.refresh_fields(node);
-                        }
-                        ViewOp::Remove { id } | ViewOp::Replace { id, .. } => {
-                            self.invalidate(id);
-                            self.forget_subtree(id);
-                            self.tree.apply(op)?;
-                            if let ViewOp::Replace { node, .. } = op {
-                                self.refresh_fields(node);
-                            }
-                        }
-                    }
-                }
-                self.drafts.retain(|(id,field),_|self.tree.node(id).is_some_and(|node|matches!(&node.kind,Kind::Fields {fields} if fields.iter().any(|value|&value.id==field && !value.read_only))));
-                if matches!(&self.focus,Some(Control::Field {node,field}) if !self.drafts.contains_key(&(node.clone(),field.clone())))
-                {
-                    self.focus = None;
-                }
-                if self.focus.is_none() && self.save.is_none() {
-                    self.focus =
-                        self.drafts
-                            .keys()
-                            .next_back()
-                            .map(|(node, field)| Control::Field {
-                                node: node.clone(),
-                                field: field.clone(),
-                            });
-                }
+                self.apply_tree(changes.iter().flat_map(|change| &change.ops))?
             }
-            SessionMsg::Streams { streams } => {
-                for id in self.streams.keys() {
-                    self.cache.remove(id);
-                }
-                self.streams.clear();
-                for stream in streams {
-                    self.streams.insert(
-                        stream.id.clone(),
-                        Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
-                            .id(&stream.id)
-                            .state(misa_proto::view::State::Streaming),
-                    );
-                }
-                self.invalidate_streams();
-            }
+            SessionMsg::Streams { streams } => self.reset_streams(streams),
             SessionMsg::Event {
                 event: SessionEvent::Stream { update },
                 ..
             } => {
-                match update {
-                    StreamUpdate::Current { stream } => {
-                        self.cache.remove(&stream.id);
-                        self.streams.insert(
-                            stream.id.clone(),
-                            Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
-                                .id(&stream.id)
-                                .state(misa_proto::view::State::Streaming),
-                        );
-                    }
-                    StreamUpdate::Append { id, text, .. } => {
-                        self.cache.remove(id);
-                        if let Some(Node {
-                            kind: Kind::Text { spans },
-                            ..
-                        }) = self.streams.get_mut(id)
-                        {
-                            if let Some(span) = spans.first_mut() {
-                                span.text.push_str(text);
-                            }
-                        }
-                    }
-                    StreamUpdate::End { id } => {
-                        self.cache.remove(id);
-                        self.streams.remove(id);
-                    }
-                }
-                self.invalidate_streams();
+                self.apply_stream(update);
             }
             _ => {}
         }
         Ok(())
     }
     pub fn image(&mut self, hash: String, image: Arc<image::RgbaImage>) {
+        let mut live = BTreeSet::new();
+        let mut pending = vec![self.root.clone()];
+        while let Some(id) = pending.pop() {
+            if let Some(node) = self.tree.node(&id) {
+                image_hashes(node, &mut live);
+            }
+            pending.extend(self.tree.children(&id));
+        }
+        if !live.contains(&hash) {
+            return;
+        }
+        const MAX_BYTES: usize = 32 * 1024 * 1024;
+        let bytes = image.as_raw().len();
+        if bytes > MAX_BYTES {
+            self.notice = "Image exceeds the decoded cache limit".into();
+            return;
+        }
+        self.images.remove(&hash);
+        let mut total: usize = self.images.values().map(|image| image.as_raw().len()).sum();
+        let mut evicted = false;
+        while total.saturating_add(bytes) > MAX_BYTES {
+            let Some((_, image)) = self.images.pop_first() else {
+                break;
+            };
+            total -= image.as_raw().len();
+            evicted = true;
+        }
+        // Cached display lists own image Arcs too. Eviction must release those
+        // copies and expose the local Load image affordance on remaining owners.
+        if evicted {
+            self.cache.clear();
+        }
         // Image decode is infrequent; only owners containing this reference are invalidated.
         let ids: Vec<_> = self
             .cache
             .keys()
             .filter(|id| {
-                self.tree.node(id).is_some_and(
-                    |node| matches!(&node.kind,Kind::Image {blob,..} if blob.hash==hash),
-                )
+                self.tree.node(id).is_some_and(|node| {
+                    let mut hashes = BTreeSet::new();
+                    image_hashes(node, &mut hashes);
+                    hashes.contains(&hash)
+                })
             })
             .cloned()
             .collect();
@@ -425,12 +635,18 @@ impl App {
             .map(Editor::text)
     }
     pub fn scroll(&mut self, delta: f32) {
+        if let Some(report) = &mut self.report {
+            report.offset = report
+                .offset
+                .saturating_add_signed((delta / 24.0).round() as isize);
+            return;
+        }
         self.scroll =
             (self.scroll + delta).clamp(0.0, (self.content_height - self.viewport_height).max(0.0));
         self.follow = false;
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
-        if self.picker.is_some() {
+        if self.picker.is_some() || self.report.is_some() {
             return vec![];
         }
         self.invalidate_focus();
@@ -483,6 +699,9 @@ impl App {
         self.activate(hit.control)
     }
     fn activate(&mut self, control: Control) -> Vec<Command> {
+        if let Control::LoadImage(reference) = control {
+            return vec![Command::LoadImage(reference)];
+        }
         match &control {
             Control::Disclosure(id)
             | Control::Field { node: id, .. }
@@ -616,6 +835,17 @@ impl App {
         commands
     }
     fn key_inner(&mut self, key: Key) -> Vec<Command> {
+        if let Some(report) = &mut self.report {
+            match key {
+                Key::Escape | Key::Enter { .. } => self.report = None,
+                Key::Up => report.offset = report.offset.saturating_sub(1),
+                Key::Down => report.offset = report.offset.saturating_add(1),
+                Key::Home => report.offset = 0,
+                Key::Copy => return vec![Command::Copy(report.entries.join("\n"))],
+                _ => {}
+            }
+            return vec![];
+        }
         if matches!(key, Key::Commands) && self.save.is_none() {
             let mut picker =
                 misa_kit::picker::Picker::new("Commands", misa_kit::picker::Accept::Run);
@@ -837,7 +1067,7 @@ impl App {
             self.rendered_nodes = 0;
         }
         self.viewport_height = height as f32;
-        let scene = self.layout(width, height);
+        let mut scene = self.layout(width, height);
         let max = (self.content_height - height as f32 + 40.0).max(0.0);
         let wanted = if self.follow {
             max
@@ -846,7 +1076,60 @@ impl App {
         };
         if (wanted - self.scroll).abs() > 0.5 {
             self.scroll = wanted;
-            return self.layout(width, height);
+            scene = self.layout(width, height);
+        }
+        if let Some(report) = &mut self.report {
+            self.hits.clear();
+            let columns = ((width.saturating_sub(96)) as usize / 9).max(1);
+            if report.columns != columns {
+                report.lines.clear();
+                for entry in &report.entries {
+                    for line in entry.lines() {
+                        let chars: Vec<_> = line.chars().collect();
+                        if chars.is_empty() {
+                            report.lines.push(String::new());
+                        }
+                        for chunk in chars.chunks(columns) {
+                            report.lines.push(chunk.iter().collect::<String>());
+                        }
+                    }
+                }
+                report.columns = columns;
+            }
+            let visible = (height.saturating_sub(140) / 24).max(1) as usize;
+            report.offset = report
+                .offset
+                .min(report.lines.len().saturating_sub(visible));
+            scene.ops.push(Op::Rect {
+                x: 24.0,
+                y: 24.0,
+                width: (width as f32 - 48.0).max(1.0),
+                height: (height as f32 - 48.0).max(1.0),
+                style: color(35, 40, 48),
+            });
+            scene
+                .ops
+                .push(text(42.0, 40.0, &report.title, color(235, 235, 240)));
+            for (index, line) in report
+                .lines
+                .iter()
+                .skip(report.offset)
+                .take(visible)
+                .enumerate()
+            {
+                scene.ops.push(text(
+                    42.0,
+                    78.0 + index as f32 * 24.0,
+                    line,
+                    color(235, 235, 240),
+                ));
+            }
+            scene.ops.push(text(
+                42.0,
+                (height as f32 - 52.0).max(0.0),
+                "↑↓ scroll · Escape close",
+                color(180, 180, 190),
+            ));
         }
         scene
     }
@@ -1104,6 +1387,24 @@ impl App {
         theme: &Theme,
         scene: &mut Scene,
     ) {
+        if misa_render::components::render_default(node, theme, (width / 8.4).max(1.0) as usize)
+            .is_some()
+        {
+            // Indexed nodes contain no children. A registered composite owns its
+            // subtree, so materialize that subtree only when its cache is dirty.
+            let model = self.tree.subtree(&node.id).unwrap_or_else(|| node.clone());
+            let lines = misa_render::components::render_default(
+                &model,
+                theme,
+                (width / 8.4).max(1.0) as usize,
+            )
+            .expect("same registered role");
+            for line in lines {
+                self.row(scene, x, *y, line.spans);
+                *y += 21.0;
+            }
+            return;
+        }
         #[cfg(test)]
         {
             self.rendered_nodes += 1;
@@ -1313,6 +1614,17 @@ impl App {
                         image: image.clone(),
                     });
                     *y += h + 6.0;
+                } else {
+                    self.box_control(
+                        scene,
+                        x,
+                        *y,
+                        width.min(180.0),
+                        30.0,
+                        "Load image",
+                        Control::LoadImage(blob.clone()),
+                    );
+                    *y += 36.0;
                 }
                 self.row(scene, x, *y, vec![(theme.role(&node.role), alt.clone())]);
                 *y += 25.0;
@@ -1363,6 +1675,19 @@ impl App {
             *y += 39.0;
         }
         *y += 5.0;
+    }
+}
+fn image_hashes(node: &Node, hashes: &mut BTreeSet<String>) {
+    if let Kind::Image { blob, .. } = &node.kind {
+        hashes.insert(blob.hash.clone());
+    }
+    for child in &node.children {
+        image_hashes(child, hashes);
+    }
+    if let Kind::List { items, .. } = &node.kind {
+        for child in items.iter().flatten() {
+            image_hashes(child, hashes);
+        }
     }
 }
 fn color(r: u8, g: u8, b: u8) -> Style {
@@ -1435,6 +1760,42 @@ mod tests {
         ops.iter()
             .any(|op| predicate(op) || matches!(op,Op::Group {ops,..} if any_op(ops,predicate)))
     }
+    #[test]
+    fn registered_composite_receives_its_indexed_subtree() {
+        let view = Node::section("status.indicators").id("indicators").child(
+            Node::section("indicator.model").id("model").child(
+                Node::new(
+                    "value.text",
+                    Kind::Fact {
+                        value: Value::str("scripted/model"),
+                    },
+                )
+                .id("model.value"),
+            ),
+        );
+        let mut app = App::new(view);
+        let scene = app.frame(900, 120);
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text { text, .. } if text.contains("scripted/model"))
+        ));
+        app.apply_tree([&ViewOp::Replace {
+            id: "model.value".into(),
+            node: Node::new(
+                "value.text",
+                Kind::Fact {
+                    value: Value::str("changed/model"),
+                },
+            )
+            .id("model.value"),
+        }])
+        .unwrap();
+        let scene = app.frame(900, 120);
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text { text, .. } if text.contains("changed/model"))
+        ));
+    }
     fn form(id: &str, kind: FieldKind) -> Node {
         Node::new(
             "panel",
@@ -1457,6 +1818,56 @@ mod tests {
             label: None,
             args: Value::Null,
         })
+    }
+    #[test]
+    fn reports_and_rejected_prompts_preserve_local_typing() {
+        let mut view = form("composer", FieldKind::Inline);
+        let Kind::Fields { fields } = &mut view.kind else {
+            unreachable!()
+        };
+        fields[0].id = "prompt".into();
+        let mut app = App::new(view.clone());
+        app.focus = Some(Control::Field {
+            node: "composer".into(),
+            field: "prompt".into(),
+        });
+        app.key(Key::Text("new draft".into()));
+        app.report(
+            "Status".into(),
+            Value::map([("needs_input", Value::Bool(true))]),
+        );
+        assert!(
+            app.key(Key::Text("must not reach composer".into()))
+                .is_empty()
+        );
+        let scene = app.frame(800, 600);
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text {text, ..} if text == "needs input: yes")
+        ));
+        assert!(app.key(Key::Escape).is_empty());
+        assert_eq!(app.field_text("composer", "prompt"), Some("new draft"));
+        app.reject_prompt(
+            "previous submission".into(),
+            "Reply lost; execution is uncertain".into(),
+        );
+        assert_eq!(app.field_text("composer", "prompt"), Some("new draft"));
+        assert_eq!(
+            app.key(Key::Copy),
+            vec![Command::Copy("previous submission".into())]
+        );
+        app.key(Key::Escape);
+        app.drafts
+            .get_mut(&("composer".into(), "prompt".into()))
+            .unwrap()
+            .set_text("");
+        app.reject_prompt("restored".into(), "Rejected".into());
+        assert_eq!(app.field_text("composer", "prompt"), Some("restored"));
+        assert_eq!(
+            app.tree.snapshot(),
+            view,
+            "local reports must not change authoritative content"
+        );
     }
     #[test]
     fn drafts_survive_updates_and_submit_only_the_target_panel() {
@@ -1575,6 +1986,70 @@ mod tests {
         let raster = crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap();
         assert!(raster.pixels().any(|pixel| pixel.0 == [255, 0, 0, 255]));
     }
+
+    #[test]
+    fn evicted_images_release_retained_scenes_and_can_be_reloaded() {
+        let reference = |hash: &str| misa_proto::view::BlobRef {
+            hash: hash.into(),
+            len: 4,
+            media: Some("image/png".into()),
+        };
+        let node = |hash: &str| {
+            Node::new(
+                "image",
+                Kind::Image {
+                    blob: reference(hash),
+                    alt: hash.into(),
+                    width: 2048,
+                    height: 2048,
+                },
+            )
+            .id(hash)
+        };
+        let mut app = App::new(
+            Node::section("root")
+                .id("root")
+                .child(node("a"))
+                .child(node("b"))
+                .child(node("c")),
+        );
+        let first = Arc::new(image::RgbaImage::new(2048, 2048));
+        let weak = Arc::downgrade(&first);
+        app.image("a".into(), first);
+        drop(app.frame(800, 600));
+        app.image("b".into(), Arc::new(image::RgbaImage::new(2048, 2048)));
+        app.image("c".into(), Arc::new(image::RgbaImage::new(2048, 2048)));
+        assert!(
+            weak.upgrade().is_none(),
+            "Cached display lists must not pin evicted bytes"
+        );
+        assert!(
+            app.images
+                .values()
+                .map(|image| image.as_raw().len())
+                .sum::<usize>()
+                <= 32 * 1024 * 1024
+        );
+        app.frame(800, 600);
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.control == Control::LoadImage(reference("a")))
+        );
+        assert_eq!(
+            app.activate(Control::LoadImage(reference("a"))),
+            vec![Command::LoadImage(reference("a"))]
+        );
+        app.image("a".into(), Arc::new(image::RgbaImage::new(1, 1)));
+        app.apply_tree([&ViewOp::Remove { id: "a".into() }])
+            .unwrap();
+        assert!(!app.images.contains_key("a"));
+        app.image("a".into(), Arc::new(image::RgbaImage::new(1, 1)));
+        assert!(
+            !app.images.contains_key("a"),
+            "Late decode cannot repopulate a removed owner"
+        );
+    }
     #[test]
     fn live_updates_do_not_steal_the_local_save_dialog() {
         let view = form("panel.input", FieldKind::Inline);
@@ -1624,6 +2099,70 @@ mod tests {
             assert_eq!(hashes.len(), 1, "render oracle is not deterministic");
             app.frame(800, 600);
             assert_eq!(app.rendered_nodes, 0);
+        }
+    }
+    #[test]
+    fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
+        use misa_client::document::Update;
+        use misa_proto::{
+            observation::Document,
+            sync::{Stream, Version},
+        };
+        use misa_protocol::observation::{Applied, MemberChange};
+        for owners in [10, 1000] {
+            let misa_proto::SessionMsg::View { view, .. } = protocol_view(owners) else {
+                unreachable!()
+            };
+            let mut app = App::new(Node::section("empty"));
+            app.observed(&Update::Reset(Document {
+                version: Version {
+                    epoch: "test".into(),
+                    rev: 0,
+                },
+                tree: view.clone(),
+                streams: vec![Stream {
+                    id: "answer.text".into(),
+                    role: "message.assistant".into(),
+                    text: "é".into(),
+                }],
+            }))
+            .unwrap();
+            app.frame(800, 600);
+            let retained = app.cache["message.0"].ops.clone();
+            let answer = Node::text("message.assistant", [Span::plain("é終")]).id("answer");
+            let update = Update::Changed {
+                member: "body".into(),
+                applied: Arc::new(Applied::Changed(std::collections::BTreeMap::from([(
+                    "body".into(),
+                    MemberChange::Document {
+                        tree: vec![ViewOp::Insert {
+                            parent: "transcript".into(),
+                            before: None,
+                            node: answer.clone(),
+                        }],
+                        live: vec![StreamUpdate::End {
+                            id: "answer.text".into(),
+                        }],
+                        reset_live: false,
+                    },
+                )]))),
+            };
+            app.observed(&update).unwrap();
+            assert!(app.streams.is_empty());
+            assert!(app.tree.contains("answer"));
+            let scene = app.frame(800, 600);
+            assert!(Arc::ptr_eq(&retained, &app.cache["message.0"].ops));
+            assert!(
+                app.rendered_nodes <= 3,
+                "only changed ancestors and final answer need layout"
+            );
+            let mut expected = view;
+            expected.children[0].children.push(answer);
+            let mut cold = App::new(expected);
+            assert_eq!(
+                crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap(),
+                crate::paint::raster(&cold.frame(800, 600), Color::Rgb(20, 22, 26)).unwrap()
+            );
         }
     }
     fn protocol_view(owners: usize) -> misa_proto::SessionMsg {
