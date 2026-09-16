@@ -1,6 +1,7 @@
 <!doctype html>
 <html>
   <body>
+    <script src="../src/preferences.js"></script>
     <script src="../src/app.js"></script>
     <script src="../src/request.js"></script>
     <script src="../src/commands.js"></script>
@@ -19,10 +20,22 @@
           return {
             getItem: (key) => values.get(key) || null,
             setItem: (key, value) => values.set(key, value),
+            key: (index) => Array.from(values.keys())[index] || null,
+            get length() { return values.size; },
           };
         }
         const store = storage();
         try {
+          const staleFirst = MisaPreferences.read(store, "concurrent");
+          const staleSecond = MisaPreferences.read(store, "concurrent");
+          staleFirst.status = "hide";
+          staleSecond.pet = "variant:portable";
+          MisaPreferences.write(store, "concurrent", "status", staleFirst.status);
+          MisaPreferences.write(store, "concurrent", "pet", staleSecond.pet);
+          const mergedChoices = MisaPreferences.read(store, "concurrent");
+          assert(mergedChoices.status === "hide" && mergedChoices.pet === "variant:portable", "independent stale tab choices cannot overwrite each other");
+          MisaPreferences.write(store, "concurrent.with.dots", "status", "auto");
+          assert(MisaPreferences.read(store, "concurrent").status === "hide", "choice keys preserve exact profile identity");
           const first = MisaClient.memory(store, "one");
           first.state.draft = "half a thought";
           first.state.theme = "plain";
@@ -371,17 +384,17 @@
           } });
           await new Promise(function (resolve) { setTimeout(resolve, 0); });
           const prefForm = prefDoc.querySelector("form");
-          assert(prefForm.elements.choice.value === "hide" && preferenceCalls === 1, "saved choices restore across runtime and instance changes");
-          prefForm.elements.choice.value = "auto";
-          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-          await new Promise(function (resolve) { setTimeout(resolve, 0); });
-          assert(preferenceCalls === 2 && JSON.parse(store.getItem("misa.presentations.daemon:session")).status === "auto", "only acknowledged choices persist and pending duplicate changes are suppressed");
-          preferenceAccepted = false;
+          assert(prefForm.elements.choice.value === "auto" && preferenceCalls === 0, "opening a retained view does not replace its selection with another tab's defaults");
           prefForm.elements.choice.value = "hide";
           prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
           await new Promise(function (resolve) { setTimeout(resolve, 0); });
-          assert(prefForm.elements.choice.value === "auto" && JSON.parse(store.getItem("misa.presentations.daemon:session")).status === "auto", "failed changes retain confirmed preference and control state");
+          assert(preferenceCalls === 1 && MisaPreferences.read(store, "daemon:session").status === "hide", "only acknowledged choices persist and pending duplicate changes are suppressed");
+          preferenceAccepted = false;
+          prefForm.elements.choice.value = "auto";
+          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(prefForm.elements.choice.value === "hide" && MisaPreferences.read(store, "daemon:session").status === "hide", "failed changes retain confirmed preference and control state");
           const copyFrame = document.createElement("iframe");
           document.body.appendChild(copyFrame);
           const copyDoc = copyFrame.contentDocument;

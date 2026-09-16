@@ -224,14 +224,7 @@
     restore();
     // Defaults for future instances are browser-owned. Live views keep their
     // own selections; changing this profile does not reconfigure other tabs.
-    var presentationKey = "misa.presentations." + (doc.body.dataset.preferences || doc.body.dataset.session || "default");
-    var presentationChoices = new Map();
-    try {
-      var savedChoices = JSON.parse(storage.getItem(presentationKey));
-      if (savedChoices && typeof savedChoices === "object") Object.entries(savedChoices).slice(0, 128).forEach(function (entry) {
-        if (typeof entry[1] === "string") presentationChoices.set(entry[0], entry[1]);
-      });
-    } catch (_) {}
+    var presentationContext = doc.body.dataset.preferences || doc.body.dataset.session || "default";
     var presentationWork = Promise.resolve();
     var pendingPresentations = new Set();
     function configurePresentation(form, choice) {
@@ -249,9 +242,9 @@
           if (!response.ok || result.ok !== true) throw Error(result.error || "Presentation change was not confirmed");
           select.value = choice;
           form.dataset.appliedChoice = choice;
-          presentationChoices.set(form.elements.id.value, choice);
-          try { storage.setItem(presentationKey, JSON.stringify(Object.fromEntries(presentationChoices))); } catch (_) {}
-          submissionStatus("");
+          var stored = true;
+          try { global.MisaPreferences.write(storage, presentationContext, form.elements.id.value, choice); } catch (_) { stored = false; }
+          submissionStatus(stored ? "" : "Display updated, but this browser could not save the preference.");
         } catch (error) { select.value = form.dataset.appliedChoice; submissionStatus(error.message || "Presentation change failed"); }
         finally { pendingPresentations.delete(form); select.disabled = false; button.disabled = false; }
       });
@@ -260,11 +253,6 @@
       if (!browser.fetch) return;
       form.dataset.appliedChoice = form.elements.choice.value;
       form.addEventListener("submit", function (event) { event.preventDefault(); configurePresentation(form, form.elements.choice.value); });
-      var savedChoice = presentationChoices.get(form.elements.id.value);
-      if (savedChoice && savedChoice !== form.elements.choice.value) {
-        if (Array.from(form.elements.choice.options).some(function (option) { return option.value === savedChoice; })) configurePresentation(form, savedChoice);
-        else submissionStatus("A saved presentation variant is unavailable; choose a supported variant in Presentations.");
-      }
     });
     // Until a revision is represented by DOM ops, preserve browser-owned state
     // around a snapshot replacement. The same restoration applies after ops.

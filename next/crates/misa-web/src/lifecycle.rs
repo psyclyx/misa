@@ -7,7 +7,7 @@ use misa_proto::invocation::Outcome;
 use crate::{escape, actions};
 
 fn page(status: StatusCode, title: &str, body: String) -> Response {
-    (status, [("cache-control", "no-store")], Html(format!("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>{}</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body><main><h1>{}</h1>{}<p><a href=\"/daemons\">Daemon overview</a></p></main><script src=\"/opening.js\"></script></body></html>", escape(title), escape(title), body))).into_response()
+    (status, [("cache-control", "no-store")], Html(format!("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>{}</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body><main><h1>{}</h1>{}<p><a href=\"/daemons\">Daemon overview</a></p></main><script src=\"/preferences.js\"></script><script src=\"/opening.js\"></script></body></html>", escape(title), escape(title), body))).into_response()
 }
 fn command(fields: &BTreeMap<String,String>) -> Result<&str, &'static str> {
     match fields.get("action_id").or_else(||fields.get("command")).map(String::as_str) {

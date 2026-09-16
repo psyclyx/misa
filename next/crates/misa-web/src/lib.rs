@@ -49,7 +49,7 @@ fn document_parts(title: &str, memory: &str, commands: &[misa_proto::wire::Comma
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
 <title>{title}</title>\n<link rel=\"stylesheet\" href=\"./style.css\">\n\
 </head>\n<body data-session=\"{session_id}\">\n<nav><a href=\"/daemons\">Daemons and sessions</a></nav>{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
-<script src=\"./commands.js\" defer></script><script src=\"./app.js\" defer></script>\n</body>\n</html>\n",
+<script src=\"./preferences.js\" defer></script><script src=\"./commands.js\" defer></script><script src=\"./app.js\" defer></script>\n</body>\n</html>\n",
         title = escape(title),
         session_id = escape(memory),
         toolbar = toolbar(),
@@ -284,6 +284,7 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/blob/{hash}", get(remote_blob))
         .route("/download", post(remote_download))
         .route("/style.css", get(|| async { ([("content-type", "text/css")], STYLE) }))
+        .route("/preferences.js", get(|| async { ([("content-type", "text/javascript")], include_str!("preferences.js")) }))
         .route("/app.js", get(|| async { ([("content-type", "text/javascript")], SCRIPT) }))
         .with_state(state)
 }

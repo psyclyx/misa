@@ -85,6 +85,7 @@ pub async fn serve(targets: &[String], address: std::net::SocketAddr) -> Result<
         .route("/daemons/events", get(events))
         .route("/overview.js", get(|| async { ([("content-type", "text/javascript")], include_str!("overview.js")) }))
         .route("/opening.js", get(|| async { ([("content-type", "text/javascript")], include_str!("opening.js")) }))
+        .route("/preferences.js", get(|| async { ([("content-type", "text/javascript")], include_str!("preferences.js")) }))
         .route("/recovery.js", get(|| async { ([("content-type", "text/javascript")], include_str!("recovery.js")) }))
         .route("/connect", post(connect))
         .route("/choose", post(choose))
@@ -125,7 +126,7 @@ async fn directory(State(hub): State<Shared>) -> Html<String> {
         }
         html.push_str("</section>");
     }
-    html.push_str("</main><script src=\"/opening.js\"></script><script src=\"/overview.js\"></script></body></html>");
+    html.push_str("</main><script src=\"/preferences.js\"></script><script src=\"/opening.js\"></script><script src=\"/overview.js\"></script></body></html>");
     Html(html)
 }
 

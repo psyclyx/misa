@@ -10,7 +10,7 @@
       var session = form.elements.namedItem("session") || form.elements.namedItem("field.id");
       if (!daemon || !session) return;
       var value = "{}";
-      try { value = browser.localStorage.getItem("misa.presentations." + daemon.value + ":" + session.value) || "{}"; } catch (_) {}
+      try { value = JSON.stringify(global.MisaPreferences.read(browser.localStorage, daemon.value + ":" + session.value)); } catch (_) {}
       var field = form.elements.namedItem("preferences");
       if (!field) { field = doc.createElement("input"); field.type = "hidden"; field.name = "preferences"; form.appendChild(field); }
       field.value = value;
