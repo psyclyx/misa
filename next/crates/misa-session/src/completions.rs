@@ -17,7 +17,7 @@
 //! # Why the command list is a source as well as a declaration
 //!
 //! So that `/co<TAB>` and a palette and a pull-down all read the same thing. The
-//! declaration in `SessionInfo` exists so a client knows a picker is *meaningful*;
+//! exported preparation catalog tells a client which pickers are available;
 //! the source exists so it has something to put in one, in the same shape as every
 //! other source.
 
@@ -34,8 +34,8 @@ use misa_proto::completion::CONVERSATIONS_QUERY;
 
 /// Every resident source the shipped session installs.
 ///
-/// One query per source, named `completion.<id>` by `Source::query`, so a client
-/// that holds a declaration can find the items with no further agreement.
+/// Each source declares its exact exported member; clients never synthesize
+/// query identifiers from source names.
 pub fn subscriptions(registry: Registry) -> Registry {
     registry
         .subscription(
@@ -169,23 +169,13 @@ fn search_args(query: &Query) -> Result<(&str, &str, u32), misa_reframe::Fault> 
     if query.args.len() != 3 { return Err(misa_reframe::Fault::query("Completion search needs source, prefix and limit")); }
     let source = query.args[0].as_str().ok_or_else(|| misa_reframe::Fault::query("Completion source must be text"))?;
     let prefix = query.args[1].as_str().ok_or_else(|| misa_reframe::Fault::query("Completion prefix must be text"))?;
-    let limit = query.args[2].as_i64().filter(|limit| *limit > 0 && *limit <= misa_proto::wire::DEFAULT_CANDIDATES as i64)
+    let limit = query.args[2].as_i64().filter(|limit| *limit > 0 && *limit <= misa_proto::preparation::DEFAULT_CANDIDATES as i64)
         .ok_or_else(|| misa_reframe::Fault::query("Completion limit is outside its bounded range"))? as u32;
     Ok((source, prefix, limit))
 }
 
 pub fn sources() -> Vec<misa_proto::preparation::Source> {
-    catalog::sources().into_iter().map(|source| {
-        let query = match source.kind {
-            misa_proto::wire::SourceKind::Resident => Query::new(source.query()),
-            misa_proto::wire::SourceKind::OnDemand => Query::new(misa_proto::preparation::SEARCH)
-                .arg(Value::str(&source.id)).arg(Value::str("")).arg(Value::Int(misa_proto::wire::DEFAULT_CANDIDATES as i64)),
-        };
-        misa_proto::preparation::Source { id: source.id, label: source.label, kind: source.kind,
-            member: misa_proto::observation::Member { contract: format!("{}@1", query.id), query,
-                encoding: misa_proto::observation::Encoding::Value, optional: false },
-        }
-    }).collect()
+    catalog::sources()
 }
 
 pub fn exports() -> Vec<misa_proto::query::Definition> {
@@ -193,7 +183,7 @@ pub fn exports() -> Vec<misa_proto::query::Definition> {
     let choices = Schema::List { items: Box::new(Schema::Record {
         fields: [("value", false), ("label", false), ("detail", true)].into_iter().map(|(name, optional)| (name.into(), Field { schema: Schema::String, optional })).collect(), allow_unknown: false,
     }) };
-    let mut definitions = sources().into_iter().filter(|source| source.kind == misa_proto::wire::SourceKind::Resident && source.member.query.id != misa_proto::completion::COMMANDS_QUERY).map(|source| Definition {
+    let mut definitions = sources().into_iter().filter(|source| source.kind == misa_proto::preparation::SourceKind::Resident && source.member.query.id != misa_proto::completion::COMMANDS_QUERY).map(|source| Definition {
         id: source.member.query.id, arguments: vec![], contract: source.member.contract, result: ResultContract::Data { schema: choices.clone() },
     }).collect::<Vec<_>>();
     definitions.push(Definition { id: misa_proto::preparation::SEARCH.into(), arguments: vec![Schema::String, Schema::String, Schema::Int], contract: "completion.search@1".into(), result: ResultContract::Data {
@@ -225,13 +215,13 @@ pub fn on_demand(db: &Value, source: &str, prefix: &str, limit: u32) -> Result<(
             format!("there is no completion source named `{source}`"),
         ));
     };
-    if declared.kind != misa_proto::wire::SourceKind::OnDemand {
+    if declared.kind != misa_proto::preparation::SourceKind::OnDemand {
         return Err(Fault::new(
             "source.resident",
-            format!("`{source}` is a source a client holds; subscribe to `{}`", declared.query()),
+            format!("`{source}` is a source a client holds; subscribe to `{}`", declared.member.query.id),
         ));
     }
-    let limit = limit.clamp(1, misa_proto::wire::DEFAULT_CANDIDATES) as usize;
+    let limit = limit.clamp(1, misa_proto::preparation::DEFAULT_CANDIDATES) as usize;
     let needle = prefix.to_lowercase();
 
     let all = db
@@ -356,7 +346,7 @@ mod tests {
     fn a_resident_source_is_readable_and_an_on_demand_one_is_not() {
         let mut loop_ = loop_with_completions();
         let models = loop_.query(&query_for("models").unwrap()).expect("models");
-        assert!(!misa_proto::wire::candidates(&models).is_empty());
+        assert!(!misa_proto::preparation::candidates(&models).is_empty());
         assert!(query_for("conversations").is_err());
         assert!(query_for("nonsense").is_err());
     }
@@ -365,7 +355,7 @@ mod tests {
     fn the_model_source_carries_what_a_picker_needs_to_choose() {
         let mut loop_ = loop_with_completions();
         let models = loop_.query(&query_for("models").unwrap()).unwrap();
-        let candidates = misa_proto::wire::candidates(&models);
+        let candidates = misa_proto::preparation::candidates(&models);
         let current = candidates
             .iter()
             .find(|candidate| candidate.value == "scripted-1")
@@ -378,14 +368,14 @@ mod tests {
     #[test]
     fn a_models_effort_levels_are_only_offered_when_it_takes_one() {
         let mut loop_ = loop_with_completions();
-        assert!(misa_proto::wire::candidates(&loop_.query(&query_for("effort").unwrap()).unwrap()).is_empty());
+        assert!(misa_proto::preparation::candidates(&loop_.query(&query_for("effort").unwrap()).unwrap()).is_empty());
     }
 
     #[test]
     fn the_command_source_carries_the_slash_a_person_would_type() {
         let mut loop_ = loop_with_completions();
         let commands = loop_.query(&query_for("commands").unwrap()).unwrap();
-        let candidates = misa_proto::wire::candidates(&commands);
+        let candidates = misa_proto::preparation::candidates(&commands);
         assert!(candidates.iter().any(|candidate| candidate.value == "/model"));
         let model = candidates.iter().find(|candidate| candidate.value == "/model").unwrap();
         assert!(model.detail.as_deref().unwrap().contains("Model"));

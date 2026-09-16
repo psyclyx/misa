@@ -23,8 +23,24 @@
 //! `value.money` exists in the view vocabulary.
 
 use misa_proto::view::Choice;
-use misa_proto::wire::{Arg, Command, Source};
+use misa_proto::preparation::{Arg, Source, SourceKind};
 use misa_value::Value;
+
+/// Owner-local input spelling before it is bound to an installed command or read.
+pub struct ShortcutTemplate {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub args: Vec<Arg>,
+}
+
+impl ShortcutTemplate {
+    fn new(id: &str, label: &str, description: &str) -> Self {
+        Self { id: id.into(), label: label.into(), description: description.into(), args: vec![] }
+    }
+    fn arg(mut self, arg: Arg) -> Self { self.args.push(arg); self }
+    pub fn first_required(&self) -> Option<&Arg> { self.args.iter().find(|arg| arg.required) }
+}
 
 /// The models to offer, from what the service said and what the catalog knows.
 ///
@@ -159,27 +175,30 @@ pub fn cost_micros(model_id: &str, input_tokens: i64, output_tokens: i64) -> i64
 
 /// The sources a session declares.
 pub fn sources() -> Vec<Source> {
-    vec![
-        Source::resident(misa_proto::completion::MODELS, "Models"),
-        Source::resident(misa_proto::completion::EFFORT, "Reasoning effort"),
-        Source::resident(misa_proto::completion::COMMANDS, "Commands"),
-        // The services this daemon knows by name, so `/login <Tab>` offers them instead of
-        // asking somebody to remember an id.
-        Source::resident(misa_proto::completion::PROVIDERS, "Providers"),
-        Source::on_demand(
-            misa_proto::completion::CONVERSATIONS,
-            "Conversations",
-            "searched by the session, because a log outgrows what a client should hold",
-        ),
-    ]
+    use misa_proto::{completion::*, observation::{Encoding, Member}, Query};
+    [
+        (MODELS, "Models", SourceKind::Resident, MODELS_QUERY),
+        (EFFORT, "Reasoning effort", SourceKind::Resident, EFFORT_QUERY),
+        (COMMANDS, "Commands", SourceKind::Resident, COMMANDS_QUERY),
+        (PROVIDERS, "Providers", SourceKind::Resident, PROVIDERS_QUERY),
+        (CONVERSATIONS, "Conversations", SourceKind::OnDemand, misa_proto::preparation::SEARCH),
+    ].into_iter().map(|(id,label,kind,query_id)| {
+        let mut query = Query::new(query_id);
+        if kind == SourceKind::OnDemand {
+            query = query.arg(Value::str(id)).arg(Value::str("")).arg(Value::Int(misa_proto::preparation::DEFAULT_CANDIDATES as i64));
+        }
+        Source { id:id.into(),label:label.into(),kind,member:Member {
+            query,contract:format!("{query_id}@1"),encoding:Encoding::Value,optional:false,
+        } }
+    }).collect()
 }
 
 /// A source a client should hold, and the query it is read from.
 pub fn resident_query(source: &str) -> Option<String> {
     let source = sources().into_iter().find(|entry| entry.id == source)?;
     match source.kind {
-        misa_proto::wire::SourceKind::Resident => Some(source.query()),
-        misa_proto::wire::SourceKind::OnDemand => None,
+        SourceKind::Resident => Some(source.member.query.id),
+        SourceKind::OnDemand => None,
     }
 }
 
@@ -190,11 +209,10 @@ pub fn resident_query(source: &str) -> Option<String> {
 /// and a hint read, so a command the loop handles and this list omits is a command nobody can
 /// run — which is a worse answer than not having it.
 ///
-/// `/status` and `/usage` are here rather than being each client's own report because they
-/// are *facts the session has*: the panel they open is part of the view tree, so one
-/// implementation of "what this session is set to" serves every frontend, and a client that
-/// wants a different one can build it from the data subscriptions instead.
-pub fn commands() -> Vec<Command> {
+/// Read shortcuts bind to finite owner exports. Each client owns the resulting
+/// report presentation and can independently choose another exported representation.
+pub fn commands() -> Vec<ShortcutTemplate> {
+    use ShortcutTemplate as Command;
     vec![
         Command::new("clear", "Clear", "forget this branch and start again")
             .arg(Arg::new("reason", "Reason")),

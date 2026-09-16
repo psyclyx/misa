@@ -132,7 +132,7 @@ pub fn sources() -> Value {
     crate::lifecycle::encode(&vec![misa_proto::preparation::Source {
         id: "conversations".into(),
         label: "Stored conversations".into(),
-        kind: misa_proto::wire::SourceKind::OnDemand,
+        kind: misa_proto::preparation::SourceKind::OnDemand,
         member: definition
             .member(vec![
                 Value::str("conversations"),

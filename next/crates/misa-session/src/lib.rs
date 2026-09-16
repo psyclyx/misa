@@ -748,7 +748,7 @@ impl Runtime {
             state.state.db(),
             source,
             prefix,
-            limit.unwrap_or(misa_proto::wire::DEFAULT_CANDIDATES),
+            limit.unwrap_or(misa_proto::preparation::DEFAULT_CANDIDATES),
         )
     }
 
