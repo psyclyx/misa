@@ -47,6 +47,7 @@ pub mod directory;
 pub mod presentation;
 pub mod preparation;
 pub mod schema;
+pub mod input;
 pub mod invocation;
 pub mod scoped;
 pub mod frame;
