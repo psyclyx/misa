@@ -23,7 +23,7 @@ impl Guest for Pet {
             commands:vec![CommandDefinition{request:None,id:"pet.feed".into(),event:"plugin.pet.feed".into(),input:r#"{"type":"record","fields":{"amount":{"schema":{"type":"int"}}}}"#.into()},
                 CommandDefinition{id:"pet.ask-feed".into(),event:"plugin.pet.ask-feed".into(),input:r#"{"type":"record","fields":{}}"#.into(),request:Some(r#"{"title":"Feed the pet","input":{"type":"record","fields":{"amount":{"schema":{"type":"int"}}}},"fields":{"amount":{"label":"Treats (1–10)"}}}"#.into())}],
             tools:vec![ToolBinding{name:"pet_feed".into(),description:"Feed the shared session pet with 1 to 10 treats".into(),command:"pet.feed".into()},ToolBinding{name:"pet_ask_feed".into(),description:"Ask the owner how many treats to feed".into(),command:"pet.ask-feed".into()}],
-            bindings:vec![ActionBinding{id:"pet.feed".into(),command:"pet.feed".into(),bound:r#"{"amount":1}"#.into(),inputs:"{}".into()}],
+            bindings:vec![ActionBinding{id:"pet.feed".into(),command:"pet.feed".into(),bound:r#"{"amount":1}"#.into(),inputs:"{}".into()},ActionBinding{id:"pet.ask-feed".into(),command:"pet.ask-feed".into(),bound:"{}".into(),inputs:"{}".into()}],
             queries:vec![
                 QueryDefinition{id:"pet.state".into(),contract:"pet.state@1".into(),arguments:vec![],output:r#"{"kind":"data","schema":{"type":"record","fields":{"treats":{"schema":{"type":"int"}}}}}"#.into(),source:QuerySource::Read(ReadContract{roots:vec!["pet".into()],schema:r#"{"type":"record","fields":{"pet":{"schema":{"type":"record","fields":{},"allow_unknown":true}}}}"#.into()})},
                 QueryDefinition{id:"pet.portable".into(),contract:"pet.portable@1".into(),arguments:vec![],output:r#"{"kind":"document"}"#.into(),source:QuerySource::Derived(vec![request("pet.state")])},
@@ -91,7 +91,7 @@ impl Guest for Pet {
             }
             _ => return Err(fault("Unknown pet query")),
         };
-        Ok(json!({"id":"pet","role":"pet.companion","kind":kind,"actions":[{"id":"pet.feed","label":"Feed"}]}).to_string())
+        Ok(json!({"id":"pet","role":"pet.companion","kind":kind,"actions":[{"id":"pet.feed","label":"Feed"},{"id":"pet.ask-feed","label":"Choose treats"}]}).to_string())
     }
 }
 export!(Pet);

@@ -207,6 +207,12 @@ impl Model {
         drafts: &BTreeMap<String, String>,
         interface: &Interface,
     ) -> Result<Prepared, Fault> {
+        let binding = &self
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == action)
+            .ok_or_else(|| Fault::unsupported("Request action is unavailable"))?
+            .binding;
         let values = if action == "resolve"
             && let Some(form) = &self.form
         {
@@ -222,6 +228,7 @@ impl Model {
         } else {
             drafts
                 .iter()
+                .filter(|(id, _)| binding.inputs.contains_key(*id))
                 .map(|(id, value)| (id.clone(), Value::str(value)))
                 .collect()
         };
@@ -381,6 +388,29 @@ mod tests {
             Some(&Value::Int(3))
         );
         assert_eq!(input.get("generation"), Some(&Value::Int(4)));
+        let mut cancel_model = model.clone();
+        cancel_model.actions.push(Action {
+            id: "cancel".into(),
+            label: "Cancel".into(),
+            binding: ActionBinding {
+                command: "input.resolve".into(),
+                bound: BTreeMap::from([
+                    ("request".into(), Value::str("request")),
+                    ("generation".into(), Value::Int(4)),
+                    ("value".into(), Value::Null),
+                ]),
+                inputs: BTreeMap::new(),
+            },
+        });
+        assert!(
+            cancel_model
+                .prepare_drafts(
+                    "cancel",
+                    &BTreeMap::from([("retries".into(), "bad".into())]),
+                    &interface
+                )
+                .is_ok()
+        );
         json["resolve"]["bound"]["generation"] = serde_json::json!(5);
         assert!(Model::parse(&serde_json::from_value(json).unwrap(), &interface).is_err());
     }
