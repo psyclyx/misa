@@ -1,14 +1,41 @@
-//! Parsing a line into the small set of things a client may ask for.
+//! Local composer parsing and presentation declarations.
 //!
-//! A frontend has a line somebody typed and a declaration from the session. This
-//! turns the first into an [`Intent`] using the second, which is the last piece that
-//! makes "the client knows what the session can do without asking" useful: a
-//! command's arguments are separated by the declaration, not guessed.
-//!
-//! What is *not* here: what any of it means. A submission is an intent, and the
-//! session's answer is whatever its own policy says.
+//! Shortcut metadata names arguments and completion sources. Parsing only prepares
+//! local input; the installed command catalog and owner validate invocations.
 
-use misa_proto::wire::{Command, Intent};
+use misa_proto::wire::Intent;
+pub use misa_proto::preparation::Arg;
+use serde::{Serialize, Deserialize};
+
+/// A local slash-command declaration; invocation authority stays in installed catalogs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Command {
+    /// Without a leading slash: the slash is punctuation, and a client draws it.
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<Arg>,
+}
+
+impl Command {
+    pub fn new(id: impl Into<String>, label: impl Into<String>, description: impl Into<String>) -> Command {
+        Command { id: id.into(), label: label.into(), description: description.into(), args: Vec::new() }
+    }
+
+    pub fn arg(mut self, arg: Arg) -> Command {
+        self.args.push(arg);
+        self
+    }
+
+    /// The first argument that has to be supplied, if any.
+    pub fn first_required(&self) -> Option<&Arg> {
+        self.args.iter().find(|arg| arg.required)
+    }
+}
+
+
 use misa_value::Value;
 
 /// What a line amounts to.
@@ -100,7 +127,7 @@ pub fn intent(parsed: &Parsed) -> Option<Intent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::wire::Arg;
+    use misa_proto::preparation::Arg;
 
     fn commands() -> Vec<Command> {
         vec![
@@ -194,4 +221,32 @@ mod tests {
             other => panic!("expected a command, got {other:?}"),
         }
     }
+}
+
+use misa_proto::preparation::SourceKind;
+
+/// Local completion presentation metadata, independent of owner queries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub id: String,
+    pub label: String,
+    pub kind: SourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl Source {
+    pub fn resident(id: impl Into<String>, label: impl Into<String>) -> Source {
+        Source { id: id.into(), label: label.into(), kind: SourceKind::Resident, description: None }
+    }
+
+    pub fn on_demand(id: impl Into<String>, label: impl Into<String>, description: impl Into<String>) -> Source {
+        Source {
+            id: id.into(),
+            label: label.into(),
+            kind: SourceKind::OnDemand,
+            description: Some(description.into()),
+        }
+    }
+
 }

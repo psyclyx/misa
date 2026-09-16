@@ -7,7 +7,7 @@
 //! differs between a terminal, a browser, and a remote control.
 //!
 //! Not here: *which* candidates exist. A session declares where a value can come
-//! from ([`misa_proto::wire::Source`]) and provides the items — a resident source as
+//! from ([`crate::intent::Source`]) and provides the items — a resident source as
 //! a query a client holds, an on-demand source as an answer to
 //! [`misa_proto::wire::Intent::Complete`].
 //!
