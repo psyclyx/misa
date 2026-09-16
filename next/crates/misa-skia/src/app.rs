@@ -19,6 +19,15 @@ pub enum Command {
     },
     LoadImage(misa_proto::view::BlobRef),
     Connect(String),
+    DaemonInvoke {
+        daemon: String,
+        command: String,
+        input: Value,
+    },
+    Archive {
+        daemon: String,
+        prefix: String,
+    },
     Discover,
     Presentation {
         id: String,

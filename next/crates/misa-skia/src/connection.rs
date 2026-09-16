@@ -437,7 +437,7 @@ async fn session(
                         Command::Form{action,drafts} => match misa_client::form::Form::action(&interaction.interface,action).and_then(|form|form.prepare(drafts)) { Ok((command,input))=>execute(&daemon,&interaction,Prepared::Invoke{command:interaction.interface.commands[&command].clone(),input}).await,Err(fault)=>Err(fault.message) },
                         Command::Intent(intent) => match prepare(&interaction, intent.clone()) { Ok(prepared) => execute(&daemon, &interaction, prepared).await, Err(error) => Err(error) },
                         Command::Save { node, destination } => save(&daemon, &interaction, node, destination).await.map(Update::Notice),
-                        Command::Request{action,fields,..}=>match request_model {Some(model)=>match model.prepare(action,fields,&interaction.interface){Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},None=>Err("Request generation is no longer current".into())},
+                        Command::Request{action,fields,..}=>match request_model {Some(model)=>match model.prepare_drafts(action,&fields.iter().map(|(id,value)|(id.clone(),value.as_str().unwrap_or_default().to_string())).collect(),&interaction.interface){Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},None=>Err("Request generation is no longer current".into())},
                         _=>Err("This action belongs to the daemon chooser".into()),
                     };
                     result.unwrap_or_else(|reason| rejected(command, reason))
