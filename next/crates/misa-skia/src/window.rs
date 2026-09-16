@@ -32,6 +32,7 @@ pub fn run(
         directories: vec![],
         generation: 0,
         active: None,
+        attention: None,
         parked: Default::default(),
         panels: Default::default(),
         panel: "status".into(),
@@ -60,6 +61,7 @@ struct Host {
     directories: Vec<crate::workspace::DaemonChoice>,
     generation: u64,
     active: Option<(String, misa_proto::observation::Scope)>,
+    attention: Option<(String,misa_proto::observation::Scope,String,i64)>,
     parked: std::collections::BTreeMap<
         (String, misa_proto::observation::Scope),
         (
@@ -105,6 +107,11 @@ impl Host {
     }
     fn commands(&mut self, commands: Vec<Command>) {
         for command in commands {
+            let command=if let Command::SelectRequest{daemon,scope,request,generation}=command {
+                if self.active.as_ref()==Some(&(daemon.clone(),scope.clone())) {self.local.open_request(request,generation);continue;}
+                self.attention=Some((daemon.clone(),scope.clone(),request,generation));
+                Command::Select{daemon,scope}
+            } else {command};
             if let Command::Appearance(choice) = command {
                 self.appearance = choice;
                 self.local.appearance(choice);
@@ -128,8 +135,8 @@ impl Host {
                     let reason = "The session is busy or disconnected".to_string();
                     match error.into_inner() {
                         Command::Intent(
-                            misa_proto::Intent::Prompt { text, .. }
-                            | misa_proto::Intent::Interrupt { text, .. },
+                            misa_kit::intent::Intent::Prompt { text, .. }
+                            | misa_kit::intent::Intent::Interrupt { text, .. },
                         ) => self.app.reject_prompt(text, reason),
                         _ => self.app.notice = reason,
                     }
@@ -303,6 +310,9 @@ impl ApplicationHandler<Update> for Host {
                     self.panels = panels;
                 }
                 self.local.directory(self.directories.clone());
+                if let Some((daemon,scope,id,generation))=self.attention.take() {
+                    if key==(daemon,scope) {self.local.open_request(id,generation);}
+                }
                 self.active = Some(key);
                 self.generation = generation;
                 self.panel_focus = false;
@@ -456,6 +466,7 @@ fn apply_update(
     update: Update,
 ) {
     match update {
+        Update::DaemonForm{daemon,form,drafts}=>local.prepared_daemon_form(daemon,form,drafts),
         Update::DocumentReport(document) => local.report(document),
         Update::InstalledCommands(commands) => local.commands(commands),
         Update::Composition {

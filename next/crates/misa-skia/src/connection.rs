@@ -1,5 +1,6 @@
 //! Native relationship owner. Replica delivery, requests and blob work have
 //! independent bounded lifetimes; the window never performs network IO.
+use misa_kit::intent::Intent;
 use crate::app::Command;
 use misa_client::{
     daemons::{Daemon, Daemons},
@@ -9,7 +10,6 @@ use misa_client::{
     interface::{self, Interface},
 };
 use misa_proto::{
-    Intent,
     invocation::Outcome,
     observation::Selection,
     view::{BlobRef, Kind, Node},
@@ -29,6 +29,7 @@ use winit::event_loop::EventLoopProxy;
 mod manager;
 
 pub enum Update {
+    DaemonForm {daemon:String,form:misa_client::form::Form,drafts:BTreeMap<String,String>},
     DocumentReport(Node),
     InstalledCommands(BTreeMap<String, Result<misa_client::form::Form, String>>),
     Form(misa_client::form::Form),

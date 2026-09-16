@@ -54,6 +54,18 @@ mod tests {
     }
 
     #[test]
+    fn exact_attention_waits_for_matching_request_and_rejects_replaced_generation() {
+        let mut local=Local::default();
+        local.open_request("credential".into(),2);
+        assert!(local.app().is_none());
+        local.request("credential".into(),2,Some(request(2)));
+        assert!(local.app().is_some());
+        local.open_request("credential".into(),1);
+        assert!(local.app().is_none());
+        local.request("credential".into(),3,Some(request(3)));
+        assert!(local.app().is_none());
+    }
+    #[test]
     fn requests_never_take_focus_and_hiding_clears_secrets_without_cancelling() {
         let mut local = Local::default();
         local.request("credential".into(), 2, Some(request(2)));
@@ -139,7 +151,7 @@ mod tests {
         let mut local = Local::default();
         local.open_chooser();
         for daemon in ["daemon-a", "daemon-b"] {
-            let commands = local.convert(vec![Command::Intent(misa_proto::Intent::Action {
+            let commands = local.convert(vec![Command::Intent(misa_kit::intent::Intent::Action {
                 node: "same-label".into(),
                 action: "choose".into(),
                 fields: vec![],
@@ -206,7 +218,7 @@ mod tests {
             field: "quantity".into(),
         });
         assert!(local.key(Key::Text("3".into())).unwrap().is_empty());
-        let commands = local.convert(vec![Command::Intent(misa_proto::Intent::Action {
+        let commands = local.convert(vec![Command::Intent(misa_kit::intent::Intent::Action {
             node: "local.form".into(),
             action: "submit".into(),
             fields: vec![misa_proto::view::Field {
@@ -243,6 +255,7 @@ pub struct Local {
     directories: Vec<DaemonChoice>,
     chooser: Option<App>,
     requests: BTreeMap<String, (Model, App)>,
+    attention: Option<(String,i64)>,
     active: Option<String>,
     catalog: Vec<misa_proto::presentation::Presentation>,
     preferences: misa_client::composition::Preferences,
@@ -573,6 +586,19 @@ impl Local {
             chooser.set_view(root);
         }
     }
+    pub fn open_request(&mut self, id: String, generation: i64) {
+        self.deactivate();
+        self.attention=Some((id,generation));
+        self.focus_attention();
+    }
+    fn focus_attention(&mut self) {
+        if let Some((id,generation))=&self.attention {
+            if let Some((model,_))=self.requests.get(id) {
+                if model.generation==*generation { self.active=Some(id.clone()); }
+                self.attention=None;
+            }
+        }
+    }
     pub fn request(&mut self, id: String, generation: i64, model: Option<Model>) {
         if self.requests.len() >= 32 && !self.requests.contains_key(&id) {
             return;
@@ -663,6 +689,7 @@ impl Local {
             .child(model.body.clone())
             .child(form);
         self.requests.insert(id.clone(), (model, App::new(view)));
+        self.focus_attention();
     }
     fn hide_request(&mut self) {
         if let Some(id) = self.active.take() {
@@ -736,7 +763,7 @@ impl Local {
         commands
             .into_iter()
             .filter_map(|command| match command {
-                Command::Intent(misa_proto::Intent::Action { fields, .. })
+                Command::Intent(misa_kit::intent::Intent::Action { fields, .. })
                     if self.daemon_form.is_some() =>
                 {
                     let (daemon, form, app) = self.daemon_form.as_mut()?;
@@ -746,6 +773,7 @@ impl Local {
                         .collect();
                     match form.prepare(&drafts) {
                         Ok((command, input)) => Some(Command::DaemonInvoke {
+                            scope: Some(form.scope.clone()),
                             daemon: daemon.clone(),
                             command,
                             input,
@@ -756,7 +784,7 @@ impl Local {
                         }
                     }
                 }
-                Command::Intent(misa_proto::Intent::Action { fields, .. })
+                Command::Intent(misa_kit::intent::Intent::Action { fields, .. })
                     if self.form_visible && self.form.is_some() =>
                 {
                     let drafts = fields
@@ -787,7 +815,7 @@ impl Local {
                         })
                     }
                 }
-                Command::Intent(misa_proto::Intent::Action {
+                Command::Intent(misa_kit::intent::Intent::Action {
                     action,
                     args,
                     fields,
@@ -828,11 +856,15 @@ impl Local {
                             .value
                             .clone(),
                     }),
+                    "work-form" => {
+                        Some(Command::PrepareWork{daemon:self.managing.clone()?,scope:misa_client::interface::decode(args.get("scope")?).ok()?,id:args.get("id")?.as_str()?.into(),command:args.get("command")?.as_str()?.into()})
+                    }
                     "stop-session" => {
                         let daemon = self.managing.clone()?;
                         let scope: misa_proto::observation::Scope =
                             misa_client::interface::decode(&args).ok()?;
                         Some(Command::DaemonInvoke {
+                            scope: self.directories.iter().find(|row|row.identity==daemon).and_then(|row|row.overview.as_ref()).and_then(|result|result.as_ref().ok()).map(|snapshot|snapshot.scope.clone()),
                             daemon,
                             command: "daemon.session.close".into(),
                             input: misa_client::lifecycle::close_input(&scope).ok()?,
@@ -858,14 +890,16 @@ impl Local {
                     )),
                     "discover" => Some(Command::Discover),
                     "disconnect" => Some(Command::Disconnect(args.as_str()?.into())),
-                    "choose" | "close-instance" => {
+                    "choose" | "attention" | "close-instance" => {
                         let get = |key| args.get(key).and_then(Value::as_str).map(str::to_owned);
                         let daemon = get("daemon")?;
                         let scope = misa_proto::observation::Scope {
                             id: misa_proto::observation::ScopeId::Session { id: get("id")? },
                             incarnation: get("incarnation")?,
                         };
-                        let command = if action == "choose" {
+                        let command = if action == "attention" {
+                            Command::SelectRequest {daemon,scope,request:get("request")?,generation:args.get("generation")?.as_i64()?}
+                        } else if action == "choose" {
                             Command::Select { daemon, scope }
                         } else {
                             Command::CloseInstance { daemon, scope }
@@ -875,7 +909,7 @@ impl Local {
                     }
                     _ => None,
                 },
-                Command::Intent(misa_proto::Intent::Action { action, fields, .. }) => {
+                Command::Intent(misa_kit::intent::Intent::Action { action, fields, .. }) => {
                     let id = self.active.as_ref()?;
                     let (model, _) = self.requests.get(id)?;
                     Some(Command::Request {
@@ -910,13 +944,18 @@ impl Local {
             self.notice("Daemon command is not available");
             return;
         };
+        let drafts=form.fields.iter().filter_map(|(id,_)|args.get(id).and_then(Value::as_str).map(|value|(id.clone(),value.into()))).collect();
+        self.prepared_daemon_form(daemon,form,drafts);
+    }
+    pub fn prepared_daemon_form(&mut self,daemon:String,form:misa_client::form::Form,drafts:BTreeMap<String,String>) {
+        if self.managing.as_ref()!=Some(&daemon){return;}
         let fields = form
             .fields
             .iter()
             .map(|(id, field)| Field {
                 id: id.clone(),
                 label: format!("{id}{}", if field.optional { " (optional)" } else { "" }),
-                value: args.get(id).and_then(Value::as_str).unwrap_or("").into(),
+                value: drafts.get(id).cloned().unwrap_or_default(),
                 hint: None,
                 kind: FieldKind::default(),
                 read_only: false,
@@ -964,6 +1003,9 @@ impl Local {
                 Value::map([("command", Value::str("daemon.session.create"))]),
                 ActionOn::Click,
             ));
+        for id in daemon.forms.keys().filter(|id| !matches!(id.as_str(),"daemon.session.create"|"daemon.session.resume")) {
+            root.children.push(Node::section("command").id(format!("daemon-command-{id}")).action(action("daemon-form",id,Value::map([("command",Value::str(id))]),ActionOn::Click)));
+        }
         for (index, entry) in daemon.sessions.iter().enumerate() {
             let mut label = entry.title.clone();
             if let Some(Ok(snapshot)) = &daemon.overview
@@ -1041,6 +1083,14 @@ impl Local {
                             )
                             .id(format!("work.{index}")),
                         );
+                    }
+                    for work in &snapshot.work {
+                        for (command,label) in [("operation.cancel","Cancel work"),("daemon.work.forget","Forget terminal work")] {
+                            if daemon.forms.contains_key(command) {
+                                let scope=serde_json::to_value(&snapshot.scope).ok().and_then(|value|serde_json::from_value::<Value>(value).ok());
+                                if let Some(scope)=scope {root.children.push(Node::section("work-action").id(format!("work-action-{}-{command}",work.id)).action(action("work-form",label,Value::map([("id",Value::str(&work.id)),("command",Value::str(command)),("scope",scope)]),ActionOn::Click)));}
+                            }
+                        }
                     }
                     for (index, request) in snapshot
                         .rows
@@ -1134,7 +1184,7 @@ mod lifecycle_tests {
     };
 
     fn intent(action_id: &str, args: Value) -> Command {
-        Command::Intent(misa_proto::Intent::Action {
+        Command::Intent(misa_kit::intent::Intent::Action {
             node: "manager".into(),
             action: action_id.into(),
             fields: vec![],
@@ -1192,10 +1242,10 @@ mod lifecycle_tests {
         let value = serde_json::from_value(serde_json::to_value(&scope).unwrap()).unwrap();
         let commands = local.convert(vec![intent("stop-session", value)]);
         assert!(
-            matches!(&commands[..], [Command::DaemonInvoke{daemon,command,input}] if daemon=="daemon-b" && command=="daemon.session.close" && input.get("incarnation").and_then(Value::as_str)==Some("old-incarnation"))
+            matches!(&commands[..], [Command::DaemonInvoke{daemon,command,input,..}] if daemon=="daemon-b" && command=="daemon.session.close" && input.get("incarnation").and_then(Value::as_str)==Some("old-incarnation"))
         );
         let mut search = intent("archive-search", Value::Null);
-        if let Command::Intent(misa_proto::Intent::Action { fields, .. }) = &mut search {
+        if let Command::Intent(misa_kit::intent::Intent::Action { fields, .. }) = &mut search {
             fields.push(Field {
                 id: "prefix".into(),
                 label: String::new(),

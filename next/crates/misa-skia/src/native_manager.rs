@@ -10,6 +10,8 @@ struct Facts {
     truncated: bool,
 }
 enum Job {
+    Form(String,misa_client::form::Form,BTreeMap<String,String>),
+    Completed(String),
     Opened(u64, Choice),
     Closed(String, misa_proto::observation::Scope),
     Archive(String, u64, misa_proto::preparation::Candidates),
@@ -157,6 +159,8 @@ pub(super) async fn run(
         tokio::select! {
             result=jobs.join_next(),if !jobs.is_empty()=>{
                 match result.unwrap().unwrap_or_else(|error|Err(error.to_string())) {
+                    Ok(Job::Form(daemon,form,drafts))=>proxy.send_event(Update::DaemonForm{daemon,form,drafts})?,
+                    Ok(Job::Completed(message))=>proxy.send_event(Update::Notice(message))?,
                     Ok(Job::Opened(version,choice))=>{proxy.send_event(Update::Notice(format!("Session {} opened",choice.1.id)))?;if version==navigation{select=Some(choice);}},
                     Ok(Job::Closed(identity,scope))=>{if let Some(instance)=instances.get(&(identity,scope)){proxy.send_event(Update::Session{generation:instance.generation,update:Box::new(Update::Notice("Server session stopped; local draft retained".into()))})?;}},
                     Ok(Job::Archive(identity,version,result))=>if archive_versions.get(&identity)==Some(&version){let mut facts=facts.lock().unwrap();let row=facts.entry(identity).or_default();row.archive=result.items;row.truncated=result.truncated;},
@@ -204,18 +208,28 @@ pub(super) async fn run(
             command=outgoing.recv()=>{
                 let Some(command)=command else{for daemon in registry.connected().await{registry.disconnect(daemon.identity()).await;}return Ok(());};
                 match command{
+                    Command::PrepareWork{daemon:identity,scope,id,command}=>{
+                        if jobs.len()>=8{proxy.send_event(Update::Notice("Daemon requests are busy".into()))?;continue;}
+                        let Some(daemon)=registry.connected().await.into_iter().find(|daemon|daemon.identity()==identity) else{continue;};
+                        jobs.spawn(async move{
+                            let interface=Interface::load(&daemon.client,scope).await.map_err(|f|f.message)?;
+                            let detail=misa_client::operation::detail(&daemon.client,&interface,&id).await.map_err(|f|f.message)?.ok_or("Work result expired")?;
+                            let form=misa_client::form::Form::command(&interface,&command).map_err(|f|f.message)?;
+                            Ok(Job::Form(identity,form,BTreeMap::from([("id".into(),id),("generation".into(),detail.generation.to_string())])))
+                        });
+                    },
                     Command::Archive{daemon:identity,prefix}=>{
                         if jobs.len()>=8{proxy.send_event(Update::Notice("Daemon requests are busy".into()))?;continue;}
                         let Some(daemon)=registry.connected().await.into_iter().find(|daemon|daemon.identity()==identity) else{proxy.send_event(Update::Notice("Daemon disconnected".into()))?;continue;};
                         let version=archive_versions.entry(identity.clone()).or_default();*version=version.wrapping_add(1);let version=*version;
                         jobs.spawn(async move{Ok(Job::Archive(identity,version,misa_client::lifecycle::conversations(&daemon,&prefix,100).await.map_err(|fault|fault.message)?))});
                     },
-                    Command::DaemonInvoke{daemon:identity,command,input}=>{
+                    Command::DaemonInvoke{daemon:identity,scope,command,input}=>{
                         if jobs.len()>=8{proxy.send_event(Update::Notice("Daemon requests are busy".into()))?;continue;}
                         let Some(daemon)=registry.connected().await.into_iter().find(|daemon|daemon.identity()==identity) else{proxy.send_event(Update::Notice("Daemon disconnected".into()))?;continue;};
                         if matches!(command.as_str(),"daemon.session.create"|"daemon.session.resume") && instances.len()>=8 {proxy.send_event(Update::Notice("Close a local instance before opening another; its server work is separate".into()))?;continue;}
                         navigation=navigation.wrapping_add(1);let version=navigation;
-                        jobs.spawn(async move{invoke_daemon(daemon,command,input,version).await});
+                        jobs.spawn(async move{invoke_daemon(daemon,scope.ok_or("Daemon owner is not current")?,command,input,version).await});
                     },
                     Command::Connect(target)=>{if connections.len()<4{connections.spawn(connect(registry.clone(),target,false));}else{proxy.send_event(Update::Notice("Connection attempts are busy".into()))?;}},
                     Command::Discover=>{if connections.len()<4{connections.spawn(discover(registry.clone()));}},
@@ -258,13 +272,14 @@ pub(super) async fn run(
 }
 async fn invoke_daemon(
     daemon: Arc<Daemon>,
+    scope: misa_proto::observation::Scope,
     command: String,
     input: Value,
     version: u64,
 ) -> Result<Job, String> {
-    let outcome = misa_client::lifecycle::invoke(&daemon, &command, input.clone())
-        .await
-        .map_err(|fault| fault.message)?;
+    let interface=Interface::load(&daemon.client,scope.clone()).await.map_err(|fault|fault.message)?;
+    let definition=interface.commands.get(&command).ok_or("Command no longer installed")?.clone();
+    let outcome=daemon.client.invoke(scope,definition,input.clone(),Duration::from_secs(30)).await.map_err(|fault|fault.message)?.outcome;
     match outcome {
         Outcome::Completed { value } => {
             if command == "daemon.session.close" {
@@ -283,22 +298,27 @@ async fn invoke_daemon(
                         .into(),
                 };
                 Ok(Job::Closed(daemon.identity().into(), scope))
-            } else {
+            } else if matches!(command.as_str(), "daemon.session.create" | "daemon.session.resume") {
                 let entry = misa_client::lifecycle::opened(&daemon, &value)
                     .await
                     .map_err(|fault| fault.message)?;
                 Ok(Job::Opened(version, (daemon, entry)))
-            }
+            } else { Ok(Job::Completed(format!("{command} completed"))) }
         }
         Outcome::Rejected { fault } => Err(fault.message),
         Outcome::Indeterminate { fault } => Err(format!(
             "Outcome uncertain; reconcile before retrying: {}",
             fault.message
         )),
-        Outcome::Accepted { operation } => Err(format!(
-            "Operation {} accepted; inspect its result before retrying",
-            operation.id
-        )),
+        Outcome::Accepted { operation } => {
+            let watch=misa_client::operation::Watch::open(&daemon.client,&interface,operation.clone(),false).await.unwrap_or_else(|fault|misa_client::operation::Watch::failed(operation,fault));
+            let message=match watch.wait().await.outcome {
+                misa_client::operation::Terminal::Finished{state,..}=>format!("Operation {state}"),
+                misa_client::operation::Terminal::Expired=>"Accepted operation result expired; completion unknown".into(),
+                misa_client::operation::Terminal::Fault(fault)=>format!("Accepted operation monitoring failed: {}",fault.message),
+            };
+            Ok(Job::Completed(message))
+        },
     }
 }
 async fn observe_daemon(
@@ -333,8 +353,7 @@ async fn observe_daemon(
             {
                 if let Ok(interface) = Interface::load(&daemon.client, snapshot.scope.clone()).await
                 {
-                    let forms = ["daemon.session.create", "daemon.session.resume"]
-                        .into_iter()
+                    let forms = interface.commands.keys().map(String::as_str)
                         .filter_map(|id| {
                             misa_client::form::Form::command(&interface, id)
                                 .ok()

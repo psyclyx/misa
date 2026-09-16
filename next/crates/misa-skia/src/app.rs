@@ -4,7 +4,7 @@ use crate::{Layout, Op, Scene};
 use misa_kit::editor::{Editor, Motion};
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
-use misa_proto::wire::Intent;
+use misa_kit::intent::Intent;
 use misa_render::{Style, Theme};
 #[cfg(test)]
 use misa_render::Color;
@@ -26,8 +26,10 @@ pub enum Command {
     },
     LoadImage(misa_proto::view::BlobRef),
     Connect(String),
+    PrepareWork { daemon:String,scope:misa_proto::observation::Scope,id:String,command:String },
     DaemonInvoke {
         daemon: String,
+        scope: Option<misa_proto::observation::Scope>,
         command: String,
         input: Value,
     },
@@ -45,6 +47,7 @@ pub enum Command {
         daemon: String,
         scope: misa_proto::observation::Scope,
     },
+    SelectRequest { daemon: String, scope: misa_proto::observation::Scope, request: String, generation: i64 },
     Select {
         daemon: String,
         scope: misa_proto::observation::Scope,
@@ -527,24 +530,6 @@ impl App {
                     Status::Stale(fault) | Status::Closed(fault) => fault.message.clone(),
                 }
             }
-        }
-        Ok(())
-    }
-    pub fn receive(&mut self, message: &misa_proto::SessionMsg) -> Result<(), String> {
-        use misa_proto::{SessionEvent, SessionMsg};
-        match message {
-            SessionMsg::View { view, .. } => self.set_view(view.clone()),
-            SessionMsg::Changes { changes, .. } => {
-                self.apply_tree(changes.iter().flat_map(|change| &change.ops))?
-            }
-            SessionMsg::Streams { streams } => self.reset_streams(streams),
-            SessionMsg::Event {
-                event: SessionEvent::Stream { update },
-                ..
-            } => {
-                self.apply_stream(update);
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -2131,9 +2116,7 @@ mod tests {
         };
         use misa_protocol::observation::{Applied, MemberChange};
         for owners in [10, 1000] {
-            let misa_proto::SessionMsg::View { view, .. } = protocol_view(owners) else {
-                unreachable!()
-            };
+            let view = protocol_view(owners);
             let mut app = App::new(Node::section("empty"));
             app.observed(&Update::Reset(Document {
                 version: Version {
@@ -2186,190 +2169,76 @@ mod tests {
             );
         }
     }
-    fn protocol_view(owners: usize) -> misa_proto::SessionMsg {
-        misa_proto::SessionMsg::View {
-            id: misa_proto::SubId(1),
-            version: misa_proto::sync::Version {
-                epoch: "test".into(),
-                rev: 0,
-            },
-            view: Node::section("session").id("session").child(
-                Node::section("transcript")
-                    .id("transcript")
-                    .children((0..owners).map(|index| {
-                        Node::text("message", [Span::plain("unchanged transcript")])
-                            .id(format!("message.{index}"))
-                    })),
-            ),
+    fn protocol_view(owners: usize) -> Node {
+        Node::section("session").id("session").child(
+            Node::section("transcript").id("transcript").children((0..owners).map(|index| {
+                Node::text("message", [Span::plain("unchanged transcript")]).id(format!("message.{index}"))
+            })),
+        )
+    }
+    // Independent cold tree/materialization oracle; no protocol cursor or wire adapter.
+    fn cold_pixels(app: &mut App, tree: &misa_proto::sync::IndexedTree, streams: &[misa_proto::sync::Stream]) {
+        let mut view = tree.snapshot();
+        let mut overlay = Node::section("streams").id("streams");
+        for stream in streams {
+            let owner = stream.id.rsplit_once('.').map_or(stream.id.as_str(), |(owner,_)| owner);
+            if !stream.text.is_empty() && !tree.contains(owner) {
+                overlay.children.push(Node::text(&stream.role, [Span::plain(&stream.text)]).id(&stream.id).state(misa_proto::view::State::Streaming));
+            }
         }
+        if !overlay.children.is_empty() { view.children[0].children.push(overlay); }
+        let scene=app.frame(800,600);
+        let expected=App::new(view).frame(800,600);
+        assert_eq!(crate::paint::raster(&scene,Color::Rgb(20,22,26)).unwrap(),crate::paint::raster(&expected,Color::Rgb(20,22,26)).unwrap());
     }
-    fn apply(
-        app: &mut App,
-        oracle: &mut misa_proto::sync::ClientView,
-        message: misa_proto::SessionMsg,
-    ) {
-        oracle.receive(&message).unwrap();
-        app.receive(&message).unwrap();
-    }
-    fn assert_cold_pixels(app: &mut App, oracle: &misa_proto::sync::ClientView) {
-        let scene = app.frame(800, 600);
-        let mut cold = App::new(oracle.rendered().unwrap());
-        let expected = cold.frame(800, 600);
-        assert_eq!(
-            crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap(),
-            crate::paint::raster(&expected, Color::Rgb(20, 22, 26)).unwrap()
-        );
+    fn observed_changes(app: &mut App, tree: Vec<ViewOp>, live: Vec<misa_proto::sync::StreamUpdate>, reset_live: bool) {
+        app.observed(&misa_client::document::Update::Changed {
+            member: "conversation".into(),
+            applied: Arc::new(misa_protocol::observation::Applied::Changed(BTreeMap::from([("conversation".into(),misa_protocol::observation::MemberChange::Document {tree,live,reset_live})]))),
+        }).unwrap();
     }
     #[test]
     fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
-        use misa_proto::{
-            SessionEvent, SessionMsg,
-            sync::{Change, ClientView, Stream, StreamUpdate, Version},
-        };
-        for owners in [10, 1000] {
-            let mut app = App::new(Node::section("empty"));
-            let mut oracle = ClientView::default();
-            apply(&mut app, &mut oracle, protocol_view(owners));
-            app.frame(800, 600);
-            let retained: Vec<_> = (0..owners)
-                .map(|index| app.cache[&format!("message.{index}")].ops.clone())
-                .collect();
-            apply(
-                &mut app,
-                &mut oracle,
-                SessionMsg::Streams {
-                    streams: vec![Stream {
-                        id: "live.text".into(),
-                        role: "message.assistant".into(),
-                        text: "hello".into(),
-                    }],
-                },
-            );
-            app.frame(800, 600);
-            apply(
-                &mut app,
-                &mut oracle,
-                SessionMsg::Event {
-                    seq: 1,
-                    event: SessionEvent::Stream {
-                        update: StreamUpdate::Append {
-                            id: "live.text".into(),
-                            offset: 5,
-                            text: " world".into(),
-                        },
-                    },
-                },
-            );
-            app.frame(800, 600);
-            assert_eq!(
-                app.rendered_nodes, 4,
-                "only root, transcript, stream group and changed stream lay out"
-            );
-            for (index, ops) in retained.iter().enumerate() {
-                assert!(Arc::ptr_eq(
-                    ops,
-                    &app.cache[&format!("message.{index}")].ops
-                ));
-            }
-            assert_cold_pixels(&mut app, &oracle);
-            apply(
-                &mut app,
-                &mut oracle,
-                SessionMsg::Changes {
-                    id: misa_proto::SubId(1),
-                    changes: vec![Change {
-                        from: Version {
-                            epoch: "test".into(),
-                            rev: 0,
-                        },
-                        version: Version {
-                            epoch: "test".into(),
-                            rev: 1,
-                        },
-                        ops: vec![ViewOp::Replace {
-                            id: "message.0".into(),
-                            node: Node::text("message", [Span::plain("changed")]).id("message.0"),
-                        }],
-                    }],
-                },
-            );
-            app.frame(800, 600);
-            assert_eq!(
-                app.rendered_nodes, 3,
-                "only root, transcript and replaced owner lay out"
-            );
-            for (index, ops) in retained.iter().enumerate().skip(1) {
-                assert!(Arc::ptr_eq(
-                    ops,
-                    &app.cache[&format!("message.{index}")].ops
-                ));
-            }
-            assert_cold_pixels(&mut app, &oracle);
+        use misa_proto::sync::{IndexedTree,Stream,StreamUpdate};
+        for owners in [10,1000] {
+            let view=protocol_view(owners);
+            let mut tree=IndexedTree::new(view.clone());
+            let mut app=App::new(view);
+            app.frame(800,600);
+            let retained:Vec<_>=(0..owners).map(|index|app.cache[&format!("message.{index}")].ops.clone()).collect();
+            let mut stream=Stream{id:"live.text".into(),role:"message.assistant".into(),text:"hello".into()};
+            observed_changes(&mut app,vec![],vec![StreamUpdate::Current{stream:stream.clone()}],true);
+            app.frame(800,600);
+            observed_changes(&mut app,vec![],vec![StreamUpdate::Append{id:stream.id.clone(),offset:5,text:" world".into()}],false);
+            stream.text.push_str(" world");
+            app.frame(800,600);
+            assert_eq!(app.rendered_nodes,4);
+            for (index,ops) in retained.iter().enumerate(){assert!(Arc::ptr_eq(ops,&app.cache[&format!("message.{index}")].ops));}
+            cold_pixels(&mut app,&tree,&[stream.clone()]);
+            let op=ViewOp::Replace{id:"message.0".into(),node:Node::text("message",[Span::plain("changed")]).id("message.0")};
+            tree.apply(&op).unwrap();
+            observed_changes(&mut app,vec![op],vec![],false);
+            app.frame(800,600);
+            assert_eq!(app.rendered_nodes,3);
+            for (index,ops) in retained.iter().enumerate().skip(1){assert!(Arc::ptr_eq(ops,&app.cache[&format!("message.{index}")].ops));}
+            cold_pixels(&mut app,&tree,&[stream]);
         }
     }
     #[test]
     fn stream_completion_and_owner_removal_match_cold_rebuilds() {
-        use misa_proto::{
-            SessionEvent, SessionMsg,
-            sync::{Change, ClientView, Stream, StreamUpdate, Version},
-        };
-        let mut app = App::new(Node::section("empty"));
-        let mut oracle = ClientView::default();
-        apply(&mut app, &mut oracle, protocol_view(4));
-        apply(
-            &mut app,
-            &mut oracle,
-            SessionMsg::Streams {
-                streams: vec![Stream {
-                    id: "live.text".into(),
-                    role: "message.assistant".into(),
-                    text: "streamed answer".into(),
-                }],
-            },
-        );
-        assert_cold_pixels(&mut app, &oracle);
-        apply(
-            &mut app,
-            &mut oracle,
-            SessionMsg::Changes {
-                id: misa_proto::SubId(1),
-                changes: vec![Change {
-                    from: Version {
-                        epoch: "test".into(),
-                        rev: 0,
-                    },
-                    version: Version {
-                        epoch: "test".into(),
-                        rev: 1,
-                    },
-                    ops: vec![
-                        ViewOp::Insert {
-                            parent: "transcript".into(),
-                            before: Some("message.2".into()),
-                            node: Node::text("message", [Span::plain("committed answer")])
-                                .id("live"),
-                        },
-                        ViewOp::Remove {
-                            id: "message.0".into(),
-                        },
-                    ],
-                }],
-            },
-        );
-        assert_cold_pixels(&mut app, &oracle);
-        apply(
-            &mut app,
-            &mut oracle,
-            SessionMsg::Event {
-                seq: 1,
-                event: SessionEvent::Stream {
-                    update: StreamUpdate::End {
-                        id: "live.text".into(),
-                    },
-                },
-            },
-        );
-        assert_cold_pixels(&mut app, &oracle);
+        use misa_proto::sync::{IndexedTree,Stream,StreamUpdate};
+        let view=protocol_view(4);
+        let mut tree=IndexedTree::new(view.clone());
+        let mut app=App::new(view);
+        let stream=Stream{id:"live.text".into(),role:"message.assistant".into(),text:"streamed answer".into()};
+        observed_changes(&mut app,vec![],vec![StreamUpdate::Current{stream:stream.clone()}],true);
+        cold_pixels(&mut app,&tree,&[stream.clone()]);
+        let ops=vec![ViewOp::Insert{parent:"transcript".into(),before:Some("message.2".into()),node:Node::text("message",[Span::plain("committed answer")]).id("live")},ViewOp::Remove{id:"message.0".into()}];
+        for op in &ops{tree.apply(op).unwrap();}
+        observed_changes(&mut app,ops,vec![],false);
+        cold_pixels(&mut app,&tree,&[stream]);
+        observed_changes(&mut app,vec![],vec![StreamUpdate::End{id:"live.text".into()}],false);
+        cold_pixels(&mut app,&tree,&[]);
     }
     #[test]
     fn editing_a_field_does_not_relayout_the_transcript() {
