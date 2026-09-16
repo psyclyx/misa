@@ -65,19 +65,6 @@ impl Query {
     }
 }
 
-/// Internal request routing context. Supplied by the connection, never decoded from an intent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RequestContext {
-    pub recipient: u64,
-    pub id: u64,
-}
-impl RequestContext {
-    pub fn connection() -> u64 {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
 /// A kernel-confirmed file offer. The destination is deliberately the client's own state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Download {

@@ -1827,7 +1827,7 @@ impl Directory {
             record.child = Some(child.scope());
             record.conversation = Some(
                 child
-                    .info()
+                    .metadata()
                     .conversation
                     .unwrap_or_else(|| child.id().into()),
             );
@@ -1957,7 +1957,7 @@ impl Directory {
                             "conversation",
                             Value::str(
                                 child
-                                    .info()
+                                    .metadata()
                                     .conversation
                                     .unwrap_or_else(|| child.id().into()),
                             ),

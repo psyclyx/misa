@@ -201,15 +201,9 @@ fn intent_registration(
             input,
             result: admitted(),
         },
-        move |runtime, context, invocation| match prepare(&invocation.input) {
+        move |runtime, _, invocation| match prepare(&invocation.input) {
             Err(fault) => Outcome::Rejected { fault },
-            Ok(intent) => outcome(runtime.intent_from(
-                intent,
-                Some(misa_proto::wire::RequestContext {
-                    recipient: context.connection,
-                    id: invocation.id,
-                }),
-            )),
+            Ok(intent) => outcome(runtime.intent(intent)),
         },
     )
 }

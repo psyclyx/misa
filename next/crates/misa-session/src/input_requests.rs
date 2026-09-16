@@ -414,7 +414,7 @@ impl Runtime {
         };
         let input = effect.get("input").cloned().unwrap_or(Value::Null);
         let invocation = |command| Invocation {
-            id: self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id: self.next_call.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             scope: self.scope(),
             command,
             input: input.clone(),

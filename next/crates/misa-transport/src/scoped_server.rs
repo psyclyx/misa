@@ -78,7 +78,7 @@ impl ProtocolHandler for Handler {
         }
         let context = CallContext {
             principal: principal.clone(),
-            connection: misa_proto::wire::RequestContext::connection(),
+            connection: CallContext::next_connection_id(),
         };
         let ClientMessage::Hello { client, .. } = &hello else { unreachable!() };
         if let Err(fault) = self.resolver.connected(&context, client) {

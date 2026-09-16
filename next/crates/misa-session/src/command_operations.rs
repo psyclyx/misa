@@ -176,7 +176,7 @@ impl Runtime {
         let id = format!(
             "{}:command:{}",
             self.scope().incarnation,
-            self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            self.next_call.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let record = Value::map([
             ("id", Value::str(&id)),

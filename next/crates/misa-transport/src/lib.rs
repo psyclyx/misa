@@ -12,6 +12,3 @@ pub mod scoped_io;
 pub mod scoped_client;
 #[cfg(test)]
 mod scoped_network_tests;
-// Temporary protocol-only compatibility coverage; no legacy socket API is exported.
-#[cfg(test)]
-mod legacy_tests;

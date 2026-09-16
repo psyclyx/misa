@@ -110,7 +110,7 @@ impl Runtime {
                 "Tool no longer belongs to active work",
             ));
         };
-        let id = self.seq.fetch_add(1, Ordering::Relaxed);
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
         let invocation = Invocation {
             id,
             scope: self.scope(),

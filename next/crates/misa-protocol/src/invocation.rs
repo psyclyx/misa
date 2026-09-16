@@ -14,6 +14,13 @@ pub struct CallContext {
     pub principal: String,
     pub connection: u64,
 }
+impl CallContext {
+    /// Host-assigned process-local identity. Never decode this from a peer.
+    pub fn next_connection_id() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 pub type Execution<'a> = Pin<Box<dyn Future<Output = Outcome> + Send + 'a>>;
 

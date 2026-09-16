@@ -255,7 +255,7 @@ impl Directory {
             if state.entries.values().any(|entry| {
                 entry
                     .runtime
-                    .info()
+                    .metadata()
                     .conversation
                     .as_deref()
                     .unwrap_or(entry.runtime.id())
@@ -629,7 +629,7 @@ fn publish(state: &mut State) {
         Value::map([
             ("id", Value::str(id)),
             ("incarnation", Value::str(entry.runtime.scope().incarnation)),
-            ("title", Value::str(entry.runtime.info().title)),
+            ("title", Value::str(entry.runtime.metadata().title)),
             ("availability", Value::str(entry.availability)),
             (
                 "source_position",

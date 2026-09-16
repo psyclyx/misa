@@ -57,16 +57,18 @@ async fn fixture(
     iroh::Endpoint,
     iroh::EndpointAddr,
     Arc<misa_session::Runtime>,
+    Arc<misa_kernel::LocalKernel>,
 ) {
     let server = crate::iroh::bind(None, false).await.unwrap();
     let endpoint = crate::iroh::bind(None, false).await.unwrap();
+    let kernel = Arc::new(misa_kernel::LocalKernel::new(
+        misa_kernel::ScriptedProvider::always("network result"),
+    ));
     let runtime = misa_session::Runtime::start(
         "demo",
         "Demo",
         None,
-        Arc::new(misa_kernel::LocalKernel::new(
-            misa_kernel::ScriptedProvider::always("network result"),
-        )),
+        kernel.clone(),
         "scripted",
         model,
         Value::Null,
@@ -86,7 +88,7 @@ async fn fixture(
             },
         )
         .spawn();
-    (router, endpoint, address, runtime)
+    (router, endpoint, address, runtime, kernel)
 }
 async fn connect(endpoint: &iroh::Endpoint, address: iroh::EndpointAddr) -> Client {
     Client::connect(endpoint, address, ClientInfo::new("test", "1"))
@@ -101,7 +103,7 @@ fn document(replica: &Replica) -> misa_proto::observation::Document {
 }
 #[tokio::test]
 async fn large_canonical_document_crosses_real_endpoint_without_truncation() {
-    let (router, endpoint, address, runtime) =
+    let (router, endpoint, address, runtime, _) =
         fixture(&"x".repeat(misa_proto::MAX_CONTROL_FRAME + 1024)).await;
     let selection = selection(&runtime, "status.presentation");
     let expected_snapshot = runtime.read_selection(&selection).unwrap();
@@ -149,7 +151,7 @@ async fn large_canonical_document_crosses_real_endpoint_without_truncation() {
 }
 #[tokio::test]
 async fn two_clients_converge_and_reconnect_resumes_the_same_owned_document() {
-    let (router, endpoint, address, runtime) = fixture("scripted-1").await;
+    let (router, endpoint, address, runtime, _) = fixture("scripted-1").await;
     let selection = selection(&runtime, "conversation.presentation");
     let handle = Handle {
         id: 1,
@@ -240,4 +242,109 @@ async fn two_clients_converge_and_reconnect_resumes_the_same_owned_document() {
     router.shutdown().await.unwrap();
     endpoint.close().await;
     endpoint_b.close().await;
+}
+
+#[tokio::test]
+async fn attachment_resolution_is_a_typed_reply_only_on_the_requesting_connection() {
+    let (router, endpoint, address, runtime, kernel) = fixture("scripted-1").await;
+    let blob = kernel
+        .blobs()
+        .put(b"attachment contents", Some("text/plain"))
+        .unwrap();
+    let mut first = connect(&endpoint, address.clone()).await;
+    let other_endpoint = crate::iroh::bind(None, false).await.unwrap();
+    let mut other = connect(&other_endpoint, address).await;
+    first
+        .try_send(ClientMessage::Invoke {
+            invocation: Invocation {
+                id: 1,
+                scope: runtime.scope(),
+                command: "session.prompt".into(),
+                input: Value::map([
+                    ("text", Value::str("keep this")),
+                    (
+                        "attachments",
+                        Value::list([Value::map([
+                            ("hash", Value::str(&blob.hash)),
+                            ("len", Value::Int(blob.len as i64)),
+                            ("media", Value::str("text/plain")),
+                        ])]),
+                    ),
+                ]),
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        next(&mut first).await,
+        ServerMessage::Reply {
+            reply: misa_proto::invocation::Reply {
+                outcome: Outcome::Accepted { .. },
+                ..
+            }
+        }
+    ));
+    fn target(node: &misa_proto::Node) -> Option<String> {
+        if node
+            .actions
+            .iter()
+            .any(|action| action.id == "attachment.save")
+        {
+            return Some(node.id.clone());
+        }
+        node.children.iter().find_map(target)
+    }
+    let mut revisions = runtime.watch_rev();
+    let node = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(node) = target(&runtime.view().unwrap()) {
+                break node;
+            }
+            revisions.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    first
+        .try_send(ClientMessage::Invoke {
+            invocation: Invocation {
+                id: 2,
+                scope: runtime.scope(),
+                command: "session.attachment.resolve".into(),
+                input: Value::map([("node", Value::str(node))]),
+            },
+        })
+        .unwrap();
+    let ServerMessage::Reply { reply } = next(&mut first).await else {
+        panic!()
+    };
+    assert_eq!(reply.id, 2);
+    let Outcome::Completed { value } = reply.outcome else {
+        panic!()
+    };
+    assert_eq!(
+        value.get("hash").and_then(Value::as_str),
+        Some(blob.hash.as_str())
+    );
+    // A second socket receives only its own correlated result, even with the same ID.
+    other
+        .try_send(ClientMessage::Invoke {
+            invocation: Invocation {
+                id: 2,
+                scope: runtime.scope(),
+                command: "session.attachment.resolve".into(),
+                input: Value::map([("node", Value::str("invented"))]),
+            },
+        })
+        .unwrap();
+    let ServerMessage::Reply { reply } = next(&mut other).await else {
+        panic!()
+    };
+    assert_eq!(reply.id, 2);
+    assert!(matches!(reply.outcome, Outcome::Rejected { .. }));
+    drop(first);
+    drop(other);
+    runtime.shutdown_complete().await;
+    router.shutdown().await.unwrap();
+    endpoint.close().await;
+    other_endpoint.close().await;
 }

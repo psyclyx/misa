@@ -19,12 +19,10 @@
 //!
 //! # The contract with a client
 //!
-//! A client may send an [`Intent`] — submit text, resolve an action this layer
-//! offered, invoke a command this layer declared, or cancel. It may subscribe, and
-//! it is sent a value whenever that value changed. It may do nothing else, because
-//! no message in the protocol can express anything else. That is why "the client
-//! owns no agent policy" is a property of the message types and not a rule anyone
-//! has to remember.
+//! Clients invoke installed, schema-checked commands and read or observe coherent
+//! selections of exported queries. Scope incarnations fence owner lifetimes;
+//! trusted caller context gates private input requests. Local Intent adapters
+//! remain domain helpers and are not a transport authority boundary.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -32,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use misa_proto::view::Node;
-use misa_proto::wire::{Intent, SessionEvent, SessionInfo};
+use misa_proto::wire::{Intent, SessionEvent};
 use misa_proto::{Fault, Query};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Outcome};
 use misa_reframe::fields;
@@ -49,7 +47,6 @@ pub mod indicators;
 pub mod usage;
 pub mod agent;
 mod protocol;
-mod replies;
 /// What a session declares: its commands, their arguments, and where a value can
 /// come from.
 pub mod catalog;
@@ -70,7 +67,22 @@ pub(crate) mod operations;
 #[cfg(test)]
 mod observation_tests;
 
-pub use misa_protocol::{Reading, Emission};
+#[derive(Clone, Debug)]
+pub enum Reading { View(Node), Data(Value) }
+
+/// Internal domain notifications. Scoped transport publishes owner transactions.
+#[derive(Clone, Debug)]
+pub struct Emission { pub event: SessionEvent }
+
+/// Owner metadata, independent of transport greetings and installed catalogs.
+#[derive(Clone, Debug)]
+pub struct Metadata {
+    pub id: String,
+    pub title: String,
+    pub conversation: Option<String>,
+    pub created_ms: i64,
+    pub policy: Vec<String>,
+}
 
 /// A running agent session.
 pub struct Runtime {
@@ -81,10 +93,8 @@ pub struct Runtime {
     to_kernel: mpsc::UnboundedSender<Request>,
     rev: watch::Sender<u64>,
     events: broadcast::Sender<Emission>,
-    replies: replies::Replies,
-    clients: Mutex<std::collections::BTreeMap<u64, misa_proto::ClientInfo>>,
-    seq: AtomicU64,
-    info: SessionInfo,
+    metadata: Metadata,
+    next_call: AtomicU64,
     provider: String,
     model: String,
     incarnation: String,
@@ -263,15 +273,12 @@ impl Runtime {
         // what a client draws before it has sent anything.
         state.watch(Query::new(misa_proto::VIEW_QUERY));
 
-        let info = SessionInfo {
+        let metadata = Metadata {
             id: id.clone(),
             title: title.into(),
             conversation,
             created_ms,
             policy: POLICY.iter().map(|name| name.to_string()).collect(),
-            queries: views::queries(),
-            commands: catalog::commands(),
-            sources: catalog::sources(),
         };
 
         let view = canonical::Canonical::new(state.db(), &contribution.sections, epoch.clone());
@@ -282,10 +289,8 @@ impl Runtime {
             to_kernel: to_kernel.clone(),
             rev,
             events,
-            seq: AtomicU64::new(1),
-            replies: replies::Replies::default(),
-            clients: Mutex::new(std::collections::BTreeMap::new()),
-            info,
+            metadata,
+            next_call: AtomicU64::new(1),
             provider,
             model,
             incarnation: epoch,
@@ -356,7 +361,7 @@ impl Runtime {
     pub fn activate(&self) {
         if self.is_closed() || self.started.swap(true,Ordering::AcqRel) {return}
         self.dispatch(Event::new("session/started"));
-        if let Some(conversation)=&self.info.conversation {
+        if let Some(conversation)=&self.metadata.conversation {
             let _=self.to_kernel.send(Request::Load{conversation:conversation.clone(),after:0,limit:i64::MAX as usize});
         }
     }
@@ -387,11 +392,11 @@ impl Runtime {
     }
 
     pub fn id(&self) -> &str {
-        &self.info.id
+        &self.metadata.id
     }
 
-    pub fn info(&self) -> SessionInfo {
-        self.info.clone()
+    pub fn metadata(&self) -> Metadata {
+        self.metadata.clone()
     }
 
     pub fn provider(&self) -> &str {
@@ -589,18 +594,6 @@ impl Runtime {
                 }
                 // A file read where the daemon is, which is the only place a path means
                 // anything. `/attach <path>` is the whole of this.
-                "kernel.blob.describe" => {
-                    let _ = self.to_kernel.send(Request::BlobDescribe { id: fields::text(effect, "id"), hash: fields::text(effect, "hash") });
-                }
-                "wire.download" => {
-                    if let (Ok(recipient), Ok(id), Ok(download)) = (
-                        fields::text(effect, "recipient").parse::<u64>(), fields::text(effect, "id").parse::<u64>(),
-                        wire::parse::<misa_proto::wire::Download>(&fields::value(effect, "download")),
-                    ) {
-                        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-                        self.replies.send(recipient, id, Emission { seq, recipient: Some(recipient), event: SessionEvent::DownloadReady { id, download } });
-                    }
-                }
                 "kernel.blob.file" => {
                     let _ = self.to_kernel.send(Request::BlobFile {
                         id: fields::text(effect, "id"),
@@ -663,8 +656,7 @@ impl Runtime {
     }
 
     fn emit(&self, event: SessionEvent) {
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.events.send(Emission { seq, event, recipient: None });
+        let _ = self.events.send(Emission { event });
     }
 
     /// Push a line to the clients without touching the transcript.
@@ -674,29 +666,9 @@ impl Runtime {
 
     /// Interpret an intent. The only place an intent is understood.
     ///
-    /// Every client message arrives here, and each arm answers one question: which
-    /// event does this ask for? A client cannot reach past this method, which is why
-    /// it cannot invent agent state.
+    /// Local domain adapter. Network callers enter through the installed command
+    /// registry, which checks authority and arguments before choosing a transition.
     pub fn intent(&self, intent: Intent) -> Vec<Fault> {
-        self.intent_from(intent, None)
-    }
-
-    pub fn intent_from(&self, intent: Intent, context: Option<misa_proto::wire::RequestContext>) -> Vec<Fault> {
-        if let Intent::Action { node, action, .. } = &intent {
-            if action == "attachment.save" {
-                let Some(context) = context else { return vec![Fault::unsupported("Saving requires a requesting client")]; };
-                let tree = match self.view() { Ok(tree) => tree, Err(fault) => return vec![fault] };
-                let Some(target) = misa_proto::view::find(&tree, node).filter(|target| target.actions.iter().any(|action| action.id == "attachment.save")) else {
-                    return vec![Fault::unsupported("This node does not offer an attachment to save")];
-                };
-                let misa_proto::view::Kind::Image { blob, .. } = &target.kind else { return vec![Fault::unsupported("This node is not an attachment")]; };
-                if let Err(error) = self.replies.reserve(context.recipient, context.id) { return vec![Fault::unsupported(error)]; }
-                let faults = self.dispatch(Event::new("intent/attachment.save")
-                    .with("hash", Value::str(&blob.hash)).with("recipient", Value::str(context.recipient.to_string())).with("id", Value::str(context.id.to_string())));
-                if !faults.is_empty() { self.replies.cancel(context.recipient, context.id); }
-                return faults;
-            }
-        }
         let event = match intent {
             Intent::Interrupt { text, attachments } => Event::new("intent/interrupt")
                 .with("prompt", Value::str(text))
@@ -747,24 +719,6 @@ impl Runtime {
             Reading::View(node) => Ok(node),
             Reading::Data(_) => Err(Fault::new("view", "the view query answered with data")),
         }
-    }
-
-    pub fn sync(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
-        self.sync_with_events(since).0
-    }
-
-    pub fn sync_with_events(&self, since: Option<&misa_proto::sync::Version>) -> (misa_proto::sync::ViewSync, u64) {
-        let mut state = self.state.lock().expect("session state is never poisoned");
-        let streams = state.streams.values().cloned().collect();
-        (state.view.sync(since, streams), self.seq.load(Ordering::Relaxed))
-    }
-
-    pub fn changes(&self, since: Option<&misa_proto::sync::Version>) -> misa_proto::sync::ViewSync {
-        self.state.lock().expect("session state is never poisoned").view.sync(since, Vec::new())
-    }
-
-    pub fn view_version(&self) -> misa_proto::sync::Version {
-        self.state.lock().expect("session state is never poisoned").view.version.clone()
     }
 
     /// Answer an on-demand completion source.
@@ -823,8 +777,6 @@ impl Interpreter for AcceptedEffects {
             | "kernel.log.list"
             | "kernel.log.load"
             | "kernel.usage"
-            | "kernel.blob.describe"
-            | "wire.download"
             | "kernel.blob.file"
             | "kernel.attempt.started"
             | "kernel.attempt.settled"
@@ -1238,7 +1190,7 @@ pub(crate) mod tests {
         let panel = misa_proto::view::find(&node, "status").expect("a panel");
         assert_eq!(panel.label.as_deref(), Some("Session"));
         let rows = misa_proto::view::find(&node, "panel.rows").expect("rows");
-        assert_eq!(rows.children.len(), 8, "one row per fact the panel reported");
+        assert_eq!(rows.children.len(), 7, "session facts exclude daemon connection presence");
         match &rows.children[0].kind {
             misa_proto::view::Kind::Fields { fields } => assert!(
                 fields[0].read_only,

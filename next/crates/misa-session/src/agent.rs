@@ -64,7 +64,6 @@ pub fn registry() -> Registry {
         .on_fn("intent/cancel", 0, "agent.cancel", on_cancel)
         .on_fn("operation/prompt.cancel", 0, "agent.prompt.cancel", on_prompt_cancel)
         .on_fn("intent/command", 0, "agent.command", on_command)
-        .on_fn("clients/changed", 0, "agent.clients", on_clients_changed)
         .on_fn("intent/action", 0, "agent.action", on_action)
         .on_fn("intent/queue.take", 0, "agent.queue.take", on_queue_take)
         .on_fn("intent/queue.clear", 0, "agent.queue.clear", on_queue_clear)
@@ -73,8 +72,6 @@ pub fn registry() -> Registry {
         .on_fn("kernel/log.appended", 0, "agent.appended", on_appended)
         .on_fn("kernel/credential", 0, "agent.credential", on_credential)
         .on_fn("kernel/credential.prompt", 0, "agent.credential.prompt", on_credential_prompt)
-        .on_fn("intent/attachment.save", 0, "agent.attachment.save", on_attachment_save)
-        .on_fn("kernel/blob.described", 0, "agent.blob.described", on_blob_described)
         .on_fn("kernel/blob", 0, "agent.blob", on_blob)
         .on_fn("kernel/process.finished", 0, "agent.process.finished", on_process_finished)
         .on_fn("queue/next", 0, "agent.queue.next", on_queue_next)
@@ -102,7 +99,6 @@ pub fn event_for(event: KernelEvent) -> Event {
         KernelEvent::ProviderThinking { id, text } => {
             Event::new("kernel/provider.thinking").with("id", Value::str(id)).with("text", Value::str(text))
         }
-        KernelEvent::BlobDescribed { id, download } => Event::new("kernel/blob.described").with("id", Value::str(id)).with("download", session_event(&download)),
         KernelEvent::Usage { id, provider, facts } => Event::new("kernel/usage")
             .with("id", Value::str(id))
             .with("provider", Value::str(provider))
@@ -999,32 +995,6 @@ fn on_conversations(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     Ok(())
 }
 
-fn on_attachment_save(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
-    let recipient = fields::event_text(event, "recipient");
-    let request = fields::event_text(event, "id");
-    let id = format!("download:{recipient}:{request}");
-    let mut pending = tx.get("session.downloads").and_then(Value::as_map).cloned().unwrap_or_default();
-    pending.insert(id.clone(), Value::map([("recipient", Value::str(recipient)), ("id", Value::str(request))]));
-    tx.set("session.downloads", Value::Map(std::sync::Arc::new(pending)))?;
-    tx.fx(Effect::new("kernel.blob.describe")
-        .with_value(Value::map([("id", Value::str(id)), ("hash", fields::event_value(event, "hash"))])));
-    Ok(())
-}
-fn on_blob_described(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
-    let id = fields::event_text(event, "id");
-    let mut pending = tx.get("session.downloads").and_then(Value::as_map).cloned().unwrap_or_default();
-    let Some(context) = pending.remove(&id) else {
-        return Ok(());
-    };
-    tx.set("session.downloads", Value::Map(std::sync::Arc::new(pending)))?;
-    tx.fx(Effect::new("wire.download").with_value(Value::map([
-        ("recipient", context.get("recipient").cloned().unwrap_or(Value::Null)),
-        ("id", context.get("id").cloned().unwrap_or(Value::Null)),
-        ("download", fields::event_value(event, "download")),
-    ])));
-    Ok(())
-}
-
 /// Somebody has to finish an authorization in a browser, so they are shown how.
 ///
 /// A panel rather than a notice, because a code and an address are things a person copies
@@ -1815,20 +1785,16 @@ impl FieldSummary {
 }
 
 fn open_status(tx: &mut Tx<'_>) -> Result<(), Fault> {
-    let clients = tx.get("session.clients").cloned().unwrap_or(Value::Null);
-    status_panel(tx, &clients)
+    status_panel(tx)
 }
 
-fn status_panel(tx: &mut Tx<'_>, clients: &Value) -> Result<(), Fault> {
+fn status_panel(tx: &mut Tx<'_>) -> Result<(), Fault> {
     panel(
             tx,
             "status",
             "Session",
             "",
             vec![
-                ("clients", clients.as_list().unwrap_or(&[]).iter().map(|client| {
-                    format!("{} {}", client.get("name").and_then(Value::as_str).unwrap_or("client"), client.get("version").and_then(Value::as_str).unwrap_or(""))
-                }).collect::<Vec<_>>().join("\n")),
                 ("provider", tx.text("session.provider")),
                 ("model", tx.text("session.model")),
                 ("effort", tx.text("session.effort")),
@@ -1846,11 +1812,4 @@ fn status_panel(tx: &mut Tx<'_>, clients: &Value) -> Result<(), Fault> {
             Vec::new(),
             vec![("panel.close".into(), "Close".into())],
         )
-}
-
-fn on_clients_changed(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
-    let clients = event.get("clients").cloned().unwrap_or_else(|| Value::list(vec![]));
-    tx.set("session.clients", clients.clone())?;
-    if tx.text("panel.id") == "status" { status_panel(tx, &clients)?; }
-    Ok(())
 }

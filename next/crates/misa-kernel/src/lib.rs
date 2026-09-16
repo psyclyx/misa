@@ -82,7 +82,6 @@ fn base64(bytes: &[u8]) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     /// Confirm an existing blob and offer it as a file, without a daemon filesystem path.
-    BlobDescribe { id: String, hash: String },
     Usage {
         id: String,
         provider: String,
@@ -197,7 +196,6 @@ pub enum CredentialAction {
 /// answer asked for one, and this is the answer arriving as a fact.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelEvent {
-    BlobDescribed { id: String, download: misa_proto::wire::Download },
     Usage {
         id: String,
         provider: String,
@@ -312,7 +310,6 @@ impl KernelEvent {
             KernelEvent::ProviderDelta { .. } => "provider.delta",
             KernelEvent::ProviderThinking { .. } => "provider.thinking",
             KernelEvent::ProviderFinished { .. } => "provider.finished",
-            KernelEvent::BlobDescribed { .. } => "blob.described",
             KernelEvent::Usage { .. } => "usage",
             KernelEvent::Models { .. } => "models",
             KernelEvent::ToolFinished { .. } => "tool.finished",
@@ -1205,19 +1202,6 @@ impl Kernel for Daemon {
                     });
                 }
             },
-            Request::BlobDescribe { id, hash } => {
-                let blob = self.blobs.describe(&hash);
-                let suffix = match blob.as_ref().and_then(|blob| blob.media.as_deref()) {
-                    Some("image/png") => ".png", Some("image/jpeg") => ".jpg", Some("image/gif") => ".gif",
-                    Some("application/pdf") => ".pdf", Some("text/plain") => ".txt", _ => ".bin",
-                };
-                let download = misa_proto::wire::Download {
-                    name: if blob.is_some() { format!("{hash}{suffix}") } else { String::new() },
-                    error: if blob.is_none() { "This attachment is no longer in the blob store".into() } else { String::new() },
-                    blob,
-                };
-                let _ = out.send(KernelEvent::BlobDescribed { id, download });
-            }
             Request::BlobLoad { id, hash } => match self.blobs.get(&hash) {
                 Some(bytes) => {
                     let media = self.blobs.media(&hash).unwrap_or_default();
