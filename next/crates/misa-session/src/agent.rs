@@ -41,7 +41,7 @@
 //! 4. **Typing while a model answers is normal.** A prompt submitted during a turn is
 //!    queued, not refused and not an interruption, and it is drained when the turn ends.
 
-use misa_proto::view::{Field, FieldKind, Node, Span};
+use misa_proto::view::{Field, FieldKind, Node};
 use crate::{Level, SessionEvent};
 use misa_reframe::fields;
 use misa_reframe::{Effect, Event, Fault, Registry, Tx};
@@ -1718,7 +1718,7 @@ pub fn composer() -> Node {
             id: "prompt".into(),
             label: "Message".into(),
             value: String::new(),
-            hint: Some("enter to send".into()),
+            hint: None,
             read_only: false,
             secret: false,
             kind: FieldKind::Block,
@@ -1731,7 +1731,6 @@ pub fn composer() -> Node {
         label: Some("Send".into()),
         args: Value::Null,
     })
-    .child(Node::text("composer.hint", [Span::plain("the session owns what happens next")]))
 }
 
 /// A one-line constructor, so the composer reads as what it is.
