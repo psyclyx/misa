@@ -1,7 +1,7 @@
 # Misa architecture
 
 This describes the scoped client/daemon implementation. Verification results and
-unfinished artifact gates belong in [plan.md](plan.md); this document does not
+unfinished artifact gates belong in [refactor-plan.md](refactor-plan.md); this document does not
 assert that a previously tested artifact contains today's source.
 
 ## Ownership and dependencies
@@ -35,7 +35,7 @@ translates its selected documents into HTML/SSE.
 
 ### Scope and authority
 
-A `Scope` identifies the daemon, logical owner and its incarnation. A reused
+A daemon relationship together with a `Scope` identifies the logical owner and its incarnation. A reused
 session label is not the same running owner. Every selection and invocation
 names its intended scope; an old queued call cannot address a replacement owner.
 

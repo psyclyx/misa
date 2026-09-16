@@ -1,5 +1,7 @@
 # Plan
 
+The current refactor is planned in [Scoped observations, commands, and presentation](refactor-plan.md). It supersedes the connection, shared-panel, synchronization, and client-composition assumptions below. The completed checklists in this file record earlier work; they do not indicate completion of that refactor.
+
 The rewrite implementation plan, in one place: the invariants the design commits to, what to build in
 what order, and what verifies each step. [`architecture.md`](architecture.md) holds the positions,
 [`parity.md`](parity.md) holds per-capability status, and this file holds the order.

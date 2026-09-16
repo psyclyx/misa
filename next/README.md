@@ -8,50 +8,45 @@ stage a real boundary, because a client now lives on the other side of a network
 The design, with its invariants and its open questions, is
 [`docs/architecture.md`](docs/architecture.md). Read that first; this file is how
 to run it. The work that is left, and the order it is in, is
-[`docs/plan.md`](docs/plan.md); [`docs/parity.md`](docs/parity.md) records what of
+[`docs/refactor-plan.md`](docs/refactor-plan.md); [`docs/parity.md`](docs/parity.md) records what of
 the previous system is already built.
 
 ## The shape
 
-```
-        ┌──────────────────────────── misa-daemon ────────────────────────────┐
-        │  kernel: the conversation log · the attempt ledger · capability      │
-        │  sessions: the agent loop · tools · the view tree                    │
-        │  an iroh endpoint, one ALPN per role                                 │
-        └───────────────────────────────┬─────────────────────────────────────┘
-                                        │  /misa/session/2
-        ┌───────────────────────────────┴─────────────────────────────────────┐
-        │  a client: subscribes, sends intents, owns the surface               │
-        └───┬───────────────┬────────────────┬────────────────────────────────┘
-            │               │                │
-        misa            misa-web         misa-skia
-        (cells/text) (a server that      (pixels)
-                      serves HTML to
-                      a browser)
-```
+Clients maintain independent relationships with multiple daemons. Sessions live on daemons;
+selecting a session or opening a panel is local client state. The scoped protocol
+(`/misa/scoped/3`) addresses each read, observation and invocation to an exact owner incarnation.
 
-The browser never speaks the protocol: `misa-web` is the client, and the browser
-gets a document, changed HTML subtrees and separate stream updates over SSE.
+Owners export named queries and installed commands. An observation selects a coherent product
+of queries within one owner; separate owners keep independent publication positions. Documents
+carry semantic trees and live overlays. Operations, input requests, presentation catalogs and
+session/delegation summaries are ordinary query data. Blob bytes use a separate authorized channel.
+
+The browser never speaks the daemon protocol: `misa-web` owns scoped client handles and sends
+complete publication batches to the browser over SSE. The TUI, native window and Android app
+use the same shared client replica and invocation machinery.
 
 ## Crates
 
-| Crate                               | What it is                                                          |
-| ----------------------------------- | ------------------------------------------------------------------- |
-| `misa-value`                        | immutable, structurally shared values and explicit patches          |
-| `misa-reframe`                      | the loop: events, coeffects, effects, subscriptions, transactions   |
-| `misa-proto`                        | the wire: view nodes, intents, subscriptions, framing. No IO        |
-| `misa-render`                       | text measurement, a role-addressed theme, tree → styled lines       |
-| `misa-kernel`                       | facts and capability: the log, the attempt ledger, providers, tools |
-| `misa-session`                      | the agent loop, the view tree, the intent vocabulary                |
-| `misa-protocol`                     | both protocol state machines over injected session traits           |
-| `misa-transport`                    | iroh, blob transfer, admission and connection drivers               |
-| `misa-kit`                          | editor, picker, selection and client memory with injected storage   |
-| `misa-plugin`                       | the plugin host: a wasm component as handlers and subscriptions     |
-| `misa-tui`, `misa-web`, `misa-skia` | terminal, browser server, and pixel frontends                       |
+| Crate                               | What it is                                                              |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `misa-value`                        | immutable, structurally shared values and explicit patches              |
+| `misa-reframe`                      | the loop: events, coeffects, effects, subscriptions, transactions       |
+| `misa-proto`                        | pure query, invocation, observation, document and framing contracts     |
+| `misa-render`                       | text measurement, a role-addressed theme, tree → styled lines           |
+| `misa-kernel`                       | facts and capability: the log, the attempt ledger, providers, tools     |
+| `misa-session`                      | session domain state, installed commands and exported projections       |
+| `misa-protocol`                     | owner publication, typed replicas and scoped protocol state machines    |
+| `misa-client`                       | daemon relationships, shared forms, observations and operation tracking |
+| `misa-daemon`                       | session lifecycle, directory and delegated work                         |
+| `misa-transport`                    | iroh, blob transfer, admission and connection drivers                   |
+| `misa-kit`                          | optional editor, picker and local command parsing algorithms            |
+| `misa-plugin`                       | the plugin host: a wasm component as handlers and subscriptions         |
+| `misa-tui`, `misa-web`, `misa-skia` | terminal, browser server, and pixel frontends                           |
 
 `android/` is the fourth frontend and is not a crate: a Kotlin app over the shared Rust
 client, linked through a small JNI seam, with its own [`README`](android/README.md). It
-draws the same view tree the other frontends draw.
+selects supported presentation variants and renders their documents with native controls.
 
 ## The shell
 
@@ -74,7 +69,8 @@ plus the Zig system's, so `cargo` is this repository's rustc wherever you are st
 
 ```sh
 cargo test --workspace                 # the gate
-cargo run -p misa-daemon               # prints a ticket
+cargo run -p misa-daemon               # advertises locally and prints a ticket
+cargo run -p misa-tui --bin misa        # discover and pair with local daemons
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
 cargo run -p misa-daemon -- --plugin /tmp/policy.component.wasm   # a policy plugin, in wasm
                                                    # (a client can start the same flow: `/login openai-codex`)
@@ -197,11 +193,24 @@ declares the state roots it asked for (`Ownership::Plugin`) so its patches have 
 land — a plugin that names a root the session already owns is refused at startup rather than
 failing inside somebody's transaction later.
 
-A plugin presents, too: the tree `view(role, db)` returns is placed in the document under a
-role built from the plugin's id (`plugin.<id>`), with the ids of that subtree prefixed so nothing a
-plugin writes can collide with a node the session wrote — so every frontend draws it with no
-frontend code at all. Why it is _placed_ rather than merged, and what a plugin may name, are in
-`docs/architecture.md` §5.
+The `misa:policy@0.3.0` ABI declares argument schemas and versioned result contracts for every
+query. Reads receive only explicitly granted roots; derived queries receive their named inputs
+and no database. Query failures remain faults. Semantic documents are ordinary queries with a
+`document` result contract, validated by the host. Presentations name ordered query variants and
+versioned capability requirements, including an unconditional fallback. The ordinary exported
+`presentation.catalog` query exposes these choices and their exact query contracts. Clients choose
+supported variants before observation; optional plugin panels are not queried unless selected.
+Independent document namespaces prevent identities from colliding.
+The previous ABI and standalone `view` export are not supported.
+
+Installed commands and action bindings are available through `commands.catalog` and
+`actions.catalog`; `queries.catalog` lists exported query contracts, including itself.
+Native command handlers return typed completion, rejection, accepted-operation, or uncertain
+outcomes. Guest event commands return accepted operations and complete after their declared state
+transaction is journaled. Declared non-secret input forms can precede that transaction; credential
+flows use private owner-managed requests and kernel credential sinks. External work needs an
+operation-aware implementation. Action bindings prepare installed commands without conferring
+authority. Request-only responders cannot be prepared as ordinary local command forms.
 
 ## Conventions
 

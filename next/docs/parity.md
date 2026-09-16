@@ -4,7 +4,7 @@ Parity means the same capability expressed through each surface's own interactio
 model. It does not require identical pixels, controls or keyboard shortcuts.
 This inventory describes implemented mechanisms and known limits. Build results,
 real interaction checks and packaged-artifact verification are separate evidence;
-see [plan.md](plan.md). Historical verification documents do not certify a newly
+see [refactor-plan.md](refactor-plan.md). Historical verification documents do not certify a newly
 changed binary or APK.
 
 ## Shared mechanisms
