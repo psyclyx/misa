@@ -226,3 +226,20 @@ a { color: var(--accent); }
 
 .label { margin-right: 0.4em; color: var(--fg-muted); }
 .n-message\.group\.header, .n-message\.group\.footer { color: var(--fg-muted); font-size: 0.8rem; }
+
+body { overflow-wrap: anywhere; }
+input, select { max-width: 100%; }
+
+.command-form, #private-request { display: grid; gap: 1rem; max-width: 34rem; }
+.command-form label, #private-request label { display: grid; gap: 0.25rem; }
+.command-form input, .command-form select, .command-form textarea,
+#private-request input:not([type="hidden"]), #private-request select, #private-request textarea {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+.command-form button, #private-request button { justify-self: start; }

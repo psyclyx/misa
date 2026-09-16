@@ -95,6 +95,7 @@ pub async fn serve(targets: &[String], address: std::net::SocketAddr) -> Result<
         .route("/recovery.js", get(|| async { ([("content-type", "text/javascript")], include_str!("recovery.js")) }))
         .route("/connect", post(connect))
         .route("/choose", post(choose))
+        .route("/daemon/commands", get(lifecycle::commands))
         .route("/lifecycle", get(lifecycle::open).post(lifecycle::perform))
         .route("/archive", get(lifecycle::archive))
         .route("/disconnect", post(lifecycle::disconnect))
@@ -122,6 +123,7 @@ async fn directory(State(hub): State<Shared>) -> Html<String> {
     for id in hub.daemons.keys() { html.push_str(&format!("<option value=\"{}\">{}</option>", super::escape(id), super::escape(id))); }
     html.push_str("</select></label><select name=\"command\"><option value=\"daemon.session.create\">Create session</option><option value=\"daemon.session.resume\">Resume conversation</option><option value=\"daemon.session.close\">Close session owner</option></select><button>Prepare</button><button formaction=\"/archive\">Browse saved conversations</button></form></section>");
     for id in hub.daemons.keys() {
+        html.push_str(&format!("<form method=\"get\" action=\"/daemon/commands\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><button>Commands for {}</button></form>", super::escape(id), super::escape(id)));
         html.push_str(&format!("<form method=\"post\" action=\"/disconnect\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><button>Disconnect {}</button></form>", super::escape(id), super::escape(id)));
     }
     if !hub.sessions.is_empty() {

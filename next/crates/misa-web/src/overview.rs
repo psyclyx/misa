@@ -79,7 +79,16 @@ fn render(daemon: &str, snapshot: &Snapshot) -> String {
     if !snapshot.work.is_empty() {
         html.push_str("<details><summary>Delegated work</summary><ul>");
         for work in &snapshot.work {
-            html.push_str(&format!("<li>{}: {} · {}{}</li>", escape(&work.id), escape(&work.state), escape(&work.lifetime), if work.blocking { " · blocks parent" } else { "" }));
+            html.push_str(&format!("<li>{}: {} · {}{}", escape(&work.id), escape(&work.state), escape(&work.lifetime), if work.blocking { " · blocks parent" } else { "" }));
+            let action = match work.state.as_str() {
+                "starting" | "running" => Some(("operation.cancel", "Prepare cancellation")),
+                "succeeded" | "failed" | "cancelled" | "expired" | "interrupted" => Some(("daemon.work.forget", "Prepare forgetting result")),
+                _ => None,
+            };
+            if let Some((command, label)) = action {
+                html.push_str(&format!("<form method=\"get\" action=\"/lifecycle\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><input type=\"hidden\" name=\"owner\" value=\"{}\"><input type=\"hidden\" name=\"command\" value=\"{}\"><input type=\"hidden\" name=\"operation\" value=\"{}\"><button {}>{}</button></form>", escape(daemon), escape(&snapshot.scope.incarnation), command, escape(&work.id), if current { "" } else { "disabled" }, label));
+            }
+            html.push_str("</li>");
         }
         html.push_str("</ul></details>");
     }
@@ -111,6 +120,9 @@ mod tests {
         let current = render("daemon", &snapshot);
         assert!(current.contains("Working · 1 awaiting input · 1 blocking children"));
         assert!(current.contains("child: running · independent"));
+        assert!(current.contains("name=\"operation\" value=\"child\""));
+        assert!(current.contains("name=\"owner\" value=\"runtime\""));
+        assert!(current.contains("Prepare cancellation"));
         assert!(current.contains("name=\"session\" value=\"child-session\""));
         assert!(current.contains("name=\"incarnation\" value=\"child-owner\""));
         assert!(current.contains("name=\"request\" value=\"child-request\""));

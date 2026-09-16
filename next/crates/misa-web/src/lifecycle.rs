@@ -1,4 +1,4 @@
-//! Local lifecycle preparation over installed daemon commands.
+//! Local preparation over installed daemon commands and lifecycle result navigation.
 use super::{Shared, Instance};
 use std::{collections::BTreeMap, time::{Duration, Instant}};
 use axum::{extract::{State, Query, Form}, response::{Response, IntoResponse, Html, Redirect}, http::StatusCode};
@@ -11,9 +11,23 @@ fn page(status: StatusCode, title: &str, body: String) -> Response {
 }
 fn command(fields: &BTreeMap<String,String>) -> Result<&str, &'static str> {
     match fields.get("action_id").or_else(||fields.get("command")).map(String::as_str) {
-        Some(id @ ("daemon.session.create" | "daemon.session.resume" | "daemon.session.close")) => Ok(id),
-        _ => Err("Choose a lifecycle command"),
+        Some(id) if !id.is_empty() => Ok(id),
+        _ => Err("Choose an installed daemon command"),
     }
+}
+fn opens_session(command: &str) -> bool { matches!(command, "daemon.session.create" | "daemon.session.resume") }
+pub(super) async fn commands(State(hub): State<Shared>, Query(fields): Query<BTreeMap<String,String>>) -> Response {
+    let id = fields.get("daemon").map(String::as_str).unwrap_or("");
+    let Some(daemon) = hub.lock().await.daemons.get(id).cloned() else { return page(StatusCode::NOT_FOUND, "Unknown daemon", String::new()); };
+    let interface = match Interface::load(&daemon.client, daemon.client.welcome().scope).await { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_GATEWAY, "Daemon unavailable", escape(&fault.message)) };
+    let mut body = String::new();
+    for command in interface.commands.keys() {
+        match CommandForm::command(&interface, command) {
+            Ok(_) => body.push_str(&format!("<form method=\"get\" action=\"/lifecycle\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><input type=\"hidden\" name=\"command\" value=\"{}\"><button>{}</button></form>", escape(id), escape(command), escape(command))),
+            Err(fault) => body.push_str(&format!("<p><code>{}</code> · {}</p>", escape(command), escape(&fault.message))),
+        }
+    }
+    page(StatusCode::OK, "Daemon commands", body)
 }
 pub(super) async fn open(State(hub): State<Shared>, Query(fields): Query<BTreeMap<String,String>>) -> Response {
     let id = fields.get("daemon").map(String::as_str).unwrap_or("");
@@ -21,13 +35,26 @@ pub(super) async fn open(State(hub): State<Shared>, Query(fields): Query<BTreeMa
     let Some(daemon) = daemon else { return page(StatusCode::NOT_FOUND, "Unknown daemon", String::new()); };
     let command = match command(&fields) { Ok(command) => command, Err(error) => return page(StatusCode::BAD_REQUEST, "Preparation failed", escape(error)) };
     let interface = match Interface::load(&daemon.client, daemon.client.welcome().scope).await { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_GATEWAY, "Daemon unavailable", escape(&fault.message)) };
+    if fields.get("owner").is_some_and(|owner| owner != &interface.scope.incarnation) {
+        return page(StatusCode::CONFLICT, "Daemon changed", "Choose the current work from the daemon overview.".into());
+    }
     let model = match CommandForm::command(&interface, command) { Ok(model) => model, Err(fault) => return page(StatusCode::BAD_REQUEST, "Command unavailable", escape(&fault.message)) };
     let mut drafts = BTreeMap::new();
-    if command != "daemon.session.close" { drafts.insert("id".into(), format!("session-{}", crate::next_id())); }
-    for key in ["id", "incarnation", "conversation"] { if let Some(value) = fields.get(key) { drafts.insert(key.into(), value.clone()); } }
+    if opens_session(command) { drafts.insert("id".into(), format!("session-{}", crate::next_id())); }
+    for key in ["id", "incarnation", "conversation", "operation", "generation"] { if let Some(value) = fields.get(key) { drafts.insert(key.into(), value.clone()); } }
+    if matches!(command, "operation.cancel" | "daemon.work.forget") && !drafts.contains_key("generation") {
+        if let Some(operation) = drafts.get("operation") {
+            let detail = match misa_client::operation::detail(&daemon.client, &interface, operation).await {
+                Ok(Some(detail)) => detail,
+                Ok(None) => return page(StatusCode::GONE, "Work unavailable", "This operation is no longer retained.".into()),
+                Err(fault) => return page(StatusCode::BAD_GATEWAY, "Work unavailable", escape(&fault.message)),
+            };
+            drafts.insert("generation".into(), detail.generation.to_string());
+        }
+    }
     let mut body = if command == "daemon.session.close" { "<p>Closing the session owner stops its work for all clients. Use Close presentation to release only a local view.</p>".into() } else { String::new() };
     body.push_str(&actions::markup_at(&model, true, &BTreeMap::new(), &drafts, "/lifecycle", &[("daemon", id), ("owner", &interface.scope.incarnation)]));
-    page(StatusCode::OK, "Prepare session command", body)
+    page(StatusCode::OK, "Prepare daemon command", body)
 }
 pub(super) async fn perform(State(hub): State<Shared>, Form(fields): Form<BTreeMap<String,String>>) -> Response {
     let id = fields.get("daemon").map(String::as_str).unwrap_or("");
@@ -39,12 +66,12 @@ pub(super) async fn perform(State(hub): State<Shared>, Form(fields): Form<BTreeM
     let prepared = CommandForm::command(&interface, command).and_then(|model| model.prepare(&fields.iter().filter_map(|(key,value)| key.strip_prefix("field.").map(|id|(id.into(),value.clone()))).collect()));
     let (_, input) = match prepared { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_REQUEST, "Command not sent", escape(&fault.message)) };
     let preferences = match crate::presentations::initial(fields.get("preferences").map(String::as_str)) { Ok(value) => value, Err(error) => return page(StatusCode::BAD_REQUEST, "Command not sent", escape(&error)) };
-    let permit = if command == "daemon.session.close" { None } else {
+    let permit = if !opens_session(command) { None } else {
         Some(match hub.lock().await.reserve() { Ok(permit) => permit, Err(response) => return response })
     };
     let outcome = daemon.client.invoke(interface.scope.clone(), interface.commands[command].clone(), input, Duration::from_secs(30)).await;
     match outcome.map(|reply|reply.outcome) {
-        Ok(Outcome::Completed { value }) if command != "daemon.session.close" => {
+        Ok(Outcome::Completed { value }) if opens_session(command) => {
             let entry = match misa_client::lifecycle::opened(&daemon, &value).await { Ok(entry) => entry, Err(fault) => return page(StatusCode::BAD_GATEWAY, "Session opened; navigation unavailable", escape(&fault.message)) };
             let remote = match crate::remote::connect_with(&daemon, &entry.id, preferences).await { Ok(remote) => remote, Err(error) => return page(StatusCode::BAD_GATEWAY, "Session opened; navigation unavailable", escape(&error)) };
             if remote.interaction.interface.scope != entry.scope() { return page(StatusCode::CONFLICT, "Session changed", "The opened session owner has already changed. Return to the overview.".into()); }
@@ -53,6 +80,7 @@ pub(super) async fn perform(State(hub): State<Shared>, Form(fields): Form<BTreeM
             hub.sessions.insert(key.clone(), Instance { _permit: permit.expect("opening reserved capacity"), remote, used: Instant::now() });
             Redirect::to(&format!("/view/{key}/")).into_response()
         }
+        Ok(Outcome::Completed { value }) if value != misa_value::Value::Null => page(StatusCode::OK, "Command result", crate::render_report(command, &value)),
         Ok(Outcome::Completed { .. }) => Redirect::to("/daemons").into_response(),
         Ok(Outcome::Rejected { fault }) => page(StatusCode::BAD_REQUEST, "Command rejected", escape(&fault.message)),
         Ok(Outcome::Accepted { operation }) => page(StatusCode::ACCEPTED, "Command accepted", format!("<p>Operation {} is running. Check the daemon overview before issuing another command.</p>", escape(&operation.id))),
@@ -112,6 +140,31 @@ mod tests {
         let id = daemon.identity().to_string();
         let owner = daemon.client.welcome().scope.incarnation;
         let hub = Arc::new(tokio::sync::Mutex::new(super::super::Hub::new(connections.clone(), BTreeMap::from([(id.clone(), daemon.clone())]))));
+        let catalog = commands(State(hub.clone()), Query(BTreeMap::from([("daemon".into(), id.clone())]))).await;
+        assert_eq!(catalog.status(), StatusCode::OK);
+        let html = axum::body::to_bytes(catalog.into_body(), 65536).await.unwrap();
+        let html = std::str::from_utf8(&html).unwrap();
+        assert!(html.contains("operation.cancel") && html.contains("daemon.work.forget"));
+        let prepared = open(State(hub.clone()), Query(BTreeMap::from([("daemon".into(), id.clone()), ("command".into(), "operation.cancel".into())]))).await;
+        assert_eq!(prepared.status(), StatusCode::OK);
+        let html = axum::body::to_bytes(prepared.into_body(), 65536).await.unwrap();
+        assert!(std::str::from_utf8(&html).unwrap().contains("name=\"field.generation\""));
+        assert!(hub.lock().await.sessions.is_empty(), "daemon command preparation never opens a transcript");
+        let expired = open(State(hub.clone()), Query(BTreeMap::from([
+            ("daemon".into(), id.clone()), ("owner".into(), owner.clone()), ("command".into(), "operation.cancel".into()), ("operation".into(), "missing-work".into()),
+        ]))).await;
+        assert_eq!(expired.status(), StatusCode::GONE);
+        let stale = open(State(hub.clone()), Query(BTreeMap::from([
+            ("daemon".into(), id.clone()), ("owner".into(), "old-daemon".into()), ("command".into(), "operation.cancel".into()), ("operation".into(), "missing-work".into()),
+        ]))).await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+        let missing = perform(State(hub.clone()), Form(BTreeMap::from([
+            ("daemon".into(), id.clone()), ("owner".into(), owner.clone()), ("action_id".into(), "operation.cancel".into()),
+            ("field.operation".into(), "missing-work".into()), ("field.generation".into(), "1".into()),
+        ]))).await;
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert!(hub.lock().await.sessions.is_empty());
         let preparation = open(State(hub.clone()), Query(BTreeMap::from([("daemon".into(), id.clone()), ("command".into(), "daemon.session.create".into())]))).await;
         assert_eq!(preparation.status(), StatusCode::OK);
         let html = axum::body::to_bytes(preparation.into_body(), 65536).await.unwrap();

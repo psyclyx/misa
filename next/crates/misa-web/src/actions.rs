@@ -18,7 +18,7 @@ pub(crate) fn markup_for(model: &ActionForm, command: bool, choices: &BTreeMap<S
     markup_at(model, command, choices, drafts, "./perform", &[])
 }
 pub(crate) fn markup_at(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>, action: &str, hidden: &[(&str, &str)]) -> String {
-    let mut html = format!("<h2>{}</h2><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), escape(action), if command { "command" } else { "action" }, escape(&model.title));
+    let mut html = format!("<h2>{}</h2><form class=\"command-form\" method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), escape(action), if command { "command" } else { "action" }, escape(&model.title));
     for (name, value) in hidden { html.push_str(&format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", escape(name), escape(value))); }
     html.push_str(&fields(&model.fields, &BTreeMap::new(), choices, drafts));
     html.push_str("<button>Run action</button></form>");

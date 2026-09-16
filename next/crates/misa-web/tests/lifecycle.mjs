@@ -60,6 +60,13 @@ try {
   assert.equal(await evaluate('[...document.querySelectorAll("#overview article > form:first-child button")].map(b => b.textContent).join(",")'), 'same-label (scripted),same-label (scripted)');
   await shot('overview');
   const identity = await evaluate('document.querySelector("#overview input[name=daemon]").value');
+  await navigate('/daemon/commands?daemon=' + encodeURIComponent(identity));
+  await wait('[...document.querySelectorAll("input[name=command]")].some(input => input.value === "daemon.work.forget")', 'installed daemon commands');
+  await evaluate('[...document.querySelectorAll("input[name=command]")].find(input => input.value === "operation.cancel").form.requestSubmit(); true');
+  await wait('document.querySelector("input[name=\'field.generation\']")', 'generic daemon command form');
+  await shot('daemon-command');
+  await navigate('/daemons');
+  await wait('document.querySelectorAll("#overview article").length === 2', 'unchanged directory after local preparation');
   await evaluate('document.querySelector("form[action=\'/lifecycle\'] select[name=command]").value = "daemon.session.create"; document.querySelector("select[name=command]").form.requestSubmit(); true');
   await wait('document.querySelector("input[name=\'field.id\']")', 'creation form');
   await evaluate('document.querySelector("input[name=\'field.id\']").value="browser-created"; document.querySelector("form[action=\'/lifecycle\']").requestSubmit(); true');
@@ -93,6 +100,10 @@ try {
   await call('Emulation.setDeviceMetricsOverride', { width: 375, height: 800, deviceScaleFactor: 1, mobile: true });
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   await shot('mobile');
+  await navigate('/daemons');
+  await wait('document.querySelectorAll("#overview article").length === 3', 'mobile multi-daemon overview');
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+  await shot('mobile-overview');
   console.log('Browser lifecycle gate passed; artifacts: ' + work);
 } catch (error) {
   try { await diagnostic?.(); } catch (_) {}
