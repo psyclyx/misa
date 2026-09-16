@@ -1,8 +1,8 @@
 # Scoped observations, commands, and presentation
 
-Status: implementation and completion plan, reviewed 2026-09-16. This records the agreed design and the work required to finish it; exit gates are not claims about current behavior. No implementation milestone is complete merely because an earlier experiment introduced similarly named types. The user has authorized incremental commits; pushing and releasing remain separate actions.
+Status: implemented and verified 2026-09-16. This records the agreed design, implementation stages and acceptance criteria. All required gates passed; exact source, artifacts, tests and platform limits are recorded in [verification.md](verification.md). Changes were committed incrementally.
 
-This plan supersedes the connection, synchronization, shared-panel, and client-composition assumptions in [plan.md](plan.md) and [architecture.md](architecture.md). Their implementation history and existing verification remain useful. Update those documents to describe the final implementation at cutover, rather than marking proposed behavior as already built.
+This plan supersedes the original connection, synchronization, shared-panel and client-composition assumptions in [plan.md](plan.md). [architecture.md](architecture.md) describes the implemented system; [refactor-progress.md](refactor-progress.md) preserves the migration history.
 
 ## Outcome
 
@@ -148,7 +148,7 @@ Only one new core crate is proposed: `misa-client`. Operations, requests, summar
 
 The migration began with uncommitted experiments. Their ownership and subsequent integration are recorded in [refactor-progress.md](refactor-progress.md); do not reset unrelated work or treat an earlier checkpoint as evidence for later edits.
 
-Current integration checkpoint: all four surfaces use scoped observations and invocations through the shared client. Legacy application envelopes, SessionInfo, ClientView and the public Runtime intent adapter are removed. Portable preparation metadata is separate from local editor/parser types; the kit has no renderer dependency. Private forms, exact-owner command preparation, operation tracking, presentation preferences, daemon lifecycle and qualified attention/work navigation have implementation and focused verification. The workspace runtime gate passes 736 tests with one existing ignored measurement; the explicit guest gate additionally passes 18 WASM integration tests. Final pinned artifact builds and platform acceptance runs remain in progress. These counts are evidence for the tested source checkpoint, not a declaration that packaging is complete.
+Completed integration: all four surfaces use scoped observations and invocations through the shared client. Legacy application envelopes, SessionInfo, ClientView and the public Runtime intent adapter are removed. Portable preparation metadata is separate from local editor/parser types; the kit has no renderer dependency. Private forms, exact-owner command preparation, operation tracking, presentation preferences, daemon lifecycle and qualified attention/work navigation have implementation and focused verification. The runtime checkpoint passes 752 workspace tests. The final pinned suite passes 770 Rust tests including 18 Wasm integration tests, then browser, native-window, X11 and native Wayland clipboard checks. Packaged terminal, native and browser lifecycle gates and all 10 Android emulator scenarios pass. Exact evidence is in [verification.md](verification.md).
 
 ### Concrete integration obligations
 
@@ -162,16 +162,16 @@ Current integration checkpoint: all four surfaces use scoped observations and in
 - Separate durable desired session membership, saved conversation logs and live runtime incarnations. Specify which sessions reopen after daemon restart; restore records without repeating unfinished external effects. Dynamic create/close must update the chosen membership policy durably before claiming restart persistence.
 - Attribute background processes and delegated work to explicit lifetime owners before promising cancellation. A removed directory row or aborted observer is not proof that owned work stopped.
 
-### Immediate remaining sequence
+### Completed verification
 
-The final failure-path review found additional correctness work before artifact certification: admitted invocation execution must outlive the waiting connection; kernel work needs precommit bounded admission; failed persistence and refused expiry must not leave falsely current state or spin; owner closure must fence waiting reads and drain owned tasks. These fixes and their regressions precede the package sequence below. Earlier green artifacts do not certify these later changes.
+The final failure-path fixes are implemented and regression-tested: admitted invocation execution outlives its waiting connection; kernel work reserves bounded capacity before commit; persistence failure publishes coherently; refused expiry waits for progress; owner closure fences waiting reads and drains owned tasks.
 
-1. Complete the pinned desktop checks/artifacts and the three-ABI Android package. Reconcile both lockfiles and verify normal client dependency closures exclude server/kernel/plugin runtimes.
-2. Run the actual browser, PTY, native window/clipboard and Android emulator scenarios against the final packaged binaries. The Android gate includes renderer-cache recovery, provider enumeration and persistent-daemon restart with a refreshed endpoint address. Fix observed defects and rerun affected gates.
-3. Audit the acceptance matrix against retained evidence: coherent publication/recovery, bounded resource teardown, private forms, independent local drafts/preferences, exact-owner action routing, delegated work and cheap overview freshness. A passing unit suite does not substitute for a platform interaction gate.
-4. Finish documentation and deletion review, recording the final source/artifact identity and any genuine remaining limitations. Commit coherent changes incrementally; pushing and releasing remain separate actions.
+- Pinned desktop checks and product artifacts, both Wasm fixtures and the three-ABI Android package built successfully. Both lockfiles and normal client dependency closures are reconciled.
+- Actual browser, PTY, native window/clipboard and Android emulator scenarios passed against the recorded packaged binaries. Screenshot review caught and corrected the narrow-screen browser heading.
+- The acceptance matrix is covered by unit, real-network, actual guest and platform interaction evidence. The obsolete wire and UI coupling paths are removed.
+- Architecture, parity and verification describe the delivered system and its explicit limits. Publishing, tagging and pushing remain separate actions.
 
-The numbered stages below retain the full design, ownership and acceptance obligations. The following table records the original migration decisions.
+The numbered stages below are retained as the implementation specification and acceptance criteria. The following table records the original migration decisions.
 
 | Work                                                                                              | Disposition                                                                                                                                               |
 | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |

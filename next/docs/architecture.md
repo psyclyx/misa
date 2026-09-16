@@ -186,6 +186,17 @@ delete/append operations replace magic patch sentinels; handlers cannot replace
 the whole database. Network publication positions, canonical document versions
 and journal acknowledgments have different jobs and are not interchangeable.
 
+The owner reserves bounded capability capacity against the finalized transaction
+before publication. Refused admission rolls back the entire transition. Reservations
+follow deferred checkpoints and queued/running requests until their last guard is
+released. External work and completion/control work have separate budgets; the
+serial journal lane can progress while file/provider workers are saturated.
+Shutdown fences admission, interrupts owned work and awaits capability cleanup.
+
+Transport retains admitted command execution independently of a connection's reply
+waiter. Disconnect cannot cancel or replay that execution; protocol shutdown drains
+it. This lifetime is distinct from a long-running operation's durable domain record.
+
 The kernel owns provider adapters, credential injection/refresh, tools, durable
 conversation facts and uniquely identified attempt accounting. Policy decides
 turns, retries, compaction and continuation. Provider usage is a named capability
