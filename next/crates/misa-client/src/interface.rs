@@ -161,6 +161,21 @@ pub fn data<'a>(result: &'a crate::ReadValue, member: &str) -> Result<&'a Value,
     }
 }
 
+/// Finite, local report presentation. Document contracts keep semantic values
+/// (money, quota, unavailable); ordinary data retains the generic report fallback.
+pub fn report(
+    result: &crate::ReadValue,
+    member: &str,
+    title: &str,
+) -> Result<misa_proto::Node, Fault> {
+    match result.members().get(member) {
+        Some(MemberState::Document(document)) => Ok(crate::document::rendered(document)),
+        Some(MemberState::Value(value)) => Ok(crate::request::report(title, value)),
+        Some(MemberState::Unavailable(fault)) => Err(fault.clone()),
+        _ => Err(Fault::query("Report member is absent")),
+    }
+}
+
 /// Typed decoding is finite catalog/result work, never token-update work.
 pub fn decode<T: DeserializeOwned>(value: &Value) -> Result<T, Fault> {
     let mut bytes = Vec::new();
@@ -168,4 +183,60 @@ pub fn decode<T: DeserializeOwned>(value: &Value) -> Result<T, Fault> {
         .map_err(|_| Fault::query("Cannot decode exported data"))?;
     ciborium::de::from_reader(bytes.as_slice())
         .map_err(|_| Fault::query("Exported data has an invalid shape"))
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    #[test]
+    fn finite_document_report_keeps_semantics_without_flattening() {
+        use misa_proto::observation::{
+            Content, Document, Publication, Scope, ScopeId, Selection, Snapshot,
+        };
+        let definition = misa_proto::query::Definition {
+            id: "usage.presentation".into(),
+            arguments: vec![],
+            contract: "usage.presentation@1".into(),
+            result: misa_proto::query::ResultContract::Document {},
+        };
+        let selection = Selection {
+            scope: Scope {
+                id: ScopeId::Daemon,
+                incarnation: "run".into(),
+            },
+            members: BTreeMap::from([("result".into(), definition.member(vec![]).unwrap())]),
+        };
+        let tree = misa_proto::Node::new(
+            "value.money",
+            misa_proto::view::Kind::Fact { value: Value::Null },
+        )
+        .id("unavailable-money");
+        let handle = misa_proto::observation::Handle {
+            id: 1,
+            generation: 1,
+        };
+        let mut replica = misa_protocol::observation::Replica::new(handle, selection).unwrap();
+        replica
+            .apply(Publication::Snapshot {
+                handle,
+                snapshot: Snapshot {
+                    position: 1,
+                    members: BTreeMap::from([(
+                        "result".into(),
+                        Content::Document(Document {
+                            version: misa_proto::sync::Version {
+                                epoch: "run".into(),
+                                rev: 1,
+                            },
+                            tree: tree.clone(),
+                            streams: vec![],
+                        }),
+                    )]),
+                },
+            })
+            .unwrap();
+        let result = crate::ReadValue(replica);
+        assert_eq!(report(&result, "result", "fallback").unwrap(), tree);
+        assert!(data(&result, "result").is_err());
+    }
 }
