@@ -1,4 +1,5 @@
 //! Terminal adaptation of shared scoped observations and installed interfaces.
+use misa_kit::intent::Intent;
 use crate::{Presentation, Session, SessionReply, SessionRequest};
 use misa_client::{
     driver::{Client, Observation},
@@ -6,7 +7,7 @@ use misa_client::{
     interface::{self, Interface},
 };
 use misa_proto::{
-    Intent, Node, invocation::Outcome, observation::Selection, view::Choice,
+    Node, invocation::Outcome, observation::Selection, view::Choice,
     preparation::SourceKind,
 };
 use misa_protocol::observation::MemberState;
@@ -61,6 +62,7 @@ impl ScopedRemote {
     pub fn parked_busy(&self) -> bool {
         !self.pending.is_empty() || !self.operations.is_empty() || !self.replacements.is_empty()
     }
+    pub fn focus_request(&mut self,id:String,generation:i64) {self.updates.push_back(Presentation::Attention{id,generation});}
     pub fn reactivate(&mut self) {
         self.updates.retain(|update| {
             matches!(update, Presentation::Reply(_) | Presentation::TurnOutput(_))
@@ -750,7 +752,7 @@ impl Session for ScopedRemote {
                     prefix,
                     result: Err(error),
                 },
-                SessionRequest::Save { .. } | SessionRequest::Invoke { .. } => {
+                SessionRequest::DaemonInvoke { .. } | SessionRequest::Save { .. } | SessionRequest::Invoke { .. } => {
                     SessionReply::Notice(error)
                 }
                 SessionRequest::RefreshRequests => unreachable!(),
@@ -760,6 +762,7 @@ impl Session for ScopedRemote {
         let interaction = self.interaction.clone();
         match request {
             SessionRequest::RefreshRequests => unreachable!(),
+            SessionRequest::DaemonInvoke{..}=>return Some(SessionReply::Notice("Daemon invocation requires workspace routing".into())),
             SessionRequest::Invoke { command, input } => {
                 let prepared = match interaction.invoke(&command, input) {
                     Ok(prepared) => prepared,

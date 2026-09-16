@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) {
         if let Some(prompt) = positional.first() {
             remote
-                .send(misa_proto::wire::Intent::Prompt {
+                .send(misa_kit::intent::Intent::Prompt {
                     text: prompt.clone(),
                     attachments: Vec::new(),
                 })

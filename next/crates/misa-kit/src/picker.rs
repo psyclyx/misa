@@ -9,7 +9,7 @@
 //! Not here: *which* candidates exist. A session declares where a value can come
 //! from ([`crate::intent::Source`]) and provides the items — a resident source as
 //! a query a client holds, an on-demand source as an answer to
-//! [`misa_proto::wire::Intent::Complete`].
+//! [`crate::intent::Intent::Complete`].
 //!
 //! # Why the split pays
 //!
@@ -21,7 +21,7 @@
 //! was client-side, and why the *declaration* is the thing that makes that safe.
 
 use misa_proto::view::Choice;
-use misa_proto::wire::Intent;
+use crate::intent::Intent;
 use misa_value::Value;
 
 /// What accepting a candidate does.

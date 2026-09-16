@@ -1,7 +1,7 @@
 //! Retained line owners. Canonical operations format only their affected owner;
 //! stream appends visit appended characters, then the visible viewport.
 use std::collections::HashMap;
-use misa_proto::{Node, SessionMsg, SessionEvent};
+use misa_proto::Node;
 use misa_proto::view::Kind;
 use misa_proto::sync::{IndexedTree, ViewOp, Stream, StreamUpdate};
 use misa_render::Line;
@@ -196,30 +196,6 @@ impl Retained {
         let mut live = Live { stream: Stream { text: String::new(), ..stream.clone() }, lines: vec![], column: 0, last_nonblank: 0 };
         live.append(&stream.text, screen);
         self.live.insert(id, live);
-    }
-    pub fn receive(&mut self, message: &SessionMsg, screen: &Screen) -> Result<(), String> {
-        match message {
-            SessionMsg::View { view, .. } => { *self = Self::new(view.clone(), screen); }
-            SessionMsg::Changes { changes, .. } => { for change in changes { for op in &change.ops { self.op(op, screen)?; } } self.reindex(); }
-            SessionMsg::Streams { streams } => { self.live.clear(); for stream in streams { self.current(stream.clone(), screen); } self.reindex(); }
-            SessionMsg::Event { event: SessionEvent::Stream { update }, .. } => match update {
-                StreamUpdate::Current { stream } => { self.current(stream.clone(), screen); self.reindex(); }
-                StreamUpdate::End { id } => { self.live.remove(id); self.reindex(); }
-                StreamUpdate::Append { id, offset, text } => {
-                    let live = self.live.get_mut(id).ok_or("missing stream")?;
-                    if live.stream.text.len() != *offset { return Err("stream offset gap".into()); }
-                    live.append(text, screen);
-                    self.work.appended_bytes += text.len();
-                    if let Some(&index) = self.live_positions.get(id) {
-                        let new = if self.rows.total() == self.rows.prefix(index + 1) { live.last_nonblank } else { live.lines.len() };
-                        self.work.index_steps += self.rows.change(index, self.lengths[index], new);
-                        self.lengths[index] = new;
-                    }
-                }
-            },
-            _ => {}
-        }
-        Ok(())
     }
     /// Apply a complete shared-client document transaction to derived render
     /// caches. Protocol cursors and recovery remain owned by the shared replica.
@@ -431,7 +407,10 @@ mod tests {
                 let mut baseline_visits = 0;
                 let mut baseline_output = String::new();
                 for text in ["one ", "two ", "界🙂", "\n", "final"] {
-                    retained.receive(&SessionMsg::Event { seq: 1, event: SessionEvent::Stream { update: StreamUpdate::Append { id: "msg9999.body".into(), offset, text: text.into() } } }, &screen).unwrap();
+                    retained.observed(&misa_client::document::Update::Changed {
+                        member: "conversation".into(),
+                        applied: std::sync::Arc::new(misa_protocol::observation::Applied::Changed(std::collections::BTreeMap::from([("conversation".into(), misa_protocol::observation::MemberChange::Document { tree: vec![], live: vec![StreamUpdate::Append { id: "msg9999.body".into(), offset, text: text.into() }], reset_live: false })]))),
+                    }, &screen).unwrap();
                     offset += text.len();
                     let rendered = retained.draw(&screen);
                     assert!(rendered.iter().any(|line| line.node.as_deref() == Some("msg9999.body")));

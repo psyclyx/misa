@@ -14,7 +14,7 @@
 //! [`Mode::Insert`] throughout and never switches; the same state machine serves
 //! both, and a `plain` policy is one line rather than a second implementation.
 
-use misa_proto::wire::Intent;
+use crate::intent::Intent;
 
 /// How a keypress is interpreted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

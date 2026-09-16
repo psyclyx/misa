@@ -156,8 +156,10 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                             },
                         }
                     },
+                    Some(Update::View(crate::Presentation::Attention{id,generation})) => {screen.dialogs.focus_request(id,generation);enqueue(&commands,Request::RefreshRequests,screen);},
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Request { id, generation, model }))) => screen.dialogs.update(id, generation, model),
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Report(report)))) => screen.dialogs.report(report),
+                    Some(Update::View(crate::Presentation::Reply(SessionReply::DaemonForm{daemon,scope,form,drafts}))) => screen.dialogs.daemon_form(daemon,scope,form,drafts),
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Form(form)))) => screen.dialogs.form(form),
                     Some(Update::View(crate::Presentation::TurnOutput(_))) => {},
                     Some(Update::View(crate::Presentation::Declaration{catalog,location})) => {
@@ -165,7 +167,6 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                     }
                     Some(Update::View(crate::Presentation::Candidates { source, items, truncated })) => screen.candidates(&source, items, truncated),
                     Some(Update::View(crate::Presentation::Snapshot(next))) => retained = crate::retained::Retained::new(next, screen),
-                    Some(Update::View(crate::Presentation::Message(message))) => retained.receive(&message, screen)?,
                     Some(Update::View(crate::Presentation::Document(update))) => {
                         match &update {
                             misa_client::document::Update::Unavailable(fault) => screen.notice = Some(fault.message.clone()),
@@ -245,8 +246,8 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                     screen.notice = Some("Wait for the attachment upload before sending".into()); continue;
                 }
                 if key.code == event::KeyCode::Enter && !screen.dialogs.focused() && screen.editor.text().is_empty() && !pending.is_empty() && crate::panel_of(&view).is_none() && !key.modifiers.contains(event::KeyModifiers::SHIFT) {
-                    if key.modifiers.contains(event::KeyModifiers::ALT) { KeyOut::Intent(misa_proto::Intent::Interrupt { text: String::new(), attachments: vec![] }) }
-                    else { KeyOut::Intent(misa_proto::Intent::Prompt { text: String::new(), attachments: vec![] }) }
+                    if key.modifiers.contains(event::KeyModifiers::ALT) { KeyOut::Intent(misa_kit::intent::Intent::Interrupt { text: String::new(), attachments: vec![] }) }
+                    else { KeyOut::Intent(misa_kit::intent::Intent::Prompt { text: String::new(), attachments: vec![] }) }
                 } else {
                 let Some(key) = crate::translate(key.code, key.modifiers) else { continue; };
                 screen.dialogs.key(&key)
@@ -258,25 +259,26 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
             _ => continue,
         };
         match out {
+            KeyOut::DaemonInvoke{daemon,scope,command,input}=>{enqueue(&commands,Request::DaemonInvoke{daemon,scope,command,input},screen);},
             KeyOut::Invoke { command, input } => { enqueue(&commands, Request::Invoke { command, input }, screen); },
             KeyOut::Local => {},
             KeyOut::Quit => return Ok(()),
             KeyOut::Intent(mut intent) => {
-                if matches!(&intent,misa_proto::Intent::Command{name,..} if name=="actions") {
+                if matches!(&intent,misa_kit::intent::Intent::Command{name,..} if name=="actions") {
                     let actions=offered_actions(&view,&contributions);
                     let mut picker=crate::Picker::new("Document actions",crate::Accept::Run);
                     picker.set_items(actions.iter().map(|(id,(_,label,origin))|misa_proto::view::Choice{value:format!("/action {id}"),label:label.clone(),detail:Some(origin.clone())}).collect(),false);
                     screen.editor.set_text(":");screen.picker=Some(picker);continue;
                 }
-                if let misa_proto::Intent::Command{name,args}=&intent && name=="action" {
+                if let misa_kit::intent::Intent::Command{name,args}=&intent && name=="action" {
                     let actions=offered_actions(&view,&contributions);
                     let id=args.get("action").and_then(misa_value::Value::as_str).unwrap_or("");
                     let Some((node,_,_))=actions.get(id) else {screen.notice=Some("Action is no longer offered by a visible document".into());continue;};
-                    intent=misa_proto::Intent::Action{node:node.clone(),action:id.into(),args:misa_value::Value::Null,fields:vec![]};
+                    intent=misa_kit::intent::Intent::Action{node:node.clone(),action:id.into(),args:misa_value::Value::Null,fields:vec![]};
                 }
-                if matches!(&intent, misa_proto::Intent::Command { name, .. } if name == "operations") { screen.dialogs.open(); enqueue(&commands, Request::RefreshRequests, screen); continue; }
+                if matches!(&intent, misa_kit::intent::Intent::Command { name, .. } if name == "operations") { screen.dialogs.open(); enqueue(&commands, Request::RefreshRequests, screen); continue; }
                 let draft = match &mut intent {
-                    misa_proto::Intent::Prompt { text, attachments } | misa_proto::Intent::Interrupt { text, attachments } => { attachments.extend(pending.iter().cloned()); Some(text.clone()) }, _ => None,
+                    misa_kit::intent::Intent::Prompt { text, attachments } | misa_kit::intent::Intent::Interrupt { text, attachments } => { attachments.extend(pending.iter().cloned()); Some(text.clone()) }, _ => None,
                 };
                 if enqueue(&commands, Request::Intent(intent), screen) { if draft.is_some() { pending.clear(); } }
                 else if let Some(text) = draft { screen.editor.set_text(text); }
@@ -335,7 +337,8 @@ async fn requests_loop(session: &mut dyn Session, mut requests: mpsc::Receiver<R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::{Node, Intent};
+    use misa_proto::Node;
+use misa_kit::intent::Intent;
     use misa_proto::view::Choice;
     struct Idle { first: bool }
     #[async_trait::async_trait]
@@ -416,7 +419,8 @@ mod tests {
 #[cfg(test)]
 mod clipboard_tests {
     use super::*;
-    use misa_proto::{Node, Intent};
+    use misa_proto::Node;
+use misa_kit::intent::Intent;
     use misa_proto::view::{BlobRef, Choice};
     use std::sync::atomic::AtomicUsize;
     struct ImageClipboard;
@@ -510,7 +514,8 @@ mod clipboard_tests {
 #[cfg(test)]
 mod save_liveness_test {
     use super::*;
-    use misa_proto::{Intent, Node};
+    use misa_proto::Node;
+use misa_kit::intent::Intent;
     use misa_proto::view::{Action, ActionOn, Choice};
     struct Saving { first: bool, started: Arc<tokio::sync::Notify> }
     #[async_trait::async_trait]
@@ -557,7 +562,7 @@ mod save_liveness_test {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
-    struct SurfaceSession {updates:mpsc::Receiver<crate::Presentation>,received:mpsc::Sender<usize>,frames:Arc<std::sync::atomic::AtomicUsize>,sent:Option<mpsc::Sender<misa_proto::Intent>>}
+    struct SurfaceSession {updates:mpsc::Receiver<crate::Presentation>,received:mpsc::Sender<usize>,frames:Arc<std::sync::atomic::AtomicUsize>,sent:Option<mpsc::Sender<misa_kit::intent::Intent>>}
     #[async_trait::async_trait]
     impl Session for SurfaceSession {
         async fn complete(&mut self,_source:&str,_prefix:&str)->Result<(Vec<misa_proto::view::Choice>,bool),String>{Ok((vec![],false))}
@@ -567,7 +572,7 @@ mod scope_tests {
             Ok(next)
         }
         async fn next(&mut self)->Result<Option<misa_proto::Node>,String>{std::future::pending().await}
-        async fn send(&mut self,intent:misa_proto::Intent)->Result<(),String>{if let Some(sent)=&self.sent {sent.send(intent).await.unwrap();}Ok(())}
+        async fn send(&mut self,intent:misa_kit::intent::Intent)->Result<(),String>{if let Some(sent)=&self.sent {sent.send(intent).await.unwrap();}Ok(())}
     }
     struct Writer{frames:Arc<std::sync::atomic::AtomicUsize>,changed:tokio::sync::watch::Sender<usize>}
     impl Write for Writer{
@@ -640,7 +645,7 @@ mod scope_tests {
             keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Enter,event::KeyModifiers::NONE)))).await.unwrap();
             painted(&mut frames,before).await;
             keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Enter,event::KeyModifiers::NONE)))).await.unwrap();
-            assert!(matches!(intents.recv().await.unwrap(),misa_proto::Intent::Action{node,action,..} if node=="pet" && action=="pet.feed"));
+            assert!(matches!(intents.recv().await.unwrap(),misa_kit::intent::Intent::Action{node,action,..} if node=="pet" && action=="pet.feed"));
             keys.send(Ok(Event::Key(event::KeyEvent::new(event::KeyCode::Char('q'),event::KeyModifiers::CONTROL)))).await.unwrap();
         };
         tokio::time::timeout(Duration::from_secs(3),async {let (result,())=tokio::join!(drive(&mut session,&mut screen,events,&mut writer),script);result.unwrap();}).await.expect("optional document action was not usable");

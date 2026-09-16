@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 pub struct Dialogs {
     requests: BTreeMap<String, (Model, String)>,
     visible: Option<String>,
+    attention: Option<(String,i64)>,
     form: Option<(
         misa_client::form::Form,
         BTreeMap<String, String>,
@@ -15,11 +16,27 @@ pub struct Dialogs {
         Option<String>,
     )>,
     report: Option<Node>,
+    form_owner:Option<(String,misa_proto::observation::Scope)>,
     generations: BTreeMap<String, i64>,
     request_forms: BTreeMap<String, (BTreeMap<String, String>, usize, Option<String>)>,
 }
 impl Dialogs {
+    pub fn focus_request(&mut self,id:String,generation:i64) {
+        self.form=None; self.report=None;
+        self.attention=Some((id,generation));
+        self.focus_attention();
+    }
+    fn focus_attention(&mut self) {
+        if let Some((id,generation))=&self.attention {
+            if let Some((model,_))=self.requests.get(id) {
+                if model.generation==*generation {self.visible=Some(id.clone());}
+                self.attention=None;
+            }
+        }
+    }
+    pub fn daemon_form(&mut self,daemon:String,scope:misa_proto::observation::Scope,form:misa_client::form::Form,drafts:BTreeMap<String,String>) {self.form(form);if let Some((_,values,_,_))=&mut self.form{*values=drafts;}self.form_owner=Some((daemon,scope));}
     pub fn form(&mut self, form: misa_client::form::Form) {
+        self.form_owner=None;
         self.visible = None;
         self.report = None;
         self.form = Some((form, BTreeMap::new(), 0, None));
@@ -67,6 +84,7 @@ impl Dialogs {
                 }
             }
         }
+        self.focus_attention();
     }
     pub fn report(&mut self, report: Node) {
         self.report = Some(report);
@@ -121,7 +139,7 @@ impl Dialogs {
                 Key::Submit => match form.prepare(drafts) {
                     Ok((command, input)) => {
                         self.form = None;
-                        return Some(KeyOut::Invoke { command, input });
+                        return Some(match self.form_owner.take(){Some((daemon,scope))=>KeyOut::DaemonInvoke{daemon,scope,command,input},None=>KeyOut::Invoke{command,input}});
                     }
                     Err(fault) => *error = Some(fault.message),
                 },
@@ -594,5 +612,9 @@ mod action_form_tests {
         assert_eq!(input.get("count"), Some(&Value::Int(3)));
         assert_eq!(input.get("name"), Some(&Value::str("Misa")));
         assert!(!dialogs.focused());
+        let scope=interface.scope.clone();
+        dialogs.daemon_form("peer-a".into(),scope.clone(),misa_client::form::Form::command(&interface,"change").unwrap(),BTreeMap::from([("count".into(),"7".into()),("name".into(),"other".into())]));
+        let Some(KeyOut::DaemonInvoke{daemon,scope:submitted,input,..})=dialogs.key(&Key::Submit) else{panic!("qualified daemon form");};
+        assert_eq!(daemon,"peer-a");assert_eq!(submitted,scope);assert_eq!(input.get("count"),Some(&Value::Int(7)));
     }
 }

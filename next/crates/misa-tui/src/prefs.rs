@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::picker::Frecency;
+use misa_kit::picker::Frecency;
 
 /// A frontend supplies where its memory lives: a file, browser storage, or app data.
 /// The kit neither chooses a path nor performs filesystem or environment access.
@@ -51,6 +51,7 @@ pub trait Storage {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    pub components: misa_render::components::Settings,
     /// The theme, by the name a person would say: `dark`, `plain`. A name rather than a
     /// frontend's type, because this crate is below every frontend and a pixel frontend's
     /// theme is not a terminal's.

@@ -1,7 +1,7 @@
 //! Pipeline mode, with injected input, output and session for deterministic tests.
 use crate::Session;
 use misa_kit::intent::{Parsed, parse};
-use misa_proto::wire::Intent;
+use misa_kit::intent::Intent;
 use std::io::Write;
 
 pub fn interactive(force_print: bool, stdin_tty: bool, stdout_tty: bool) -> bool {

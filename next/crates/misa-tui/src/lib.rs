@@ -30,6 +30,7 @@ mod retained;
 mod chrome;
 pub mod clipboard;
 pub mod storage;
+pub mod prefs;
 pub mod save;
 
 #[cfg(test)]
@@ -38,12 +39,13 @@ thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cel
 use std::path::PathBuf;
 
 use misa_kit::picker::{Accept, Effect as PickerEffect, Picker};
-use misa_kit::prefs::Prefs;
-use misa_kit::{editor as ed, intent as line, select};
+use crate::prefs::Prefs;
+use misa_kit::{editor as ed, intent as line};
+use misa_render::select;
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
 use misa_kit::intent::Command;
 use misa_proto::preparation::SourceKind;
-use misa_proto::wire::Intent;
+use misa_kit::intent::Intent;
 use misa_kit::intent::Source;
 use misa_render::{Line, Theme};
 
@@ -133,6 +135,7 @@ pub struct PanelInput {
 /// What a keypress caused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOut {
+    DaemonInvoke { daemon:String,scope:misa_proto::observation::Scope,command:String,input:misa_value::Value },
     Invoke { command: String, input: misa_value::Value },
     /// Choose a local destination, then request the attachment the session offered.
     Save(save::Request),
@@ -1173,7 +1176,7 @@ pub trait Session: Send {
     async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
         Some(match request {
             SessionRequest::RefreshRequests => SessionReply::Notice("This session has no input request catalog".into()),
-            SessionRequest::Invoke { .. } => SessionReply::Notice("This session does not support installed invocations".into()),
+            SessionRequest::DaemonInvoke { .. } | SessionRequest::Invoke { .. } => SessionReply::Notice("This session does not support installed invocations".into()),
             SessionRequest::Intent(intent) => {
                 let draft = match &intent { Intent::Prompt { text, attachments } | Intent::Interrupt { text, attachments } => Some((text.clone(), attachments.clone())), _ => None };
                 SessionReply::Sent { draft, result: self.send(intent).await }
@@ -1206,6 +1209,7 @@ pub trait Session: Send {
 pub struct Catalog { pub commands: Vec<Command>, pub sources: Vec<Source> }
 
 pub enum Presentation {
+    Attention { id: String, generation: i64 },
     Documents(Vec<(String,misa_client::document::Update)>),
     Activate(String),
     Forget(String),
@@ -1215,10 +1219,10 @@ pub enum Presentation {
     Declaration { catalog: Catalog, location: String },
     Candidates { source: String, items: Vec<Choice>, truncated: bool },
     Snapshot(Node),
-    Message(misa_proto::SessionMsg),
     Reply(SessionReply),
 }
 pub enum SessionRequest {
+    DaemonInvoke { daemon:String,scope:misa_proto::observation::Scope,command:String,input:misa_value::Value },
     RefreshRequests,
     Invoke { command: String, input: misa_value::Value },
     Intent(Intent),
@@ -1227,6 +1231,7 @@ pub enum SessionRequest {
     Save { node: String, destination: String },
 }
 pub enum SessionReply {
+    DaemonForm { daemon:String,scope:misa_proto::observation::Scope,form:misa_client::form::Form,drafts:std::collections::BTreeMap<String,String> },
     Form(misa_client::form::Form),
     Request { id: String, generation: i64, model: Option<misa_client::request::Model> },
     Report(Node),

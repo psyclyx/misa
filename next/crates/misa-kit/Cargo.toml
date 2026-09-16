@@ -11,6 +11,3 @@ serde.workspace = true
 serde_json.workspace = true
 misa-proto.workspace = true
 misa-value.workspace = true
-# A selection moves over what was *rendered*, so the kit needs the renderer's output
-# type. Both are client-side crates, so this stays inside the client layer.
-misa-render.workspace = true
