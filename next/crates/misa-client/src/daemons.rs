@@ -291,9 +291,9 @@ impl Daemons {
         #[cfg(not(unix))]
         let local = false;
         if let Some(code) = code.filter(|_| !local) {
-            // Admission's remote pairing exchange is cut over separately from
+            // Admission is a separate exchange from
             // scoped application traffic; no attached session is opened here.
-            misa_transport::iroh::Client::pair(
+            misa_transport::pairing::pair(
                 &self.endpoint,
                 address.clone(),
                 &code,

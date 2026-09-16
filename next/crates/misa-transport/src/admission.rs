@@ -367,22 +367,23 @@ pub struct Admission {
     roster: Roster,
     paired: Paired,
     invitation: std::sync::Mutex<Option<Invitation>>,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl Admission {
     /// Admit anybody: what a test wants, and what `--open` means.
     pub fn open() -> Admission {
-        Admission { roster: Roster::open(), paired: Paired::in_memory(), invitation: std::sync::Mutex::new(None) }
+        Admission { roster: Roster::open(), paired: Paired::in_memory(), invitation: std::sync::Mutex::new(None), changed: tokio::sync::watch::channel(0).0 }
     }
 
     /// Admit the peers named, and anybody who pairs.
     pub fn listed(peers: impl IntoIterator<Item = String>) -> Admission {
-        Admission { roster: Roster::listed(peers), paired: Paired::in_memory(), invitation: std::sync::Mutex::new(None) }
+        Admission { roster: Roster::listed(peers), paired: Paired::in_memory(), invitation: std::sync::Mutex::new(None), changed: tokio::sync::watch::channel(0).0 }
     }
 
     /// Admit anybody whose key has been approved, and the names a composition added.
     pub fn paired(paired: Paired) -> Admission {
-        Admission { roster: Roster::listed(std::iter::empty::<String>()), paired, invitation: std::sync::Mutex::new(None) }
+        Admission { roster: Roster::listed(std::iter::empty::<String>()), paired, invitation: std::sync::Mutex::new(None), changed: tokio::sync::watch::channel(0).0 }
     }
 
     /// Admit this peer as well, whether or not it ever pairs.
@@ -394,6 +395,13 @@ impl Admission {
     /// The decision, and the only one this type makes.
     pub fn admits(&self, peer: &str) -> bool {
         self.roster.admits(peer) || self.paired.admits(peer)
+    }
+
+    /// Only the private same-user socket may call this path.
+    pub(crate) fn admit_local(&self, peer: &str, now: i64) -> Result<(), String> {
+        self.paired.add(peer, "local client", now)?;
+        self.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+        Ok(())
     }
 
     /// Whether a peer that is not admitted may still ask to be.
@@ -436,6 +444,7 @@ impl Admission {
             return Err("that code is not the one this daemon is showing".to_string());
         }
         self.paired.add(peer, label, now)?;
+        self.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
         // Spent, whether or not it is used again: one code is one client.
         if let Ok(mut open) = self.invitation.lock() {
             *open = None;
@@ -445,8 +454,13 @@ impl Admission {
 
     /// Forget a key, so that it has to pair again.
     pub fn revoke(&self, peer: &str) -> Result<bool, String> {
-        self.paired.revoke(peer)
+        let removed = self.paired.revoke(peer)?;
+        if removed { self.changed.send_modify(|revision| *revision = revision.wrapping_add(1)); }
+        Ok(removed)
     }
+
+    /// Wake active connections to recheck admission after pairing or revocation.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> { self.changed.subscribe() }
 
     /// Every key that may attach without a code, in order.
     pub fn peers(&self) -> Vec<Peer> {

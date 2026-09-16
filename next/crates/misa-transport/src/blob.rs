@@ -72,8 +72,25 @@ impl ProtocolHandler for Handler {
         }
         debug!(peer = %peer, "a peer opened the blob connection");
         let (send, recv) = connection.accept_bi().await?;
-        if let Err(error) = converse(self.blobs.clone(), send, recv).await {
-            warn!(peer = %peer, error = %error, "a blob connection ended badly");
+        let peer_id = peer.to_string();
+        let mut changed = self.admission.watch();
+        let conversation = converse(self.blobs.clone(), self.admission.clone(), peer_id.clone(), send, recv);
+        tokio::pin!(conversation);
+        loop {
+            if !self.admission.admits(&peer_id) {
+                connection.close(0u32.into(), b"admission revoked");
+                return Ok(());
+            }
+            tokio::select! {
+                result = &mut conversation => {
+                    if let Err(error) = result {
+                        warn!(peer = %peer, error = %error, "a blob connection ended badly");
+                        connection.close(0u32.into(), b"blob request refused");
+                    }
+                    break;
+                }
+                _ = changed.changed() => {}
+            }
         }
         connection.closed().await;
         Ok(())
@@ -81,13 +98,14 @@ impl ProtocolHandler for Handler {
 }
 
 /// Answer requests until the client stops asking.
-async fn converse(blobs: Arc<dyn BlobStore>, mut send: SendStream, mut recv: RecvStream) -> Result<(), String> {
+async fn converse(blobs: Arc<dyn BlobStore>, admission: Arc<Admission>, peer: String, mut send: SendStream, mut recv: RecvStream) -> Result<(), String> {
     let mut decoder = Decoder::with_limit(MAX_BLOB_FRAME);
     let mut buffer = vec![0u8; READ_CHUNK];
     loop {
         let Some(payload) = read_frame(&mut recv, &mut decoder, &mut buffer).await? else {
             return Ok(());
         };
+        if !admission.admits(&peer) { return Err("admission revoked".into()); }
         let reply = match decode::<BlobMsg>(&payload) {
             Ok(message) => match message.acceptable() {
                 Err(fault) => BlobReply::Refused { fault },
@@ -274,12 +292,16 @@ impl Store {
     /// One request, over the connection this store keeps, reconnecting once if it has gone.
     async fn ask(&self, message: BlobMsg) -> Result<BlobReply, String> {
         let mut guard = self.connection.lock().await;
-        if guard.is_none() {
-            *guard = Some(Client::connect(&self.endpoint, self.address.clone()).await?);
-        }
-        let answer = guard.as_mut().expect("connected above").ask(&message).await;
+        // Keep an in-flight stream out of the reusable slot. Cancellation can
+        // interrupt either framing direction; dropping the request must drop
+        // that stream instead of handing a partial reply to the next caller.
+        let mut connection = match guard.take() {
+            Some(connection) => connection,
+            None => Client::connect(&self.endpoint, self.address.clone()).await?,
+        };
+        let answer = connection.ask(&message).await;
         match answer {
-            Ok(reply) => Ok(reply),
+            Ok(reply) => { *guard = Some(connection); Ok(reply) },
             Err(first) => {
                 // A connection that has gone is not a store that has no bytes, and reconnecting
                 // once is what tells the two apart.
@@ -288,7 +310,7 @@ impl Store {
                     .await
                     .map_err(|err| format!("{first}; reconnecting: {err}"))?;
                 let answer = fresh.ask(&message).await;
-                *guard = Some(fresh);
+                if answer.is_ok() { *guard = Some(fresh); }
                 answer
             }
         }
@@ -338,6 +360,51 @@ mod tests {
     use std::time::Duration;
 
     const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+
+    #[derive(Debug)]
+    struct PartialReply {
+        attempts: Arc<std::sync::atomic::AtomicUsize>,
+        partial: Arc<tokio::sync::Notify>,
+    }
+    impl ProtocolHandler for PartialReply {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            let (mut send, mut recv) = connection.accept_bi().await?;
+            let mut decoder = Decoder::with_limit(MAX_BLOB_FRAME);
+            let mut buffer = vec![0; 1024];
+            let payload = read_frame(&mut recv, &mut decoder, &mut buffer).await.unwrap().unwrap();
+            let BlobMsg::Get { hash } = decode(&payload).unwrap() else { panic!("expected fetch") };
+            let reply = encode_within(&BlobReply::Missing { hash }, MAX_BLOB_FRAME).unwrap();
+            if self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                send.write_all(&reply[..reply.len() - 1]).await.unwrap();
+                self.partial.notify_one();
+                connection.closed().await;
+            } else {
+                send.write_all(&reply).await.unwrap();
+                connection.closed().await;
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_partial_reply_discards_the_stream_before_the_next_fetch() {
+        let server = crate::iroh::bind(None, false).await.unwrap();
+        let client = crate::iroh::bind(None, false).await.unwrap();
+        let partial = Arc::new(tokio::sync::Notify::new());
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let router = iroh::protocol::Router::builder(server.clone()).accept(ALPN_BLOB, PartialReply { attempts: attempts.clone(), partial: partial.clone() }).spawn();
+        let store = Store::new(client.clone(), server.addr());
+        let first_store = store.clone();
+        let first = tokio::spawn(async move { first_store.get(&"0".repeat(64)).await });
+        within("partial response", partial.notified()).await;
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert!(within("fresh fetch", store.get(&"1".repeat(64))).await.unwrap().is_none());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        drop(store);
+        client.close().await;
+        router.shutdown().await.unwrap();
+    }
 
     /// A bound on every await in these tests.
     ///

@@ -314,6 +314,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // store the kernel writes, because a session's images have to be reachable from a client
     // and not only from the process that produced them.
     let blobs = kernel.blobs().clone();
+    let archive = misa_daemon::archive::Store::new(kernel.store().clone());
+    kernel=kernel.with_store(archive.clone());
     let store = kernel.store().clone();
     let kernel: Arc<dyn Kernel> = Arc::new(kernel);
 
@@ -342,8 +344,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let identity = options.data_dir.as_ref().map(|dir| misa_transport::identity::load(&dir.join("daemon.identity"))).transpose()?;
     let endpoint = misa_transport::iroh::bind(identity, options.relay).await?;
 
-    let sessions = misa_transport::iroh::Sessions::new();
     let directory = misa_daemon::directory::Directory::fresh().map_err(|fault| fault.message)?;
+    directory.install_archive(archive).await.map_err(|fault|fault.message)?;
     {
         let kernel = kernel.clone();
         let provider = options.provider.clone();
@@ -381,7 +383,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             provider: Some(options.provider.clone()), model: Some(options.model.clone()), parent_attempt: None, recovering: true,
         }).await.map_err(|fault| fault.message)?;
     }
-    for runtime in directory.sessions() { sessions.insert(runtime); }
 
     // The ticket is printed before anything waits on the network. An endpoint's identity
     // exists as soon as it is bound, and a daemon that says nothing until it has found a
@@ -426,7 +427,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         resolver: Arc::new(misa_daemon::directory::Routes(directory.clone())),
         admission: admission.clone(),
     };
-    let router = misa_transport::server::serve_with_scopes(endpoint.clone(), sessions, Arc::new(blobs::Store(blobs)), admission.clone(), scoped);
+    let router = misa_transport::server::serve(endpoint.clone(), Arc::new(blobs::Store(blobs)), admission.clone(), scoped);
     #[cfg(unix)]
     let _local = misa_transport::local::advertise(&node, &options.session, admission.clone())?;
     let online = endpoint.clone();
