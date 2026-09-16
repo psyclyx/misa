@@ -63,27 +63,53 @@ pub struct Reader {
     observation: Option<ObservationId>,
     daemon: Option<String>,
     sequence: Option<u64>,
+    baseline: bool,
 }
 
 /// Capture all local document readers at one owner publication boundary.
-pub fn capture_many<'a>(observation: &Observation, readers: impl IntoIterator<Item=(&'a str,&'a mut Reader)>) -> Vec<(String,Update)> {
-    let daemon=observation.daemon_identity();
-    let mut readers=readers.into_iter().collect::<Vec<_>>();
-    for (_,reader) in &mut readers {
-        if reader.observation != Some(observation.id()) || reader.daemon.as_ref()!=Some(&daemon) {
-            reader.observation=Some(observation.id());reader.daemon=Some(daemon.clone());reader.sequence=None;
+pub fn capture_many<'a>(
+    observation: &Observation,
+    readers: impl IntoIterator<Item = (&'a str, &'a mut Reader)>,
+) -> Vec<(String, Update)> {
+    let daemon = observation.daemon_identity();
+    let mut readers = readers.into_iter().collect::<Vec<_>>();
+    for (_, reader) in &mut readers {
+        if reader.observation != Some(observation.id()) || reader.daemon.as_ref() != Some(&daemon) {
+            reader.observation = Some(observation.id());
+            reader.daemon = Some(daemon.clone());
+            reader.invalidate();
         }
     }
-    observation.inspect(|replica,notice| readers.into_iter().filter_map(|(id,reader)| reader.read(replica,notice).map(|update|(id.to_string(),update))).collect()).unwrap_or_default()
+    observation
+        .inspect(|replica, notice| {
+            readers
+                .into_iter()
+                .filter_map(|(id, reader)| {
+                    reader
+                        .read(replica, notice)
+                        .map(|update| (id.to_string(), update))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl Reader {
+    /// Discard only this surface's delivery baseline after local decode/apply
+    /// failure. The next capture rebuilds from the authoritative replica; no
+    /// observation cursor or server state is changed.
+    pub fn invalidate(&mut self) {
+        self.sequence = None;
+        self.baseline = false;
+    }
+
     pub fn new(member: impl Into<String>) -> Self {
         Self {
             member: member.into(),
             observation: None,
             daemon: None,
             sequence: None,
+            baseline: false,
         }
     }
 
@@ -92,7 +118,7 @@ impl Reader {
         if self.observation != Some(observation.id()) || self.daemon.as_ref() != Some(&daemon) {
             self.observation = Some(observation.id());
             self.daemon = Some(daemon);
-            self.sequence = None;
+            self.invalidate();
         }
         observation
             .inspect(|replica, notice| self.read(replica, notice))
@@ -115,14 +141,16 @@ impl Reader {
             .expect("current replica has its selected members");
         let member = members.get(&self.member)?;
         if let MemberState::Unavailable(fault) = member {
+            self.baseline = false;
             return Some(Update::Unavailable(fault.clone()));
         }
         let MemberState::Document(document) = member else {
+            self.baseline = false;
             return Some(Update::Unavailable(Fault::query(
                 "Selected member is not a document",
             )));
         };
-        if contiguous {
+        if contiguous && self.baseline {
             if let Applied::Changed(changes) = notice.applied.as_ref() {
                 match changes.get(&self.member) {
                     Some(MemberChange::Document { .. }) => {
@@ -136,6 +164,7 @@ impl Reader {
                 }
             }
         }
+        self.baseline = true;
         Some(Update::Reset(document.snapshot()))
     }
 }
@@ -242,6 +271,11 @@ mod tests {
                     Some(Update::Changed { .. })
                 ));
                 assert!(reader.read(&replica, Some(&notice)).is_none());
+                reader.invalidate();
+                let Some(Update::Reset(document)) = reader.read(&replica, Some(&notice)) else {
+                    panic!("local apply failure must rebaseline even without a new publication")
+                };
+                assert_eq!(document.streams[0].text, "é");
             } else if position == 3 {
                 let Some(Update::Reset(document)) = reader.read(&replica, Some(&notice)) else {
                     panic!("missed local delivery requires a coherent reset")
@@ -249,6 +283,42 @@ mod tests {
                 assert_eq!(document.streams[0].text, "ééé");
             }
         }
+        reader.invalidate();
+        replica.mark_disconnected();
+        assert!(matches!(
+            reader.read(
+                &replica,
+                Some(&Notice {
+                    sequence: 5,
+                    applied: Arc::new(Applied::Stale)
+                })
+            ),
+            Some(Update::Status(_))
+        ));
+        let applied = replica
+            .apply(Publication::Update {
+                handle,
+                update: misa_proto::observation::Update {
+                    from: 3,
+                    position: 4,
+                    members: BTreeMap::new(),
+                },
+            })
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                reader.read(
+                    &replica,
+                    Some(&Notice {
+                        sequence: 6,
+                        applied: Arc::new(applied)
+                    })
+                ),
+                Some(Update::Reset(_))
+            ),
+            "a status is not a render baseline"
+        );
         let MemberState::Document(document) = &replica.current().unwrap()["body"] else {
             panic!("document")
         };
