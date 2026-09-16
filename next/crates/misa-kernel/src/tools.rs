@@ -22,7 +22,7 @@
 //! stopped printing — is exactly what makes a build or a test run painful to watch.
 //! So a command's output goes to a file, the call answers after `wait_ms` whether or
 //! not the command is done, a background command is reported when it finishes, and
-//! nothing is killed before its own deadline. See [`Shell`].
+//! the owner can cancel its processes when it closes. See [`Shell`].
 //!
 //! # A failure is a result
 //!
@@ -261,7 +261,7 @@ impl Tool for ListDirectory {
 /// - its output goes to a file from the first byte, so nothing is lost while it runs;
 /// - the call blocks for `wait_ms` and then *answers anyway*, leaving the command running;
 /// - `background: true` says so up front, and the answer comes back immediately;
-/// - the process is killed only at `timeout_ms`, which defaults to ten minutes;
+/// - the process is killed at `timeout_ms` or when its owning session closes;
 /// - when a command is left running the answer carries its pid and the file to tail, and the
 ///   session is told when it finishes, so a turn that ended long ago still learns the outcome.
 ///
@@ -275,6 +275,16 @@ pub struct Shell {
     events: mpsc::UnboundedSender<KernelEvent>,
     /// Names the next run, so two calls never share a log file.
     seq: AtomicU64,
+}
+
+fn kill_group(pid:u32) {
+    #[cfg(unix)]
+    if let Ok(pid)=i32::try_from(pid) {if pid>0 {
+        // The child created its own process group and has not yet been reaped.
+        unsafe {libc::kill(-pid,libc::SIGKILL);}
+    }}
+    #[cfg(not(unix))]
+    let _=pid;
 }
 
 impl Shell {
@@ -297,6 +307,11 @@ impl Tool for Shell {
     }
 
     async fn run(&self, args: &Value) -> Result<String, String> {
+        self.run_in(args,crate::ToolContext{reports:self.events.clone(),cancelled:None}).await
+    }
+
+    async fn run_in(&self,args:&Value,context:crate::ToolContext)->Result<String,String> {
+        if context.cancelled.as_ref().is_some_and(|cancelled|*cancelled.borrow()) {return Err("owning session closed".into())}
         let command = arg_text(args, "command");
         if command.trim().is_empty() {
             return Ok("no `command` was given".into());
@@ -326,8 +341,12 @@ impl Tool for Shell {
         // `sh -lc` explicitly, never a string handed to a shell by a library that meant to exec
         // a program. The previous system put the same translation in its tool and the same note
         // beside it: isolation belongs to the launcher, not the tool.
-        let spawned = tokio::process::Command::new("sh")
-            .arg("-lc")
+        let mut process=tokio::process::Command::new("sh");
+        #[cfg(unix)] {
+            use std::os::unix::process::CommandExt;
+            process.as_std_mut().process_group(0);
+        }
+        let spawned = process.arg("-lc")
             .arg(&command)
             .stdout(std::process::Stdio::from(file))
             .stderr(std::process::Stdio::from(stderr))
@@ -349,13 +368,20 @@ impl Tool for Shell {
         // the watcher reports it instead.
         let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel::<()>();
         let (status_tx, status_rx) = tokio::sync::oneshot::channel::<Outcome>();
-        let events = self.events.clone();
+        let events = context.reports;
+        let mut cancelled=context.cancelled;
         let report = log.clone();
         let named = command.clone();
         tokio::spawn(async move {
             let (waited, killed) = tokio::select! {
                 status = child.wait() => (status, false),
+                _ = async { match cancelled.as_mut() {Some(cancelled)=>{let _=cancelled.wait_for(|value|*value).await;},None=>std::future::pending::<()>().await} } => {
+                    kill_group(pid);
+                    let _ = child.start_kill();
+                    (child.wait().await, true)
+                },
                 _ = tokio::time::sleep(deadline) => {
+                    kill_group(pid);
                     let _ = child.start_kill();
                     (child.wait().await, true)
                 }

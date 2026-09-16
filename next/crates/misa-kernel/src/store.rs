@@ -347,9 +347,9 @@ impl Store for SqliteStore {
         let mut statement = connection
             .prepare(
                 "select e.conversation, e.data, e.seq,
-                        (select count(*) from entries c where c.conversation = e.conversation)
+                        (select count(*) from entries c where c.conversation = e.conversation and c.kind = 'message')
                  from entries e
-                 where e.seq in (select min(seq) from entries group by conversation)",
+                 where e.seq in (select min(seq) from entries where kind = 'message' group by conversation)",
             )
             .map_err(|err| err.to_string())?;
         let rows = statement
@@ -507,7 +507,7 @@ fn title_of(entry: &Value) -> String {
 
 fn summarise(entries: &[Entry]) -> Vec<Conversation> {
     let mut seen: Vec<(String, i64, String)> = Vec::new();
-    for entry in entries {
+    for entry in entries.iter().filter(|entry| entry.kind == "message") {
         match seen.iter_mut().find(|(id, _, _)| id == &entry.conversation) {
             Some((_, count, _)) => *count += 1,
             None => seen.push((
@@ -619,6 +619,21 @@ mod tests {
     #[test]
     fn the_memory_store_keeps_the_same_rules() {
         exercise(&MemoryStore::new());
+    }
+
+    #[test]
+    fn operation_metadata_never_becomes_a_conversation_title_or_message_count() {
+        let stores: Vec<Box<dyn Store>> = vec![Box::new(MemoryStore::new()), Box::new(SqliteStore::open(std::path::Path::new(":memory:")).unwrap())];
+        for store in stores {
+            store.append("only-metadata", "operations.checkpoint", &Value::Null, 0).unwrap();
+            store.append("chat", "operations.checkpoint", &Value::Null, 0).unwrap();
+            store.append("chat", "message", &Value::str("actual prompt"), 1).unwrap();
+            store.append("chat", "operations.checkpoint", &Value::Null, 2).unwrap();
+            let conversations = store.conversations().unwrap();
+            assert_eq!(conversations.len(), 1);
+            assert_eq!(conversations[0].title, "actual prompt");
+            assert_eq!(conversations[0].messages, 1);
+        }
     }
 
     #[test]

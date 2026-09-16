@@ -240,6 +240,7 @@ pub enum KernelEvent {
         text: String,
     },
     Appended { conversation: String, seq: i64, kind: String, data: Value },
+    AppendFailed { conversation: String, kind: String, data: Value, message: String },
     Loaded { conversation: String, entries: Vec<Entry> },
     Conversations { id: String, headers: Value },
     AttemptRecorded { id: String, name: String },
@@ -316,6 +317,7 @@ impl KernelEvent {
             KernelEvent::Models { .. } => "models",
             KernelEvent::ToolFinished { .. } => "tool.finished",
             KernelEvent::Appended { .. } => "log.appended",
+            KernelEvent::AppendFailed { .. } => "log.failed",
             KernelEvent::Loaded { .. } => "log.loaded",
             KernelEvent::Conversations { .. } => "log.listed",
             KernelEvent::AttemptRecorded { .. } => "attempt.recorded",
@@ -348,6 +350,8 @@ pub trait Kernel: Send + Sync {
     fn events(&self) -> Option<mpsc::UnboundedReceiver<KernelEvent>> {
         None
     }
+    /// Release work whose lifetime belongs to this reporting owner.
+    async fn close(&self, _out: &mpsc::UnboundedSender<KernelEvent>) {}
 }
 
 /// One model call, as a provider adapter needs to see it.
@@ -375,6 +379,10 @@ pub struct Answer {
 }
 
 /// A tool, as the kernel runs it.
+pub struct ToolContext {
+    pub reports: mpsc::UnboundedSender<KernelEvent>,
+    pub cancelled: Option<tokio::sync::watch::Receiver<bool>>,
+}
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -382,6 +390,7 @@ pub trait Tool: Send + Sync {
     /// model is told what happened and decides what to do, exactly as the previous system
     /// decided when it settled on one close-out sentence.
     async fn run(&self, args: &Value) -> Result<String, String>;
+    async fn run_in(&self,args:&Value,_context:ToolContext)->Result<String,String> {self.run(args).await}
 }
 
 /// How a daemon is composed.
@@ -452,7 +461,8 @@ impl SearchKind {
 struct ActiveAuthorization {
     id: String,
     owner: mpsc::UnboundedSender<KernelEvent>,
-    cancel: tokio::sync::oneshot::Sender<()>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    done:tokio::sync::oneshot::Receiver<()>,
     token: Arc<()>,
 }
 
@@ -472,6 +482,7 @@ pub struct Daemon {
     /// a service on the internet testable at all.
     flows: Vec<(String, oauth::Flow)>,
     authorizations: Arc<std::sync::Mutex<Vec<ActiveAuthorization>>>,
+    tool_owners: std::sync::Mutex<Vec<(mpsc::UnboundedSender<KernelEvent>,tokio::sync::watch::Sender<bool>)>>,
     /// Where a tool that keeps running after it answers reports what happened.
     events: mpsc::UnboundedSender<KernelEvent>,
     /// The other end of `events`, handed to the session exactly once.
@@ -500,6 +511,7 @@ impl Daemon {
             events,
             listener: std::sync::Mutex::new(Some(listener)),
             authorizations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tool_owners: std::sync::Mutex::new(Vec::new()),
             shell,
         }
     }
@@ -527,6 +539,7 @@ impl Daemon {
             events,
             listener: std::sync::Mutex::new(Some(listener)),
             authorizations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tool_owners: std::sync::Mutex::new(Vec::new()),
             shell,
         })
     }
@@ -552,6 +565,7 @@ impl Daemon {
             events,
             listener: std::sync::Mutex::new(Some(listener)),
             authorizations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tool_owners: std::sync::Mutex::new(Vec::new()),
             shell: composition.shell,
         }
     }
@@ -724,10 +738,11 @@ impl Daemon {
         let named = provider.clone();
         let waiting = provider.clone();
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let (finished,done)=tokio::sync::oneshot::channel();
         let token = Arc::new(());
         let authorizations = self.authorizations.clone();
         authorizations.lock().unwrap().push(ActiveAuthorization {
-            id: id.clone(), owner: out.clone(), cancel, token: token.clone(),
+            id: id.clone(), owner: out.clone(), cancel:Some(cancel),done, token: token.clone(),
         });
         tokio::spawn(async move {
             let login = oauth::login(
@@ -747,7 +762,6 @@ impl Daemon {
                 _ = cancelled => Err("Authorization cancelled".to_string()),
                 result = login => result,
             };
-            authorizations.lock().unwrap().retain(|active| !Arc::ptr_eq(&active.token, &token));
             match result {
                 Ok(token) => {
                     let account = token.account.clone();
@@ -774,6 +788,8 @@ impl Daemon {
                 }
                 Err(message) => report_credential(&credentials, id, false, message, &out),
             }
+            authorizations.lock().unwrap().retain(|active| !Arc::ptr_eq(&active.token, &token));
+            let _=finished.send(());
         });
     }
 
@@ -863,6 +879,19 @@ fn report_credential(
 
 #[async_trait]
 impl Kernel for Daemon {
+    async fn close(&self, out: &mpsc::UnboundedSender<KernelEvent>) {
+        let tools={let mut owners=self.tool_owners.lock().expect("tool owners poisoned");
+            let mut closed=Vec::new();let mut index=0;
+            while index<owners.len() {if owners[index].0.same_channel(out) {let (_,cancel)=owners.remove(index);cancel.send_replace(true);closed.push(cancel);} else {index+=1;}} closed
+        };
+        let flows={let mut active=self.authorizations.lock().expect("authorization state is never poisoned");
+            let mut closed=Vec::new();let mut index=0;
+            while index<active.len() {if active[index].owner.same_channel(out) {let mut flow=active.remove(index);if let Some(cancel)=flow.cancel.take() {let _=cancel.send(());}closed.push(flow.done);} else {index+=1;}}closed
+        };
+        for tool in tools {tool.closed().await;}
+        for flow in flows {let _=flow.await;}
+    }
+
     fn events(&self) -> Option<mpsc::UnboundedReceiver<KernelEvent>> {
         self.listener.lock().expect("the listener is taken once").take()
     }
@@ -913,8 +942,13 @@ impl Kernel for Daemon {
                 }
             }
             Request::ToolRun { id, call_id, name, args } => {
+                let cancelled={
+                    let mut owners=self.tool_owners.lock().expect("tool owners poisoned");
+                    if let Some((_,cancel))=owners.iter().find(|(owner,_)|owner.same_channel(out)) {cancel.subscribe()}
+                    else {let(cancel,receiver)=tokio::sync::watch::channel(false);owners.push((out.clone(),cancel));receiver}
+                };
                 let result = match self.tool(&name) {
-                    Some(tool) => tool.run(&args).await,
+                    Some(tool) => tool.run_in(&args,ToolContext{reports:out.clone(),cancelled:Some(cancelled)}).await,
                     // An unknown tool is a result the model can act on, not a fault that
                     // stops the turn.
                     None => Err(format!("no tool named `{name}`")),
@@ -983,10 +1017,10 @@ impl Kernel for Daemon {
                         let _ = out.send(KernelEvent::Appended { conversation, seq, kind, data });
                     }
                     Ok(Err(message)) => {
-                        let _ = out.send(KernelEvent::Failed { id: conversation, message });
+                        let _ = out.send(KernelEvent::AppendFailed { conversation, kind, data, message });
                     }
                     Err(err) => {
-                        let _ = out.send(KernelEvent::Failed { id: conversation, message: err.to_string() });
+                        let _ = out.send(KernelEvent::AppendFailed { conversation, kind, data, message: err.to_string() });
                     }
                 }
             }
@@ -1091,10 +1125,10 @@ impl Kernel for Daemon {
                 CredentialAction::CancelOAuth { request } => {
                     let mut active = self.authorizations.lock().unwrap();
                     if let Some(index) = active.iter().position(|flow| flow.id == request && flow.owner.same_channel(out)) {
-                        let flow = active.remove(index);
-                        let _ = flow.cancel.send(());
+                        if let Some(cancel)=active[index].cancel.take() {let _=cancel.send(());}
                     } else {
-                        report_credential(&self.credentials, request, false, "Authorization already finished".into(), out);
+                        // A cancellation receipt is not the original flow outcome.
+                        report_credential(&self.credentials, id, false, "Authorization already finished".into(), out);
                     }
                 }
                 CredentialAction::OAuth { provider } => self.authorize(&provider, id, out),
@@ -1230,11 +1264,28 @@ mod tests {
         Daemon::new(ScriptedProvider::always("hi"))
     }
 
+    struct RejectAppend;
+    impl Store for RejectAppend {
+        fn append(&self, _: &str, _: &str, _: &Value, _: i64) -> Result<i64, String> { Err("disk unavailable".into()) }
+        fn load(&self, _: &str, _: i64, _: usize) -> Result<Vec<Entry>, String> { Ok(vec![]) }
+        fn conversations(&self) -> Result<Vec<Conversation>, String> { Ok(vec![]) }
+        fn attempt_start(&self, _: &Attempt) -> Result<String, String> { Err("unused".into()) }
+        fn attempt_settle(&self, _: &str, _: &str, _: i64, _: i64, _: i64, _: i64) -> Result<(), String> { Err("unused".into()) }
+        fn attempts(&self, _: Option<&str>) -> Result<Vec<Attempt>, String> { Ok(vec![]) }
+        fn attempt_live(&self, _: &str) -> Result<bool, String> { Ok(false) }
+    }
     #[tokio::test]
-    async fn a_background_command_answers_at_once_and_reports_on_the_kernels_own_channel() {
-        // The whole path, because the seam is where mistakes hide: the tool call comes back
-        // immediately with a pid and a log, and the end of the command arrives on the one
-        // channel nothing asked for.
+    async fn failed_append_preserves_checkpoint_correlation() {
+        let kernel = kernel().with_store(Arc::new(RejectAppend));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let data = Value::map([("checkpoint", Value::str("owner:17"))]);
+        kernel.execute(Request::Append { conversation: "conversation".into(), kind: "operations.checkpoint".into(), data: data.clone() }, &tx).await;
+        assert!(matches!(rx.recv().await, Some(KernelEvent::AppendFailed { conversation, kind, data: actual, .. })
+            if conversation == "conversation" && kind == "operations.checkpoint" && actual == data));
+    }
+
+    #[tokio::test]
+    async fn a_background_command_answers_at_once_and_reports_to_its_owner() {
         let kernel = kernel();
         let mut reports = kernel.events().expect("a kernel reports on its own schedule");
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1252,7 +1303,7 @@ mod tests {
                 &tx,
             )
             .await;
-        match &drain(&mut rx).await[0] {
+        match &rx.recv().await.expect("immediate tool receipt") {
             KernelEvent::ToolFinished { ok, text, .. } => {
                 assert!(ok, "{text}");
                 assert!(text.contains("started in the background"), "{text}");
@@ -1261,7 +1312,7 @@ mod tests {
             other => panic!("a tool call answered with `{}`", other.kind()),
         }
 
-        let report = tokio::time::timeout(std::time::Duration::from_secs(10), reports.recv())
+        let report = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
             .expect("a report")
             .expect("the channel is open");
@@ -1274,6 +1325,7 @@ mod tests {
             }
             other => panic!("reported `{}`", other.kind()),
         }
+        assert!(reports.try_recv().is_err(),"Private process completion must not enter the shared legacy channel");
     }
 
     #[tokio::test]
@@ -1460,6 +1512,27 @@ mod tests {
             }
             other => panic!("expected a result, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn background_processes_report_and_cancel_only_with_their_owner() {
+        let kernel=kernel();
+        let (first,mut first_events)=mpsc::unbounded_channel();
+        let (second,mut second_events)=mpsc::unbounded_channel();
+        for owner in [&first,&second] {
+            kernel.execute(Request::ToolRun{id:"shell".into(),call_id:"shell".into(),name:"shell".into(),args:Value::map([
+                ("command",Value::str("sleep 30")),("background",Value::Bool(true)),
+            ])},owner).await;
+        }
+        assert!(matches!(first_events.recv().await,Some(KernelEvent::ToolFinished{ok:true,..})));
+        assert!(matches!(second_events.recv().await,Some(KernelEvent::ToolFinished{ok:true,..})));
+        kernel.close(&first).await;
+        let first=tokio::time::timeout(std::time::Duration::from_secs(3),first_events.recv()).await.unwrap();
+        assert!(matches!(first,Some(KernelEvent::ProcessFinished{killed:true,..})));
+        assert!(second_events.try_recv().is_err(),"Closing one owner must not stop or report to another");
+        kernel.close(&second).await;
+        let second=tokio::time::timeout(std::time::Duration::from_secs(3),second_events.recv()).await.unwrap();
+        assert!(matches!(second,Some(KernelEvent::ProcessFinished{killed:true,..})));
     }
 
     #[tokio::test]
