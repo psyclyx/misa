@@ -576,3 +576,29 @@ async fn guest_declared_form_keeps_model_tool_pending_until_owner_response_is_du
     assert_eq!(kernel.entries().iter().filter(|entry|entry.kind=="tool_result").count(),1);
     runtime.shutdown_complete().await;
 }
+
+#[tokio::test]
+async fn restored_owner_checkpoints_never_reach_subscribed_guest_handlers() {
+    let plugin = Arc::new(Plugin::load(&component()).unwrap());
+    let kernel = Arc::new(LocalKernel::new(ScriptedProvider::always("unused")));
+    kernel.store().append("private-restart", "operations.checkpoint", &Value::map([
+        ("version", Value::Int(1)),
+        ("next", Value::Int(7)),
+        ("owners", Value::map([("operation", Value::str("private-principal"))])),
+        ("forms", Value::map([("private-form", Value::map([
+            ("continuation", Value::str("private-continuation-marker")),
+        ]))])),
+    ]), 0).unwrap();
+    kernel.store().append("private-restart", "guest.policy.guest.note", &Value::str("public-marker"), 1).unwrap();
+    let runtime = Runtime::start_with("restart", "Restart", Some("private-restart".into()), kernel,
+        "scripted", "scripted-1", Value::Null, contribution(&plugin));
+    wait_for_guest(&runtime, "loaded").await;
+    let Reading::Data(state) = runtime.read(&Query::new("policy.guest.state")).unwrap() else { panic!() };
+    let loaded = state.get("guest").unwrap().get("loaded").unwrap();
+    let encoded = serde_json::to_string(loaded).unwrap();
+    assert!(encoded.contains("public-marker"));
+    assert!(!encoded.contains("operations.checkpoint"));
+    assert!(!encoded.contains("private-principal"));
+    assert!(!encoded.contains("private-continuation-marker"));
+    runtime.shutdown_complete().await;
+}

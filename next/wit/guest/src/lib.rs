@@ -31,6 +31,7 @@ impl Guest for Shell {
             version: "0.2.0".to_string(),
             // Commands use explicitly installed plugin events.
             events: vec![
+                "kernel/log.loaded".to_string(),
                 "intent/prompt".to_string(),
                 "plugin.policy.guest.refresh".to_string(),
                 "intent/cancel".to_string(),
@@ -90,6 +91,9 @@ impl Guest for Shell {
     /// One event in, patches and effects out — validated by the host *before* anything
     /// commits, which is why an unknown event is a fault and not a `panic!`.
     fn handle(event: Event, db: String) -> Result<(Vec<Patch>, Vec<Effect>), Fault> {
+        if event.kind == "kernel/log.loaded" {
+            return Ok((vec![Patch { path: "guest.loaded".into(), op: Op::Set(event.data.unwrap_or_else(|| "null".into())) }], vec![]));
+        }
         // The host validated the command before dispatching its installed event.
         if event.kind == "plugin.policy.guest.refresh" {
             return Ok((

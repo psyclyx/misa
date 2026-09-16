@@ -1135,7 +1135,9 @@ fn on_loaded(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     }
     let conversation = fields::event_text(event, "conversation");
     let entries = fields::event_value(event, "entries");
-    tx.set(crate::command_operations::ROOT, crate::command_operations::restore(entries.as_list().unwrap_or(&[])))?;
+    let commands = event.get("restored_operations").and_then(|restored| restored.get("commands")).cloned()
+        .unwrap_or_else(|| crate::command_operations::restore(entries.as_list().unwrap_or(&[])));
+    tx.set(crate::command_operations::ROOT, commands)?;
     let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
     let folded = crate::journal::fold(base, entries.as_list().unwrap_or(&[]));
     let messages = folded.get("messages").and_then(Value::as_list).unwrap_or(&[]).to_vec();

@@ -421,6 +421,12 @@ pub(super) fn restore(event: Event) -> (Event, Option<Store>) {
         ("prompts", Value::list(prompts)),
         ("operations", store.summary()),
         ("requests", store.requests()),
+        ("commands", crate::command_operations::restore(entries)),
     ]);
-    (event.with("restored_operations", restored), Some(store))
+    // Checkpoints contain caller-private continuation inputs. Consume them at
+    // the owner boundary, before the event reaches contributed handlers.
+    let public_entries = Value::list(entries.iter().filter(|entry| {
+        entry.get("kind").and_then(Value::as_str) != Some(KIND)
+    }).cloned());
+    (event.with("entries", public_entries).with("restored_operations", restored), Some(store))
 }
