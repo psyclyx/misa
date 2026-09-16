@@ -2,6 +2,7 @@
 //! owns IO and dispatches returned requests; surfaces observe replicas and keep
 //! their own selection/drafts. No method reconnects or retries an invocation.
 pub mod composition;
+pub mod lifecycle;
 pub mod overview;
 pub mod preference_store;
 pub mod operation;

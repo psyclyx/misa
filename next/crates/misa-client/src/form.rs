@@ -15,6 +15,32 @@ pub struct Form {
     command: Command,
 }
 impl Form {
+    pub fn command(interface: &Interface, id: &str) -> Result<Self, Fault> {
+        let command = interface
+            .commands
+            .get(id)
+            .ok_or_else(|| Fault::query("Unknown command"))?
+            .clone();
+        let Schema::Record { fields, .. } = &command.input else {
+            return Err(Fault::unsupported("Command form requires record input"));
+        };
+        let binding = ActionBinding {
+            command: id.into(),
+            bound: BTreeMap::new(),
+            inputs: fields.keys().map(|id| (id.clone(), id.clone())).collect(),
+        };
+        binding.validate_for(&command)?;
+        Ok(Self {
+            title: id.into(),
+            fields: fields
+                .iter()
+                .map(|(id, field)| (id.clone(), field.clone()))
+                .collect(),
+            binding,
+            command,
+        })
+    }
+
     pub fn action(interface: &Interface, id: &str) -> Result<Self, Fault> {
         let binding = interface
             .actions
