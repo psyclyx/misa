@@ -418,8 +418,8 @@ impl Contribution {
                 tx.set("session.plugin_write", Value::Null)?;
                 crate::command_operations::settle(tx, event.get("data").unwrap(), "failed")?;
                 let message = event.get("message").and_then(Value::as_str).unwrap_or("Plugin state could not be recorded");
-                tx.fx(Effect::new("wire.event").with("event", crate::wire::render(&misa_proto::SessionEvent::Notice {
-                    level: misa_proto::wire::Level::Error, text: message.into(),
+                tx.fx(Effect::new("wire.event").with("event", crate::wire::render(&crate::SessionEvent::Notice {
+                    level: crate::Level::Error, text: message.into(),
                 })));
                 Ok(())
             });

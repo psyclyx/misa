@@ -267,7 +267,7 @@ impl Runtime {
             Ok((Outcome::Completed { value: Value::Null }, None))
         });
         if let Outcome::Rejected { fault } | Outcome::Indeterminate { fault } = outcome {
-            self.notice(misa_proto::wire::Level::Error, fault.message);
+            self.notice(crate::Level::Error, fault.message);
         }
     }
 }

@@ -1,6 +1,7 @@
+use crate::Intent;
 use std::{collections::BTreeMap, sync::Arc};
 
-use misa_proto::{Query, observation::*, sync::StreamUpdate, wire::Intent};
+use misa_proto::{Query, observation::*, sync::StreamUpdate};
 use misa_protocol::observation::{MemberState, Replica};
 use misa_reframe::Event;
 use misa_value::Value;

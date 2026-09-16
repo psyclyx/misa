@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use misa_proto::view::{Action, ActionOn, BlobRef, Field, FieldKind, Kind, Node, Span, State};
-use misa_proto::wire::Level;
+use crate::Level;
 use misa_reframe::{Inputs, Query, Registry, Subscription, read_query};
 use misa_value::Value;
 

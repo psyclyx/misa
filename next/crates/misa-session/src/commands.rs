@@ -1,10 +1,10 @@
 //! Installed command contracts and owner-side handlers. Bindings carry no authority.
 use crate::Runtime;
+use misa_reframe::Event;
 use misa_proto::{
     Fault,
     invocation::{Command, Invocation, Outcome},
     schema::{Field, Literal, Schema},
-    wire::Intent,
 };
 use misa_protocol::invocation::{CallContext, CommandOwner, Execution};
 use misa_value::Value;
@@ -190,10 +190,10 @@ fn text(input: &Value, name: &str) -> String {
         .unwrap_or_default()
         .to_owned()
 }
-fn intent_registration(
+fn transition_registration(
     id: &str,
     input: Schema,
-    prepare: impl Fn(&Value) -> Result<Intent, Fault> + Send + Sync + 'static,
+    prepare: impl Fn(&Value) -> Event + Send + Sync + 'static,
 ) -> CommandRegistration {
     CommandRegistration::new(
         Command {
@@ -201,10 +201,7 @@ fn intent_registration(
             input,
             result: admitted(),
         },
-        move |runtime, _, invocation| match prepare(&invocation.input) {
-            Err(fault) => Outcome::Rejected { fault },
-            Ok(intent) => outcome(runtime.intent(intent)),
-        },
+        move |runtime, _, invocation| outcome(runtime.dispatch(prepare(&invocation.input))),
     )
 }
 pub fn builtins() -> Vec<CommandRegistration> {
@@ -250,7 +247,7 @@ pub fn builtins() -> Vec<CommandRegistration> {
             |runtime, context, invocation| crate::operations::prompt(runtime, context, invocation, false)),
         CommandRegistration::new(Command { preparation: Default::default(), id: "session.interrupt".into(), input: prompt(), result: admitted() },
             |runtime, context, invocation| crate::operations::prompt(runtime, context, invocation, true)),
-        intent_registration(
+        transition_registration(
             "session.cancel",
             record([(
                 "target",
@@ -260,32 +257,21 @@ pub fn builtins() -> Vec<CommandRegistration> {
                 true,
             )]),
             |input| {
-                Ok(Intent::Cancel {
-                    target: input
-                        .get("target")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                })
+                Event::new("intent/cancel").with("target", input.get("target").cloned().unwrap_or(Value::Null))
             },
         ),
-        intent_registration(
+        transition_registration(
             "session.model.select",
             record([("model", Schema::String, false)]),
             |input| {
-                Ok(Intent::Command {
-                    name: "model".into(),
-                    args: Value::str(text(input, "model")),
-                })
+                Event::new("intent/command").with("name", Value::str("model")).with("args", Value::str(text(input, "model")))
             },
         ),
-        intent_registration(
+        transition_registration(
             "session.effort.select",
             record([("effort", Schema::String, false)]),
             |input| {
-                Ok(Intent::Command {
-                    name: "effort".into(),
-                    args: Value::str(text(input, "effort")),
-                })
+                Event::new("intent/command").with("name", Value::str("effort")).with("args", Value::str(text(input, "effort")))
             },
         ),
     ];
@@ -296,9 +282,9 @@ pub fn builtins() -> Vec<CommandRegistration> {
         ("session.attachment.add", "attach", "path", true),
     ] {
         let input = if argument.is_empty() { record([]) } else { record([(argument, Schema::String, !required)]) };
-        registrations.push(intent_registration(id, input, move |input| Ok(Intent::Command {
-            name: name.into(), args: Value::str(text(input, argument)),
-        })));
+        registrations.push(transition_registration(id, input, move |input|
+            Event::new("intent/command").with("name", Value::str(name)).with("args", Value::str(text(input, argument)))
+        ));
     }
     for (id, event) in [
         ("session.models.refresh", "discovery/models.refresh"),

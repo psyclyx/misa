@@ -21,8 +21,8 @@
 //!
 //! Clients invoke installed, schema-checked commands and read or observe coherent
 //! selections of exported queries. Scope incarnations fence owner lifetimes;
-//! trusted caller context gates private input requests. Local Intent adapters
-//! remain domain helpers and are not a transport authority boundary.
+//! trusted caller context gates private input requests. Tests can inject local
+//! domain inputs; network clients use the installed command registry.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -30,7 +30,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use misa_proto::view::Node;
-use misa_proto::wire::{Intent, SessionEvent};
 use misa_proto::{Fault, Query};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Outcome};
 use misa_reframe::fields;
@@ -40,6 +39,12 @@ use tokio::sync::{broadcast, mpsc, watch};
 use misa_kernel::{CredentialAction, Kernel, KernelEvent, Request};
 
 pub use contribution::Contribution;
+#[cfg(test)]
+mod intent;
+#[cfg(test)]
+pub(crate) use intent::Intent;
+mod events;
+pub use events::{Level, SessionEvent};
 
 /// What a composition adds to the loop: handlers, subscriptions, and their state.
 pub mod contribution;
@@ -670,7 +675,7 @@ impl Runtime {
     }
 
     /// Publish an owner diagnostic through ordinary observable domain state.
-    pub fn notice(&self, level: misa_proto::wire::Level, text: impl Into<String>) {
+    pub fn notice(&self, level: crate::Level, text: impl Into<String>) {
         let faults = self.dispatch(Event::new("owner/notice").with("level", Value::str(level.as_str())).with("text", Value::str(text.into())));
         if let Some(fault) = faults.into_iter().next() { self.shutdown_with_fault(fault); }
     }
@@ -679,7 +684,8 @@ impl Runtime {
     ///
     /// Local domain adapter. Network callers enter through the installed command
     /// registry, which checks authority and arguments before choosing a transition.
-    pub fn intent(&self, intent: Intent) -> Vec<Fault> {
+    #[cfg(test)]
+    pub(crate) fn intent(&self, intent: Intent) -> Vec<Fault> {
         let event = match intent {
             Intent::Interrupt { text, attachments } => Event::new("intent/interrupt")
                 .with("prompt", Value::str(text))
@@ -691,19 +697,8 @@ impl Runtime {
             Intent::Prompt { text, attachments } => Event::new("intent/prompt")
                 .with("text", Value::str(text))
                 .with("attachments", encode_blobs(&attachments)),
-            Intent::Cancel { target } => Event::new("intent/cancel").with("target", match target {
-                Some(target) => Value::str(target),
-                None => Value::Null,
-            }),
             Intent::Command { name, args } => {
                 Event::new("intent/command").with("name", Value::str(name)).with("args", args)
-            }
-            // Completion is a request with a reply, not a fact about the session, so
-            // it is answered by `complete` and never dispatched into the loop.
-            Intent::Complete { .. } => {
-                return vec![Fault::unsupported(
-                    "completion is answered as a request, not dispatched as an intent",
-                )];
             }
             Intent::Action { node, action, args, fields: submitted } => Event::new("intent/action")
                 .with("node", Value::str(node))
@@ -1398,6 +1393,7 @@ mod wire {
 }
 
 /// The fields a client submitted with an action, as data.
+#[cfg(test)]
 fn encode_fields(fields: &[misa_proto::view::Field]) -> Value {
     Value::list(
         fields
@@ -1413,6 +1409,7 @@ fn encode_fields(fields: &[misa_proto::view::Field]) -> Value {
 /// the kernel resolves every one of them the same way: a hash it holds becomes bytes, and a
 /// hash it does not becomes a sentence saying so. Nothing here is trusted, because nothing
 /// here is anything but a name.
+#[cfg(test)]
 fn encode_blobs(attachments: &[misa_proto::view::BlobRef]) -> Value {
     Value::list(
         attachments

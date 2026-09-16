@@ -127,7 +127,7 @@ impl Runtime {
             pending.bytes = pending.bytes.saturating_sub(bytes);
             drop(pending);
             for fault in faults {
-                self.notice(misa_proto::wire::Level::Error, fault.message);
+                self.notice(crate::Level::Error, fault.message);
             }
         }
     }
@@ -185,13 +185,13 @@ mod tests {
         );
         let mut observation = observed(&runtime);
         runtime.notice(
-            misa_proto::Level::Warn,
+            crate::Level::Warn,
             "Owner warning visible to scoped clients",
         );
         assert!(observation.poll().is_some());
         assert!(format!("{:?}", runtime.view().unwrap()).contains("Owner warning visible"));
         for _ in 0..70 {
-            runtime.notice(misa_proto::Level::Info, "bounded notice");
+            runtime.notice(crate::Level::Info, "bounded notice");
         }
         assert_eq!(
             runtime

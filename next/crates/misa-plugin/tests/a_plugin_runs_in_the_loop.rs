@@ -21,7 +21,6 @@ use std::sync::Arc;
 use misa_kernel::{LocalKernel, Provider, ScriptedProvider};
 use misa_plugin::{ PLUGIN_PRIORITY, Plugin, PluginFault};
 use misa_reframe::{Effect, Event, Interpreter, Loop, Query, Registry};
-use misa_proto::wire::Intent;
 use misa_session::{Reading, Runtime};
 use misa_value::Value;
 
@@ -321,8 +320,6 @@ async fn an_action_from_a_plugins_tree_reaches_the_plugin() {
     assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation.clone()).await.outcome, Outcome::Rejected { .. }));
     invocation.input = binding.prepare(&std::collections::BTreeMap::new()).unwrap();
     assert!(matches!(dispatcher.dispatch(runtime.as_ref(), invocation).await.outcome, Outcome::Accepted { .. }));
-    // Legacy node action traffic cannot invoke the installed command implicitly.
-    assert!(!runtime.intent(Intent::Action { node: "plugin.policy.guest.main.guest".into(), action: "policy.guest.refresh".into(), args: Value::Null, fields: vec![] }).is_empty());
 
     wait_for_guest(&runtime, "acted").await;
 
@@ -467,8 +464,11 @@ async fn a_session_runs_what_a_plugin_declared() {
 
     let (runtime, kernel) = session(contribution(&plugin));
 
-    let faults = runtime.intent(Intent::Prompt { text: "hello".into(), attachments: vec![] });
-    assert!(faults.is_empty(), "{faults:?}");
+    use misa_protocol::invocation::{CallContext, CommandOwner};
+    let outcome = runtime.execute(&CallContext { principal: "guest-test".into(), connection: 1 }, misa_proto::invocation::Invocation {
+        id: 1, scope: runtime.scope(), command: "session.prompt".into(), input: Value::map([("text", Value::str("hello"))]),
+    }).await;
+    assert!(matches!(outcome, misa_proto::invocation::Outcome::Accepted { .. }), "{outcome:?}");
 
     wait_for_guest(&runtime, "turns").await;
 

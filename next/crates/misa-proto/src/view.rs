@@ -17,7 +17,7 @@
 //!
 //! - **Stable ids.** A node that represents the same thing across two revisions
 //!   carries the same id, so a client can stream an append into it
-//!   ([`wire::SessionEvent::TextDelta`](crate::wire::SessionEvent)) or keep a
+//!   ([`StreamUpdate`](crate::sync::StreamUpdate)) or keep a
 //!   scroll anchor without re-rendering the world.
 //! - **Structure, not strings.** Markdown arrives as [`Kind::List`],
 //!   [`Kind::Code`], [`Kind::Table`], and inline runs. No frontend parses

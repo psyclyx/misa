@@ -1,7 +1,7 @@
-//! Proposed major-version envelopes. The legacy session-attached protocol stays
-//! on its existing version until all consumers cut over together.
+//! Scoped application envelopes. Admission is a separate protocol; connecting
+//! never attaches a client to a session.
 use crate::{
-    ClientInfo, Fault,
+    Fault,
     invocation::{Invocation, Reply},
     observation::{Handle, Publication, Resume, Scope, ScopeId, Selection, Snapshot},
 };
@@ -277,7 +277,7 @@ mod tests {
     }
     #[test]
     fn incompatible_or_misattributed_greetings_are_rejected() {
-        for version in [0, crate::PROTOCOL_VERSION, VERSION + 1] {
+        for version in [0, 2, VERSION + 1] {
             assert!(
                 ClientMessage::Hello {
                     version,
@@ -357,5 +357,18 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+}
+
+/// Who is connecting. Logged, and useful when several clients attach at once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
+impl ClientInfo {
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        ClientInfo { name: name.into(), version: version.into() }
     }
 }

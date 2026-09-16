@@ -222,86 +222,10 @@ pub fn address(node: &mut Node) {
     }
 }
 
-/// The client accumulator. Persistent state is exactly `(version, canonical tree)`;
-/// streams are an ephemeral overlay and are never written into that tree.
-#[derive(Clone, Debug, Default)]
-pub struct ClientView {
-    version: Option<Version>,
-    tree: Option<IndexedTree>,
-    streams: std::collections::BTreeMap<String, Stream>,
-}
-
-impl ClientView {
-    pub fn restore(version: Version, mut tree: Node) -> Result<Self, String> {
-        crate::view::validate(&tree).map_err(|fault| fault.to_string())?;
-        address(&mut tree);
-        crate::view::validate(&tree).map_err(|fault| fault.to_string())?;
-        Ok(Self { version: Some(version), tree: Some(IndexedTree::new(tree)), streams: Default::default() })
-    }
-    pub fn version(&self) -> Option<&Version> { self.version.as_ref() }
-    pub fn canonical(&self) -> Option<Node> { self.tree.as_ref().map(IndexedTree::snapshot) }
-    pub fn persisted(&self) -> Option<(Version, Node)> { Some((self.version.clone()?, self.canonical()?)) }
-    pub fn streams(&self) -> Vec<Stream> { self.streams.values().cloned().collect() }
-    pub fn rendered(&self) -> Option<Node> {
-        let tree = self.tree.as_ref()?;
-        let mut view = tree.snapshot();
-        let mut overlay = Node::section("streams").id("streams");
-        for stream in self.streams.values() {
-            let owner = stream.id.rsplit_once('.').map(|(owner, _)| owner).unwrap_or(&stream.id);
-            if stream.text.is_empty() || tree.contains(owner) { continue; }
-            overlay.children.push(Node::text(&stream.role, [crate::view::Span::plain(&stream.text)])
-                .id(&stream.id).state(crate::view::State::Streaming));
-        }
-        if !overlay.children.is_empty() {
-            if let Some(transcript) = view.children.iter_mut().find(|node| node.id == "transcript") {
-                transcript.children.push(overlay);
-            } else { view.children.push(overlay); }
-        }
-        Some(view)
-    }
-
-    pub fn receive(&mut self, message: &crate::SessionMsg) -> Result<bool, String> {
-        use crate::{SessionEvent, SessionMsg};
-        match message {
-            SessionMsg::View { version, view, .. } => {
-                *self = Self::restore(version.clone(), view.clone())?;
-            }
-            SessionMsg::Changes { changes, .. } => {
-                for change in changes {
-                    if self.version.as_ref() != Some(&change.from) {
-                        self.tree = None; self.version = None;
-                        return Err("view revision gap; a canonical snapshot is required".into());
-                    }
-                    let tree = self.tree.as_mut().ok_or("changes arrived without a canonical view")?;
-                    for op in &change.ops {
-                        if let Err(error) = tree.apply(op) {
-                            self.tree = None; self.version = None;
-                            return Err(error);
-                        }
-                    }
-                    self.version = Some(change.version.clone());
-                }
-            }
-            SessionMsg::Streams { streams } => { self.streams = streams.iter().map(|stream| (stream.id.clone(), stream.clone())).collect(); }
-            SessionMsg::Event { event: SessionEvent::Stream { update }, .. } => match update {
-                StreamUpdate::Current { stream } => { self.streams.insert(stream.id.clone(), stream.clone()); }
-                StreamUpdate::Append { id, offset, text } => {
-                    let stream = self.streams.get_mut(id).ok_or("append arrived without a current stream")?;
-                    if stream.text.len() != *offset { return Err("stream byte offset gap; a current value is required".into()); }
-                    stream.text.push_str(text);
-                }
-                StreamUpdate::End { id } => { self.streams.remove(id); }
-            },
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-}
-
 #[cfg(test)]
 mod receiver_tests {
     use super::*;
-    use crate::{SessionMsg, SessionEvent, SubId};
+    use crate::observation::{Snapshot, Content, Document};
     fn version(rev: u64) -> Version { Version { epoch: "incarnation".into(), rev } }
     fn root() -> Node { Node::section("root").id("root").child(Node::section("a").id("a")) }
     #[test]
@@ -319,27 +243,9 @@ mod receiver_tests {
     #[test]
     fn restore_checks_generated_addresses_as_well_as_explicit_ones() {
         let root = root().child(Node::section("x")).child(Node::section("explicit").id("root.x.0"));
-        assert!(ClientView::restore(version(0), root).is_err());
-    }
-    #[test]
-    fn revision_gap_discards_the_accumulator_and_requires_snapshot() {
-        let mut state = ClientView::restore(version(0), root()).unwrap();
-        let bad = SessionMsg::Changes { id: SubId(1), changes: vec![Change { from: version(1), version: version(2), ops: vec![] }] };
-        assert!(state.receive(&bad).is_err());
-        assert!(state.persisted().is_none());
-        state.receive(&SessionMsg::View { id: SubId(1), version: version(2), view: root() }).unwrap();
-        assert_eq!(state.version(), Some(&version(2)));
-    }
-    #[test]
-    fn utf8_append_offsets_are_bytes_and_never_change_persisted_tree() {
-        let mut state = ClientView::restore(version(0), root()).unwrap();
-        let before = state.persisted();
-        state.receive(&SessionMsg::Streams { streams: vec![Stream { id: "msg.2.text".into(), role: "message.assistant".into(), text: "é".into() }] }).unwrap();
-        let append = |offset| SessionMsg::Event { seq: 1, event: SessionEvent::Stream { update: StreamUpdate::Append { id: "msg.2.text".into(), offset, text: "🙂".into() } } };
-        assert!(state.receive(&append(1)).is_err());
-        state.receive(&append(2)).unwrap();
-        assert_eq!(state.streams()[0].text, "é🙂");
-        assert_eq!(state.persisted(), before);
+        let mut root = root;
+        address(&mut root);
+        assert!(crate::view::validate(&root).is_err());
     }
     #[test]
     fn a_large_transcript_crosses_chunks_and_restores_into_the_client() {
@@ -347,14 +253,15 @@ mod receiver_tests {
         let view = Node::section("session").id("session").child(
             Node::section("transcript").id("transcript").child(
                 Node::text("message.assistant", [crate::view::Span::plain(&body)]).id("msg.1.text")));
-        let message = SessionMsg::View { id: SubId(1), version: version(1), view: view.clone() };
+        let message = Snapshot { position: 1, members: std::collections::BTreeMap::from([("conversation".into(), Content::Document(Document { version: version(1), tree: view.clone(), streams: vec![] }))]) };
         let wire = crate::chunk::encode(&message).unwrap();
         let mut decoder = crate::chunk::Decoder::new();
         for bytes in wire.chunks(4093) { decoder.push(bytes).unwrap(); }
-        let received: SessionMsg = crate::chunk::decode(&decoder.next().unwrap().unwrap()).unwrap();
-        let mut client = ClientView::default();
-        client.receive(&received).unwrap();
-        assert_eq!(client.canonical(), Some(view));
+        let received: Snapshot = crate::chunk::decode(&decoder.next().unwrap().unwrap()).unwrap();
+        assert_eq!(received, message);
+        let Content::Document(document) = &received.members["conversation"] else { panic!("document") };
+        crate::view::validate(&document.tree).unwrap();
+        assert_eq!(IndexedTree::new(document.tree.clone()).snapshot(), view);
     }
     #[test]
     fn canonical_history_cardinality_is_not_a_protocol_limit() {

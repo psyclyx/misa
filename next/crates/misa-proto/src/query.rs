@@ -1,5 +1,6 @@
 //! Installed query contracts, independent of presentation and transport policy.
 use serde::{Deserialize, Serialize};
+use misa_value::Value;
 
 pub const CATALOG: &str = "queries.catalog";
 pub fn catalog_definition() -> Definition {
@@ -153,5 +154,41 @@ mod tests {
         member.encoding = Encoding::Value;
         member.contract = "counter@2".into();
         assert!(definition.validate(&member).is_err());
+    }
+}
+
+/// A declared query: a name and its arguments.
+///
+/// The name is a dotted, lowercase identifier. The arguments are data, so a query
+/// is a value a client can log, compare, and retain, and a session can key a
+/// scope entry by.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Query {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<Value>,
+}
+
+impl Query {
+    pub fn new(id: impl Into<String>) -> Self {
+        Query { id: id.into(), args: Vec::new() }
+    }
+
+    pub fn arg(mut self, value: Value) -> Self {
+        self.args.push(value);
+        self
+    }
+
+    /// The query's canonical form, used as a scope key.
+    ///
+    /// A separator that cannot appear unescaped in a canonical value key keeps a
+    /// query with one argument distinct from a query with two.
+    pub fn key(&self) -> String {
+        let mut out = self.id.clone();
+        for arg in &self.args {
+            out.push('\u{1}');
+            out.push_str(&arg.canonical_key());
+        }
+        out
     }
 }

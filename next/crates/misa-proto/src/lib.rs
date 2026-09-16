@@ -23,11 +23,9 @@
 //! > A session may not decide appearance, and a client may not invent agent
 //! > state.
 //!
-//! The first half is enforced by construction: the vocabulary has nothing to
-//! decide appearance *with*. The second half is enforced by the shape of
-//! [`wire::Intent`]: a client can submit text, resolve a node's own action, run a
-//! named command, or cancel — and nothing else. A client cannot describe an agent
-//! effect, because no message type carries one.
+//! Installed query and command contracts describe what an owner exposes.
+//! [`scoped`] carries finite reads, coherent observations and validated
+//! invocations. A client never publishes owner state or describes a kernel effect.
 //!
 //! # The corollary that matters in practice
 //!
@@ -53,23 +51,18 @@ pub mod scoped;
 pub mod frame;
 pub mod view;
 pub mod sync;
-pub mod wire;
+pub mod fault;
+pub mod ticket;
+#[cfg(test)]
+mod domain_tests;
 
 pub use blob::{BlobMsg, BlobReply, MAX_BLOB_BYTES, MAX_BLOB_FRAME};
 pub use frame::{FrameError, decode, encode};
 pub use view::Node;
-pub use wire::{
-    ClientInfo, ClientMsg, Fault, Intent, Level, Query, SessionEvent, SessionInfo,
-    Pairing, SessionMsg, SubId, Ticket,
-};
-
-/// The version both ends announce. A peer that announces another major version is
-/// refused before it can act, rather than being partially understood.
-pub const PROTOCOL_VERSION: u16 = 2;
-
-/// Client to session: the whole client vocabulary. One bidirectional stream per
-/// connection carries it.
-pub const ALPN_SESSION: &[u8] = b"/misa/session/2";
+pub use fault::Fault;
+pub use query::Query;
+pub use scoped::ClientInfo;
+pub use ticket::{Pairing, Ticket};
 
 /// Bulk content by hash. A view node that carries an image names a blob here
 /// rather than inlining bytes, so a transcript stays small and a client fetches

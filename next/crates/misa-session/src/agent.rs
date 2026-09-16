@@ -42,7 +42,7 @@
 //!    queued, not refused and not an interruption, and it is drained when the turn ends.
 
 use misa_proto::view::{Field, FieldKind, Node, Span};
-use misa_proto::wire::{Level, SessionEvent};
+use crate::{Level, SessionEvent};
 use misa_reframe::fields;
 use misa_reframe::{Effect, Event, Fault, Registry, Tx};
 use misa_value::{Op, Value};

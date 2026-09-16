@@ -132,7 +132,7 @@ mod tests {
         );
         assert!(
             client
-                .connect(address.clone(), misa_proto::ALPN_SESSION)
+                .connect(address.clone(), b"/misa/session/2")
                 .await
                 .is_err(),
             "removed Attach ALPN is still mounted"

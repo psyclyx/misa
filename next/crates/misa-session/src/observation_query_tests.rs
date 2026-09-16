@@ -112,7 +112,7 @@ async fn model_discovery_ignores_superseded_reports_and_accepts_discovered_ids()
     runtime.dispatch(report("models.1", "stale-model"));
     assert!(runtime.state.lock().unwrap().state.db().get("session").unwrap().get("catalogue").is_none());
     runtime.dispatch(report("models.2", "newly-served-model"));
-    assert!(runtime.intent(misa_proto::wire::Intent::Command { name: "model".into(), args: Value::str("newly-served-model") }).is_empty());
+    assert!(runtime.intent(crate::Intent::Command { name: "model".into(), args: Value::str("newly-served-model") }).is_empty());
     assert_eq!(runtime.state.lock().unwrap().state.db().get("session").unwrap().get("model").and_then(Value::as_str), Some("newly-served-model"));
 }
 

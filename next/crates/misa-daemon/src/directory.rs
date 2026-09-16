@@ -829,7 +829,6 @@ pub fn connections_definition() -> misa_proto::query::Definition {
 mod tests {
     use super::*;
     use misa_proto::query::ResultContract;
-    use misa_proto::wire::Intent;
 
     fn runtime(id: &str) -> Arc<Runtime> {
         Runtime::start(
@@ -890,14 +889,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(
-            first
-                .intent(Intent::Prompt {
-                    text: "start".into(),
-                    attachments: vec![]
-                })
-                .is_empty()
-        );
+        assert!(matches!(first.execute(&context(), Invocation {
+            id: 1, scope: first.scope(), command: "session.prompt".into(),
+            input: Value::map([("text", Value::str("start"))]),
+        }).await, misa_proto::invocation::Outcome::Accepted { .. }));
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
             observed.changed().changed(),

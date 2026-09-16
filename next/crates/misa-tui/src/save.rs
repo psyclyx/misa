@@ -128,14 +128,22 @@ mod transport_tests {
             "test",
             misa_value::Value::Null,
         );
-        runtime.intent(misa_proto::wire::Intent::Prompt {
-            text: "file".into(),
-            attachments: vec![stored],
-        });
+        use misa_protocol::invocation::{CallContext, CommandOwner};
+        let outcome = runtime.execute(&CallContext { principal: "save-test".into(), connection: 1 }, misa_proto::invocation::Invocation {
+            id: 1, scope: runtime.scope(), command: "session.prompt".into(),
+            input: misa_value::Value::map([
+                ("text", misa_value::Value::str("file")),
+                ("attachments", misa_value::Value::list([misa_value::Value::map([
+                    ("hash", misa_value::Value::str(&stored.hash)),
+                    ("len", misa_value::Value::Int(stored.len as i64)),
+                    ("media", stored.media.as_deref().map(misa_value::Value::str).unwrap_or(misa_value::Value::Null)),
+                ])])),
+            ]),
+        }).await;
+        assert!(matches!(outcome, misa_proto::invocation::Outcome::Accepted { .. }));
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let directory = misa_daemon::directory::Directory::new("save-daemon").unwrap();
         directory.insert(runtime).unwrap();
-        use misa_protocol::invocation::CommandOwner;
         let admission = std::sync::Arc::new(misa_transport::admission::Admission::open());
         let router = iroh::protocol::Router::builder(endpoint.clone())
             .accept(

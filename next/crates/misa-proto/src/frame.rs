@@ -137,11 +137,11 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{ClientMsg, ClientInfo, Query, SubId};
+    use crate::{scoped::ClientMessage, ClientInfo, observation::Handle};
 
-    fn hello() -> ClientMsg {
-        ClientMsg::Hello {
-            version: crate::PROTOCOL_VERSION,
+    fn hello() -> ClientMessage {
+        ClientMessage::Hello {
+            version: crate::scoped::VERSION,
             client: ClientInfo::new("test", "0.1.0"),
         }
     }
@@ -151,12 +151,12 @@ mod tests {
         let frame = encode(&hello()).unwrap();
         assert!(frame.len() > HEADER_BYTES);
         let payload = &frame[HEADER_BYTES..];
-        assert_eq!(decode::<ClientMsg>(payload).unwrap(), hello());
+        assert_eq!(decode::<ClientMessage>(payload).unwrap(), hello());
     }
 
     #[test]
     fn a_decoder_reassembles_a_message_split_at_every_boundary() {
-        let frame = encode(&ClientMsg::Subscribe { since: None, id: SubId(1), query: Query::new("session.view") }).unwrap();
+        let frame = encode(&ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }).unwrap();
         // Every byte boundary except the last leaves an incomplete frame, and the
         // next push completes it from whatever arrived.
         for split in 0..frame.len() {
@@ -165,7 +165,7 @@ mod tests {
             assert!(decoder.next().is_none(), "a partial frame was reported complete at {split}");
             decoder.push(&frame[split..]).unwrap();
             let payload = decoder.next().expect("a complete frame").unwrap();
-            assert!(matches!(decode::<ClientMsg>(&payload).unwrap(), ClientMsg::Subscribe { .. }));
+            assert!(matches!(decode::<ClientMessage>(&payload).unwrap(), ClientMessage::CancelObservation { .. }));
             assert!(decoder.next().is_none());
             assert!(decoder.is_empty());
         }
@@ -175,16 +175,16 @@ mod tests {
     fn a_decoder_returns_several_frames_from_one_read() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&encode(&hello()).unwrap());
-        bytes.extend_from_slice(&encode(&ClientMsg::Unsubscribe { id: SubId(1) }).unwrap());
-        bytes.extend_from_slice(&encode(&ClientMsg::Unsubscribe { id: SubId(2) }).unwrap());
+        bytes.extend_from_slice(&encode(&ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }).unwrap());
+        bytes.extend_from_slice(&encode(&ClientMessage::CancelObservation { handle: Handle { id: 2, generation: 1 } }).unwrap());
         let mut decoder = Decoder::new();
         decoder.push(&bytes).unwrap();
         let first = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMsg>(&first).unwrap(), ClientMsg::Hello { .. }));
+        assert!(matches!(decode::<ClientMessage>(&first).unwrap(), ClientMessage::Hello { .. }));
         let second = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMsg>(&second).unwrap(), ClientMsg::Unsubscribe { id: SubId(1) }));
+        assert!(matches!(decode::<ClientMessage>(&second).unwrap(), ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }));
         let third = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMsg>(&third).unwrap(), ClientMsg::Unsubscribe { id: SubId(2) }));
+        assert!(matches!(decode::<ClientMessage>(&third).unwrap(), ClientMessage::CancelObservation { handle: Handle { id: 2, generation: 1 } }));
         assert!(decoder.next().is_none());
     }
 
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn an_oversized_message_is_refused_by_the_writer() {
         let payload = "x".repeat(4096);
-        match encode_within(&ClientMsg::Unsubscribe { id: SubId(1) }, 8) {
+        match encode_within(&ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }, 8) {
             Err(FrameError::TooLarge(_, 8)) => {}
             other => panic!("expected a refusal, got {other:?}"),
         }
