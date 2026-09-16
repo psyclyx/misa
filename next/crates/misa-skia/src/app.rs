@@ -4,14 +4,21 @@ use crate::{Layout, Op, Scene};
 use misa_kit::editor::{Editor, Motion};
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
-use misa_proto::wire::{Intent, SessionInfo};
-use misa_render::{Color, Style, Theme};
+use misa_proto::wire::Intent;
+use misa_render::{Style, Theme};
+#[cfg(test)]
+use misa_render::Color;
 use misa_value::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    Appearance(crate::appearance::Choice),
+    InvokeInstalled {
+        command: String,
+        input: Value,
+    },
     Intent(Intent),
     Save {
         node: String,
@@ -112,6 +119,7 @@ pub enum Key {
 }
 
 pub struct App {
+    light: bool,
     #[cfg(test)]
     rendered_nodes: usize,
     tree: IndexedTree,
@@ -119,7 +127,7 @@ pub struct App {
     streams: BTreeMap<String, Node>,
     cache: BTreeMap<String, Arc<Cached>>,
     cache_width: u32,
-    pub info: Option<SessionInfo>,
+    pub commands: Vec<misa_kit::intent::Command>,
     pub notice: String,
     pub hits: Vec<Hit>,
     pub focus: Option<Control>,
@@ -189,7 +197,8 @@ impl App {
             streams: BTreeMap::new(),
             cache: BTreeMap::new(),
             cache_width: 0,
-            info: None,
+            light: false,
+            commands: vec![],
             notice: String::new(),
             hits: vec![],
             focus: None,
@@ -209,6 +218,15 @@ impl App {
         };
         app.set_view(view);
         app
+    }
+    pub fn set_light(&mut self, light: bool) {
+        if self.light != light {
+            self.light = light;
+            self.cache.clear();
+        }
+    }
+    fn colors(&self) -> crate::appearance::Palette {
+        crate::appearance::Palette::new(self.light)
     }
     pub fn report(&mut self, title: String, value: Value) {
         let mut entries = Vec::new();
@@ -800,11 +818,7 @@ impl App {
                 .find(|field| field.id == "prompt")
                 .map(|field| field.value.as_str())
                 .unwrap_or("");
-            let commands = self
-                .info
-                .as_ref()
-                .map(|info| info.commands.as_slice())
-                .unwrap_or(&[]);
+            let commands = self.commands.as_slice();
             let parsed = misa_kit::intent::parse(text, commands);
             let Some(intent) = misa_kit::intent::intent(&parsed) else {
                 self.notice = format!("Cannot submit: {parsed:?}");
@@ -819,7 +833,10 @@ impl App {
                 fields,
             }
         };
-        if action.on == ActionOn::Submit {
+        // Only the composer hands its draft to a pending operation immediately.
+        // Other forms remain locally editable until their owner acknowledges or
+        // removes the request; validation/rejection must not erase the input.
+        if action_id == "composer.submit" && action.on == ActionOn::Submit {
             for ((node, _), edit) in &mut self.drafts {
                 if node == node_id {
                     edit.submit();
@@ -859,19 +876,7 @@ impl App {
             let mut picker =
                 misa_kit::picker::Picker::new("Commands", misa_kit::picker::Accept::Run);
             picker.set_items(
-                self.info
-                    .as_ref()
-                    .map(|info| {
-                        info.commands
-                            .iter()
-                            .map(|command| misa_proto::view::Choice {
-                                value: command.id.clone(),
-                                label: command.label.clone(),
-                                detail: Some(command.description.clone()),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                self.commands.iter().map(|command| misa_proto::view::Choice { value: command.id.clone(), label: command.label.clone(), detail: Some(command.description.clone()) }).collect(),
                 false,
             );
             self.picker = Some(picker);
@@ -1087,6 +1092,7 @@ impl App {
             self.scroll = wanted;
             scene = self.layout(width, height);
         }
+        let colors = self.colors();
         if let Some(report) = &mut self.report {
             self.hits.clear();
             let columns = ((width.saturating_sub(96)) as usize / 9).max(1);
@@ -1114,11 +1120,9 @@ impl App {
                 y: 24.0,
                 width: (width as f32 - 48.0).max(1.0),
                 height: (height as f32 - 48.0).max(1.0),
-                style: color(35, 40, 48),
+                style: colors.surface,
             });
-            scene
-                .ops
-                .push(text(42.0, 40.0, &report.title, color(235, 235, 240)));
+            scene.ops.push(text(42.0, 40.0, &report.title, colors.text));
             for (index, line) in report
                 .lines
                 .iter()
@@ -1126,18 +1130,15 @@ impl App {
                 .take(visible)
                 .enumerate()
             {
-                scene.ops.push(text(
-                    42.0,
-                    78.0 + index as f32 * 24.0,
-                    line,
-                    color(235, 235, 240),
-                ));
+                scene
+                    .ops
+                    .push(text(42.0, 78.0 + index as f32 * 24.0, line, colors.text));
             }
             scene.ops.push(text(
                 42.0,
                 (height as f32 - 52.0).max(0.0),
                 "↑↓ scroll · Escape close",
-                color(180, 180, 190),
+                colors.muted,
             ));
         }
         scene
@@ -1151,7 +1152,11 @@ impl App {
             ops: vec![],
         };
         let root = self.root.clone();
-        let theme = Theme::dark();
+        let theme = if self.light {
+            Theme::light()
+        } else {
+            Theme::dark()
+        };
         let mut y = 20.0 - self.scroll;
         self.present(
             &root,
@@ -1186,11 +1191,11 @@ impl App {
                     y: row.y,
                     width: misa_render::width(&selected) as f32 * 8.4,
                     height: 21.0,
-                    style: color(55, 86, 120),
+                    style: self.colors().selection,
                 });
                 scene
                     .ops
-                    .push(text(x, row.y, &selected, color(230, 232, 236)));
+                    .push(text(x, row.y, &selected, self.colors().text));
             }
         }
         if !self.notice.is_empty() {
@@ -1199,13 +1204,13 @@ impl App {
                 y: height as f32 - 26.0,
                 width: width as f32,
                 height: 26.0,
-                style: color(35, 40, 48),
+                style: self.colors().surface,
             });
             scene.ops.push(text(
                 12.0,
                 height as f32 - 23.0,
                 &self.notice,
-                color(230, 230, 235),
+                self.colors().text,
             ));
         }
         if let Some((_, edit)) = &self.save {
@@ -1219,13 +1224,13 @@ impl App {
                 y,
                 width: w,
                 height: 150.0,
-                style: color(35, 40, 48),
+                style: self.colors().surface,
             });
             scene.ops.push(text(
                 x + 12.0,
                 y + 10.0,
                 "Save attachment · local destination",
-                color(235, 235, 240),
+                self.colors().text,
             ));
             self.box_control(
                 &mut scene,
@@ -1263,13 +1268,13 @@ impl App {
                 y,
                 width: (width as f32 - 60.0).max(80.0),
                 height: 300.0,
-                style: color(35, 40, 48),
+                style: self.colors().surface,
             });
             scene.ops.push(text(
                 42.0,
                 y + 12.0,
                 &format!("Commands · {}", picker.query),
-                color(235, 235, 240),
+                self.colors().text,
             ));
             let matches = picker.matches();
             let start = picker.selected_index().saturating_sub(7);
@@ -1278,7 +1283,7 @@ impl App {
                     42.0,
                     y + 48.0,
                     "No matching commands",
-                    color(180, 180, 190),
+                    self.colors().muted,
                 ));
             }
             for (index, candidate) in matches.iter().enumerate().skip(start).take(8) {
@@ -1296,14 +1301,14 @@ impl App {
                     42.0,
                     y + 48.0 + (index - start) as f32 * 26.0,
                     &label,
-                    color(235, 235, 240),
+                    self.colors().text,
                 ));
             }
             scene.ops.push(text(
                 42.0,
                 y + 270.0,
                 "↑↓ select · Enter insert · Escape close",
-                color(180, 180, 190),
+                self.colors().muted,
             ));
         }
         scene
@@ -1325,9 +1330,9 @@ impl App {
             width: width + 2.0,
             height: height + 2.0,
             style: if focused {
-                color(90, 170, 240)
+                self.colors().accent
             } else {
-                color(66, 74, 86)
+                self.colors().border
             },
         });
         scene.ops.push(Op::Rect {
@@ -1335,14 +1340,14 @@ impl App {
             y,
             width,
             height,
-            style: color(27, 31, 38),
+            style: self.colors().field,
         });
         for (line, text_value) in label.lines().enumerate() {
             scene.ops.push(text(
                 x + 7.0,
                 y + 6.0 + line as f32 * 21.0,
                 text_value,
-                color(230, 232, 236),
+                self.colors().text,
             ));
         }
         if focused && matches!(control, Control::Field { .. } | Control::SavePath) {
@@ -1355,7 +1360,7 @@ impl App {
                     y: y + 6.0 + line as f32 * 21.0,
                     width: 1.5,
                     height: 18.0,
-                    style: color(230, 232, 236),
+                    style: self.colors().text,
                 });
             }
         }
@@ -1522,7 +1527,7 @@ impl App {
                     y: *y,
                     width,
                     height: 10.0,
-                    style: color(45, 52, 61),
+                    style: self.colors().meter,
                 });
                 scene.ops.push(Op::Rect {
                     x,
@@ -1534,7 +1539,7 @@ impl App {
                             0.0
                         },
                     height: 10.0,
-                    style: color(90, 170, 225),
+                    style: self.colors().accent,
                 });
                 *y += 22.0;
             }
@@ -1564,9 +1569,9 @@ impl App {
                         width,
                         height,
                         style: if index == 0 {
-                            color(45, 53, 63)
+                            self.colors().selected_button
                         } else {
-                            color(28, 33, 40)
+                            self.colors().button
                         },
                     });
                     for (column, cell) in cells.into_iter().enumerate() {
@@ -1699,9 +1704,6 @@ fn image_hashes(node: &Node, hashes: &mut BTreeSet<String>) {
         }
     }
 }
-fn color(r: u8, g: u8, b: u8) -> Style {
-    Style::fg(Color::Rgb(r, g, b))
-}
 fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
     Op::Text {
         x,
@@ -1714,6 +1716,22 @@ fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changing_local_theme_preserves_drafts_and_rebuilds_cached_colors() {
+        let mut app = App::new(form("panel.input", FieldKind::Inline));
+        app.frame(640, 480);
+        app.key(Key::Text("private draft".into()));
+        let dark = app.frame(640, 480);
+        app.set_light(true);
+        let light = app.frame(640, 480);
+        assert_eq!(
+            app.field_text("panel.input", "value"),
+            Some("private draft")
+        );
+        assert_ne!(dark.ops, light.ops);
+        app.set_light(false);
+        assert_eq!(dark.ops, app.frame(640, 480).ops);
+    }
     use super::*;
     use misa_proto::view::{Action, Field, Span};
     use misa_value::Value;
@@ -1724,13 +1742,7 @@ mod tests {
             fields[0].id = "prompt".into();
         }
         let mut app = App::new(view);
-        app.info = Some(
-            serde_json::from_value(serde_json::json!({
-                "id":"test", "title":"Test", "created_ms":0,
-                "commands":[{"id":"model","label":"Model"},{"id":"clear","label":"Clear"}]
-            }))
-            .unwrap(),
-        );
+        app.commands = serde_json::from_value(serde_json::json!([{ "id":"model", "label":"Model" }, { "id":"clear", "label":"Clear" }])).unwrap();
         app.key(Key::Commands);
         app.key(Key::Down);
         assert_eq!(
@@ -2381,5 +2393,6 @@ mod tests {
         assert!(
             matches!(&sent[..],[Command::Intent(Intent::Action {fields,..})] if fields[0].value=="draft")
         );
+        assert_eq!(app.field_text("panel.input", "value"), Some("draft"));
     }
 }

@@ -173,7 +173,7 @@ mod tests {
             commands: BTreeMap::from([(
                 "feed".into(),
                 Definition {
-                    id: "feed".into(),
+                    preparation: Default::default(), id: "feed".into(),
                     input: Schema::Record {
                         fields: BTreeMap::from([(
                             "amount".into(),
@@ -225,10 +225,18 @@ mod tests {
         );
         assert!(local.key(Key::Escape).unwrap().is_empty());
         assert!(local.app().is_none());
+        local.form(misa_client::form::Form::action(&interface, "pet.feed").unwrap());
+        assert_eq!(local.app().unwrap().field_text("local.form", "quantity"), Some("3"));
     }
 }
 #[derive(Default)]
 pub struct Local {
+    report: Option<App>,
+    appearance: crate::appearance::Choice,
+    installed_commands: BTreeMap<String, Result<misa_client::form::Form, String>>,
+    choosing_commands: bool,
+    command_form: bool,
+    form_visible: bool,
     managing: Option<String>,
     daemon_form: Option<(String, misa_client::form::Form, App)>,
     form: Option<(String, App)>,
@@ -250,13 +258,95 @@ fn action(id: &str, label: &str, args: Value, on: ActionOn) -> Action {
     }
 }
 impl Local {
+    pub fn report(&mut self, document: Node) {
+        self.deactivate();
+        self.report = Some(App::new(document));
+    }
+    pub fn set_light(&mut self, light: bool) {
+        if let Some(app) = self.app() {
+            app.set_light(light);
+        }
+    }
+    pub fn appearance(&mut self, choice: crate::appearance::Choice) {
+        if self.appearance != choice {
+            self.appearance = choice;
+            if self.choosing_presentations {
+                self.open_presentations();
+            }
+        }
+    }
+    pub fn commands(
+        &mut self,
+        commands: BTreeMap<String, Result<misa_client::form::Form, String>>,
+    ) {
+        self.installed_commands = commands;
+        if self.choosing_commands {
+            self.open_commands();
+        }
+    }
+    pub fn open_commands(&mut self) {
+        self.deactivate();
+        self.choosing_commands = true;
+        let mut root = Node::section("commands")
+            .id("commands")
+            .label("Installed commands · Escape closes · Ctrl+P keeps shortcut completion");
+        for (index, (id, form)) in self.installed_commands.iter().enumerate() {
+            let mut row = Node::section("command")
+                .id(format!("command.{index}"))
+                .label(id);
+            match form {
+                Ok(_) => {
+                    row = row.action(action(
+                        "installed-command",
+                        "Prepare command",
+                        Value::str(id),
+                        ActionOn::Click,
+                    ))
+                }
+                Err(reason) => {
+                    row = row.child(Node::text(
+                        "notice",
+                        [Span::plain(format!(
+                            "Unavailable as a local form: {reason}"
+                        ))],
+                    ))
+                }
+            }
+            root = root.child(row);
+        }
+        if self.installed_commands.is_empty() {
+            root = root.child(Node::text(
+                "notice",
+                [Span::plain(
+                    "Connect to a session to discover its installed commands",
+                )],
+            ));
+        }
+        let mut app = App::new(root);
+        app.scroll(-f32::MAX);
+        self.chooser = Some(app);
+    }
     pub fn notice(&mut self, notice: &str) {
         if let Some(app) = self.app() {
             app.notice = notice.into();
         }
     }
     pub fn form(&mut self, form: misa_client::form::Form) {
+        self.open_form(form, false);
+    }
+    fn open_form(&mut self, form: misa_client::form::Form, command: bool) {
+        if self.command_form == command
+            && self.form.as_ref().is_some_and(|(id, _)| id == &form.title)
+        {
+            self.chooser = None;
+            self.report = None;
+            self.hide_request();
+            self.form_visible = true;
+            return;
+        }
         self.deactivate();
+        self.command_form = command;
+        self.form_visible = true;
         let fields = form
             .fields
             .iter()
@@ -284,7 +374,9 @@ impl Local {
         self.form = Some((form.title, App::new(node)));
     }
     pub fn deactivate(&mut self) {
-        self.form = None;
+        self.report = None;
+        self.choosing_commands = false;
+        self.form_visible = false;
         self.daemon_form = None;
         self.managing = None;
         self.chooser = None;
@@ -293,11 +385,14 @@ impl Local {
     }
     pub fn directory(&mut self, entries: Vec<DaemonChoice>) {
         self.directories = entries;
-        if self.chooser.is_some() && !self.choosing_presentations {
+        if self.chooser.is_some() && !self.choosing_presentations && !self.choosing_commands {
             self.rebuild_chooser();
         }
     }
     pub fn open_chooser(&mut self) {
+        self.report = None;
+        self.form_visible = false;
+        self.choosing_commands = false;
         self.managing = None;
         self.daemon_form = None;
         self.choosing_presentations = false;
@@ -319,11 +414,18 @@ impl Local {
         }
     }
     pub fn open_presentations(&mut self) {
+        self.report = None;
+        self.daemon_form = None;
+        self.form_visible = false;
+        self.choosing_commands = false;
         self.hide_request();
         self.choosing_presentations = true;
         let mut root = Node::section("presentations")
             .id("presentations")
-            .label("Presentations · Escape closes");
+            .label(format!(
+                "Presentations · appearance {} · Escape closes",
+                self.appearance.name()
+            ));
         for presentation in self
             .catalog
             .iter()
@@ -384,6 +486,18 @@ impl Local {
                 ));
             }
             root = root.child(row);
+        }
+        for choice in [
+            crate::appearance::Choice::System,
+            crate::appearance::Choice::Dark,
+            crate::appearance::Choice::Light,
+        ] {
+            root = root.action(action(
+                &format!("appearance.{}", choice.name()),
+                &format!("Theme: {}", choice.name()),
+                Value::str(choice.name()),
+                ActionOn::Click,
+            ));
         }
         self.chooser = Some(App::new(root));
     }
@@ -491,25 +605,27 @@ impl Local {
         if let Some(form) = &model.form
             && let misa_proto::schema::Schema::Record { fields, .. } = &form.input
         {
-            inputs.extend(fields.iter().map(|(id, field)| {
-                misa_client::request::Input {
-                    id: id.clone(),
-                    label: format!(
-                        "{}{}{}",
-                        form.fields
-                            .get(id)
-                            .map(|field| field.label.as_str())
-                            .unwrap_or(id),
-                        if field.optional { " (optional)" } else { "" },
-                        if matches!(field.schema, misa_proto::schema::Schema::String) {
-                            ""
-                        } else {
-                            " · JSON value"
-                        }
-                    ),
-                    secret: false,
-                }
-            }));
+            inputs.extend(
+                fields
+                    .iter()
+                    .map(|(id, field)| misa_client::request::Input {
+                        id: id.clone(),
+                        label: format!(
+                            "{}{}{}",
+                            form.fields
+                                .get(id)
+                                .map(|field| field.label.as_str())
+                                .unwrap_or(id),
+                            if field.optional { " (optional)" } else { "" },
+                            if matches!(field.schema, misa_proto::schema::Schema::String) {
+                                ""
+                            } else {
+                                " · JSON value"
+                            }
+                        ),
+                        secret: false,
+                    }),
+            );
         }
         let mut form = Node::new(
             "request.form",
@@ -556,6 +672,9 @@ impl Local {
         }
     }
     pub fn open_requests(&mut self) {
+        self.report = None;
+        self.daemon_form = None;
+        self.form_visible = false;
         self.chooser = None;
         let ids: Vec<_> = self.requests.keys().cloned().collect();
         let next = self
@@ -570,10 +689,13 @@ impl Local {
         self.requests.len()
     }
     fn app(&mut self) -> Option<&mut App> {
+        if self.report.is_some() {
+            return self.report.as_mut();
+        }
         if self.daemon_form.is_some() {
             return self.daemon_form.as_mut().map(|(_, _, app)| app);
         }
-        if self.form.is_some() {
+        if self.form_visible && self.form.is_some() {
             return self.form.as_mut().map(|(_, app)| app);
         }
         if self.chooser.is_some() {
@@ -635,15 +757,35 @@ impl Local {
                     }
                 }
                 Command::Intent(misa_proto::Intent::Action { fields, .. })
-                    if self.form.is_some() =>
+                    if self.form_visible && self.form.is_some() =>
                 {
-                    Some(Command::Form {
-                        action: self.form.as_ref()?.0.clone(),
-                        drafts: fields
-                            .into_iter()
-                            .map(|field| (field.id, field.value))
-                            .collect(),
-                    })
+                    let drafts = fields
+                        .into_iter()
+                        .map(|field| (field.id, field.value))
+                        .collect();
+                    let (id, app) = self.form.as_mut()?;
+                    if self.command_form {
+                        match self
+                            .installed_commands
+                            .get(id)?
+                            .as_ref()
+                            .ok()?
+                            .prepare(&drafts)
+                        {
+                            Ok((command, input)) => {
+                                Some(Command::InvokeInstalled { command, input })
+                            }
+                            Err(fault) => {
+                                app.notice = fault.message;
+                                None
+                            }
+                        }
+                    } else {
+                        Some(Command::Form {
+                            action: id.clone(),
+                            drafts,
+                        })
+                    }
                 }
                 Command::Intent(misa_proto::Intent::Action {
                     action,
@@ -651,6 +793,19 @@ impl Local {
                     fields,
                     ..
                 }) if self.chooser.is_some() => match action.as_str() {
+                    action if action.starts_with("appearance.") => Some(Command::Appearance(
+                        crate::appearance::Choice::parse(args.as_str()?)?,
+                    )),
+                    "installed-command" => {
+                        let form = self
+                            .installed_commands
+                            .get(args.as_str()?)?
+                            .as_ref()
+                            .ok()?
+                            .clone();
+                        self.open_form(form, true);
+                        None
+                    }
                     "manage" => {
                         self.managing = Some(args.as_str()?.into());
                         self.rebuild_chooser();
@@ -987,6 +1142,43 @@ mod lifecycle_tests {
         })
     }
     #[test]
+    fn installed_command_chooser_uses_schema_without_shortcut_or_action() {
+        let command = Definition {
+            preparation: Default::default(), id: "plugin.custom".into(),
+            input: Schema::Record {
+                fields: BTreeMap::new(),
+                allow_unknown: false,
+            },
+            result: Schema::Value,
+        };
+        let interface = misa_client::interface::Interface {
+            scope: misa_proto::observation::Scope {
+                id: misa_proto::observation::ScopeId::Daemon,
+                incarnation: "run".into(),
+            },
+            queries: BTreeMap::new(),
+            commands: BTreeMap::from([(command.id.clone(), command)]),
+            presentations: vec![],
+            actions: BTreeMap::new(),
+        };
+        let mut local = Local::default();
+        local.commands(BTreeMap::from([(
+            "plugin.custom".into(),
+            misa_client::form::Form::command(&interface, "plugin.custom")
+                .map_err(|fault| fault.message),
+        )]));
+        local.open_commands();
+        local.convert(vec![intent(
+            "installed-command",
+            Value::str("plugin.custom"),
+        )]);
+        assert!(local.command_form);
+        let result = local.convert(vec![intent("submit", Value::Null)]);
+        assert!(
+            matches!(&result[..],[Command::InvokeInstalled{command,input}] if command=="plugin.custom" && input==&Value::map([]))
+        );
+    }
+    #[test]
     fn stop_targets_exact_owner_and_archive_search_stays_local() {
         let mut local = Local::default();
         local.open_chooser();
@@ -1021,7 +1213,7 @@ mod lifecycle_tests {
     #[test]
     fn resume_form_prefills_conversation_and_survives_directory_refresh() {
         let definition = Definition {
-            id: "daemon.session.resume".into(),
+            preparation: Default::default(), id: "daemon.session.resume".into(),
             input: Schema::Record {
                 fields: BTreeMap::from([
                     (

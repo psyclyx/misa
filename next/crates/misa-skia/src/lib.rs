@@ -126,6 +126,7 @@ pub mod connection;
 pub mod window;
 pub mod workspace;
 mod preferences;
+pub mod appearance;
 
 pub mod paint {
     use super::{Op, Scene};

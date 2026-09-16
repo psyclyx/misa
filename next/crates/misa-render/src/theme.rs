@@ -53,7 +53,10 @@ impl Style {
     };
 
     pub fn fg(color: Color) -> Style {
-        Style { fg: color, ..Style::PLAIN }
+        Style {
+            fg: color,
+            ..Style::PLAIN
+        }
     }
 
     pub fn rgb(r: u8, g: u8, b: u8) -> Style {
@@ -88,8 +91,16 @@ impl Style {
     /// Merge: the other style's non-default fields win.
     pub fn over(self, other: Style) -> Style {
         Style {
-            fg: if other.fg == Color::Default { self.fg } else { other.fg },
-            bg: if other.bg == Color::Default { self.bg } else { other.bg },
+            fg: if other.fg == Color::Default {
+                self.fg
+            } else {
+                other.fg
+            },
+            bg: if other.bg == Color::Default {
+                self.bg
+            } else {
+                other.bg
+            },
             bold: self.bold || other.bold,
             dim: self.dim || other.dim,
             italic: self.italic || other.italic,
@@ -135,7 +146,10 @@ impl Theme {
         set("message.thinking", Style::fg(hex(0x9aa2ad)).italic());
         set("message.thinking.rail", Style::fg(hex(0x5b6270)));
         // A model reasoning aloud: present, readable, and clearly not the answer.
-        set("message.assistant.thinking", Style::fg(hex(0x8a919c)).italic());
+        set(
+            "message.assistant.thinking",
+            Style::fg(hex(0x8a919c)).italic(),
+        );
         set("message.assistant.thinking.rail", Style::fg(hex(0x4d5462)));
         // What the session told the model on its own: a background command finishing is the
         // only thing that speaks this way, and it should read as a footnote rather than prose.
@@ -152,7 +166,10 @@ impl Theme {
         set("mode.insert", Style::fg(hex(0x64b5a0)).bold());
         set("mode.normal", Style::fg(hex(0xc9a227)).bold());
         set("palette.title", Style::fg(hex(0x64b5a0)).bold());
-        set("palette.item.selected", Style::fg(hex(0xe6e8ea)).on(hex(0x39415a)).bold());
+        set(
+            "palette.item.selected",
+            Style::fg(hex(0xe6e8ea)).on(hex(0x39415a)).bold(),
+        );
         set("palette.item", Style::fg(hex(0xb9bec6)));
         set("palette.hint", Style::fg(hex(0x8a8f98)));
         set("value.context", Style::fg(hex(0x64b5a0)));
@@ -228,6 +245,26 @@ impl Theme {
             states: BTreeMap::new(),
             default: Style::PLAIN,
         }
+    }
+
+    /// The same semantic accents, with darker foregrounds for light surfaces.
+    pub fn light() -> Theme {
+        let mut theme = Self::dark();
+        theme.name = "light".into();
+        for style in theme
+            .roles
+            .values_mut()
+            .chain(theme.tokens.values_mut())
+            .chain(theme.states.values_mut())
+            .chain(std::iter::once(&mut theme.default))
+        {
+            style.fg = match style.fg {
+                Color::Default => Color::Rgb(28, 32, 40),
+                Color::Rgb(r, g, b) => Color::Rgb(r / 2, g / 2, b / 2),
+                value => value,
+            };
+        }
+        theme
     }
 
     pub fn with_role(mut self, role: &str, style: Style) -> Theme {
@@ -372,8 +409,14 @@ mod tests {
     #[test]
     fn a_theme_can_be_extended_for_a_plugin_role() {
         let theme = Theme::dark().with_role("message.handoff", Style::fg(hex(0xaa00aa)).bold());
-        assert_eq!(theme.role("message.handoff"), Style::fg(hex(0xaa00aa)).bold());
+        assert_eq!(
+            theme.role("message.handoff"),
+            Style::fg(hex(0xaa00aa)).bold()
+        );
         // And a role under it still finds it.
-        assert_eq!(theme.role("message.handoff.detail"), Style::fg(hex(0xaa00aa)).bold());
+        assert_eq!(
+            theme.role("message.handoff.detail"),
+            Style::fg(hex(0xaa00aa)).bold()
+        );
     }
 }

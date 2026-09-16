@@ -25,6 +25,8 @@ pub fn run(
         local.open_chooser();
     }
     let mut host = Host {
+        appearance: crate::preferences::appearance(),
+        appearance_writer: crate::preferences::appearance_writer(events.create_proxy()),
         app: App::new(view),
         local,
         directories: vec![],
@@ -51,6 +53,8 @@ pub fn run(
     host.error.map_or(Ok(()), Err)
 }
 struct Host {
+    appearance: crate::appearance::Choice,
+    appearance_writer: std::sync::mpsc::SyncSender<crate::appearance::Choice>,
     app: App,
     local: crate::workspace::Local,
     directories: Vec<crate::workspace::DaemonChoice>,
@@ -101,7 +105,14 @@ impl Host {
     }
     fn commands(&mut self, commands: Vec<Command>) {
         for command in commands {
-            if let Command::Copy(text) = command {
+            if let Command::Appearance(choice) = command {
+                self.appearance = choice;
+                self.local.appearance(choice);
+                if self.appearance_writer.try_send(choice).is_err() {
+                    self.local
+                        .notice("Appearance storage is busy; choice was not saved");
+                }
+            } else if let Command::Copy(text) = command {
                 self.app.notice = match self
                     .clipboard
                     .as_mut()
@@ -150,6 +161,13 @@ impl Host {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
+        let light = self
+            .appearance
+            .light(window.theme() == Some(winit::window::Theme::Light));
+        let colors = crate::appearance::Palette::new(light);
+        self.app.set_light(light);
+        self.local.appearance(self.appearance);
+        self.local.set_light(light);
         let scene = if let Some(scene) = self.local.frame(size.width, size.height) {
             scene
         } else {
@@ -167,6 +185,7 @@ impl Host {
                 }
             }
             if let Some(panel) = self.panels.get_mut(&self.panel) {
+                panel.set_light(light);
                 let pane = panel.frame(size.width, panel_height);
                 scene.ops.push(crate::Op::Rect {
                     x: 0.0,
@@ -174,7 +193,7 @@ impl Host {
                     width: size.width as f32,
                     height: panel_height as f32,
                     style: misa_render::Style {
-                        fg: misa_render::Color::Rgb(20, 22, 26),
+                        fg: colors.background,
                         ..Default::default()
                     },
                 });
@@ -186,7 +205,7 @@ impl Host {
             }
             scene
         };
-        let image = crate::paint::raster(&scene, misa_render::Color::Rgb(20, 22, 26))?;
+        let image = crate::paint::raster(&scene, colors.background)?;
         if let Some(path) = &self.snapshot {
             image.save(path).map_err(|error| error.to_string())?;
         }
@@ -215,7 +234,7 @@ impl ApplicationHandler<Update> for Host {
                     .create_window(
                         Window::default_attributes()
                             .with_title(
-                                "misa · pixels · Ctrl+O daemons · Ctrl+R requests · Ctrl+I panels · Ctrl+Shift+I presentations",
+                                "misa · pixels · Ctrl+O daemons · Ctrl+R requests · Ctrl+I panels · Ctrl+Shift+I appearance · Ctrl+Shift+P installed commands",
                             )
                             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 720.0)),
                     )
@@ -288,7 +307,7 @@ impl ApplicationHandler<Update> for Host {
                 self.generation = generation;
                 self.panel_focus = false;
                 if let (Some(window), Some((daemon, _))) = (&self.window, &self.active) {
-                    window.set_title(&format!("misa · pixels · {} · Ctrl+O daemons · Ctrl+R requests · Ctrl+Shift+I presentations", daemon.chars().take(12).collect::<String>()));
+                    window.set_title(&format!("misa · pixels · {} · Ctrl+O daemons · Ctrl+R requests · Ctrl+Shift+I appearance · Ctrl+Shift+P installed commands", daemon.chars().take(12).collect::<String>()));
                 }
             }
             Update::Directory(delivery) => {
@@ -384,7 +403,12 @@ impl ApplicationHandler<Update> for Host {
                         }
                     }
                     WinitKey::Character(ref text) if command && text.eq_ignore_ascii_case("p") => {
-                        self.key(Key::Commands)
+                        if self.modifiers.shift_key() {
+                            self.local.open_commands();
+                            self.redraw();
+                        } else {
+                            self.key(Key::Commands)
+                        }
                     }
                     WinitKey::Named(NamedKey::ArrowUp) => self.key(Key::Up),
                     WinitKey::Named(NamedKey::ArrowDown) => self.key(Key::Down),
@@ -419,6 +443,7 @@ impl ApplicationHandler<Update> for Host {
                     _ => {}
                 }
             }
+            WindowEvent::ThemeChanged(_) => self.redraw(),
             _ => {}
         }
     }
@@ -431,6 +456,8 @@ fn apply_update(
     update: Update,
 ) {
     match update {
+        Update::DocumentReport(document) => local.report(document),
+        Update::InstalledCommands(commands) => local.commands(commands),
         Update::Composition {
             catalog,
             preferences,
@@ -473,7 +500,7 @@ fn apply_update(
                 }
             }
         }
-        Update::Info(info) => app.info = Some(info),
+        Update::Shortcuts(commands) => app.commands = commands,
         Update::Image { hash, image, .. } => {
             app.image(hash.clone(), image.clone());
             for panel in panels.values_mut() {

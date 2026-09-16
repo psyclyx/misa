@@ -29,6 +29,8 @@ use winit::event_loop::EventLoopProxy;
 mod manager;
 
 pub enum Update {
+    DocumentReport(Node),
+    InstalledCommands(BTreeMap<String, Result<misa_client::form::Form, String>>),
     Form(misa_client::form::Form),
     Documents(Vec<Arc<Delivery>>),
     Session {
@@ -56,7 +58,7 @@ pub enum Update {
         generation: i64,
         model: Option<misa_client::request::Model>,
     },
-    Info(misa_proto::wire::SessionInfo),
+    Shortcuts(Vec<misa_kit::intent::Command>),
     Image {
         hash: String,
         image: Arc<image::RgbaImage>,
@@ -190,35 +192,9 @@ async fn session(
     };
     let (mut observation, mut deliveries) =
         compose(&daemon, &interaction, &preferences, proxy).await?;
-    let info = misa_proto::SessionInfo {
-        id: entry.id,
-        title: entry.title,
-        conversation: None,
-        created_ms: 0,
-        policy: vec![],
-        queries: interaction.interface.queries.keys().cloned().collect(),
-        commands: interaction
-            .shortcuts
-            .iter()
-            .map(|shortcut| misa_proto::wire::Command {
-                id: shortcut.id.clone(),
-                label: shortcut.label.clone(),
-                description: shortcut.description.clone(),
-                args: shortcut.args.clone(),
-            })
-            .collect(),
-        sources: interaction
-            .sources
-            .iter()
-            .map(|source| misa_proto::wire::Source {
-                id: source.id.clone(),
-                label: source.label.clone(),
-                kind: source.kind.clone(),
-                description: None,
-            })
-            .collect(),
-    };
-    proxy.send_event(Update::Info(info))?;
+    let commands = interaction.shortcuts.iter().map(|shortcut| misa_kit::intent::Command { id: shortcut.id.clone(), label: shortcut.label.clone(), description: shortcut.description.clone(), args: shortcut.args.clone() }).collect();
+    proxy.send_event(Update::Shortcuts(commands))?;
+    proxy.send_event(Update::InstalledCommands(interaction.interface.commands.keys().map(|id| (id.clone(), misa_client::form::Form::command(&interaction.interface,id).map_err(|fault|fault.message))).collect()))?;
     let mut changes = observation.watch();
     let mut image_reader = document::Reader::new("document");
     let mut requested = BTreeSet::new();
@@ -434,6 +410,7 @@ async fn session(
                 let request_model=match &command{Command::Request{id,generation,..}=>request_models.get(id).filter(|model|model.generation==*generation).cloned(),_=>None};
                 commands.spawn(async move {
                     let result = match &command {
+                        Command::InvokeInstalled {command,input} => match interaction.invoke(command,input.clone()) {Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},
                         Command::Form{action,drafts} => match misa_client::form::Form::action(&interaction.interface,action).and_then(|form|form.prepare(drafts)) { Ok((command,input))=>execute(&daemon,&interaction,Prepared::Invoke{command:interaction.interface.commands[&command].clone(),input}).await,Err(fault)=>Err(fault.message) },
                         Command::Intent(intent) => match prepare(&interaction, intent.clone()) { Ok(prepared) => execute(&daemon, &interaction, prepared).await, Err(error) => Err(error) },
                         Command::Save { node, destination } => save(&daemon, &interaction, node, destination).await.map(Update::Notice),
@@ -568,12 +545,7 @@ async fn execute(
                 )
                 .await
                 .map_err(|fault| fault.message)?;
-            Ok(Update::Report {
-                title,
-                value: interface::data(&result, "result")
-                    .map_err(|fault| fault.message)?
-                    .clone(),
-            })
+            Ok(Update::DocumentReport(interface::report(&result,"result",&title).map_err(|fault|fault.message)?))
         }
         Prepared::Invoke { command, input } => {
             let title = command.id.clone();
