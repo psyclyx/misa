@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct Options {
     session: String,
+    sessions: Vec<String>,
     data_dir: Option<PathBuf>,
     relay: bool,
     provider: String,
@@ -70,6 +71,7 @@ struct Options {
     search: Option<String>,
     search_url: String,
     once: bool,
+    tool_approval: String,
     /// Wasm components to load as policy plugins, in the order given.
     ///
     /// Repeatable, and paths rather than names: what a daemon may run is a decision somebody
@@ -109,6 +111,7 @@ fn parse() -> Result<Options, String> {
 fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         session: "demo".into(),
+        sessions: vec![],
         data_dir: None,
         relay: true,
         provider: "scripted".into(),
@@ -122,13 +125,19 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
         search: None,
         search_url: "http://localhost:8080".into(),
         once: false,
+        tool_approval: "allow".into(),
         plugins: Vec::new(),
         login: None,
     };
     while let Some(argument) = arguments.next() {
         let mut next = |name: &str| arguments.next().ok_or_else(|| format!("{name} needs a value"));
         match argument.as_str() {
-            "--session" | "-s" => options.session = next("--session")?,
+            "--session" | "-s" => {
+                let session = next("--session")?;
+                if session.is_empty() { return Err("Session names must not be empty".into()); }
+                if options.sessions.is_empty() { options.session = session.clone(); }
+                if !options.sessions.contains(&session) { options.sessions.push(session); }
+            }
             "--data-dir" | "-d" => options.data_dir = Some(PathBuf::from(next("--data-dir")?)),
             "--no-relay" => options.relay = false,
             "--provider" => options.provider = next("--provider")?,
@@ -139,6 +148,13 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
             "--search" => options.search = Some(next("--search")?),
             "--search-url" => options.search_url = next("--search-url")?,
             "--once" => options.once = true,
+            "--tool-approval" => {
+                let policy = next("--tool-approval")?;
+                if !matches!(policy.as_str(), "allow" | "ask" | "deny") {
+                    return Err("--tool-approval expects allow, ask, or deny".into());
+                }
+                options.tool_approval = policy;
+            }
             "--plugin" => options.plugins.push(PathBuf::from(next("--plugin")?)),
             // The one bare word this command line takes: `login <provider>` is
             // something a person does, and a `--login` flag would be the same thing
@@ -298,6 +314,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // store the kernel writes, because a session's images have to be reachable from a client
     // and not only from the process that produced them.
     let blobs = kernel.blobs().clone();
+    let store = kernel.store().clone();
     let kernel: Arc<dyn Kernel> = Arc::new(kernel);
 
     // Who may attach. Decided once, here, and applied to both connections a daemon serves:
@@ -322,27 +339,55 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         admission
     });
 
-    let endpoint = misa_transport::iroh::bind(None, options.relay).await?;
+    let identity = options.data_dir.as_ref().map(|dir| misa_transport::identity::load(&dir.join("daemon.identity"))).transpose()?;
+    let endpoint = misa_transport::iroh::bind(identity, options.relay).await?;
 
     let sessions = misa_transport::iroh::Sessions::new();
-    let contribution = plugins(&options.plugins)?;
-    let runtime = Runtime::start_with(
-        options.session.clone(),
-        format!("{} ({})", options.session, options.provider),
-        Some(options.session.clone()),
-        kernel,
-        options.provider.clone(),
-        options.model.clone(),
-        Value::Null,
-        contribution,
-    );
-    sessions.insert(runtime);
+    let directory = misa_daemon::directory::Directory::fresh().map_err(|fault| fault.message)?;
+    {
+        let kernel = kernel.clone();
+        let provider = options.provider.clone();
+        let model = options.model.clone();
+        let paths = options.plugins.clone();
+        let approval = options.tool_approval.clone();
+        let owner = Arc::downgrade(&directory);
+        directory.install_factory(Arc::new(move |_, spec: misa_daemon::lifecycle::SessionSpec| {
+            let owner = owner.clone();
+            let config = Value::map([("tool_approval", Value::str(&approval)), ("parent_attempt", spec.parent_attempt.as_ref().map(Value::str).unwrap_or(Value::Null))]);
+            let (kernel, store, provider, model, paths) = (kernel.clone(), store.clone(), provider.clone(), model.clone(), paths.clone());
+            Box::pin(async move { tokio::task::spawn_blocking(move || {
+                let conversation = spec.conversation.as_deref().unwrap_or(&spec.id);
+                let exists = !store.load(conversation, 0, 1).map_err(|message| misa_proto::Fault::new("storage", message))?.is_empty();
+                if spec.conversation.is_some() && !exists && !spec.recovering { return Err(misa_proto::Fault::new("missing_conversation", "Stored conversation is unavailable")); }
+                if spec.conversation.is_none() && exists { return Err(misa_proto::Fault::new("existing_conversation", "Use resume for a stored conversation")); }
+                let contribution = plugins(&paths).map_err(|error| misa_proto::Fault::new("composition", error.to_string()))?;
+                let contribution = misa_daemon::delegation::install(contribution, owner);
+                Ok(Runtime::prepare_with(spec.id, spec.title, spec.conversation, kernel,
+                    spec.provider.unwrap_or(provider), spec.model.unwrap_or(model), config, contribution))
+            }).await.map_err(|error| misa_proto::Fault::new("composition", error.to_string()))? })
+        })).map_err(|fault| fault.message)?;
+    }
+    if let Some(data_dir) = &options.data_dir {
+        directory.install_membership(Arc::new(misa_daemon::membership::File::at(data_dir.join("active-sessions.cbor")))).await.map_err(|fault| fault.message)?;
+        directory.install_work_log(data_dir.join("delegated-work.cbor")).await.map_err(|fault|fault.message)?;
+    }
+    let host = misa_protocol::invocation::CallContext { principal: endpoint.id().to_string(), connection: 0 };
+    for (id, fault) in directory.restore(&host).await { eprintln!("cannot restore {id}: {}", fault.message); }
+    let names = if options.sessions.is_empty() { vec![options.session.clone()] } else { options.sessions.clone() };
+    for name in &names {
+        if directory.sessions().iter().any(|runtime| runtime.id() == name) { continue; }
+        directory.open(&host, misa_daemon::lifecycle::SessionSpec {
+            id: name.clone(), title: format!("{} ({})", name, options.provider), conversation: Some(name.clone()),
+            provider: Some(options.provider.clone()), model: Some(options.model.clone()), parent_attempt: None, recovering: true,
+        }).await.map_err(|fault| fault.message)?;
+    }
+    for runtime in directory.sessions() { sessions.insert(runtime); }
 
     // The ticket is printed before anything waits on the network. An endpoint's identity
     // exists as soon as it is bound, and a daemon that says nothing until it has found a
     // relay is a daemon that looks broken on a machine with no route to one — which is
     // exactly the machine somebody runs it on first.
-    println!("{}", misa_transport::iroh::ticket(&endpoint, &options.session));
+    for name in &names { println!("{}", misa_transport::iroh::ticket(&endpoint, name)); }
     if options.data_dir.is_some() {
         eprintln!("data in {}", options.data_dir.as_ref().expect("just checked").display());
     }
@@ -375,7 +420,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // and it must not be on the path to answering a client on this one. A machine with no
     // route out never becomes online, so a daemon that waited first would print a ticket and
     // then ignore every peer that used it — on exactly the machine somebody tries first.
-    let router = misa_transport::server::serve(endpoint.clone(), sessions, Arc::new(blobs::Store(blobs)), admission.clone());
+    let scoped = misa_transport::scoped_server::Handler {
+        daemon: endpoint.id().to_string(),
+        scope: misa_protocol::invocation::CommandOwner::scope(directory.as_ref()),
+        resolver: Arc::new(misa_daemon::directory::Routes(directory.clone())),
+        admission: admission.clone(),
+    };
+    let router = misa_transport::server::serve_with_scopes(endpoint.clone(), sessions, Arc::new(blobs::Store(blobs)), admission.clone(), scoped);
+    #[cfg(unix)]
+    let _local = misa_transport::local::advertise(&node, &options.session, admission.clone())?;
     let online = endpoint.clone();
     tokio::spawn(async move {
         online.online().await;
@@ -384,9 +437,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // actually has: a `pair` line shows a new code, `peers` lists the keys that may attach,
     // and `revoke <id>` forgets one. All three are decisions a person makes while the daemon
     // runs, which is why they are here rather than in a flag.
-    let console = tokio::spawn(console(admission.clone(), node.clone(), options.session.clone()));
-    tokio::signal::ctrl_c().await?;
-    console.abort();
+    let console = console(admission.clone(), node.clone(), options.session.clone());
+    tokio::pin!(console);
+    use std::io::IsTerminal as _;
+    let interactive = std::io::stdin().is_terminal();
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        () = &mut console => {
+            // Services commonly have /dev/null as stdin.
+            if !interactive { tokio::signal::ctrl_c().await?; }
+        },
+    }
+    directory.shutdown_complete().await;
     let _ = router.shutdown().await;
     Ok(())
 }
@@ -466,6 +528,7 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         })?;
 
         let descriptor = plugin.descriptor().clone();
+        plugin.authorize_reads(&descriptor.roots).map_err(|fault| fault.message)?;
         eprintln!(
             "plugin `{}` {}: handling {:?}, answering {:?}, roots {:?}",
             descriptor.id, descriptor.version, descriptor.events, descriptor.queries, descriptor.roots
@@ -476,21 +539,20 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         for (name, subscription) in plugin.subscriptions() {
             contribution = contribution.with_subscription(name, subscription);
         }
-        for action in &descriptor.actions {
-            contribution = contribution.with_action(action).map_err(|fault| {
-                format!("`{}` declares an affordance it may not have: {}", descriptor.id, fault.message)
-            })?;
+        for definition in &descriptor.queries {
+            contribution = contribution.export_query(definition.export());
         }
-        // What it presents. The session builds it from session data and places it in the document,
-        // which is why no frontend has to know anything about a plugin.
-        let presenting = plugin.clone();
-        contribution = contribution.with_section(misa_session::views::Section {
-            inputs: vec![misa_value::Path::root()],
-            plugin: descriptor.id.clone(),
-            build: Arc::new(move |db| {
-                presenting.view(db).map_err(|fault| fault.message)
-            }),
-        });
+        for command in &descriptor.commands {
+            contribution = contribution.with_command(misa_session::commands::CommandRegistration::event(
+                &command.id, command.input.clone(), &command.event,
+            ));
+        }
+        for binding in &descriptor.bindings { contribution = contribution.with_binding(binding.clone()); }
+        for tool in &descriptor.tools { contribution = contribution.with_tool(tool.clone()); }
+        // Every presentation is selected independently by each client.
+        for presentation in &descriptor.presentations {
+            contribution = contribution.with_presentation(presentation.clone());
+        }
         for root in &descriptor.roots {
             // Empty, because what a plugin keeps in its own root is its own business and its
             // first patch is what fills it. A name the session already owns is refused in here.
@@ -547,9 +609,17 @@ fn qr(text: &str) -> Result<String, String> {
 
 /// The daemon's console: one line, one decision.
 async fn console(admission: Arc<misa_transport::admission::Admission>, node: String, session: String) {
-    use tokio::io::AsyncBufReadExt as _;
-    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    // Tokio's stdin uses a blocking pool read that runtime shutdown waits for.
+    // A dedicated thread does not hold shutdown hostage while waiting for input.
+    let (sender, mut lines) = tokio::sync::mpsc::channel(16);
+    std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break; };
+            if sender.blocking_send(line).is_err() { break; }
+        }
+    });
+    while let Some(line) = lines.recv().await {
         let line = line.trim().to_string();
         if line.is_empty() {
             continue;
