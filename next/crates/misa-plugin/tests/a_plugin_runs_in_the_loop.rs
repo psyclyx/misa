@@ -11,6 +11,8 @@
 //! `MISA_PLUGIN_FIXTURE=/path/to/policy.component.wasm` uses a component somebody already made
 //! — the README's two commands — instead of building one, which is what to do when the
 //! interesting answer is "is the host wrong, or is the guest?".
+//! `MISA_PET_FIXTURE` likewise supplies the separately built pet component. Pinned
+//! checks provide both fixtures so tests never launch a nested Cargo build.
 
 #![cfg(feature = "guest-fixture")]
 
@@ -45,6 +47,12 @@ fn component() -> Vec<u8> {
         return std::fs::read(&path).expect("the component MISA_PLUGIN_FIXTURE names");
     }
     build_component("guest")
+}
+fn pet_component() -> Vec<u8> {
+    if let Ok(path) = std::env::var("MISA_PET_FIXTURE") {
+        return std::fs::read(&path).expect("the component MISA_PET_FIXTURE names");
+    }
+    build_component("pet")
 }
 fn build_component(package:&str)->Vec<u8> {
     let next = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -509,7 +517,7 @@ async fn wait_for_guest(runtime: &Runtime, key: &str) {
 async fn pet_command_and_model_tool_share_state_while_presentations_are_local_choices() {
     use misa_proto::{invocation::{Invocation,Outcome},observation::{Content,Selection}};
     use misa_protocol::invocation::{CallContext,Dispatcher};
-    let plugin=Arc::new(Plugin::load(&build_component("pet")).unwrap());
+    let plugin=Arc::new(Plugin::load(&pet_component()).unwrap());
     plugin.validate(&misa_session::AcceptedEffects).unwrap();
     let kernel=Arc::new(LocalKernel::new(ScriptedProvider::new([
         misa_kernel::Turn::call("pet_feed",Value::map([("amount",Value::Int(3))]),misa_kernel::Turn::say("Pet fed")),
@@ -543,7 +551,7 @@ async fn guest_declared_form_keeps_model_tool_pending_until_owner_response_is_du
     use misa_proto::{invocation::{Invocation,Outcome},observation::{Content,Encoding,Member,Selection}};
     use misa_protocol::invocation::{CallContext,Dispatcher};
     use std::collections::BTreeMap;
-    let plugin=Arc::new(Plugin::load(&build_component("pet")).unwrap());
+    let plugin=Arc::new(Plugin::load(&pet_component()).unwrap());
     plugin.validate(&misa_session::AcceptedEffects).unwrap();
     let kernel=Arc::new(LocalKernel::new(ScriptedProvider::new([misa_kernel::Turn::call("pet_ask_feed",Value::map([]),misa_kernel::Turn::say("Owner fed the pet"))])));
     let runtime=Runtime::start_with("pet-input","Pet input",None,kernel.clone(),"scripted","test",Value::Null,contribution(&plugin));

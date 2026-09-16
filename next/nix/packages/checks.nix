@@ -2,6 +2,7 @@
   callPackage,
   stdenv,
   misa-guest,
+  misa-pet,
   wasm-tools,
   lld,
   chromium,
@@ -30,6 +31,7 @@ in
   ];
   inherit (skia) buildInputs preCheck;
   env = skia.env // {
+    MISA_PET_FIXTURE = "${misa-pet}/lib/misa/policy-pet.wasm";
     MISA_PLUGIN_FIXTURE = "${misa-guest}/lib/misa/policy-guest.wasm";
   };
   cargoBuildFlags = [ "--workspace" ];
