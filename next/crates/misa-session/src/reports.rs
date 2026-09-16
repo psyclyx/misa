@@ -49,6 +49,7 @@ impl Runtime {
         } else { faults };
         self.drain_reports();
         self.settle_transaction_tools();
+        self.settle_input_continuations();
         faults
     }
 

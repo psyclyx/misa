@@ -544,9 +544,11 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
             contribution = contribution.export_query(definition.export());
         }
         for command in &descriptor.commands {
-            contribution = contribution.with_command(misa_session::commands::CommandRegistration::event(
-                &command.id, command.input.clone(), &command.event,
-            ));
+            let registration = match &command.request {
+                Some(form) => misa_session::commands::CommandRegistration::input_event(&command.id, command.input.clone(), &command.event, form.clone()).map_err(|fault| fault.message)?,
+                None => misa_session::commands::CommandRegistration::event(&command.id, command.input.clone(), &command.event),
+            };
+            contribution = contribution.with_command(registration);
         }
         for binding in &descriptor.bindings { contribution = contribution.with_binding(binding.clone()); }
         for tool in &descriptor.tools { contribution = contribution.with_tool(tool.clone()); }

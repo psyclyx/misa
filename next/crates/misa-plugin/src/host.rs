@@ -83,7 +83,7 @@ pub struct Descriptor {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CommandDefinition { pub id: String, pub input: Schema, pub event: String }
+pub struct CommandDefinition { pub id: String, pub input: Schema, pub event: String, pub request: Option<misa_proto::input::Form> }
 impl CommandDefinition {
     pub fn export(&self) -> misa_proto::invocation::Command {
         misa_proto::invocation::Command { id: self.id.clone(), input: self.input.clone(),
@@ -273,6 +273,7 @@ impl Plugin {
             tools: declared.tools.into_iter().map(|tool|misa_proto::tool::Binding{name:tool.name,description:tool.description,command:tool.command}).collect(),
             commands: declared.commands.into_iter().map(|command| Ok(CommandDefinition {
                 id: command.id, input: schema(&command.input)?, event: command.event,
+                request: command.request.map(|request| serde_json::from_str(&request).map_err(|_| PluginFault::refused("Invalid command input form"))).transpose()?,
             })).collect::<Result<_, PluginFault>>()?,
             bindings: declared.bindings.into_iter().map(|binding| Ok(misa_proto::invocation::Binding {
                 id: binding.id, binding: misa_proto::invocation::ActionBinding {
@@ -389,6 +390,7 @@ impl Plugin {
                 return Err(PluginFault::refused("Invalid command or undeclared command event"));
             }
             command.export().validate().map_err(|fault| PluginFault::refused(fault.message))?;
+            if let Some(request) = &command.request { request.validate().map_err(|fault| PluginFault::refused(fault.message))?; }
         }
         let mut bindings = std::collections::BTreeSet::new();
         let mut tools=std::collections::BTreeSet::new();
@@ -481,7 +483,12 @@ impl Plugin {
             .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
             .map_err(|fault| PluginFault::guest(&fault))?;
         let (patches, effects) = answered;
-        Ok((patches_of(&patches)?, effects_of(&effects)?))
+        let effects = effects_of(&effects)?;
+        for effect in &effects { validate_effect(&self.descriptor.id, &self.descriptor.effects, effect)?; }
+        if !effects.is_empty() && self.descriptor.commands.iter().any(|command| command.event == event.kind) {
+            return Err(PluginFault::refused("A transaction command may return state patches only; asynchronous work requires an operation-aware command"));
+        }
+        Ok((patches_of(&patches)?, effects))
     }
 
     /// One query, answered as a value.
@@ -650,8 +657,18 @@ fn plain_roots(id: &str, roots: &[String]) -> Result<(), PluginFault> {
 /// json cannot express, so a plugin asking for it would produce an effect the session quietly
 /// drops. A plugin reports by patching state and letting the session decide what a client is
 /// told — the same rule that keeps presentation out of the middle layer.
+fn validate_effect(plugin: &str, declared: &[String], effect: &Effect) -> Result<(), PluginFault> {
+    if !declared.contains(&effect.kind) || not_a_plugin_effect(&effect.kind).is_some() {
+        return Err(PluginFault::refused("Plugin returned an undeclared or owner-only effect"));
+    }
+    if effect.kind == "kernel.log.append" && !effect.get("kind").and_then(Value::as_str).is_some_and(|kind| kind.starts_with(&format!("guest.{plugin}."))) {
+        return Err(PluginFault::refused("A plugin may append only its guest journal namespace, never owner facts or checkpoints"));
+    }
+    Ok(())
+}
 fn not_a_plugin_effect(kind: &str) -> Option<&'static str> {
     match kind {
+        "owner.input.continue" => Some("input continuation authority is supplied by the owner, never a plugin effect"),
         "wire.event" => Some(
             "a wire event carries a `SessionEvent` in the protocol's own encoding, which json \
              cannot express; a plugin reports by patching state and the session decides what to \
@@ -924,4 +941,19 @@ mod tests {
         assert_eq!(optional_json(&Value::Null, "nothing").unwrap(), None);
     }
 
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    #[test]
+    fn guest_effects_cannot_forge_owner_checkpoints_or_continuation_authority() {
+        let declared=vec!["kernel.log.append".into(),"owner.input.continue".into()];
+        for kind in ["operations.checkpoint","plugin.patch","message","reset","guest.other.note"] {
+            assert!(validate_effect("test",&declared,&Effect::new("kernel.log.append").with("kind",Value::str(kind))).is_err());
+        }
+        assert!(validate_effect("test",&declared,&Effect::new("kernel.log.append").with("kind",Value::str("guest.test.note"))).is_ok());
+        assert!(validate_effect("test",&declared,&Effect::new("owner.input.continue")).is_err());
+        assert!(validate_effect("test",&[],&Effect::new("kernel.log.list")).is_err());
+    }
 }

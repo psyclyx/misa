@@ -48,9 +48,30 @@ mod tests {
     use super::*;
     #[test]
     fn forms_require_a_bounded_closed_record_and_known_field_labels() {
-        let mut form=Form{title:"Choose a project".into(),input:Schema::Record{fields:BTreeMap::from([("project".into(),crate::schema::Field{schema:Schema::String,optional:false})]),allow_unknown:false},fields:BTreeMap::new()};
+        let mut form = Form {
+            title: "Choose a project".into(),
+            input: Schema::Record {
+                fields: BTreeMap::from([(
+                    "project".into(),
+                    crate::schema::Field {
+                        schema: Schema::String,
+                        optional: false,
+                    },
+                )]),
+                allow_unknown: false,
+            },
+            fields: BTreeMap::new(),
+        };
         assert!(form.validate().is_ok());
-        form.fields.insert("unknown".into(),Field{label:"Unknown".into()});assert!(form.validate().is_err());
-        form.fields.clear();form.input=Schema::String;assert!(form.validate().is_err());
+        form.fields.insert(
+            "unknown".into(),
+            Field {
+                label: "Unknown".into(),
+            },
+        );
+        assert!(form.validate().is_err());
+        form.fields.clear();
+        form.input = Schema::String;
+        assert!(form.validate().is_err());
     }
 }

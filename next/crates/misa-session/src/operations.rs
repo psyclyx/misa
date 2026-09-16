@@ -16,15 +16,26 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub const SUMMARY: &str = "operations.summary";
 pub const REQUEST: &str = "operation.request";
+pub(crate) fn outcome_of_result(record: &Value) -> Option<Outcome> {
+    if record.get("terminal").and_then(Value::as_bool) != Some(true) { return None; }
+    if let Some(outcome) = record.get("outcome").and_then(|value| crate::wire::parse(value).ok()) { return Some(outcome); }
+    Some(match record.get("state").and_then(Value::as_str) {
+        Some("succeeded") => Outcome::Completed { value: Value::Null },
+        Some("failed" | "cancelled" | "expired") => Outcome::Rejected { fault: Fault::new("operation_failed", "Operation did not complete successfully") },
+        _ => Outcome::Indeterminate { fault: Fault::new("interrupted", "Operation interrupted; reconcile durable state before retrying") },
+    })
+}
 const KEY_TTL_MS: i64 = 10 * 60 * 1000;
 const MAX_RECORDS: usize = 64;
 #[path = "approvals.rs"]
 mod approvals;
 #[path = "operation_journal.rs"]
 mod journal;
+#[path = "input_requests.rs"]
+mod forms;
 pub(crate) use approvals::ToolApprovalPolicy;
 pub(crate) use journal::DeferredWork;
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Phase {
     Running,
     Awaiting,
@@ -75,6 +86,7 @@ pub(crate) struct Store {
     prompt_owners: BTreeMap<String, String>,
     events: Vec<Event>,
     approvals: BTreeMap<String, approvals::Approval>,
+    forms: BTreeMap<String, forms::FormRecord>,
     last_checkpoint: Option<Value>,
 }
 impl Store {
@@ -96,7 +108,11 @@ impl Store {
                     record.expires_ms.map(Value::Int).unwrap_or(Value::Null),
                 ),
             ])
-        }))
+        }).chain(self.forms.values().map(forms::FormRecord::operation)))
+    }
+    fn requests(&self) -> Value {
+        let approvals = approvals::summaries(self);
+        Value::list(approvals.as_list().unwrap_or(&[]).iter().cloned().chain(self.forms.values().map(forms::FormRecord::summary)))
     }
     pub(crate) fn deadline(&self) -> Option<i64> {
         self.records
@@ -108,6 +124,7 @@ impl Store {
                     .values()
                     .filter_map(approvals::Approval::deadline),
             )
+            .chain(self.forms.values().filter_map(forms::FormRecord::deadline))
             .min()
     }
     fn owned(
@@ -146,6 +163,10 @@ fn record(fields: impl IntoIterator<Item = (&'static str, Schema)>) -> Schema {
             .collect(),
         allow_unknown: false,
     }
+}
+fn with_outcome(mut schema: Schema) -> Schema {
+    if let Schema::Record { fields, .. } = &mut schema { fields.insert("outcome".into(), Field { schema: Schema::Value, optional: true }); }
+    schema
 }
 pub(crate) fn definitions() -> Vec<Definition> {
     vec![
@@ -187,7 +208,7 @@ pub(crate) fn definitions() -> Vec<Definition> {
             contract: "operation.result@1".into(),
             result: ResultContract::Data {
                 schema: Schema::Nullable {
-                    inner: Box::new(record([
+                    inner: Box::new(with_outcome(record([
                         ("id", Schema::String),
                         ("kind", Schema::String),
                         (
@@ -218,7 +239,7 @@ pub(crate) fn definitions() -> Vec<Definition> {
                                 items: Box::new(Schema::Int),
                             },
                         ),
-                    ])),
+                    ]))),
                 },
             },
         },
@@ -238,7 +259,7 @@ pub(crate) fn restricted_exports() -> Vec<(Definition, crate::observation::Restr
     )]
 }
 pub(crate) fn registry(registry: Registry) -> Registry {
-    registry
+    forms::registry(registry)
         .subscription(
             "requests.summary",
             read_query(|db, _| {
@@ -337,6 +358,7 @@ pub(crate) fn registry(registry: Registry) -> Registry {
                 else {
                     return Value::Null;
                 };
+                if record.get("kind").and_then(Value::as_str) == Some("input") { return record.clone(); }
                 let phase = record
                     .get("state")
                     .and_then(Value::as_str)
@@ -447,6 +469,7 @@ pub(crate) fn request(state: &State, query: &Query, context: &CallContext) -> Re
     if state.operations.approvals.contains_key(id) {
         return approvals::detail(state, id, context);
     }
+    if state.operations.forms.contains_key(id) { return forms::detail(state, id, context); }
     let record = state
         .operations
         .records
@@ -486,6 +509,7 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
     };
     vec![
         approvals::command(),
+        forms::cancel_command(),
         CommandRegistration::new(
             Command {
                 id: "credentials.authorize".into(),
@@ -631,6 +655,12 @@ fn resolve(runtime: &Runtime, context: &CallContext, invocation: &Invocation) ->
     })
 }
 fn cancel(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> Outcome {
+    if runtime.state.lock().unwrap().operations.forms.contains_key(text(&invocation.input, "operation")) {
+        let mut input = invocation.input.as_map().cloned().unwrap_or_default();
+        let request = input.remove("operation").unwrap();
+        input.insert("request".into(), request);
+        return forms::cancel(runtime, context, &Invocation { input: Value::Map(Arc::new(input)), ..invocation.clone() });
+    }
     let scope = runtime.scope();
     runtime.operation_transition(None, |store, db| {
         let id = text(&invocation.input, "operation");
@@ -740,7 +770,7 @@ impl Runtime {
             };
             let mut event = Event::new("operations/changed")
                 .with("summary", candidate.summary())
-                .with("requests", approvals::summaries(&candidate));
+                .with("requests", candidate.requests());
             if let Some(slots) = slots {
                 event = event.with("slots", slots);
             }
@@ -891,6 +921,7 @@ impl Runtime {
         }
         self.operation_transition(None, |store, _db| {
             approvals::expire(store, now);
+            forms::expire(store, now);
             for record in store.records.values_mut() {
                 if record.phase == Phase::Awaiting
                     && record.expires_ms.is_some_and(|deadline| deadline <= now)

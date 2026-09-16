@@ -20,7 +20,7 @@
 //  * A plugin **may fail**. Every call returns a `fault`, and a fault rolls the
 //    plugin's transaction back and is reported. It does not take the session down.
 
-package misa:policy@0.2.0;
+package misa:policy@0.3.0;
 
 interface types {
     /// A contained failure. `code` is stable; `message` is for a person.
@@ -124,6 +124,10 @@ interface policy-api {
         id: string,
         input: string,
         event: string,
+        /// Optional declared non-secret input form (misa-proto input::Form JSON).
+        /// The owner asks the invoking principal, then delivers immutable initial
+        /// arguments and the validated response as input.arguments/input.value.
+        request: option<string>,
     }
     record action-binding {
         id: string,

@@ -154,17 +154,12 @@ pub(crate) fn interrupt(tx: &mut Tx<'_>) -> Result<(), misa_reframe::Fault> {
 impl Runtime {
     pub(crate) fn settle_transaction_tools(&self) {
         let completed = {
-            let state = self.state.lock().expect("session state poisoned");
+            let mut state = self.state.lock().expect("session state poisoned");
             self.tool_invocations.lock().expect("tool correlations poisoned").iter().filter_map(|(id, (_, _, operation))| {
                 let operation = operation.as_ref()?;
                 if operation.scope != self.scope() { return None; }
-                let record = records(state.state.db()).iter().find(|record| record.get("id").and_then(Value::as_str) == Some(&operation.id))?;
-                if record.get("terminal").and_then(Value::as_bool) != Some(true) { return None; }
-                let outcome = match record.get("state").and_then(Value::as_str) {
-                    Some("succeeded") => Outcome::Completed { value: Value::Null },
-                    Some("failed") => Outcome::Rejected { fault: Fault::new("persistence_failed", "Command transaction was not recorded") },
-                    _ => Outcome::Indeterminate { fault: Fault::new("interrupted", "Command transaction interrupted; reconcile durable state before retrying") },
-                };
+                let record = state.state.query(&misa_proto::Query::new("operation.result").arg(Value::str(&operation.id))).ok()?;
+                let outcome = crate::operations::outcome_of_result(&record)?;
                 Some((*id, outcome))
             }).collect::<Vec<_>>()
         };

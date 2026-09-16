@@ -172,7 +172,7 @@ fn an_event_becomes_patches_and_effects_the_loop_applies() {
 
     // And its effect is queued for the interpreter, in the loop's own shape.
     let effect = outcome.effects.iter().find(|effect| effect.kind == "kernel.log.append").expect("the plugin's effect");
-    assert_eq!(effect.field("kind"), "note");
+    assert_eq!(effect.field("kind"), "guest.policy.guest.note");
     assert_eq!(effect.field("conversation"), "guest");
 }
 
@@ -398,9 +398,11 @@ fn contribution(plugin: &Arc<Plugin>) -> misa_session::Contribution {
         contribution = contribution.export_query(definition.export());
     }
     for command in &plugin.descriptor().commands {
-        contribution = contribution.with_command(misa_session::commands::CommandRegistration::event(
-            &command.id, command.input.clone(), &command.event,
-        ));
+        let registration = match &command.request {
+            Some(form) => misa_session::commands::CommandRegistration::input_event(&command.id, command.input.clone(), &command.event, form.clone()).unwrap(),
+            None => misa_session::commands::CommandRegistration::event(&command.id, command.input.clone(), &command.event),
+        };
+        contribution = contribution.with_command(registration);
     }
     for tool in &plugin.descriptor().tools { contribution=contribution.with_tool(tool.clone()); }
     for binding in &plugin.descriptor().bindings { contribution = contribution.with_binding(binding.clone()); }
@@ -489,7 +491,7 @@ async fn a_session_runs_what_a_plugin_declared() {
     // so the interpreter ran it and the daemon's log has the entry the plugin asked for.
     let entries = wait_for_entries(&kernel, "guest").await;
     assert_eq!(entries.len(), 1, "{entries:?}");
-    assert_eq!(entries[0].kind, "note");
+    assert_eq!(entries[0].kind, "guest.policy.guest.note");
     assert_eq!(entries[0].data.as_str(), Some("seen a prompt"));
 }
 
@@ -534,4 +536,43 @@ async fn pet_command_and_model_tool_share_state_while_presentations_are_local_ch
     assert!(misa_proto::view::find(&runtime.view().unwrap(),"pet").is_none());
     preferences.set(&plugin.descriptor().presentations,&[],&presentation.id,misa_client::composition::Choice::Hidden).unwrap();
     assert!(preferences.resolve(&plugin.descriptor().presentations,&[],&[]).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn guest_declared_form_keeps_model_tool_pending_until_owner_response_is_durable() {
+    use misa_proto::{invocation::{Invocation,Outcome},observation::{Content,Encoding,Member,Selection}};
+    use misa_protocol::invocation::{CallContext,Dispatcher};
+    use std::collections::BTreeMap;
+    let plugin=Arc::new(Plugin::load(&build_component("pet")).unwrap());
+    plugin.validate(&misa_session::AcceptedEffects).unwrap();
+    let kernel=Arc::new(LocalKernel::new(ScriptedProvider::new([misa_kernel::Turn::call("pet_ask_feed",Value::map([]),misa_kernel::Turn::say("Owner fed the pet"))])));
+    let runtime=Runtime::start_with("pet-input","Pet input",None,kernel.clone(),"scripted","test",Value::Null,contribution(&plugin));
+    let context=CallContext{principal:"pet-owner".into(),connection:1};
+    let dispatcher=Dispatcher::new(context.clone(),8,Default::default(),Default::default());
+    let invoke=|id,command:&str,input|Invocation{id,scope:runtime.scope(),command:command.into(),input};
+    let Outcome::Accepted{operation:prompt}=dispatcher.dispatch(runtime.as_ref(),invoke(1,"session.prompt",Value::map([("text",Value::str("ask me how many treats"))]))).await.outcome else{panic!()};
+    let request=tokio::time::timeout(std::time::Duration::from_secs(5),async{loop{
+        let Reading::Data(value)=runtime.read(&Query::new("requests.summary")).unwrap()else{panic!()};
+        if let Some(request)=value.as_list().unwrap().iter().find(|request|request.get("kind").and_then(Value::as_str)==Some("form")){break request.clone()}
+        tokio::task::yield_now().await;
+    }}).await.unwrap();
+    assert!(!kernel.entries().iter().any(|entry|entry.kind=="tool_result"));
+    let id=request.get("id").and_then(Value::as_str).unwrap();
+    let selection=Selection{scope:runtime.scope(),members:BTreeMap::from([("request".into(),Member{query:Query::new("operation.request").arg(Value::str(id)),contract:"operation.request@1".into(),encoding:Encoding::Value,optional:false})])};
+    assert!(misa_protocol::owner::Owner::read(runtime.as_ref(),&CallContext{principal:"other".into(),connection:2},&selection).is_err());
+    let snapshot=misa_protocol::owner::Owner::read(runtime.as_ref(),&context,&selection).unwrap();
+    let Content::Value(detail)=&snapshot.members["request"]else{panic!()};
+    assert_eq!(detail.get("title").and_then(Value::as_str),Some("Feed the pet"));
+    let response=invoke(2,"input.resolve",Value::map([("request",Value::str(id)),("generation",request.get("generation").unwrap().clone()),("value",Value::map([("amount",Value::Int(4))]))]));
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(),response.clone()).await.outcome,Outcome::Accepted{..}));
+    assert!(matches!(dispatcher.dispatch(runtime.as_ref(),response).await.outcome,Outcome::Rejected{..}));
+    tokio::time::timeout(std::time::Duration::from_secs(5),async{loop{
+        let Reading::Data(value)=runtime.read(&Query::new("operation.result").arg(Value::str(&prompt.id))).unwrap()else{panic!()};
+        if value.get("terminal")==Some(&Value::Bool(true)){assert_eq!(value.get("state").and_then(Value::as_str),Some("succeeded"));break;}
+        tokio::task::yield_now().await;
+    }}).await.unwrap();
+    let Reading::Data(state)=runtime.read(&Query::new("pet.state")).unwrap()else{panic!()};
+    assert_eq!(state.get("treats"),Some(&Value::Int(4)));
+    assert_eq!(kernel.entries().iter().filter(|entry|entry.kind=="tool_result").count(),1);
+    runtime.shutdown_complete().await;
 }

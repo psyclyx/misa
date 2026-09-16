@@ -42,6 +42,7 @@ impl Store {
                     .unwrap_or_else(|| Value::list([])),
             ),
             ("requests", approvals::checkpoint(self)),
+            ("forms", crate::wire::render(&self.forms)),
             ("commands", db.get(crate::command_operations::ROOT).cloned().unwrap_or_else(|| Value::list([]))),
         ])
     }
@@ -86,6 +87,7 @@ impl Runtime {
             && state.operations.records.is_empty()
             && state.operations.prompt_owners.is_empty()
             && state.operations.approvals.is_empty()
+            && state.operations.forms.is_empty()
             && state.state.db().get(crate::command_operations::ROOT).and_then(Value::as_list).is_none_or(|records| records.is_empty())
         {
             return;
@@ -149,9 +151,10 @@ impl Runtime {
             record.expires_ms = None;
         }
         approvals::interrupt(&mut state.operations);
+        forms::interrupt(&mut state.operations);
         let event = Event::new("operations/persistence.failed")
             .with("summary", state.operations.summary())
-            .with("requests", approvals::summaries(&state.operations));
+            .with("requests", state.operations.requests());
         self.dispatch_locked(state, event);
         self.rev.send_replace(state.state.rev());
     }
@@ -179,6 +182,11 @@ impl Runtime {
                     "persistence_failed",
                     "Operation checkpoint failed; work was not replayed",
                 )]);
+            }
+            if forms::acknowledged(&mut state.operations, event.get("data").unwrap_or(&Value::Null)) {
+                let changed = Event::new("operations/changed").with("summary", state.operations.summary()).with("requests", state.operations.requests());
+                self.dispatch_locked(&mut state, changed);
+                self.rev.send_replace(state.state.rev());
             }
             let active = state
                 .state
@@ -323,6 +331,10 @@ pub(super) fn restore(event: Event) -> (Event, Option<Store>) {
                 .and_then(Value::as_list)
                 .unwrap_or(&[]),
         );
+        if let Some(saved) = checkpoint.get("forms") {
+            store.forms = crate::wire::parse(saved).unwrap_or_default();
+            forms::restore(&mut store);
+        }
     }
     // A persisted final assistant fact wins even if its trailing checkpoint did
     // not reach storage. Sequence IDs, not a client idle state, identify output.
@@ -408,7 +420,7 @@ pub(super) fn restore(event: Event) -> (Event, Option<Store>) {
     let restored = Value::map([
         ("prompts", Value::list(prompts)),
         ("operations", store.summary()),
-        ("requests", approvals::summaries(&store)),
+        ("requests", store.requests()),
     ]);
     (event.with("restored_operations", restored), Some(store))
 }

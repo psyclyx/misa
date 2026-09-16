@@ -19,9 +19,10 @@ fn request(id: &str) -> QueryRequest {
 impl Guest for Pet {
     fn describe() -> Descriptor {
         Descriptor{
-            id:"pet".into(),version:"0.2.0".into(),events:vec!["plugin.pet.feed".into()],effects:vec![],roots:vec!["pet".into()],
-            commands:vec![CommandDefinition{id:"pet.feed".into(),event:"plugin.pet.feed".into(),input:r#"{"type":"record","fields":{"amount":{"schema":{"type":"int"}}}}"#.into()}],
-            tools:vec![ToolBinding{name:"pet_feed".into(),description:"Feed the shared session pet with 1 to 10 treats".into(),command:"pet.feed".into()}],
+            id:"pet".into(),version:"0.3.0".into(),events:vec!["plugin.pet.feed".into(),"plugin.pet.ask-feed".into()],effects:vec![],roots:vec!["pet".into()],
+            commands:vec![CommandDefinition{request:None,id:"pet.feed".into(),event:"plugin.pet.feed".into(),input:r#"{"type":"record","fields":{"amount":{"schema":{"type":"int"}}}}"#.into()},
+                CommandDefinition{id:"pet.ask-feed".into(),event:"plugin.pet.ask-feed".into(),input:r#"{"type":"record","fields":{}}"#.into(),request:Some(r#"{"title":"Feed the pet","input":{"type":"record","fields":{"amount":{"schema":{"type":"int"}}}},"fields":{"amount":{"label":"Treats (1–10)"}}}"#.into())}],
+            tools:vec![ToolBinding{name:"pet_feed".into(),description:"Feed the shared session pet with 1 to 10 treats".into(),command:"pet.feed".into()},ToolBinding{name:"pet_ask_feed".into(),description:"Ask the owner how many treats to feed".into(),command:"pet.ask-feed".into()}],
             bindings:vec![ActionBinding{id:"pet.feed".into(),command:"pet.feed".into(),bound:r#"{"amount":1}"#.into(),inputs:"{}".into()}],
             queries:vec![
                 QueryDefinition{id:"pet.state".into(),contract:"pet.state@1".into(),arguments:vec![],output:r#"{"kind":"data","schema":{"type":"record","fields":{"treats":{"schema":{"type":"int"}}}}}"#.into(),source:QuerySource::Read(ReadContract{roots:vec!["pet".into()],schema:r#"{"type":"record","fields":{"pet":{"schema":{"type":"record","fields":{},"allow_unknown":true}}}}"#.into()})},
@@ -38,12 +39,13 @@ impl Guest for Pet {
         Ok(())
     }
     fn handle(event: Event, db: String) -> Result<(Vec<Patch>, Vec<Effect>), Fault> {
-        if event.kind != "plugin.pet.feed" {
+        if event.kind != "plugin.pet.feed" && event.kind != "plugin.pet.ask-feed" {
             return Err(fault("Unknown pet event"));
         }
         let data: Value = serde_json::from_str(event.data.as_deref().unwrap_or("null"))
             .map_err(|_| fault("Invalid event data"))?;
-        let amount = data["input"]["amount"]
+        let input = if event.kind == "plugin.pet.ask-feed" { &data["input"]["value"] } else { &data["input"] };
+        let amount = input["amount"]
             .as_i64()
             .filter(|amount| (1..=10).contains(amount))
             .ok_or_else(|| fault("Feed between 1 and 10 treats"))?;

@@ -60,9 +60,6 @@ impl Handler for PluginHandler {
                 fault.message
             ))
         })?;
-        if !effects.is_empty() && self.plugin.descriptor().commands.iter().any(|command| command.event == event.kind) {
-            return Err(Fault::handler("A declared transaction command may return state patches only; external work requires an operation-aware command"));
-        }
         for patch in patches {
             tx.patch(&patch.path, patch.op)?;
         }

@@ -50,6 +50,15 @@ impl CommandRegistration {
     pub fn event_kind(&self) -> Option<&str> {
         self.event.as_deref()
     }
+    /// A declared non-secret form precedes the same durable event transaction.
+    pub fn input_event(id: impl Into<String>, input: Schema, event: impl Into<String>, form: misa_proto::input::Form) -> Result<Self, Fault> {
+        form.validate()?;
+        let event = event.into();
+        let event_name = event.clone();
+        let mut registration = Self::new(Command { id: id.into(), input, result: admitted() }, move |runtime, context, invocation| runtime.request_transaction_input(context, invocation, form.clone(), &event));
+        registration.event = Some(event_name);
+        Ok(registration)
+    }
 }
 pub fn install(
     contributed: &[CommandRegistration],

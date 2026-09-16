@@ -38,6 +38,7 @@ impl Guest for Shell {
             // What its views offer. A tree that offers anything else is refused when it is
             // presented.
             commands: vec![CommandDefinition {
+                request: None,
                 id: "policy.guest.refresh".into(), event: "plugin.policy.guest.refresh".into(),
                 input: r#"{"type":"record","fields":{"confirm":{"schema":{"type":"bool"}}}}"#.into(),
             }],
@@ -114,7 +115,7 @@ impl Guest for Shell {
             vec![Effect {
                 kind: "kernel.log.append".to_string(),
                 data: Some(
-                    "{\"conversation\":\"guest\",\"kind\":\"note\",\"data\":\"seen a prompt\"}"
+                    "{\"conversation\":\"guest\",\"kind\":\"guest.policy.guest.note\",\"data\":\"seen a prompt\"}"
                         .to_string(),
                 ),
             }],

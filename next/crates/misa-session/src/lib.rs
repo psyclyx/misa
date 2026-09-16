@@ -542,6 +542,7 @@ impl Runtime {
     fn perform(&self, outcome: &Outcome) {
         for effect in &outcome.effects {
             match effect.kind.as_str() {
+                "owner.input.continue" => self.continue_input(effect),
                 "kernel.provider.call" => {
                     let _ = self.to_kernel.send(Request::ProviderCall {
                         id: fields::text(effect, "id"),
@@ -830,6 +831,7 @@ impl Interpreter for AcceptedEffects {
             | "kernel.models.discover"
             | "kernel.credential"
             | "wire.event" => Ok(()),
+            "owner.input.continue" => Ok(()),
             other => Err(format!("this session does not know the effect `{other}`")),
         }
     }
