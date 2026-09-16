@@ -14,7 +14,7 @@ use axum::Router;
 use misa_proto::view::{BlobRef, FieldKind};
 #[cfg(test)]
 use misa_proto::view::{ActionOn, Kind, Node, Span, State as NodeState};
-use misa_proto::wire::Intent;
+use misa_kit::intent::Intent;
 use misa_value::Value;
 #[cfg(test)]
 use misa_session::Runtime;
@@ -43,12 +43,12 @@ fn outcome_report(outcome: &misa_proto::invocation::Outcome) -> Option<String> {
     }
 }
 
-fn document_parts(title: &str, memory: &str, commands: &[misa_proto::wire::Command], region: &str, lead: &str) -> String {
+fn document_parts(title: &str, memory: &str, commands: &[misa_kit::intent::Command], region: &str, lead: &str) -> String {
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
 <title>{title}</title>\n<link rel=\"stylesheet\" href=\"./style.css\">\n\
-</head>\n<body data-session=\"{session_id}\">\n<nav><a href=\"/daemons\">Daemons and sessions</a></nav>{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
+</head>\n<body data-session=\"{session_id}\">\n<header class=\"session-tools\"><div class=\"session-heading\"><a href=\"/daemons\">Daemons and sessions</a><h1>{title}</h1>{toolbar}<form method=\"post\" action=\"./close\"><button>Close presentation</button></form></div></header><main id=\"main\">{lead}{region}</main>\n{declarations}\
 <script src=\"./preferences.js\" defer></script><script src=\"./commands.js\" defer></script><script src=\"./app.js\" defer></script>\n</body>\n</html>\n",
         title = escape(title),
         session_id = escape(memory),
@@ -105,7 +105,7 @@ fn lead(pending: &[BlobRef]) -> String {
 /// script and no round trip. A client that wants ranking, previews, or frecency is
 /// welcome to build one — that is what `misa-kit`'s picker is — but the plainest
 /// possible frontend still knows what the session can do.
-fn command_declarations(commands: &[misa_proto::wire::Command]) -> String {
+fn command_declarations(commands: &[misa_kit::intent::Command]) -> String {
     if commands.is_empty() {
         return String::new();
     }
@@ -393,7 +393,7 @@ async fn remote_blob(State(state): State<Arc<Remote>>, Path(hash): Path<String>)
 async fn remote_page(State(state): State<Arc<Remote>>) -> Html<String> {
     let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
     let memory = format!("{}:{}:{}", state.daemon.identity(), state.interaction.interface.scope.incarnation, state.instance);
-    Html(document_parts(&state.session.title, &memory, &remote::declarations(&state.interaction), &state.region.get(), &lead).replacen("<body ", &format!("<body data-preferences=\"{}\" ", escape(&format!("{}:{}", state.daemon.identity(), state.session.id))), 1).replacen("<main", &format!("{}<section id=\"activity\" aria-label=\"Operations and requests\">{}</section><main", presentations::controls(&state), state.region.activity_html()), 1).replace("</nav>", "<form method=\"post\" action=\"./close\"><button>Close presentation</button></form></nav>"))
+    Html(document_parts(&state.session.title, &memory, &remote::declarations(&state.interaction), &state.region.get(), &lead).replacen("<body ", &format!("<body data-preferences=\"{}\" ", escape(&format!("{}:{}", state.daemon.identity(), state.session.id))), 1).replacen("</header>", &format!("{}<section id=\"activity\" aria-label=\"Operations and requests\">{}</section></header>", presentations::controls(&state), state.region.activity_html()), 1))
 }
 
 async fn remote_events(

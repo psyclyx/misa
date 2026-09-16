@@ -366,7 +366,7 @@ fn an_image_is_a_reference_rather_than_bytes() {
 
 #[test]
 fn a_document_is_a_document() {
-    let commands = vec![misa_proto::wire::Command::new("model", "Model", "choose a model").arg(misa_proto::wire::Arg::new("model", "Model").required().from("models"))];
+    let commands = vec![misa_kit::intent::Command::new("model", "Model", "choose a model").arg(misa_proto::preparation::Arg::new("model", "Model").required().from("models"))];
     let html = document_parts("a demo", "demo", &commands, &render_main(&view()), "");
     assert!(html.starts_with("<!doctype html>"), "{html}");
     assert!(html.contains("<main id=\"main\">"), "{html}");
@@ -473,7 +473,7 @@ fn a_fact_is_marked_up_with_its_value_and_written_by_the_clients_formatter() {
 
 #[test]
 fn the_declarations_become_the_browsers_own_completion() {
-    let commands = vec![misa_proto::wire::Command::new("model", "Model", "choose a model").arg(misa_proto::wire::Arg::new("model", "Model").required().from("models"))];
+    let commands = vec![misa_kit::intent::Command::new("model", "Model", "choose a model").arg(misa_proto::preparation::Arg::new("model", "Model").required().from("models"))];
     let html = command_declarations(&commands);
     assert!(html.contains("<datalist id=\"misa-commands\">"), "{html}");
     assert!(html.contains("value=\"/model\""), "{html}");

@@ -287,7 +287,7 @@
           await new Promise(function (resolve) { setTimeout(resolve, 0); });
           assert(draft.value === "uncertain submission" && calls === 4, "lost reply retains the draft and never retries the mutation");
           assert(client.prefs.state.recoveries.some(function (entry) { return entry.text === "uncertain submission" && entry.reason.includes("Check the session"); }), "uncertain submissions remain explicitly recoverable");
-          doc.getElementById("main").innerHTML = "";
+          doc.getElementById("main").innerHTML = '<p data-session-loading>Loading session…</p>';
           const multi = function (documents) { client.transaction([{ kind: "documents", data: JSON.stringify(documents) }]); };
           const presentation = function (id, prefix, html) { return { id, prefix, messages: [
             { kind: "snapshot", data: html }, { kind: "streams", data: "[]" }
@@ -303,6 +303,7 @@
           ]);
           await Promise.resolve();
           assert(!mixedPublication && doc.getElementById("status:value"), "selected documents become visible in one publication");
+          assert(!doc.querySelector("[data-session-loading]"), "current documents retire the initial loading placeholder");
           composedObserver.disconnect();
           multi(["conversation", "status"].map(function (id) { return {
             id, prefix: id === "status" ? "status:" : "", messages: [{ kind: "streams", data: JSON.stringify([{ id: "answer.text", role: "assistant", text: id }]) }]

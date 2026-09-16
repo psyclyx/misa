@@ -19,8 +19,6 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
         .state
         .map(|state| format!(" data-state=\"{}\"", state_word(state)))
         .unwrap_or_default();
-    let kind = format!(" kind.{}.", node.role);
-    let _ = kind;
     // A thematic break is a void element: it has no closing tag to match.
     if let Kind::Rule = &node.kind {
         out.push_str(&format!("<hr class=\"n-{role}\"{id}{state}>"));
@@ -69,7 +67,7 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
             code(text, captures, out);
             out.push_str("</code></pre>");
         }
-        Kind::List { ordered, items } => {
+        Kind::List { items, .. } => {
             // Each item is its own `<li>`; a nested list inside one is the child
             // nodes of that item, which the loop below emits.
             let mut items_out = String::new();
@@ -81,9 +79,6 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
                 items_out.push_str("</li>");
             }
             out.push_str(&items_out);
-            if *ordered {
-                out.insert_str(0, "");
-            }
         }
         Kind::Table { head, rows } => {
             out.push_str("<table>");

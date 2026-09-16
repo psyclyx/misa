@@ -473,6 +473,7 @@
             else throw Error("unknown document update");
           });
         });
+        root.querySelectorAll("[data-session-loading]").forEach(function (node) { node.remove(); });
       } finally {
         main = root; activeStreams = previousStreams; documentPrefix = previousPrefix;
       }

@@ -204,3 +204,25 @@ nav[aria-label="Display"] {
   padding: 0.75rem 1rem;
   text-align: right;
 }
+
+/* Client chrome stays compact; domain content keeps the same reading width. */
+.session-tools {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.85rem;
+}
+.session-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+.session-heading h1 { font-size: 1rem; margin: 0; flex: 1; }
+.session-heading nav[aria-label="Display"] { padding: 0; }
+.session-tools p { margin: 0.4rem 0; }
+.session-tools button { padding: 0.25rem 0.5rem; }
+.session-tools details { margin: 0.35rem 0; }
+.session-tools summary { cursor: pointer; }
+#activity { color: var(--fg-muted); }
+.session-tools + main { padding-top: 1rem; }
+a { color: var(--accent); }
+
+.label { margin-right: 0.4em; color: var(--fg-muted); }
+.n-message\.group\.header, .n-message\.group\.footer { color: var(--fg-muted); font-size: 0.8rem; }

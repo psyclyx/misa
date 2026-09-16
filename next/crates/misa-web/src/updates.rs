@@ -2,8 +2,6 @@
 //! for a new subscriber, a lagged subscriber, or a protocol reset.
 use axum::response::sse::{Event, KeepAlive, Sse};
 use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
-#[cfg(test)]
-use misa_proto::{SessionEvent, SessionMsg};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
@@ -136,56 +134,6 @@ impl Region {
         Ok(())
     }
 
-    // Old rendering fixtures remain useful oracles without a production protocol
-    // adapter or synchronization cursor in this derived HTML cache.
-    #[cfg(test)]
-    pub fn receive(&self, message: &SessionMsg) -> Result<bool, String> {
-        use misa_client::document::Update;
-        use misa_protocol::observation::{Applied, MemberChange};
-        let (tree, live, reset_live) = match message {
-            SessionMsg::View { view, version, .. } => {
-                return self.observed(&Update::Reset(misa_proto::observation::Document {
-                    tree: view.clone(),
-                    version: version.clone(),
-                    streams: vec![],
-                }));
-            }
-            SessionMsg::Changes { changes, .. } => (
-                changes
-                    .iter()
-                    .flat_map(|change| change.ops.clone())
-                    .collect(),
-                vec![],
-                false,
-            ),
-            SessionMsg::Streams { streams } => (
-                vec![],
-                streams
-                    .iter()
-                    .map(|stream| StreamUpdate::Current {
-                        stream: stream.clone(),
-                    })
-                    .collect(),
-                true,
-            ),
-            SessionMsg::Event {
-                event: SessionEvent::Stream { update },
-                ..
-            } => (vec![], vec![update.clone()], false),
-            _ => return Ok(false),
-        };
-        self.observed(&Update::Changed {
-            member: "body".into(),
-            applied: Arc::new(Applied::Changed(BTreeMap::from([(
-                "body".into(),
-                MemberChange::Document {
-                    tree,
-                    live,
-                    reset_live,
-                },
-            )]))),
-        })
-    }
     fn publish(&self, state: &mut State, messages: Vec<Message>) {
         state.sequence += 1;
         let _ = self.updates.send(Batch {
@@ -393,7 +341,7 @@ fn apply_document(state: &mut State, update: &misa_client::document::Update, pre
 
 fn html(state: &State) -> String {
     if !state.valid {
-        return "<p role=\"status\">Loading session…</p>".into();
+        return "<p data-session-loading role=\"status\">Loading session…</p>".into();
     }
     if !state.documents.is_empty() {
         return state.documents.iter().map(|(id, document)| format!("<section data-presentation=\"{}\">{}</section>", crate::escape(id), document_html(document, &document_prefix(id)))).collect();
@@ -467,8 +415,7 @@ impl Subscription {
 mod tests {
     use super::*;
     use misa_proto::{
-        SubId,
-        sync::{Change, Stream, StreamUpdate, Version},
+        sync::{Stream, StreamUpdate, Version},
         view::{Node, Span},
     };
     #[tokio::test]
@@ -534,6 +481,15 @@ mod tests {
             rev,
         }
     }
+    fn changes(region: &Region, tree: Vec<ViewOp>, live: Vec<StreamUpdate>, reset_live: bool) {
+        region.observed(&misa_client::document::Update::Changed {
+            member: "body".into(),
+            applied: Arc::new(misa_protocol::observation::Applied::Changed(BTreeMap::from([("body".into(), misa_protocol::observation::MemberChange::Document { tree, live, reset_live })]))),
+        }).unwrap();
+    }
+    fn streams(region: &Region, streams: Vec<Stream>) {
+        changes(region, vec![], streams.into_iter().map(|stream| StreamUpdate::Current { stream }).collect(), true);
+    }
     fn snapshot(region: &Region, count: usize) {
         let tree = Node::section("root")
             .id("root")
@@ -542,29 +498,16 @@ mod tests {
                     .id(format!("old-{index}"))
             }));
         region
-            .receive(&SessionMsg::View {
-                id: SubId(1),
-                version: version(0),
-                view: tree,
-            })
+            .observed(&misa_client::document::Update::Reset(misa_proto::observation::Document {
+                version: version(0), tree, streams: vec![],
+            }))
             .unwrap();
     }
     fn append(region: &Region, rev: u64) {
-        region
-            .receive(&SessionMsg::Changes {
-                id: SubId(1),
-                changes: vec![Change {
-                    from: version(rev - 1),
-                    version: version(rev),
-                    ops: vec![ViewOp::Insert {
-                        parent: "root".into(),
-                        before: None,
-                        node: Node::text("text", [Span::plain("new text")])
-                            .id(format!("new-{rev}")),
-                    }],
-                }],
-            })
-            .unwrap();
+        changes(region, vec![ViewOp::Insert {
+            parent: "root".into(), before: None,
+            node: Node::text("text", [Span::plain("new text")]).id(format!("new-{rev}")),
+        }], vec![], false);
     }
     #[tokio::test]
     async fn append_bytes_do_not_grow_with_the_existing_transcript() {
@@ -594,15 +537,11 @@ mod tests {
         for rev in 1..=70 {
             append(&region, rev);
         }
-        region
-            .receive(&SessionMsg::Streams {
-                streams: vec![Stream {
+        streams(&region, vec![Stream {
                     id: "live.text".into(),
                     role: "message.assistant".into(),
                     text: "live-only".into(),
-                }],
-            })
-            .unwrap();
+                }]);
         let recovered = subscriber.next().await.unwrap();
         assert_eq!(recovered.name, None);
         assert!(recovered.data.contains("new-70"));
@@ -619,30 +558,17 @@ mod tests {
     async fn stream_append_sends_only_the_offset_and_new_bytes() {
         let region = Region::new();
         snapshot(&region, 10);
-        region
-            .receive(&SessionMsg::Streams {
-                streams: vec![Stream {
+        streams(&region, vec![Stream {
                     id: "live.text".into(),
                     role: "text".into(),
                     text: "a".repeat(10000),
-                }],
-            })
-            .unwrap();
+                }]);
         let mut subscriber = region.subscribe();
         subscriber.next().await.unwrap();
         subscriber.next().await.unwrap();
-        region
-            .receive(&SessionMsg::Event {
-                seq: 1,
-                event: SessionEvent::Stream {
-                    update: StreamUpdate::Append {
-                        id: "live.text".into(),
-                        offset: 10000,
-                        text: "λ".into(),
-                    },
-                },
-            })
-            .unwrap();
+        changes(&region, vec![], vec![StreamUpdate::Append {
+            id: "live.text".into(), offset: 10000, text: "λ".into(),
+        }], false);
         let event = subscriber.next().await.unwrap();
         assert_eq!(event.name, Some("stream"));
         assert!(event.data.len() < 100);
@@ -665,22 +591,10 @@ mod tests {
         let mut subscriber = region.subscribe();
         subscriber.next().await.unwrap();
         subscriber.next().await.unwrap();
-        region
-            .receive(&SessionMsg::Changes {
-                id: SubId(1),
-                changes: vec![Change {
-                    from: version(0),
-                    version: version(1),
-                    ops: vec![
-                        ViewOp::Replace {
-                            id: "old-0".into(),
-                            node: Node::text("text", [Span::plain("<replacement>")]).id("old-0"),
-                        },
-                        ViewOp::Remove { id: "old-1".into() },
-                    ],
-                }],
-            })
-            .unwrap();
+        changes(&region, vec![
+            ViewOp::Replace { id: "old-0".into(), node: Node::text("text", [Span::plain("<replacement>")]).id("old-0") },
+            ViewOp::Remove { id: "old-1".into() },
+        ], vec![], false);
         let event = subscriber.next().await.unwrap();
         let ops: serde_json::Value = serde_json::from_str(&event.data).unwrap();
         assert_eq!(ops[0]["op"], "replace");

@@ -5,7 +5,8 @@ use misa_client::{
     interaction::{Interaction, Prepared},
     interface::Interface,
 };
-use misa_proto::{Intent, invocation::Outcome, observation::Selection};
+use misa_kit::intent::Intent;
+use misa_proto::{invocation::Outcome, observation::Selection};
 #[cfg(test)]
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -544,6 +545,6 @@ mod tests {
 }
 
 /// Adapt installed shortcuts to the local composer parser; these are not session metadata.
-pub(crate) fn declarations(interaction: &Interaction) -> Vec<misa_proto::wire::Command> {
-    interaction.shortcuts.iter().map(|shortcut| misa_proto::wire::Command { id: shortcut.id.clone(), label: shortcut.label.clone(), description: shortcut.description.clone(), args: shortcut.args.clone() }).collect()
+pub(crate) fn declarations(interaction: &Interaction) -> Vec<misa_kit::intent::Command> {
+    interaction.shortcuts.iter().map(|shortcut| misa_kit::intent::Command { id: shortcut.id.clone(), label: shortcut.label.clone(), description: shortcut.description.clone(), args: shortcut.args.clone() }).collect()
 }

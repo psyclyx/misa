@@ -64,7 +64,7 @@ pub(super) async fn archive(State(hub): State<Shared>, Query(fields): Query<BTre
     let daemon = hub.lock().await.daemons.get(id).cloned();
     let Some(daemon) = daemon else { return page(StatusCode::NOT_FOUND, "Unknown daemon", String::new()); };
     let prefix = fields.get("q").map(String::as_str).unwrap_or("");
-    let candidates = match misa_client::lifecycle::conversations(&daemon, prefix, misa_proto::wire::DEFAULT_CANDIDATES).await { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_GATEWAY, "Archive unavailable", escape(&fault.message)) };
+    let candidates = match misa_client::lifecycle::conversations(&daemon, prefix, misa_proto::preparation::DEFAULT_CANDIDATES).await { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_GATEWAY, "Archive unavailable", escape(&fault.message)) };
     let mut body = format!("<form method=\"get\" action=\"/archive\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><label>Search <input name=\"q\" value=\"{}\"></label><button>Search</button></form>", escape(id), escape(prefix));
     for choice in candidates.items {
         body.push_str(&format!("<form method=\"get\" action=\"/lifecycle\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><input type=\"hidden\" name=\"command\" value=\"daemon.session.resume\"><input type=\"hidden\" name=\"conversation\" value=\"{}\"><button>Resume {}</button><p>{}</p></form>", escape(id), escape(&choice.value), escape(&choice.label), escape(choice.detail.as_deref().unwrap_or(""))));

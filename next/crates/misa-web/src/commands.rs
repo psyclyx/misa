@@ -17,7 +17,7 @@ pub(crate) async fn prepare(remote: &Remote, shortcut: &str, drafts: &BTreeMap<S
         Target::Command { command } => {
             let model = Form::command(&remote.interaction.interface, command)?;
             let sources = shortcut.args.iter().filter_map(|arg| arg.source.as_ref().map(|source| (arg.name.clone(), source.clone()))).collect::<BTreeMap<_, _>>();
-            let members = sources.iter().map(|(field, source)| remote.interaction.complete(source, "", misa_proto::wire::DEFAULT_CANDIDATES).map(|member| (field.clone(), member))).collect::<Result<BTreeMap<_, _>, _>>()?;
+            let members = sources.iter().map(|(field, source)| remote.interaction.complete(source, "", misa_proto::preparation::DEFAULT_CANDIDATES).map(|member| (field.clone(), member))).collect::<Result<BTreeMap<_, _>, _>>()?;
             let mut choices = BTreeMap::new();
             if !members.is_empty() {
                 let values = remote.daemon.client.read(Selection { scope: remote.interaction.interface.scope.clone(), members }, Duration::from_secs(20)).await?;
@@ -62,7 +62,7 @@ pub(crate) async fn candidates(State(remote): State<Arc<Remote>>, Query(fields):
     let prefix = fields.get("q").map(String::as_str).unwrap_or("");
     if prefix.len() > 2048 { return (StatusCode::BAD_REQUEST, "Search is too long").into_response(); }
     let result = async {
-        let member = remote.interaction.complete(source, prefix, misa_proto::wire::DEFAULT_CANDIDATES)?;
+        let member = remote.interaction.complete(source, prefix, misa_proto::preparation::DEFAULT_CANDIDATES)?;
         let values = remote.daemon.client.read(Selection { scope: remote.interaction.interface.scope.clone(), members: BTreeMap::from([("choices".into(), member)]) }, Duration::from_secs(20)).await?;
         decode::<Candidates>(data(&values, "choices")?)
     }.await;
