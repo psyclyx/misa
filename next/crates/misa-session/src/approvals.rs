@@ -201,7 +201,7 @@ pub(super) fn expire(store: &mut Store, now: i64) {
     }
 }
 impl Runtime {
-    pub(crate) fn approve_tool(&self, effect: &Effect) {
+    pub(crate) fn approve_tool(&self, effect: &Effect, admission: &crate::kernel_queue::Admission) {
         let request = Request::ToolRun {
             id: crate::fields::text(effect, "id"),
             call_id: crate::fields::text(effect, "call_id"),
@@ -209,7 +209,7 @@ impl Runtime {
             args: crate::fields::value(effect, "args"),
         };
         if self.tool_approval == ToolApprovalPolicy::Allow {
-            let _ = self.deliver_request(request);
+            let _ = self.deliver_request(request, admission);
             return;
         }
         let operation = crate::fields::text(effect, "operation");

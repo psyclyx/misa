@@ -91,17 +91,17 @@ fn json_schema(schema: &Schema) -> Result<serde_json::Value, Fault> {
     })
 }
 impl Runtime {
-    pub(crate) fn deliver_request(&self, request: Request) -> Result<(), Fault> {
+    pub(crate) fn deliver_request(&self, request: Request, admission: &crate::kernel_queue::Admission) -> Result<(), Fault> {
         let Request::ToolRun { name, args, .. } = &request else {
             return self
                 .to_kernel
-                .send(request)
+                .send(request, admission)
                 .map_err(|_| Fault::new("closed_scope", "Kernel dispatcher closed"));
         };
         let Some(binding) = self.tool_bindings.get(name) else {
             return self
                 .to_kernel
-                .send(request)
+                .send(request, admission)
                 .map_err(|_| Fault::new("closed_scope", "Kernel dispatcher closed"));
         };
         let Some((context, operation)) = self.trusted_tool_context(&request) else {

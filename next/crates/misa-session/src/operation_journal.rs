@@ -59,6 +59,7 @@ pub(crate) struct DeferredWork {
     pending: BTreeMap<String, Deferred>,
 }
 struct Deferred {
+    admission: crate::kernel_queue::Admission,
     effects: Vec<misa_reframe::Effect>,
     request: Option<Request>,
     operation: Option<String>,
@@ -81,7 +82,7 @@ impl Runtime {
     pub(crate) fn queue_operation_checkpoint(
         &self,
         state: &mut State,
-        effects: &mut Vec<misa_reframe::Effect>,
+        outcome: &mut crate::kernel_queue::Outcome,
         request: &mut Option<Request>,
     ) {
         let checkpoint = state.operations.checkpoint(state.state.db());
@@ -128,7 +129,8 @@ impl Runtime {
         state.deferred.pending.insert(
             token.clone(),
             Deferred {
-                effects: std::mem::take(effects),
+                effects: std::mem::take(&mut outcome.effects),
+                admission: outcome.admission.clone(),
                 request: request.take(),
                 operation,
             },
@@ -141,10 +143,10 @@ impl Runtime {
                 conversation,
                 kind: KIND.into(),
                 data: Value::Map(Arc::new(fields)),
-            })
+            }, &outcome.admission)
             .is_err()
         {
-            effects.push(
+            outcome.effects.push(
                 misa_reframe::Effect::new("owner.checkpoint.failed")
                     .with("checkpoint", Value::str(token)),
             );
@@ -172,7 +174,7 @@ impl Runtime {
     fn fail_operation_checkpoints(
         &self,
         state: &mut State,
-    ) -> Result<misa_reframe::Outcome, Fault> {
+    ) -> Result<crate::kernel_queue::Outcome, Fault> {
         // Discard gated work even when the diagnostic publication is refused.
         state.deferred.pending.clear();
         let mut candidate = state.operations.clone();
@@ -180,7 +182,7 @@ impl Runtime {
         let event = Event::new("operations/persistence.failed")
             .with("summary", candidate.summary())
             .with("requests", candidate.requests());
-        let outcome = self.dispatch_locked(state, event);
+        let outcome = self.dispatch_admitted(state, event, crate::kernel_queue::Class::Control);
         if !outcome.committed() {
             return Err(Fault::new(
                 "publication_failed",
@@ -230,12 +232,12 @@ impl Runtime {
                 let changed = Event::new("operations/changed")
                     .with("summary", candidate.summary())
                     .with("requests", candidate.requests());
-                let mut publication = self.dispatch_locked(&mut state, changed);
+                let mut publication = self.dispatch_admitted(&mut state, changed, crate::kernel_queue::Class::Control);
                 if !publication.committed() {
                     if let Some(fault) = publication
                         .as_faults()
                         .into_iter()
-                        .find(|fault| fault.code == "composition.busy")
+                        .find(|fault| matches!(fault.code.as_str(), "composition.busy" | "admission.busy"))
                     {
                         // Release this checkpoint's effects once, so the pending
                         // plugin journal write can finish. Existing automatic
@@ -244,6 +246,7 @@ impl Runtime {
                             token.to_owned(),
                             Deferred {
                                 effects: vec![],
+                                admission: Default::default(),
                                 request: None,
                                 operation: deferred.operation.clone(),
                             },
@@ -264,10 +267,11 @@ impl Runtime {
                     state.operations = candidate;
                     self.queue_operation_checkpoint(
                         &mut state,
-                        &mut publication.effects,
+                        &mut publication,
                         &mut None,
                     );
-                    deferred.effects.extend(publication.effects);
+                    deferred.effects.extend(publication.inner.effects);
+                    deferred.admission.extend(publication.admission);
                     self.rev.send_replace(state.state.rev());
                 }
             }
@@ -360,12 +364,12 @@ impl Runtime {
             }
             deferred
         };
-        self.perform(&misa_reframe::Outcome {
-            effects: deferred.effects,
-            ..Default::default()
+        self.perform(&crate::kernel_queue::Outcome {
+            inner: misa_reframe::Outcome {effects: deferred.effects, ..Default::default()},
+            admission: deferred.admission.clone(),
         });
         if let Some(request) = deferred.request {
-            let _ = self.deliver_request(request);
+            let _ = self.deliver_request(request, &deferred.admission);
         }
         Some(retry.into_iter().collect())
     }

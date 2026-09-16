@@ -711,6 +711,12 @@ impl Loop {
     /// the chain, because later events would see a database an earlier handler
     /// meant to change.
     pub fn dispatch(&mut self, event: Event) -> Outcome {
+        self.dispatch_checked(event, |_| Ok(()))
+    }
+
+    /// Reserve owner resources against the final validated transaction before
+    /// publishing its state. Refusal rolls back the complete dispatch chain.
+    pub fn dispatch_checked(&mut self, event: Event, admit: impl FnOnce(&Outcome) -> Result<(), Fault>) -> Outcome {
         let before = self.db.clone();
         let mut outcome = Outcome { rev: self.rev, ..Outcome::default() };
         let mut queue = VecDeque::new();
@@ -771,6 +777,9 @@ impl Loop {
         }
         if outcome.committed() && !outcome.deferred.is_empty() {
             outcome.faults.push(Fault::new("transaction.unfinalized", "Owner did not finalize deferred writes"));
+        }
+        if outcome.committed() {
+            if let Err(fault)=admit(&outcome) {outcome.faults.push(fault);}
         }
         if outcome.committed() {
             self.rev += 1;
@@ -896,6 +905,22 @@ mod tests {
 
     /// Only `announce` may run. Everything else must be refused before the commit.
     struct OnlyAnnounce;
+
+    #[test]
+    fn admission_refusal_rolls_back_prepared_state_and_effects() {
+        let mut owner = Loop::new(registry(), Arc::new(OnlyAnnounce), base());
+        let refused = owner.dispatch_checked(Event::new("tick"), |prepared| {
+            assert_eq!(prepared.effects.len(), 1);
+            assert!(!prepared.changes.is_empty());
+            Err(Fault::new("capacity", "No reserved execution slot"))
+        });
+        assert_eq!(refused.faults[0].code, "capacity");
+        assert_eq!(owner.db(), &base());
+        assert_eq!(owner.rev(), 0);
+        assert!(refused.effects.is_empty() && refused.changes.is_empty());
+        assert!(owner.dispatch(Event::new("tick")).committed());
+        assert_eq!(owner.db().get("count").and_then(Value::as_i64), Some(1));
+    }
 
     #[test]
     fn deferred_writes_require_finalization_and_rollback_effects() {

@@ -24,7 +24,7 @@ impl Pending {
     }
 }
 fn busy(faults: &[Fault]) -> bool {
-    faults.iter().any(|fault| fault.code == "composition.busy")
+    faults.iter().any(|fault| matches!(fault.code.as_str(), "composition.busy" | "admission.busy"))
 }
 fn size(value: &Value) -> usize {
     let payload = match value {
@@ -90,7 +90,7 @@ impl Runtime {
         faults
     }
 
-    fn drain_reports(&self) {
+    pub(crate) fn drain_reports(&self) {
         {
             let mut pending = self.reports.lock().expect("report queue poisoned");
             pending.wake = pending.wake.wrapping_add(1);

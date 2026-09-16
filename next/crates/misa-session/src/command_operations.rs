@@ -199,15 +199,16 @@ impl Runtime {
                     fault: Fault::new("closed_scope", "Session closed"),
                 };
             }
-            let mut outcome = self.dispatch_locked(
+            let mut outcome = self.dispatch_admitted(
                 &mut state,
                 Event::new("command/transaction")
                     .with("record", record)
                     .with("event", Value::str(kind))
                     .with("data", event.data),
+                if context.connection == 0 { crate::kernel_queue::Class::Control } else { crate::kernel_queue::Class::External },
             );
             if outcome.committed() {
-                self.queue_operation_checkpoint(&mut state, &mut outcome.effects, &mut None);
+                self.queue_operation_checkpoint(&mut state, &mut outcome, &mut None);
             }
             outcome
         };

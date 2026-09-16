@@ -562,7 +562,7 @@ fn authorize(runtime: &Runtime, context: &CallContext, invocation: &Invocation) 
     }
     let oauth = misa_kernel::presets::oauth(&provider).is_some();
     let scope = runtime.scope();
-    runtime.operation_transition(None, |store, _db| {
+    runtime.operation_transition_as(crate::kernel_queue::Class::External, None, |store, _db| {
         if store.records.len() >= MAX_RECORDS {
             let oldest = store
                 .records
@@ -755,7 +755,12 @@ impl Runtime {
         (operation.map(str::to_owned),attempt)
     }
     fn operation_transition(
+        &self, slots: Option<Value>,
+        change: impl FnOnce(&mut Store, &Value) -> Result<(Outcome, Option<Request>), Fault>,
+    ) -> Outcome { self.operation_transition_as(crate::kernel_queue::Class::Control, slots, change) }
+    fn operation_transition_as(
         &self,
+        class: crate::kernel_queue::Class,
         slots: Option<Value>,
         change: impl FnOnce(&mut Store, &Value) -> Result<(Outcome, Option<Request>), Fault>,
     ) -> Outcome {
@@ -797,7 +802,7 @@ impl Runtime {
                     Value::map([("kind", Value::str(event.kind)), ("data", event.data)])
                 });
             event = event.with("events", Value::list(events));
-            let mut outcome = self.dispatch_locked(&mut state, event);
+            let mut outcome = self.dispatch_admitted(&mut state, event, class);
             if !outcome.committed() {
                 return rejected(outcome.as_faults().into_iter().next().unwrap_or_else(|| {
                     Fault::new("operation_failed", "Operation transition was refused")
@@ -815,7 +820,7 @@ impl Runtime {
                     .any(|record| record.get("id").and_then(Value::as_str) == Some(id))
             });
             state.operations = candidate;
-            self.queue_operation_checkpoint(&mut state, &mut outcome.effects, &mut request);
+            self.queue_operation_checkpoint(&mut state, &mut outcome, &mut request);
             let revision = state.state.rev();
             self.operation_deadline
                 .send_replace(state.operations.deadline());
@@ -824,7 +829,7 @@ impl Runtime {
         self.perform(&outcome);
         self.rev.send_replace(revision);
         if let Some(request) = request {
-            if self.deliver_request(request).is_err() {
+            if self.deliver_request(request, &outcome.admission).is_err() {
                 return Outcome::Indeterminate {
                     fault: Fault::new(
                         "kernel_unavailable",
@@ -2124,7 +2129,7 @@ pub(crate) fn prompt(
             .unwrap_or_else(|| Value::list([])),
     )
     .with("operation", Value::str(&id));
-    runtime.operation_transition(None, |store, db| {
+    runtime.operation_transition_as(crate::kernel_queue::Class::External, None, |store, db| {
         // Retention follows the public operation records; identities are owner-only.
         store.prompt_owners.retain(|key, _| {
             db.get("prompt_operations")

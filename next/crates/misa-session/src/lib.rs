@@ -31,7 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use misa_proto::view::Node;
 use misa_proto::{Fault, Query};
-use misa_reframe::{Effect, Event, Interpreter, Loop, Outcome};
+use misa_reframe::{Effect, Event, Interpreter, Loop};
 use misa_reframe::fields;
 use misa_value::Value;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -64,6 +64,8 @@ mod journal;
 mod canonical;
 mod publication;
 mod reports;
+mod kernel_queue;
+use kernel_queue::Outcome;
 pub mod observation;
 pub mod commands;
 mod command_operations;
@@ -95,7 +97,8 @@ pub struct Runtime {
     state: Mutex<State>,
     /// What compositions contributed to every view this session builds.
     sections: Vec<views::Section>,
-    to_kernel: mpsc::UnboundedSender<Request>,
+    to_kernel: kernel_queue::Queue,
+    kernel_budget: kernel_queue::Budget,
     rev: watch::Sender<u64>,
     events: broadcast::Sender<Emission>,
     metadata: Metadata,
@@ -249,11 +252,12 @@ impl Runtime {
         // Two channels, not one: a request goes out to the kernel and a report comes
         // back. The loop never awaits, and a kernel report re-enters it as an
         // ordinary event rather than as a callback from inside a transaction.
-        let (to_kernel, mut from_loop) = mpsc::unbounded_channel::<Request>();
+        let (to_kernel, from_loop) = kernel_queue::Queue::new();
+        let kernel_budget = kernel_queue::Budget::default();
         let (kernel_events, mut kernel_reports) = mpsc::unbounded_channel::<KernelEvent>();
         let (events, _) = broadcast::channel::<Emission>(512);
         let (rev, _) = watch::channel(0u64);
-        let (closing, mut shutdown) = watch::channel(false);
+        let (closing, shutdown) = watch::channel(false);
         let (stopped, stopped_rx) = watch::channel(false);
         // A kernel that reports on its own schedule — a background command finishing — needs a
         // reader that is not a request. There is exactly one such stream, so there is one task.
@@ -293,6 +297,7 @@ impl Runtime {
             state: Mutex::new(State { operations: Default::default(), deferred: Default::default(), state, view, streams: Default::default(), stream_bytes: 0, publications: Default::default() }),
             sections: contribution.sections,
             to_kernel: to_kernel.clone(),
+            kernel_budget,
             rev,
             events,
             metadata,
@@ -325,32 +330,7 @@ impl Runtime {
             });
         }
 
-        tokio::spawn(async move {
-            let mut work = tokio::task::JoinSet::new();
-            loop {
-                tokio::select! {
-                    _ = shutdown.changed() => break,
-                    _ = work.join_next(), if !work.is_empty() => {},
-                    request = from_loop.recv(), if work.len() < 64 => {
-                        let Some(request) = request else { break; };
-                        let kernel = kernel.clone();
-                        let out = kernel_events.clone();
-                        if matches!(request, Request::Append { .. } | Request::Load { .. }) {
-                            tokio::select! {
-                                _ = shutdown.changed() => break,
-                                _ = kernel.execute(request, &out) => {},
-                            }
-                        } else {
-                            work.spawn(async move { kernel.execute(request, &out).await; });
-                        }
-                    }
-                }
-            }
-            work.abort_all();
-            while work.join_next().await.is_some() {}
-            kernel.close(&kernel_events).await;
-            stopped.send_replace(true);
-        });
+        tokio::spawn(from_loop.run(kernel, kernel_events, shutdown, stopped));
 
         let reports = Arc::downgrade(&runtime);
         tokio::spawn(async move {
@@ -360,6 +340,16 @@ impl Runtime {
             }
         });
 
+        let weak = Arc::downgrade(&runtime);
+        let wake = runtime.kernel_budget.wake.clone();
+        let mut closing = runtime.closing.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! { biased; _ = closing.changed() => break, _ = wake.notified() => {} }
+                let Some(runtime) = weak.upgrade() else { break; };
+                runtime.drain_reports();
+            }
+        });
         operations::start_expiry_loop(&runtime);
         runtime
     }
@@ -369,7 +359,8 @@ impl Runtime {
         if self.is_closed() || self.started.swap(true,Ordering::AcqRel) {return}
         self.dispatch(Event::new("session/started"));
         if let Some(conversation)=&self.metadata.conversation {
-            let _=self.to_kernel.send(Request::Load{conversation:conversation.clone(),after:0,limit:i64::MAX as usize});
+            let admission = self.kernel_budget.reserve(kernel_queue::Class::Control, 0).expect("startup capacity");
+            let _=self.to_kernel.send(Request::Load{conversation:conversation.clone(),after:0,limit:i64::MAX as usize}, &admission);
         }
     }
 
@@ -384,6 +375,7 @@ impl Runtime {
         if self.closed_reason.set(fault).is_err() { return; }
         self.closed.store(true, Ordering::Release);
         self.closing.send_replace(true);
+        self.operation_deadline.send_replace(None);
         self.reports.lock().expect("report queue poisoned").clear();
         self.tool_invocations.lock().expect("tool correlations poisoned").clear();
         let mut state = self.state.lock().expect("session state is never poisoned");
@@ -475,7 +467,7 @@ impl Runtime {
             let mut outcome = self.dispatch_locked(&mut state, event);
             if outcome.committed() {
                 if let Some(restored) = restored { state.operations = restored; state.deferred.clear(); }
-                self.queue_operation_checkpoint(&mut state, &mut outcome.effects, &mut None);
+                self.queue_operation_checkpoint(&mut state, &mut outcome, &mut None);
             }
             outcome
         };
@@ -492,7 +484,11 @@ impl Runtime {
     }
 
     /// Caller holds the owner lock; publication and stream retirement share the commit.
-    fn dispatch_locked(&self, state: &mut State, mut event: Event) -> misa_reframe::Outcome {
+    fn dispatch_locked(&self, state: &mut State, event: Event) -> Outcome {
+        let class = if event.kind.starts_with("kernel/") || event.kind.starts_with("owner/") { kernel_queue::Class::Control } else { kernel_queue::Class::External };
+        self.dispatch_admitted(state, event, class)
+    }
+    fn dispatch_admitted(&self, state: &mut State, mut event: Event, class: kernel_queue::Class) -> Outcome {
             if matches!(event.kind.as_str(), "intent/cancel" | "intent/interrupt") {
                 if let Some(seq) = pending_seq(state.state.db()) {
                     for (field, suffix) in [("text", "text"), ("thinking", "thinking")] {
@@ -503,7 +499,13 @@ impl Runtime {
             }
             state.state.set_clock(now_ms());
             let previous = pending_seq(state.state.db());
-            let outcome = state.state.dispatch(event);
+            let mut admission = kernel_queue::Admission::default();
+            let inner = state.state.dispatch_checked(event, |outcome| {
+                if self.is_closed() { return Err(misa_reframe::Fault::new("closed_scope", "Session owner is closed")); }
+                admission = self.kernel_budget.reserve(class, outcome.effects.len())?;
+                Ok(())
+            });
+            let outcome = Outcome { inner, admission };
             if outcome.committed() {
                 state.operations.reconcile(state.state.db());
                 self.operation_deadline.send_replace(state.operations.deadline());
@@ -560,11 +562,12 @@ impl Runtime {
     }
 
     fn perform(&self, outcome: &Outcome) {
+        let send = |request| self.to_kernel.send(request, &outcome.admission);
         for effect in &outcome.effects {
             match effect.kind.as_str() {
                 "owner.input.continue" => self.continue_input(effect),
                 "kernel.provider.call" => {
-                    let _ = self.to_kernel.send(Request::ProviderCall {
+                    let _ = send(Request::ProviderCall {
                         id: fields::text(effect, "id"),
                         provider: fields::text(effect, "provider"),
                         model: fields::text(effect, "model"),
@@ -574,22 +577,22 @@ impl Runtime {
                     });
                 }
                 "kernel.usage" => {
-                    let _ = self.to_kernel.send(Request::Usage {
+                    let _ = send(Request::Usage {
                         id: fields::text(effect, "id"),
                         provider: fields::text(effect, "provider"),
                     });
                 }
                 "kernel.models.discover" => {
-                    let _ = self.to_kernel.send(Request::DiscoverModels {
+                    let _ = send(Request::DiscoverModels {
                         id: fields::text(effect, "id"),
                         provider: fields::text(effect, "provider"),
                     });
                 }
                 "kernel.tool.run" => {
-                    self.approve_tool(effect);
+                    self.approve_tool(effect, &outcome.admission);
                 }
                 "kernel.log.append" => {
-                    let _ = self.to_kernel.send(Request::Append {
+                    let _ = send(Request::Append {
                         conversation: fields::text(effect, "conversation"),
                         kind: fields::text(effect, "kind"),
                         data: fields::value(effect, "data"),
@@ -598,10 +601,10 @@ impl Runtime {
                 // Reading the log back, which is what `/resume` is: a listing when no
                 // conversation was named, and the entries themselves when one was.
                 "kernel.log.list" => {
-                    let _ = self.to_kernel.send(Request::Conversations { id: fields::text(effect, "id") });
+                    let _ = send(Request::Conversations { id: fields::text(effect, "id") });
                 }
                 "kernel.log.load" => {
-                    let _ = self.to_kernel.send(Request::Load {
+                    let _ = send(Request::Load {
                         conversation: fields::text(effect, "conversation"),
                         after: fields::int(effect, "after"),
                         limit: fields::int(effect, "limit").max(1) as usize,
@@ -610,14 +613,14 @@ impl Runtime {
                 // A file read where the daemon is, which is the only place a path means
                 // anything. `/attach <path>` is the whole of this.
                 "kernel.blob.file" => {
-                    let _ = self.to_kernel.send(Request::BlobFile {
+                    let _ = send(Request::BlobFile {
                         id: fields::text(effect, "id"),
                         path: fields::text(effect, "path"),
                     });
                 }
                 "kernel.attempt.started" => {
                     let conversation = fields::text(effect, "conversation");
-                    let _ = self.to_kernel.send(Request::AttemptStarted {
+                    let _ = send(Request::AttemptStarted {
                         id: format!("{}:{}", self.incarnation, fields::text(effect, "id")),
                         conversation: (!conversation.is_empty()).then_some(conversation),
                         parent: self.parent_attempt.clone(),
@@ -645,12 +648,10 @@ impl Runtime {
                         // safe reading of an action a handler spelled wrong.
                         _ => CredentialAction::List,
                     };
-                    let _ = self
-                        .to_kernel
-                        .send(Request::Credential { id: fields::text(effect, "id"), action });
+                    let _ = send(Request::Credential { id: fields::text(effect, "id"), action });
                 }
                 "kernel.attempt.settled" => {
-                    let _ = self.to_kernel.send(Request::AttemptSettled {
+                    let _ = send(Request::AttemptSettled {
                         id: format!("{}:{}", self.incarnation, fields::text(effect, "id")),
                         status: fields::text(effect, "status"),
                         input_tokens: fields::int(effect, "input_tokens"),
