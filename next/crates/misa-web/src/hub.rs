@@ -22,8 +22,10 @@ struct Hub {
     overviews: BTreeMap<String, super::overview::Feed>,
     updates: tokio::sync::watch::Sender<u64>,
     sessions: BTreeMap<String, Instance>,
+    capacity: Arc<tokio::sync::Semaphore>,
 }
 struct Instance {
+    _permit: tokio::sync::OwnedSemaphorePermit,
     remote: Arc<super::Remote>,
     used: Instant,
 }
@@ -33,7 +35,11 @@ impl Hub {
     fn new(connections: Arc<Daemons>, daemons: BTreeMap<String, Arc<Daemon>>) -> Self {
         let updates = tokio::sync::watch::channel(0).0;
         let overviews = daemons.iter().map(|(id, daemon)| (id.clone(), super::overview::Feed::start(daemon.clone(), updates.clone()))).collect();
-        Self { connections, daemons, overviews, updates, sessions: BTreeMap::new() }
+        Self { connections, daemons, overviews, updates, sessions: BTreeMap::new(), capacity: Arc::new(tokio::sync::Semaphore::new(MAX_INSTANCES)) }
+    }
+    fn reserve(&mut self) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
+        self.expire();
+        self.capacity.clone().try_acquire_owned().map_err(|_| (axum::http::StatusCode::TOO_MANY_REQUESTS, "Close an existing presentation before opening another").into_response())
     }
     fn summaries(&self) -> String {
         self.daemons.iter().map(|(id, _)| format!("<section><h2>{}</h2>{}</section>", super::escape(id), self.overviews.get(id).map(|feed|feed.html()).unwrap_or_default())).collect()
@@ -179,6 +185,7 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
         Ok(preferences) => preferences,
         Err(error) => return (axum::http::StatusCode::BAD_REQUEST, error).into_response(),
     };
+    let permit = match hub.lock().await.reserve() { Ok(permit) => permit, Err(response) => return response };
     match super::remote::connect_with(&daemon, session, preferences).await {
         Ok(remote) => {
             if incarnation != &remote.interaction.interface.scope.incarnation {
@@ -186,17 +193,10 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
             }
             let key = remote.instance.clone();
             let mut hub = hub.lock().await;
-            hub.expire();
-            if hub.sessions.len() >= MAX_INSTANCES {
-                return (
-                    axum::http::StatusCode::TOO_MANY_REQUESTS,
-                    "Close an existing presentation before opening another",
-                )
-                    .into_response();
-            }
             hub.sessions.insert(
                 key.clone(),
                 Instance {
+                    _permit: permit,
                     remote,
                     used: Instant::now(),
                 },
@@ -240,6 +240,7 @@ async fn dispatch(State(hub): State<Shared>, mut request: Request) -> Response {
         }
         let session = &remote.session;
         let preferences = remote.preferences.lock().unwrap().clone();
+        let permit = match hub.lock().await.reserve() { Ok(permit) => permit, Err(response) => return response };
         let fork = match super::remote::connect_with(&remote.daemon, &session.id, preferences).await {
             Ok(fork) => fork,
             Err(error) => return (axum::http::StatusCode::BAD_GATEWAY, error).into_response(),
@@ -248,10 +249,8 @@ async fn dispatch(State(hub): State<Shared>, mut request: Request) -> Response {
             return (axum::http::StatusCode::CONFLICT, "The session restarted; select its new incarnation from Daemons and sessions").into_response();
         }
         let mut hub = hub.lock().await;
-        hub.expire();
-        if hub.sessions.len() >= MAX_INSTANCES { return (axum::http::StatusCode::TOO_MANY_REQUESTS, "Close an existing presentation before opening another tab").into_response(); }
         let key = fork.instance.clone();
-        hub.sessions.insert(key.clone(), Instance { remote: fork, used: Instant::now() });
+        hub.sessions.insert(key.clone(), Instance { _permit: permit, remote: fork, used: Instant::now() });
         let memory = format!("{}:{}:{}", remote.daemon.identity(), remote.interaction.interface.scope.incarnation, key);
         return axum::Json(serde_json::json!({"url":format!("/view/{key}/"),"memory":memory})).into_response();
     }
@@ -327,6 +326,15 @@ mod tests {
         .await
         .unwrap();
         let hub = Arc::new(Mutex::new(Hub::new(connections, BTreeMap::from([(id.clone(), daemon)]))));
+        // In-flight opens consume capacity before their first network await.
+        let mut reservations = Vec::new();
+        for _ in 0..MAX_INSTANCES { reservations.push(hub.lock().await.reserve().unwrap()); }
+        assert_eq!(hub.lock().await.reserve().unwrap_err().status(), StatusCode::TOO_MANY_REQUESTS);
+        reservations.pop();
+        let replacement = hub.lock().await.reserve().unwrap();
+        assert_eq!(hub.lock().await.reserve().unwrap_err().status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(replacement);
+        drop(reservations);
         let mut paths = Vec::new();
         for session in ["first", "second"] {
             let incarnation = hub.lock().await.daemons[&id].sessions().unwrap().sessions.into_iter().find(|entry| entry.id == session).unwrap().incarnation;

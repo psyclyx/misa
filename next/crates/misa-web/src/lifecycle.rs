@@ -1,5 +1,5 @@
 //! Local lifecycle preparation over installed daemon commands.
-use super::{Shared, Instance, MAX_INSTANCES};
+use super::{Shared, Instance};
 use std::{collections::BTreeMap, time::{Duration, Instant}};
 use axum::{extract::{State, Query, Form}, response::{Response, IntoResponse, Html, Redirect}, http::StatusCode};
 use misa_client::{form::Form as CommandForm, interface::Interface};
@@ -39,6 +39,9 @@ pub(super) async fn perform(State(hub): State<Shared>, Form(fields): Form<BTreeM
     let prepared = CommandForm::command(&interface, command).and_then(|model| model.prepare(&fields.iter().filter_map(|(key,value)| key.strip_prefix("field.").map(|id|(id.into(),value.clone()))).collect()));
     let (_, input) = match prepared { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_REQUEST, "Command not sent", escape(&fault.message)) };
     let preferences = match crate::presentations::initial(fields.get("preferences").map(String::as_str)) { Ok(value) => value, Err(error) => return page(StatusCode::BAD_REQUEST, "Command not sent", escape(&error)) };
+    let permit = if command == "daemon.session.close" { None } else {
+        Some(match hub.lock().await.reserve() { Ok(permit) => permit, Err(response) => return response })
+    };
     let outcome = daemon.client.invoke(interface.scope.clone(), interface.commands[command].clone(), input, Duration::from_secs(30)).await;
     match outcome.map(|reply|reply.outcome) {
         Ok(Outcome::Completed { value }) if command != "daemon.session.close" => {
@@ -47,9 +50,7 @@ pub(super) async fn perform(State(hub): State<Shared>, Form(fields): Form<BTreeM
             if remote.interaction.interface.scope != entry.scope() { return page(StatusCode::CONFLICT, "Session changed", "The opened session owner has already changed. Return to the overview.".into()); }
             let key = remote.instance.clone();
             let mut hub = hub.lock().await;
-            hub.expire();
-            if hub.sessions.len() >= MAX_INSTANCES { return page(StatusCode::TOO_MANY_REQUESTS, "Session opened", "Close a local presentation, then select the created session in the overview.".into()); }
-            hub.sessions.insert(key.clone(), Instance { remote, used: Instant::now() });
+            hub.sessions.insert(key.clone(), Instance { _permit: permit.expect("opening reserved capacity"), remote, used: Instant::now() });
             Redirect::to(&format!("/view/{key}/")).into_response()
         }
         Ok(Outcome::Completed { .. }) => Redirect::to("/daemons").into_response(),
