@@ -36,6 +36,8 @@ impl Drop for Entry {
 }
 
 struct State {
+    archive: Result<Value,Fault>,
+    archive_installed: bool,
     entries: BTreeMap<String, Entry>,
     position: u64,
     value: Value,
@@ -84,6 +86,18 @@ pub struct Directory {
 }
 
 impl Directory {
+    pub async fn install_archive(self:&Arc<Self>,store:Arc<crate::archive::Store>)->Result<(),Fault> {
+        use misa_kernel::Store as _;
+        {let mut state=self.state.lock().unwrap();if state.archive_installed{return Err(Fault::new("composition","Archive store already installed"));}state.archive_installed=true;}
+        let mut changes=store.watch();let mut lifecycle=self.watch_work();let weak=Arc::downgrade(self);
+        let initial=store.clone();let result=tokio::task::spawn_blocking(move||initial.conversations()).await.map_err(|error|Fault::new("archive",error.to_string()))?.map(|rows|Value::list(rows.iter().map(misa_kernel::Conversation::to_value))).map_err(|message|Fault::new("archive",message));
+        {let mut state=self.state.lock().unwrap();state.archive=result;publish(&mut state);}
+        let task=tokio::spawn(async move {loop {
+            tokio::select! {changed=changes.changed()=>if changed.is_err(){return;},changed=lifecycle.changed()=>{if changed.is_err() || weak.upgrade().is_none_or(|directory|directory.is_closed()){return;}continue;}}
+            let source=store.clone();let result=tokio::task::spawn_blocking(move||source.conversations()).await.map_err(|error|Fault::new("archive",error.to_string())).and_then(|value|value.map_err(|message|Fault::new("archive",message))).map(|rows|Value::list(rows.iter().map(misa_kernel::Conversation::to_value)));
+            let Some(directory)=weak.upgrade() else{return;};if directory.is_closed(){return;}let mut state=directory.state.lock().unwrap();if state.archive!=result {state.archive=result;publish(&mut state);}
+        }});self.supervisors.lock().unwrap().push(task);Ok(())
+    }
     pub fn fresh() -> Result<Arc<Self>, Fault> {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes)
@@ -116,6 +130,8 @@ impl Directory {
             work_writes: tokio::sync::Mutex::new(()),
             supervisors: Mutex::new(Vec::new()),
             state: Mutex::new(State {
+                archive: Err(Fault::unsupported("Archive store is not installed")),
+                archive_installed:false,
                 entries: BTreeMap::new(),
                 position: 0,
                 value: Value::list([]),
@@ -382,10 +398,12 @@ impl Directory {
             misa_proto::query::catalog_definition(),
         ];
         definitions.extend(crate::delegation::definitions());
+        definitions.extend(crate::archive::definitions());
         definitions
     }
-    fn member(&self, state: &State, member: &Member) -> Content {
-        Content::Value(match member.query.id.as_str() {
+    fn member(&self, state: &State, member: &Member) -> Result<Content,Fault> {
+        if matches!(member.query.id.as_str(),"daemon.conversations"|"completion.catalog"|"completion.search") {return match crate::archive::read(&state.archive,&member.query) {Ok(value)=>Ok(Content::Value(value)),Err(fault) if member.optional=>Ok(Content::Unavailable(fault)),Err(fault)=>Err(fault)};}
+        Ok(Content::Value(match member.query.id.as_str() {
             misa_proto::invocation::CATALOG => {
                 crate::lifecycle::encode(&crate::lifecycle::commands())
             }
@@ -401,7 +419,7 @@ impl Directory {
                     .unwrap_or_default(),
             ),
             _ => state.value.clone(),
-        })
+        }))
     }
 
     pub fn selection(&self) -> Selection {
@@ -652,8 +670,8 @@ impl Owner for Directory {
             members: selection
                 .members
                 .iter()
-                .map(|(name, member)| (name.clone(), self.member(&state, member)))
-                .collect(),
+                .map(|(name, member)| Ok((name.clone(), self.member(&state, member)?)))
+                .collect::<Result<_,Fault>>()?,
         })
     }
     fn observe(
@@ -687,8 +705,8 @@ impl Owner for Directory {
             members: selection
                 .members
                 .iter()
-                .map(|(name, member)| (name.clone(), self.member(&state, member)))
-                .collect(),
+                .map(|(name, member)| Ok((name.clone(), self.member(&state, member)?)))
+                .collect::<Result<_,Fault>>()?,
         };
         drop(state);
         let position = snapshot.position;
@@ -700,6 +718,7 @@ impl Owner for Directory {
                 handle,
                 changed,
                 position,
+                faulted: false,
             }),
             Publication::Snapshot { handle, snapshot },
         ))
@@ -713,6 +732,7 @@ struct Observed {
     handle: Handle,
     changed: watch::Receiver<u64>,
     position: u64,
+    faulted: bool,
 }
 impl misa_protocol::owner::Observation for Observed {
     fn changed(&mut self) -> &mut watch::Receiver<u64> {
@@ -722,12 +742,17 @@ impl misa_protocol::owner::Observation for Observed {
         let snapshot = match self.directory.read(&self.context, &self.selection) {
             Ok(snapshot) => snapshot,
             Err(reason) => {
-                return Some(Publication::Closed {
+                self.faulted = true;
+                return Some(Publication::Fault {
                     handle: self.handle,
-                    reason,
+                    fault: reason,
                 });
             }
         };
+        if std::mem::take(&mut self.faulted) {
+            self.position = snapshot.position;
+            return Some(Publication::Snapshot { handle: self.handle, snapshot });
+        }
         if snapshot.position == self.position {
             return None;
         }
@@ -904,4 +929,19 @@ mod tests {
         assert!(second.poll().is_none());
         assert!(directory.insert(runtime("new")).is_err());
     }
+}
+#[cfg(test)] mod archive_fault_tests {
+ use super::*;
+ #[tokio::test] async fn archive_failure_recovers_with_a_complete_coherent_snapshot(){
+  let directory=Directory::new("archive-recovery").unwrap();
+  let archive=crate::archive::Store::new(Arc::new(misa_kernel::MemoryStore::default()));directory.install_archive(archive).await.unwrap();
+  let definition=crate::archive::definitions().into_iter().find(|definition|definition.id=="daemon.conversations").unwrap();
+  let selection=Selection{scope:directory.scope(),members:BTreeMap::from([("archive".into(),definition.member(vec![Value::str(""),Value::Int(10)]).unwrap())])};
+  let (mut watch,_)=directory.clone().observe(CallContext{principal:"test".into(),connection:1},Handle{id:1,generation:1},selection,None).unwrap();
+  {let mut state=directory.state.lock().unwrap();state.archive=Err(Fault::new("storage","Temporarily unavailable"));publish(&mut state);}
+  assert!(matches!(watch.poll(),Some(Publication::Fault{..})));
+  {let mut state=directory.state.lock().unwrap();state.archive=Ok(Value::list([]));publish(&mut state);}
+  assert!(matches!(watch.poll(),Some(Publication::Snapshot{..})),"recovery cannot resume sparse updates over failed required data");
+  directory.shutdown_complete().await;
+ }
 }
