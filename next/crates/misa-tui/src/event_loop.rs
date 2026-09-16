@@ -131,7 +131,8 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                         }
                     },
                     Some(Update::View(crate::Presentation::Activate(next))) => {
-                        if scope.is_empty() {scope=next;} else if scope != next {
+                        if scope.is_empty() {screen.enter_draft_scope(next.clone());scope=next;} else if scope != next {
+                            screen.remember_draft();
                             let old = (
                                 std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen)),
                                 std::mem::take(&mut contributions), std::mem::take(&mut screen.dialogs),
@@ -143,7 +144,8 @@ async fn drive_with_clipboard(session: &mut dyn Session, screen: &mut Screen,
                             if !scope.is_empty() { parked.insert(scope,old); }
                             if let Some((r,c,d,e,p,command,panel,selection,scroll,follow,attachments,upload_count,epoch))=parked.remove(&next) {
                                 retained=r;contributions=c;screen.dialogs=d;screen.editor=e;screen.picker=p;screen.pending_command=command;screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;
-                            } else { screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
+                            } else { screen.editor.set_text(screen.prefs.drafts.get(&next).cloned().unwrap_or_default());screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
+                            screen.draft_scope=Some(next.clone());
                             scope=next;
                         }
                     },
@@ -589,7 +591,7 @@ mod scope_tests {
         let mut session=SurfaceSession{updates:receive_updates,received,frames:frame.clone(),sent:None};
         let mut writer=Writer{frames:frame.clone(),changed};
         let mut screen=Screen::new(80,24);
-        screen.editor.set_text("draft A");
+        screen.prefs.drafts.insert("A".into(),"draft A".into());
         screen.dialogs.update("secret".into(),1,Some(misa_client::request::Model{form:None,id:"secret".into(),generation:1,title:"Credential".into(),body:misa_proto::Node::section("request").id("request"),input:Some(misa_client::request::Input{id:"value".into(),label:"Key".into(),secret:true}),actions:vec![]}));
         screen.dialogs.open();screen.dialogs.key(&crate::Key::Char('s'));screen.dialogs.key(&crate::Key::Escape);
         let (keys,events)=mpsc::channel(8);

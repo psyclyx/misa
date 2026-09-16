@@ -61,6 +61,8 @@ pub struct Prefs {
     pub opened: Vec<String>,
     /// What was in the composer, unsent.
     pub draft: String,
+    /// Drafts are qualified by daemon identity and exact session incarnation.
+    pub drafts: BTreeMap<String,String>,
     /// How often each choice was accepted, by the value the picker offered.
     pub frecency: BTreeMap<String, i64>,
 }

@@ -13,6 +13,30 @@ impl File {
         Self { path }
     }
 
+    /// Merge only this surface's changed settings under a stable cross-process lock.
+    pub fn update(&self,before:&crate::prefs::Prefs,after:&crate::prefs::Prefs)->Result<(),String> {
+        let parent=self.path.parent().filter(|path|!path.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|error|error.to_string())?;
+        let mut options=std::fs::OpenOptions::new();options.read(true).write(true).create(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let lock=options.open(self.path.with_extension("lock")).map_err(|error|error.to_string())?;
+        lock.lock().map_err(|error|error.to_string())?;
+        let mut current:serde_json::Value=match self.read()? {Some(text)=>serde_json::from_str(&text).map_err(|error|format!("Cannot merge invalid preferences: {error}"))?,None=>serde_json::to_value(crate::prefs::Prefs::default()).unwrap()};
+        let current=current.as_object_mut().ok_or("Preferences must be an object")?;
+        let before=serde_json::to_value(before).map_err(|error|error.to_string())?;
+        let after=serde_json::to_value(after).map_err(|error|error.to_string())?;
+        for (key,value) in after.as_object().unwrap() {
+            if before.get(key)==Some(value){continue;}
+            if matches!(key.as_str(),"drafts"|"frecency") {
+                let object=current.entry(key.clone()).or_insert_with(||serde_json::json!({})).as_object_mut().ok_or("Preference map is invalid")?;
+                for (id,value) in value.as_object().ok_or("Preference map is invalid")? {
+                    if before.get(key).and_then(|value|value.get(id))!=Some(value){object.insert(id.clone(),value.clone());}
+                }
+            } else {current.insert(key.clone(),value.clone());}
+        }
+        self.write(&serde_json::to_string_pretty(current).map_err(|error|error.to_string())?)
+    }
+
     pub fn default_path() -> PathBuf {
         if let Ok(explicit) = std::env::var("MISA_PREFS")
             && !explicit.is_empty()
@@ -82,6 +106,23 @@ mod tests {
     use super::*;
     use crate::prefs::Prefs;
 
+    #[test]
+    fn independent_writers_merge_drafts_from_stale_snapshots() {
+        let directory=std::env::temp_dir().join(format!("misa-draft-writers-{}-{}",std::process::id(),crate::test_unique_id()));
+        let path=directory.join("client.json");
+        let barrier=std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads=(0..8).map(|index|{
+            let (path,barrier)=(path.clone(),barrier.clone());
+            std::thread::spawn(move||{
+                let before=Prefs::default();let mut after=before.clone();after.drafts.insert(format!("peer{index}:scope:epoch"),format!("draft{index}"));
+                barrier.wait();File::at(path).update(&before,&after).unwrap();
+            })
+        }).collect::<Vec<_>>();
+        for thread in threads{thread.join().unwrap();}
+        let prefs=Prefs::load(&File::at(path));assert_eq!(prefs.drafts.len(),8);
+        for index in 0..8{assert_eq!(prefs.drafts[&format!("peer{index}:scope:epoch")],format!("draft{index}"));}
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn a_terminal_saves_private_complete_documents_and_reports_write_failures() {
         let directory = std::env::temp_dir().join(format!("misa-storage-{}", std::process::id()));

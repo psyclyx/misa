@@ -10,6 +10,7 @@ struct Facts {
     truncated: bool,
 }
 enum Job {
+    Report(Node),
     Form(String,misa_client::form::Form,BTreeMap<String,String>),
     Completed(String),
     Opened(u64, Choice),
@@ -160,6 +161,7 @@ pub(super) async fn run(
             result=jobs.join_next(),if !jobs.is_empty()=>{
                 match result.unwrap().unwrap_or_else(|error|Err(error.to_string())) {
                     Ok(Job::Form(daemon,form,drafts))=>proxy.send_event(Update::DaemonForm{daemon,form,drafts})?,
+                    Ok(Job::Report(document))=>proxy.send_event(Update::DocumentReport(document))?,
                     Ok(Job::Completed(message))=>proxy.send_event(Update::Notice(message))?,
                     Ok(Job::Opened(version,choice))=>{proxy.send_event(Update::Notice(format!("Session {} opened",choice.1.id)))?;if version==navigation{select=Some(choice);}},
                     Ok(Job::Closed(identity,scope))=>{if let Some(instance)=instances.get(&(identity,scope)){proxy.send_event(Update::Session{generation:instance.generation,update:Box::new(Update::Notice("Server session stopped; local draft retained".into()))})?;}},
@@ -303,7 +305,7 @@ async fn invoke_daemon(
                     .await
                     .map_err(|fault| fault.message)?;
                 Ok(Job::Opened(version, (daemon, entry)))
-            } else { Ok(Job::Completed(format!("{command} completed"))) }
+            } else if value.is_null() { Ok(Job::Completed(format!("{command} completed"))) } else {Ok(Job::Report(misa_client::request::report(&format!("{} · {command}",daemon.identity()),&value)))}
         }
         Outcome::Rejected { fault } => Err(fault.message),
         Outcome::Indeterminate { fault } => Err(format!(

@@ -167,6 +167,8 @@ pub struct Screen {
     history_search: Option<HistorySearch>,
     pub theme: Theme,
     pub editor: ed::Editor,
+    draft_scope: Option<String>,
+    saved_prefs: Prefs,
     /// The picker in front of the editor, when one is open.
     pub picker: Option<Picker>,
     /// Which command an accepted argument belongs to.
@@ -199,6 +201,8 @@ pub struct Screen {
 impl Screen {
     pub fn new(width: u16, height: u16) -> Screen {
         Screen {
+            draft_scope: None,
+            saved_prefs: Prefs::default(),
             local_presentation: presentation::stock(),
             components: Default::default(),
             values: Default::default(),
@@ -246,9 +250,21 @@ impl Screen {
             _ => Theme::dark(),
         };
         screen.editor.set_text(prefs.draft.clone());
+        screen.saved_prefs=prefs.clone();
         screen.prefs = prefs;
         screen.prefs_path = Some(path);
         screen
+    }
+
+    fn remember_draft(&mut self) {
+        if let Some(scope)=&self.draft_scope {
+            self.prefs.drafts.insert(scope.clone(),self.editor.text().into());
+        } else {self.prefs.draft=self.editor.text().into();}
+    }
+    fn enter_draft_scope(&mut self,scope:String) {
+        self.remember_draft();
+        self.editor.set_text(self.prefs.drafts.get(&scope).cloned().unwrap_or_default());
+        self.draft_scope=Some(scope);
     }
 
     /// Write what this client knows, and say so when it cannot.
@@ -260,9 +276,10 @@ impl Screen {
         let Some(path) = self.prefs_path.clone() else {
             return;
         };
-        self.prefs.draft = self.editor.text().to_string();
-        if let Err(error) = self.prefs.save(&storage::File::at(path)) {
-            self.notice = Some(error);
+        self.remember_draft();
+        match storage::File::at(path).update(&self.saved_prefs,&self.prefs) {
+            Ok(())=>self.saved_prefs=self.prefs.clone(),
+            Err(error)=>self.notice=Some(error),
         }
     }
 
@@ -1616,6 +1633,19 @@ mod tests {
         dir.join("client.json")
     }
 
+    #[test]
+    fn persisted_drafts_follow_exact_scope_and_independent_windows_merge() {
+        let path=memory("scoped-drafts");
+        let mut first=Screen::remembering(Prefs::default(),path.clone());
+        let mut second=Screen::remembering(Prefs::default(),path.clone());
+        first.enter_draft_scope("peer-a:session:epoch1".into());first.editor.set_text("first");first.save();
+        second.enter_draft_scope("peer-b:session:epoch1".into());second.editor.set_text("second");second.save();
+        let prefs=Prefs::load(&storage::File::at(path.clone()));
+        assert_eq!(prefs.drafts["peer-a:session:epoch1"],"first");assert_eq!(prefs.drafts["peer-b:session:epoch1"],"second");
+        let mut reopened=Screen::remembering(prefs,path);
+        reopened.enter_draft_scope("peer-a:session:epoch2".into());assert_eq!(reopened.editor.text(),"");
+        reopened.enter_draft_scope("peer-a:session:epoch1".into());assert_eq!(reopened.editor.text(),"first");
+    }
     #[test]
     fn a_client_that_remembers_starts_where_somebody_left_off() {
         // What "a restart forgets where somebody was" meant: the theme, the nodes they had

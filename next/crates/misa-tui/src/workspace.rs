@@ -530,7 +530,7 @@ impl Session for Workspace {
                 let definition=interface.commands.get(&command).ok_or("Command is no longer installed")?.clone();
                 let reply=owner.client.invoke(scope,definition,input,std::time::Duration::from_secs(30)).await.map_err(|f|f.message)?;
                 let message=match reply.outcome {
-                    misa_proto::invocation::Outcome::Completed{..}=>format!("{command} completed"),
+                    misa_proto::invocation::Outcome::Completed{value}=>{if !value.is_null(){return Ok(LocalChange::Reply(SessionReply::Report(misa_client::request::report(&format!("{} · {command}",owner.identity()),&value))));}format!("{command} completed")},
                     misa_proto::invocation::Outcome::Rejected{fault}=>fault.message,
                     misa_proto::invocation::Outcome::Indeterminate{fault}=>format!("Outcome uncertain: {}",fault.message),
                     misa_proto::invocation::Outcome::Accepted{operation}=>{
