@@ -280,13 +280,23 @@ impl Client {
 /// connection is not a person waiting: it is the next image fetch, which can try again.
 pub struct Store {
     endpoint: Endpoint,
-    address: EndpointAddr,
+    address: std::sync::Mutex<EndpointAddr>,
     connection: tokio::sync::Mutex<Option<Client>>,
 }
 
 impl Store {
     pub fn new(endpoint: Endpoint, address: EndpointAddr) -> Arc<Store> {
-        Arc::new(Store { endpoint, address, connection: tokio::sync::Mutex::new(None) })
+        Arc::new(Store { endpoint, address: std::sync::Mutex::new(address), connection: tokio::sync::Mutex::new(None) })
+    }
+
+    pub fn refresh_address(&self, address: EndpointAddr) -> Result<(), String> {
+        let mut current = self.address.lock().expect("blob address poisoned");
+        if current.id != address.id { return Err("Routing hints name a different daemon".into()); }
+        *current = address;
+        Ok(())
+    }
+    fn address(&self) -> EndpointAddr {
+        self.address.lock().expect("blob address poisoned").clone()
     }
 
     /// One request, over the connection this store keeps, reconnecting once if it has gone.
@@ -297,7 +307,7 @@ impl Store {
         // that stream instead of handing a partial reply to the next caller.
         let mut connection = match guard.take() {
             Some(connection) => connection,
-            None => Client::connect(&self.endpoint, self.address.clone()).await?,
+            None => Client::connect(&self.endpoint, self.address()).await?,
         };
         let answer = connection.ask(&message).await;
         match answer {
@@ -306,7 +316,7 @@ impl Store {
                 // A connection that has gone is not a store that has no bytes, and reconnecting
                 // once is what tells the two apart.
                 *guard = None;
-                let mut fresh = Client::connect(&self.endpoint, self.address.clone())
+                let mut fresh = Client::connect(&self.endpoint, self.address())
                     .await
                     .map_err(|err| format!("{first}; reconnecting: {err}"))?;
                 let answer = fresh.ask(&message).await;

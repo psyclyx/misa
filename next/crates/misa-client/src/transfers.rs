@@ -81,6 +81,10 @@ impl Transfers {
     }
     /// Explicit relationship removal cancels socket work and refuses new work.
     /// Already running blocking decoders finish while retaining their permits.
+    pub fn refresh_address(&self, address: iroh::EndpointAddr) -> Result<(), String> {
+        self.store.refresh_address(address)
+    }
+
     pub fn close(&self) {
         self.closed.send_replace(true);
         self.slots.close();

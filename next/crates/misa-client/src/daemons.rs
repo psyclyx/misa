@@ -254,6 +254,10 @@ impl Daemons {
             }
             return Err(Fault::new("closed", "Daemon connection was cancelled"));
         }
+        if let Ok(daemon) = &result {
+            daemon.client.refresh_address(address.clone()).await?;
+            daemon.blobs.refresh_address(address).map_err(Fault::protocol)?;
+        }
         if result.is_err() {
             let mut connected = self
                 .connected
@@ -485,6 +489,29 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[tokio::test]
+    async fn fresh_ticket_refreshes_existing_relationship_after_port_changes() {
+        let a = misa_transport::iroh::bind(None, false).await.unwrap();
+        let secret = a.secret_key().clone();
+        let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
+        let router = iroh::protocol::Router::builder(a.clone())
+            .accept(scoped::ALPN, handler(&a, Directory::new("before"))).spawn();
+        let registry = Daemons::new(endpoint.clone(), ClientInfo::new("restart-test", "1"));
+        let first = registry.connect(address(&a)).await.unwrap();
+        current(&first, "before").await;
+        router.shutdown().await.unwrap();
+        a.close().await;
+        let b = misa_transport::iroh::bind(Some(secret), false).await.unwrap();
+        let router = iroh::protocol::Router::builder(b.clone())
+            .accept(scoped::ALPN, handler(&b, Directory::new("after"))).spawn();
+        let refreshed = registry.connect(address(&b)).await.unwrap();
+        assert!(Arc::ptr_eq(&first, &refreshed));
+        current(&first, "after").await;
+        assert!(first.client.refresh_address(address(&endpoint)).await.is_err());
+        first.client.disconnect().await.unwrap();
+        router.shutdown().await.unwrap();
+        endpoint.close().await;
     }
     #[tokio::test]
     async fn multiple_daemons_keep_same_named_sessions_distinct_and_deduplicate_peers() {

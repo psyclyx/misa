@@ -123,6 +123,7 @@ struct Lease {
     changes: watch::Receiver<u64>,
 }
 enum Request {
+    RefreshAddress(EndpointAddr),
     Observe {
         selection: Selection,
         checkpoint: Option<Checkpoint>,
@@ -145,6 +146,14 @@ type Calls = BTreeMap<u64, oneshot::Sender<Result<Reply, Fault>>>;
 type Reads = BTreeMap<u64, oneshot::Sender<Result<ReadValue, Fault>>>;
 
 impl Client {
+    /// Refresh routing hints for the same authenticated peer without replacing leases.
+    pub async fn refresh_address(&self, address: EndpointAddr) -> Result<(), Fault> {
+        if address.id.to_string() != self.welcome().daemon {
+            return Err(Fault::new("identity", "Routing hints name a different daemon"));
+        }
+        self.inner.commands.send(Request::RefreshAddress(address)).await.map_err(|_| stopped())
+    }
+
     pub async fn connect(
         endpoint: &Endpoint,
         address: EndpointAddr,
@@ -341,7 +350,7 @@ async fn run(
     mut commands: mpsc::Receiver<Request>,
     mut cancelled: mpsc::Receiver<ObservationId>,
     sweep: Arc<Notify>,
-    dial: Dial,
+    mut dial: Dial,
     status: watch::Sender<Status>,
     stop: Arc<AtomicBool>,
 ) {
@@ -453,6 +462,14 @@ async fn run(
                 let Some(request) = request else { return; };
                 let mut state = state.lock().expect("client state poisoned");
                 match request {
+                    Request::RefreshAddress(address) => {
+                        dial.address = address;
+                        if wire.is_none() && enabled {
+                            reconnect.abort_all();
+                            reconnect = tokio::task::JoinSet::new();
+                            attempts = 0;
+                        }
+                    }
                     Request::Observe { selection, checkpoint, reply } => {
                         if reply.is_closed() { continue; }
                         if !interests.is_empty() { let _ = reply.send(Err(Fault::new("busy", "Restoring observation interests"))); continue; }
