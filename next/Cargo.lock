@@ -2716,16 +2716,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-client"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "iroh",
+ "misa-proto",
+ "misa-protocol",
+ "misa-transport",
+ "misa-value",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "misa-daemon"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ciborium",
+ "getrandom 0.4.3",
  "misa-kernel",
  "misa-plugin",
  "misa-proto",
+ "misa-protocol",
  "misa-session",
  "misa-transport",
  "misa-value",
  "qrcode",
+ "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2740,6 +2760,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "futures",
+ "libc",
  "misa-proto",
  "misa-value",
  "reqwest 0.12.28",
@@ -2755,7 +2776,6 @@ name = "misa-kit"
 version = "0.1.0"
 dependencies = [
  "misa-proto",
- "misa-render",
  "misa-value",
  "serde",
  "serde_json",
@@ -2765,8 +2785,10 @@ dependencies = [
 name = "misa-plugin"
 version = "0.1.0"
 dependencies = [
+ "misa-client",
  "misa-kernel",
  "misa-proto",
+ "misa-protocol",
  "misa-reframe",
  "misa-render",
  "misa-session",
@@ -2793,6 +2815,7 @@ version = "0.1.0"
 dependencies = [
  "misa-proto",
  "misa-value",
+ "serde",
  "tokio",
 ]
 
@@ -2810,6 +2833,7 @@ version = "0.1.0"
 dependencies = [
  "misa-proto",
  "misa-value",
+ "serde",
  "unicode-width",
 ]
 
@@ -2826,6 +2850,7 @@ dependencies = [
  "misa-render",
  "misa-value",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2836,8 +2861,10 @@ dependencies = [
  "arboard",
  "futures",
  "image",
+ "misa-client",
  "misa-kit",
  "misa-proto",
+ "misa-protocol",
  "misa-render",
  "misa-transport",
  "misa-value",
@@ -2855,12 +2882,14 @@ dependencies = [
  "async-trait",
  "blake3",
  "iroh",
+ "libc",
  "misa-kernel",
  "misa-proto",
  "misa-protocol",
  "misa-render",
  "misa-session",
  "misa-value",
+ "serde",
  "tokio",
  "tracing",
 ]
@@ -2874,13 +2903,19 @@ dependencies = [
  "base64 0.22.1",
  "crossterm",
  "image",
+ "iroh",
+ "misa-client",
+ "misa-daemon",
  "misa-kernel",
  "misa-kit",
  "misa-proto",
+ "misa-protocol",
  "misa-render",
  "misa-session",
  "misa-transport",
  "misa-value",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2898,8 +2933,14 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures",
+ "getrandom 0.4.3",
+ "iroh",
+ "misa-client",
+ "misa-daemon",
  "misa-kernel",
+ "misa-kit",
  "misa-proto",
+ "misa-protocol",
  "misa-reframe",
  "misa-render",
  "misa-session",
@@ -2908,6 +2949,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
