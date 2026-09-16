@@ -284,11 +284,11 @@ impl Daemons {
             (target.to_owned(), None, None)
         };
         let address = misa_transport::iroh::address_of(&node).map_err(Fault::protocol)?;
-        #[cfg(unix)]
+        #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
         let local = misa_transport::local::pair(&node, &self.endpoint.id().to_string())
             .await
             .map_err(Fault::protocol)?;
-        #[cfg(not(unix))]
+        #[cfg(not(all(unix, not(any(target_os = "android", target_os = "ios")))))]
         let local = false;
         if let Some(code) = code.filter(|_| !local) {
             // Admission is a separate exchange from
@@ -340,7 +340,7 @@ impl Daemons {
         true
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     pub async fn discover_local(&self) -> Result<Vec<Result<Arc<Daemon>, Fault>>, Fault> {
         let targets = misa_transport::local::discover()
             .await
