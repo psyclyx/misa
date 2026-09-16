@@ -28,7 +28,7 @@ enum LocalChange {
     Attached(u64, crate::scoped_remote::ScopedRemote),
     Opened(u64, crate::scoped_remote::ScopedRemote),
     Closed(String),
-    Completion(u64,String,String,Result<(Vec<Choice>,bool),String>),
+    Completion(u64, String, String, Result<(Vec<Choice>, bool), String>),
 }
 
 impl Workspace {
@@ -246,7 +246,11 @@ impl Workspace {
             Source::resident("client.presentations", "Presentations"),
             Source::resident("client.daemons", "Daemons"),
             Source::resident("client.sessions", "Sessions"),
-            Source::on_demand("client.conversations","Stored conversations","Search the daemon archive"),
+            Source::on_demand(
+                "client.conversations",
+                "Stored conversations",
+                "Search the daemon archive",
+            ),
         ]);
         if let Some(id) = self
             .active
@@ -658,11 +662,37 @@ impl Session for Workspace {
             }
         }
         if let SessionRequest::Complete { source, prefix } = &request {
-            if source=="client.conversations" {
-                if self.local_pending.len()>=8 {return Some(SessionReply::Complete{source:source.clone(),prefix:prefix.clone(),result:Err("Too many pending workspace requests".into())});}
-                let Some(daemon)=self.selected.as_ref().and_then(|id|self.connected.get(id)).cloned() else{return Some(SessionReply::Complete{source:source.clone(),prefix:prefix.clone(),result:Err("Choose a daemon first".into())});};
-                let generation=self.selection_generation;let source=source.clone();let prefix=prefix.clone();
-                self.local_pending.spawn(async move {let result=misa_client::lifecycle::conversations(&daemon,&prefix,100).await.map(|value|(value.items,value.truncated)).map_err(|fault|fault.message);Ok(LocalChange::Completion(generation,source,prefix,result))});return None;
+            if source == "client.conversations" {
+                if self.local_pending.len() >= 8 {
+                    return Some(SessionReply::Complete {
+                        source: source.clone(),
+                        prefix: prefix.clone(),
+                        result: Err("Too many pending workspace requests".into()),
+                    });
+                }
+                let Some(daemon) = self
+                    .selected
+                    .as_ref()
+                    .and_then(|id| self.connected.get(id))
+                    .cloned()
+                else {
+                    return Some(SessionReply::Complete {
+                        source: source.clone(),
+                        prefix: prefix.clone(),
+                        result: Err("Choose a daemon first".into()),
+                    });
+                };
+                let generation = self.selection_generation;
+                let source = source.clone();
+                let prefix = prefix.clone();
+                self.local_pending.spawn(async move {
+                    let result = misa_client::lifecycle::conversations(&daemon, &prefix, 100)
+                        .await
+                        .map(|value| (value.items, value.truncated))
+                        .map_err(|fault| fault.message);
+                    Ok(LocalChange::Completion(generation, source, prefix, result))
+                });
+                return None;
             }
 
             if source.starts_with("client.") {
@@ -740,7 +770,7 @@ async fn monitor_overview(
 ) {
     let mut directory = daemon.watch();
     loop {
-        let overview = match misa_client::overview::Overview::open(&daemon.client).await {
+        let mut overview = match misa_client::overview::Overview::open(&daemon.client).await {
             Ok(overview) => overview,
             Err(fault) => {
                 snapshots
@@ -754,18 +784,15 @@ async fn monitor_overview(
                 continue;
             }
         };
-        let mut changes = overview.watch();
         loop {
             let snapshot = overview.snapshot().map_err(|fault| fault.message);
-            let scope = snapshot.as_ref().ok().map(|value| value.scope.clone());
             snapshots
                 .lock()
                 .unwrap()
                 .insert(daemon.identity().into(), snapshot);
             signal.send_modify(|v| *v = v.wrapping_add(1));
-            tokio::select! {result=changes.changed()=>if result.is_err(){return;},result=directory.changed()=>if result.is_err(){return;}}
-            if scope.as_ref() != Some(&daemon.client.welcome().scope) {
-                break;
+            if overview.changed().await.is_err() {
+                return;
             }
         }
     }

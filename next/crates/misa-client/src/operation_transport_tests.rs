@@ -46,6 +46,7 @@ impl TestOwner {
     fn definitions() -> Vec<Definition> {
         vec![
             misa_proto::query::catalog_definition(),
+            misa_proto::directory::definition(),
             Definition {
                 id: "operation.result".into(),
                 arguments: vec![Schema::String],
@@ -70,6 +71,8 @@ impl TestOwner {
                     let value = if member.query.id == misa_proto::query::CATALOG {
                         serde_json::from_value(serde_json::to_value(Self::definitions()).unwrap())
                             .unwrap()
+                    } else if member.query.id == misa_proto::directory::SESSIONS {
+                        Value::list([])
                     } else {
                         match &*self.state.lock().unwrap() {
                             State::Value(value) => value.clone(),
@@ -219,7 +222,10 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
             Server {
                 handler: misa_transport::scoped_server::Handler {
                     daemon: server.id().to_string(),
-                    scope: Scope {id:ScopeId::Daemon,incarnation:"source".into()},
+                    scope: Scope {
+                        id: ScopeId::Daemon,
+                        incarnation: "source".into(),
+                    },
                     resolver: Arc::new(Registry(owner.clone())),
                     admission: Arc::new(misa_transport::admission::Admission::open()),
                 },
@@ -287,7 +293,19 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
         let watch = Watch::open(&client, &source, reference.clone(), false)
             .await
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5),async {while !watch.observation.as_ref().unwrap().inspect(|replica,_|replica.current().is_some()).unwrap_or(false) {tokio::task::yield_now().await;}}).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !watch
+                .observation
+                .as_ref()
+                .unwrap()
+                .inspect(|replica, _| replica.current().is_some())
+                .unwrap_or(false)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         let expired = matches!(state, State::Value(_));
         owner.set(state);
         let completion = tokio::time::timeout(std::time::Duration::from_secs(5), watch.wait())
@@ -315,6 +333,109 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
         matches!(&*owner.state.lock().unwrap(),State::Value(value) if value.get("terminal")==Some(&Value::Bool(false))),
         "dropping interest never cancels domain work"
     );
+    client.disconnect().await.unwrap();
+    router.shutdown().await.unwrap();
+    endpoint.close().await;
+}
+struct RestartServer {
+    daemon: String,
+    owners: [Arc<TestOwner>; 2],
+    accepted: AtomicUsize,
+    cut: Arc<Notify>,
+}
+impl std::fmt::Debug for RestartServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("restart fixture")
+    }
+}
+impl iroh::protocol::ProtocolHandler for RestartServer {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        let first = self.accepted.fetch_add(1, Ordering::SeqCst) == 0;
+        let owner = self.owners[usize::from(!first)].clone();
+        let killer = first.then(|| {
+            let socket = connection.clone();
+            let cut = self.cut.clone();
+            tokio::spawn(async move {
+                cut.notified().await;
+                socket.close(1u32.into(), b"restart");
+            })
+        });
+        let handler = misa_transport::scoped_server::Handler {
+            daemon: self.daemon.clone(),
+            scope: owner.scope.clone(),
+            resolver: Arc::new(Registry(owner)),
+            admission: Arc::new(misa_transport::admission::Admission::open()),
+        };
+        let result = handler.accept(connection).await;
+        if let Some(task) = killer {
+            task.abort();
+        }
+        result
+    }
+}
+#[tokio::test]
+async fn overview_follows_authenticated_restart_without_relabeling_old_data_current() {
+    let server = misa_transport::iroh::bind(None, false).await.unwrap();
+    let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
+    let mut old = TestOwner::new();
+    Arc::get_mut(&mut old).unwrap().scope = Scope {
+        id: ScopeId::Daemon,
+        incarnation: "old".into(),
+    };
+    let mut new = TestOwner::new();
+    Arc::get_mut(&mut new).unwrap().scope = Scope {
+        id: ScopeId::Daemon,
+        incarnation: "new".into(),
+    };
+    let cut = Arc::new(Notify::new());
+    let router = iroh::protocol::Router::builder(server.clone())
+        .accept(
+            misa_proto::scoped::ALPN,
+            RestartServer {
+                daemon: server.id().to_string(),
+                owners: [old, new],
+                accepted: AtomicUsize::new(0),
+                cut: cut.clone(),
+            },
+        )
+        .spawn();
+    let address =
+        misa_transport::iroh::address_of(&misa_transport::iroh::node_of(&server)).unwrap();
+    let client = Client::connect(
+        &endpoint,
+        address,
+        ClientInfo::new("overview-test", "1"),
+        Limits::default(),
+    )
+    .await
+    .unwrap();
+    let mut overview = crate::overview::Overview::open(&client).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !matches!(overview.snapshot().unwrap().status, Status::Current) {
+            overview.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    cut.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let snapshot = overview.snapshot().unwrap();
+            if snapshot.scope != client.welcome().scope {
+                assert!(!matches!(snapshot.status, Status::Current));
+            }
+            if snapshot.scope.incarnation == "new" && matches!(snapshot.status, Status::Current) {
+                break;
+            }
+            overview.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    drop(overview);
     client.disconnect().await.unwrap();
     router.shutdown().await.unwrap();
     endpoint.close().await;

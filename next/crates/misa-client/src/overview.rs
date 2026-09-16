@@ -67,6 +67,9 @@ pub struct Snapshot {
 }
 pub struct Overview {
     observation: Observation,
+    client: Client,
+    connection: tokio::sync::watch::Receiver<crate::driver::Status>,
+    refresh_fault: Option<Fault>,
 }
 impl Overview {
     pub async fn open(client: &Client) -> Result<Self, Fault> {
@@ -83,6 +86,9 @@ impl Overview {
             }
         }
         Ok(Self {
+            client: client.clone(),
+            connection: client.status(),
+            refresh_fault: None,
             observation: client
                 .observe(
                     Selection {
@@ -97,6 +103,40 @@ impl Overview {
     pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> {
         self.observation.watch()
     }
+    /// Follow authenticated daemon incarnations. A changed greeting first makes
+    /// old data stale; the next wait rebuilds against the new owner's catalog.
+    pub async fn changed(&mut self) -> Result<(), Fault> {
+        if matches!(
+            self.connection.borrow().phase,
+            crate::driver::Phase::Disconnected
+        ) {
+            return Err(Fault::new("closed", "Daemon relationship disconnected"));
+        }
+        let scope = self
+            .observation
+            .inspect(|replica, _| replica.selection().scope.clone());
+        if scope.as_ref() != Some(&self.client.welcome().scope) {
+            if self.refresh_fault.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            match Self::open(&self.client).await {
+                Ok(replacement) => {
+                    let current = replacement
+                        .observation
+                        .inspect(|replica, _| replica.selection().scope.clone());
+                    if current.as_ref() == Some(&self.client.welcome().scope) {
+                        *self = replacement;
+                    }
+                }
+                Err(fault) => self.refresh_fault = Some(fault),
+            }
+            return Ok(());
+        }
+        tokio::select! {
+            changed = self.observation.changed() => changed,
+            changed = self.connection.changed() => changed.map_err(|_|Fault::new("closed","Daemon relationship closed")),
+        }
+    }
     pub fn snapshot(&self) -> Result<Snapshot, Fault> {
         self.observation
             .inspect(|replica, _| {
@@ -109,6 +149,12 @@ impl Overview {
                     work: vec![],
                     unavailable: BTreeMap::new(),
                 };
+                if result.scope != self.client.welcome().scope {
+                    result.status =
+                        Status::Stale(self.refresh_fault.clone().unwrap_or_else(|| {
+                            Fault::new("owner_changed", "Daemon restarted; refreshing overview")
+                        }));
+                }
                 let Some(members) = replica.last_good() else {
                     return Ok(result);
                 };
