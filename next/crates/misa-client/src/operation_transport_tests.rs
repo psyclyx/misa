@@ -260,6 +260,16 @@ async fn exact_cross_scope_interests_survive_reconnect_and_report_expiry_fault_c
         scope: owner.scope.clone(),
         id: "accepted".into(),
     };
+    let target = Interface::load(&client, owner.scope.clone()).await.unwrap();
+    let current = detail(&client, &target, "accepted").await.unwrap().unwrap();
+    assert_eq!(current.operation, reference);
+    assert_eq!(current.generation, 1);
+    assert!(!current.terminal);
+    assert_eq!(owner.active.load(Ordering::SeqCst), 0, "finite command preparation retains no observation");
+    assert!(detail(&client, &target, "different-operation").await.is_err(), "returned identity cannot replace the requested operation");
+    owner.set(State::Value(Value::Null));
+    assert!(detail(&client, &target, "accepted").await.unwrap().is_none());
+    owner.set(State::Value(result(false)));
     let mut watch = Watch::open(&client, &source, reference.clone(), false)
         .await
         .unwrap();

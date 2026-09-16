@@ -8,6 +8,31 @@ use misa_protocol::observation::{MemberState, Status};
 use misa_value::Value;
 use std::collections::BTreeMap;
 
+/// A finite authoritative result for local inspection or command preparation.
+/// The owner and generation must be retained when submitting a later action.
+#[derive(Clone, Debug)]
+pub struct Detail {
+    pub operation: OperationRef,
+    pub generation: i64,
+    pub state: String,
+    pub terminal: bool,
+    pub value: Value,
+}
+pub async fn detail(client: &Client, interface: &Interface, id: &str) -> Result<Option<Detail>, Fault> {
+    let member = interface.query("operation.result", vec![Value::str(id)])?;
+    let result = client.read(Selection {
+        scope: interface.scope.clone(),
+        members: BTreeMap::from([("result".into(), member)]),
+    }, std::time::Duration::from_secs(20)).await?;
+    let value = crate::interface::data(&result, "result")?;
+    if value == &Value::Null { return Ok(None); }
+    let (generation, state, terminal, _) = decode_result(value, id, None)?;
+    Ok(Some(Detail {
+        operation: OperationRef { scope: interface.scope.clone(), id: id.into() },
+        generation, state, terminal, value: value.clone(),
+    }))
+}
+
 #[derive(Debug)]
 pub enum Terminal {
     Finished {
