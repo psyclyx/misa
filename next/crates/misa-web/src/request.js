@@ -10,7 +10,7 @@
     function invalidate(message) {
       if (invalid) return;
       invalid = true;
-      form.querySelectorAll("input:not([type=hidden]), textarea").forEach(function (field) { field.value = ""; });
+      form.querySelectorAll("input:not([type=hidden]), textarea, select").forEach(function (field) { field.value = ""; });
       form.querySelectorAll("input, textarea, button, select").forEach(function (field) { field.disabled = true; });
       doc.getElementById("request-status").textContent = message;
       events.close();

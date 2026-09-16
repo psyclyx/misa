@@ -20,12 +20,19 @@ pub(crate) fn markup_for(model: &ActionForm, command: bool, choices: &BTreeMap<S
 pub(crate) fn markup_at(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>, action: &str, hidden: &[(&str, &str)]) -> String {
     let mut html = format!("<h2>{}</h2><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), escape(action), if command { "command" } else { "action" }, escape(&model.title));
     for (name, value) in hidden { html.push_str(&format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", escape(name), escape(value))); }
-    for (id, field) in &model.fields {
+    html.push_str(&fields(&model.fields, &BTreeMap::new(), choices, drafts));
+    html.push_str("<button>Run action</button></form>");
+    html
+}
+
+pub(crate) fn fields(fields: &[(String, misa_proto::schema::Field)], labels: &BTreeMap<String,String>, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String,String>) -> String {
+    let mut html = String::new();
+    for (id, field) in fields {
         let name = escape(&format!("field.{id}"));
         let draft = drafts.get(id).map(String::as_str).unwrap_or("");
         let value = escape(draft);
         let required = if field.optional { "" } else { " required" };
-        html.push_str(&format!("<label>{}{} ", escape(id), if field.optional { " (optional)" } else { "" }));
+        html.push_str(&format!("<label>{}{} ", escape(labels.get(id).unwrap_or(id)), if field.optional { " (optional)" } else { "" }));
         match &field.schema {
             Schema::String => {
                 if let Some(choices) = choices.get(id) {
@@ -56,7 +63,6 @@ pub(crate) fn markup_at(model: &ActionForm, command: bool, choices: &BTreeMap<St
         }
         html.push_str("</label>");
     }
-    html.push_str("<button>Run action</button></form>");
     html
 }
 

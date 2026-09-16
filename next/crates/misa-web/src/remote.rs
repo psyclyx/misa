@@ -215,6 +215,13 @@ mod tests {
             ]), allow_unknown: false }, result: Schema::Value },
             move |_, _, invocation| { captured.lock().unwrap().push(invocation.input.clone()); Outcome::Completed { value: Value::Null } },
         )).with_binding(Binding { id: "example.feed".into(), binding: ActionBinding { command: "example.feed".into(), bound: BTreeMap::from([("pet".into(), Value::str("owned"))]), inputs: BTreeMap::from([("quantity".into(), "amount".into()), ("label".into(), "label".into())]) } });
+        let form_values = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = form_values.clone();
+        let form_schema = Schema::Record { fields: BTreeMap::from([("count".into(), Field { schema: Schema::Int, optional: false })]), allow_unknown: false };
+        let contribution = contribution.with_command(misa_session::commands::CommandRegistration::new(
+            Command { id: "example.form".into(), input: Schema::Record { fields: BTreeMap::from([("value".into(), Field { schema: form_schema.clone(), optional: false })]), allow_unknown: false }, result: Schema::Value },
+            move |_, _, invocation| { collected.lock().unwrap().push(invocation.input.clone()); Outcome::Completed { value: Value::Null } },
+        ));
         let runtime = misa_session::Runtime::start_with(
             "web",
             "Web",
@@ -232,7 +239,7 @@ mod tests {
             contribution,
         );
         let directory = misa_daemon::directory::Directory::new("web-daemon").unwrap();
-        directory.insert(runtime).unwrap();
+        directory.insert(runtime.clone()).unwrap();
         let server = misa_transport::iroh::bind(None, false).await.unwrap();
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let router = iroh::protocol::Router::builder(server.clone())
@@ -385,6 +392,28 @@ mod tests {
         let valid = super::super::remote_router(remote.clone()).oneshot(form("/perform", "action_id=example.feed&field.quantity=3&field.label=snack&field.pet=forged")).await.unwrap();
         assert_eq!(valid.status(), axum::http::StatusCode::SEE_OTHER);
         assert_eq!(*actions.lock().unwrap(), vec![Value::map([("amount", Value::Int(3)), ("label", Value::str("snack")), ("pet", Value::str("owned"))])]);
+        let Outcome::Accepted { operation: custom } = runtime.request_input(
+            &misa_protocol::invocation::CallContext { principal: endpoint.id().to_string(), connection: 1 },
+            misa_proto::input::Form { title: "Choose a feeding count".into(), input: form_schema, fields: BTreeMap::from([("count".into(), misa_proto::input::Field { label: "Number of portions".into() })]) },
+            ActionBinding { command: "example.form".into(), bound: BTreeMap::new(), inputs: BTreeMap::from([("value".into(), "value".into())]) }, 60_000,
+        ) else { panic!("custom request must be accepted"); };
+        let opened = super::super::remote_router(remote.clone()).oneshot(form("/request", &format!("id={}", custom.id))).await.unwrap();
+        assert_eq!(opened.status(), axum::http::StatusCode::OK);
+        let html = axum::body::to_bytes(opened.into_body(), 65536).await.unwrap();
+        let html = std::str::from_utf8(&html).unwrap();
+        assert!(html.contains("Number of portions") && html.contains("name=\"field.count\"") && html.contains("type=\"number\"") && html.contains("formnovalidate"));
+        assert!(!html.contains("app.js"));
+        let invalid = super::super::remote_router(remote.clone()).oneshot(form("/respond", &format!("id={}&generation=1&action=resolve&field.count=wrong", custom.id))).await.unwrap();
+        assert_eq!(invalid.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(form_values.lock().unwrap().is_empty());
+        let resolved = super::super::remote_router(other.clone()).oneshot(form("/respond", &format!("id={}&generation=1&action=resolve&field.count=4", custom.id))).await.unwrap();
+        assert_eq!(resolved.status(), axum::http::StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while form_values.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(*form_values.lock().unwrap(), vec![Value::map([("value", Value::map([("count", Value::Int(4))]))])]);
+        let duplicate = super::super::remote_router(remote.clone()).oneshot(form("/respond", &format!("id={}&generation=1&action=resolve&field.count=8", custom.id))).await.unwrap();
+        assert_eq!(duplicate.status(), axum::http::StatusCode::BAD_REQUEST);
         let current = remote.daemon.client.read(Selection { scope: credential.scope.clone(), members: BTreeMap::from([("request".into(), remote.interaction.interface.query("operation.request", vec![Value::str(&credential.id)]).unwrap())]) }, Duration::from_secs(5)).await.unwrap();
         let model = misa_client::request::Model::parse(misa_client::interface::data(&current, "request").unwrap(), &remote.interaction.interface).unwrap().unwrap();
         let opened = super::super::remote_router(remote.clone()).oneshot(form("/request", &format!("id={}", credential.id))).await.unwrap();

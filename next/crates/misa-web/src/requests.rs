@@ -46,7 +46,14 @@ pub(crate) async fn open(State(remote): State<Arc<Remote>>, Form(fields): Form<H
     if let Some(input) = &model.input {
         body.push_str(&format!("<label>{}<input name=\"{}\" type=\"{}\" autocomplete=\"off\"></label>", escape(&input.label), escape(&input.id), if input.secret { "password" } else { "text" }));
     }
-    for action in &model.actions { body.push_str(&format!("<button name=\"action\" value=\"{}\">{}</button>", escape(&action.id), escape(&action.label))); }
+    if let Some(form) = &model.form {
+        if let misa_proto::schema::Schema::Record { fields, .. } = &form.input {
+            let fields = fields.iter().map(|(id, field)|(id.clone(),field.clone())).collect::<Vec<_>>();
+            let labels = form.fields.iter().map(|(id,field)|(id.clone(),field.label.clone())).collect();
+            body.push_str(&crate::actions::fields(&fields, &labels, &BTreeMap::new(), &BTreeMap::new()));
+        }
+    }
+    for action in &model.actions { body.push_str(&format!("<button name=\"action\" value=\"{}\"{}>{}</button>", escape(&action.id), if action.id == "cancel" { " formnovalidate" } else { "" }, escape(&action.label))); }
     body.push_str("</form><p>Returning to the session hides this form. It does not cancel the operation.</p><script src=\"./request.js\"></script>");
     page(StatusCode::OK, &model.title, body)
 }
@@ -97,8 +104,12 @@ pub(crate) async fn respond(State(remote): State<Arc<Remote>>, Form(fields): For
     let prepared = async {
         let model = model(&remote, fields.get("id").map(String::as_str).unwrap_or("")).await?;
         if fields.get("generation").and_then(|value| value.parse::<i64>().ok()) != Some(model.generation) { return Err("The request changed; reopen its current form".to_string()); }
-        let values = model.input.as_ref().and_then(|input| fields.get(&input.id).map(|value| (input.id.clone(), Value::str(value)))).into_iter().collect();
-        model.prepare(fields.get("action").map(String::as_str).unwrap_or(""), &values, &remote.interaction.interface).map_err(|fault| fault.message)
+        let drafts = if model.form.is_some() {
+            fields.iter().filter_map(|(id,value)|id.strip_prefix("field.").map(|id|(id.into(),value.clone()))).collect()
+        } else {
+            model.input.as_ref().and_then(|input| fields.get(&input.id).map(|value| (input.id.clone(), value.clone()))).into_iter().collect()
+        };
+        model.prepare_drafts(fields.get("action").map(String::as_str).unwrap_or(""), &drafts, &remote.interaction.interface).map_err(|fault| fault.message)
     }.await;
     let prepared = match prepared {
         Ok(prepared) => prepared,

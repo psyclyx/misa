@@ -64,13 +64,14 @@
           document.body.appendChild(frame);
           const doc = frame.contentDocument;
           const privateDoc = document.implementation.createHTMLDocument("request");
-          privateDoc.body.innerHTML = '<p id="request-status"></p><form id="private-request"><input type="hidden" name="id" value="test"><input type="hidden" name="generation" value="1"><input type="password" name="value" value="private-key"><button>Respond</button></form>';
+          privateDoc.body.innerHTML = '<p id="request-status"></p><form id="private-request"><input type="hidden" name="id" value="test"><input type="hidden" name="generation" value="1"><input type="password" name="value" value="private-key"><select name="field.choice"><option value="">Choose</option><option value="true" selected>Yes</option></select><button>Respond</button></form>';
           let privateEvents;
           MisaRequest.start(privateDoc, function (url) { privateEvents = this; this.close = function () { this.closed = true; }; this.url = url; });
           privateEvents.onmessage({ data: "current" });
           assert(privateDoc.querySelector('[name="value"]').value === "private-key", "current private request retains its local secret draft");
           privateEvents.onmessage({ data: "resolved" });
           assert(privateDoc.querySelector('[name="value"]').value === "" && privateDoc.querySelector("button").disabled && privateEvents.closed, "remote request resolution clears secrets and disables the obsolete form");
+          assert(privateDoc.querySelector("select").value === "" && privateDoc.querySelector("select").disabled, "remote request resolution clears and disables typed choice drafts");
           doc.body.dataset.session = "demo";
           const region =
             '<form id="composer"><textarea name="prompt"></textarea><button>Send</button></form>' +
