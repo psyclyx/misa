@@ -626,7 +626,9 @@ fn resolve(runtime: &Runtime, context: &CallContext, invocation: &Invocation) ->
             text(&invocation.input, "request"),
             generation(&invocation.input),
         )?;
-        if record.oauth || record.phase != Phase::Awaiting {
+        if record.oauth || record.phase != Phase::Awaiting
+            || record.expires_ms.is_some_and(|deadline| deadline <= crate::now_ms())
+        {
             return Err(Fault::new(
                 "stale_request",
                 "Credential request is not accepting a value",
@@ -936,28 +938,96 @@ impl Runtime {
         });
     }
 }
-pub(crate) fn start_expiry_loop(runtime: &Arc<Runtime>) {
+pub(crate) fn start_expiry_loop(runtime: &Arc<Runtime>) -> tokio::task::JoinHandle<()> {
     let weak = Arc::downgrade(runtime);
     let mut deadline = runtime.operation_deadline.subscribe();
+    let mut closing = runtime.closing.subscribe();
+    let mut revision = runtime.watch_rev();
     tokio::spawn(async move {
         loop {
+            if *closing.borrow_and_update() { return; }
             let next = *deadline.borrow_and_update();
             if let Some(at) = next {
                 tokio::select! {
+                    _=closing.changed()=>{return;},
                     changed=deadline.changed()=>{if changed.is_err(){return;}},
                     _=tokio::time::sleep(std::time::Duration::from_millis(at.saturating_sub(crate::now_ms()).max(0) as u64))=>{
-                        let Some(runtime)=weak.upgrade() else{return;};runtime.expire_operations(crate::now_ms());
+                        // Arm before attempting the transition: a checkpoint acknowledgement
+                        // may make a refused transition retryable without moving its deadline.
+                        revision.borrow_and_update();
+                        let Some(runtime)=weak.upgrade() else{return;};
+                        runtime.expire_operations(crate::now_ms());
+                        drop(runtime);
+                        if deadline.borrow().is_some_and(|at| at > crate::now_ms()) { continue; }
+                        // A past deadline is not permission to busy-loop after refusal.
+                        // Successful transitions notify deadline; refused ones await owner
+                        // progress. Closing wakes this even while a client retains the owner.
+                        tokio::select! {
+                            _=closing.changed()=>{return;},
+                            changed=deadline.changed()=>{if changed.is_err(){return;}},
+                            changed=revision.changed()=>{if changed.is_err(){return;}},
+                        }
                     }
                 }
-            } else if deadline.changed().await.is_err() {
-                return;
+            } else {
+                tokio::select! {
+                    _=closing.changed()=>{return;},
+                    changed=deadline.changed()=>{if changed.is_err(){return;}},
+                }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn refused_expiry_waits_for_owner_progress_and_stops_on_shutdown() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use misa_reframe::FnHandler;
+        let refuse = Arc::new(AtomicBool::new(false));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let refusal = refuse.clone();
+        let counter = attempts.clone();
+        let contribution = crate::Contribution::new().with_handler("operations/changed", 100,
+            Arc::new(FnHandler::new("expiry-refusal", move |_: &mut misa_reframe::Tx<'_>, _: &Event| {
+                if refusal.load(Ordering::SeqCst) {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    return Err(misa_reframe::Fault::new("test.refused", "Wait for owner progress"));
+                }
+                Ok(())
+            })));
+        let runtime = Runtime::start_with("expiry", "Expiry", None, Arc::new(Sink::default()),
+            "scripted", "test", Value::Null, contribution);
+        let id = start(&runtime, "alice", "anthropic");
+        refuse.store(true, Ordering::SeqCst);
+        let due = crate::now_ms() - 1;
+        runtime.state.lock().unwrap().operations.records.get_mut(&id).unwrap().expires_ms = Some(due);
+        runtime.operation_deadline.send_replace(Some(due));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while attempts.load(Ordering::SeqCst) == 0 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "an overdue refused transition must not spin");
+        assert!(runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Awaiting);
+        assert!(matches!(resolve(&runtime, &context("alice"),
+            &invocation(&runtime, "credentials.resolve", resolve_input(&id, 1))),
+            Outcome::Rejected { fault } if fault.code == "stale_request"),
+            "deadline validity is enforced even when publishing expiry was refused");
+        refuse.store(false, Ordering::SeqCst);
+        runtime.rev.send_replace(runtime.rev());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Expired { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let task = start_expiry_loop(&runtime);
+        runtime.shutdown_complete().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), task).await.unwrap().unwrap();
+        // The retained Arc must not keep the scheduling task alive after closure.
+        assert!(runtime.is_closed());
+    }
     #[tokio::test]
     async fn private_responses_are_declared_request_preparation_without_hiding_their_schemas() {
         let (runtime, _) = setup();

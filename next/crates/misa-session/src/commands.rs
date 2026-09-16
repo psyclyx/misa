@@ -149,14 +149,13 @@ fn shortcuts(installed: &BTreeMap<String, CommandRegistration>) -> Vec<misa_prot
                 let command = match other {
                     "model" => "session.model.select", "effort" => "session.effort.select",
                     "clear" => "session.clear", "compact" => "session.compact",
-                    "resume" => "session.conversation.resume", "attach" | "image" => "session.attachment.add",
+                    "attach" | "image" => "session.attachment.add",
                     "models" => "session.models.refresh",
                     "login" => "credentials.authorize",
                     _ => return None,
                 };
                 if !installed.contains_key(command) { return None; }
                 if other == "effort" { entry.args[0].name = "effort".into(); }
-                if other == "resume" { entry.args[0].required = true; }
                 Target::Command { command: command.into() }
             }
         };
@@ -278,7 +277,6 @@ pub fn builtins() -> Vec<CommandRegistration> {
     for (id, name, argument, required) in [
         ("session.clear", "clear", "reason", false),
         ("session.compact", "compact", "", false),
-        ("session.conversation.resume", "resume", "conversation", true),
         ("session.attachment.add", "attach", "path", true),
     ] {
         let input = if argument.is_empty() { record([]) } else { record([(argument, Schema::String, !required)]) };
@@ -360,6 +358,20 @@ mod tests {
     use super::*;
     use misa_protocol::invocation::Dispatcher;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn conversation_resume_is_owned_only_by_daemon_lifecycle() {
+        let runtime = Runtime::start("resume-boundary", "Resume", None,
+            Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("unused"))),
+            "scripted", "test", Value::Null);
+        assert!(!runtime.command_registry.contains_key("session.conversation.resume"));
+        assert!(!shortcuts(&runtime.command_registry).iter().any(|shortcut| shortcut.id == "resume"));
+        let dispatcher = Dispatcher::new(CallContext { principal: "trusted".into(), connection: 1 }, 4, Default::default(), Default::default());
+        let result = dispatcher.dispatch(runtime.as_ref(), Invocation { id: 1, scope: runtime.scope(),
+            command: "session.conversation.resume".into(), input: Value::map([("conversation", Value::str("other"))]) }).await;
+        assert!(matches!(result.outcome, Outcome::Rejected { .. }));
+        runtime.shutdown_complete().await;
+    }
 
     #[tokio::test]
     async fn contributed_handlers_have_typed_results_and_preserve_uncertain_outcomes() {
