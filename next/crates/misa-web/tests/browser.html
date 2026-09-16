@@ -2,6 +2,7 @@
 <html>
   <body>
     <script src="../src/app.js"></script>
+    <script src="../src/request.js"></script>
     <script>
       (async function () {
         const checks = [];
@@ -60,6 +61,14 @@
           const frame = document.createElement("iframe");
           document.body.appendChild(frame);
           const doc = frame.contentDocument;
+          const privateDoc = document.implementation.createHTMLDocument("request");
+          privateDoc.body.innerHTML = '<p id="request-status"></p><form id="private-request"><input type="hidden" name="id" value="test"><input type="hidden" name="generation" value="1"><input type="password" name="value" value="private-key"><button>Respond</button></form>';
+          let privateEvents;
+          MisaRequest.start(privateDoc, function (url) { privateEvents = this; this.close = function () { this.closed = true; }; this.url = url; });
+          privateEvents.onmessage({ data: "current" });
+          assert(privateDoc.querySelector('[name="value"]').value === "private-key", "current private request retains its local secret draft");
+          privateEvents.onmessage({ data: "resolved" });
+          assert(privateDoc.querySelector('[name="value"]').value === "" && privateDoc.querySelector("button").disabled && privateEvents.closed, "remote request resolution clears secrets and disables the obsolete form");
           doc.body.dataset.session = "demo";
           const region =
             '<form id="composer"><textarea name="prompt"></textarea><button>Send</button></form>' +
@@ -169,6 +178,33 @@
           client.streamUpdate({ update: "end", id: "msg.7.text" });
           client.snapshot(region);
           draft = doc.querySelector("textarea");
+          client.streams([{ id: "atomic.text", role: "assistant", text: "done" }]);
+          const main = doc.getElementById("main");
+          let partial = false;
+          const observer = new MutationObserver(function () {
+            if (doc.getElementById("atomic") && doc.querySelector('[data-stream="atomic.text"]')) partial = true;
+          });
+          observer.observe(main, { subtree: true, childList: true });
+          client.transaction([
+            { kind: "changes", data: JSON.stringify([{ op: "insert", parent: "main", before: null, html: '<p id="atomic">done</p>' }]) },
+            { kind: "stream", data: JSON.stringify({ update: "end", id: "atomic.text" }) },
+          ]);
+          await Promise.resolve();
+          observer.disconnect();
+          assert(!partial && doc.getElementById("atomic") && !doc.querySelector('[data-stream="atomic.text"]'), "DOM observers see complete settlement transactions");
+          let invalid = false;
+          try {
+            client.transaction([{ kind: "changes", data: JSON.stringify([{ op: "remove", id: "missing" }]) }]);
+          } catch (_) { invalid = true; }
+          assert(invalid && main.hidden, "invalid derived DOM is hidden during recovery");
+          const activity = doc.createElement("section"); activity.id = "activity"; doc.body.appendChild(activity);
+          client.transaction([{ kind: "activity", data: "<p>Approval needed</p>" }]);
+          assert(main.hidden && activity.textContent === "Approval needed", "independent work summaries stay usable without repairing an invalid document");
+          try { client.transaction([{ kind: "streams", data: "[]" }]); } catch (_) {}
+          assert(main.hidden, "a delta cannot revive an invalid DOM");
+          client.transaction([{ kind: "snapshot", data: region }, { kind: "streams", data: "[]" }]);
+          assert(!main.hidden, "coherent replacement restores visibility");
+          draft = doc.querySelector("textarea");
           assert(draft.value === "unsent", "snapshot preserves unsent draft");
           assert(
             doc.activeElement === draft &&
@@ -196,16 +232,119 @@
               "plain",
             "theme is persisted",
           );
-          doc
-            .getElementById("composer")
-            .dispatchEvent(
-              new Event("submit", { bubbles: true, cancelable: true }),
-            );
-          assert(
-            MisaClient.memory(store, "misa.preferences.demo").state.draft ===
-              "",
-            "submitted draft is cleared",
-          );
+          const form = doc.getElementById("composer");
+          draft = doc.querySelector("textarea");
+          form.action = "./intent";
+          let reply;
+          let calls = 0;
+          browser.fetch = function () { calls++; return new Promise(function (resolve) { reply = resolve; }); };
+          const submitted = function () { form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); };
+          const settle = async function (ok, value) {
+            reply({ ok: ok, json: async function () { return value; } });
+            await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          };
+          submitted();
+          assert(draft.value === "unsent", "submission waits for acknowledgment before clearing");
+          draft.value = "newer typing";
+          draft.dispatchEvent(new Event("input", { bubbles: true }));
+          await settle(true, { ok: true });
+          assert(draft.value === "newer typing", "late acceptance preserves newer typing");
+          assert(client.prefs.state.recoveries.length === 0, "confirmed acceptance releases recovery copy");
+          submitted();
+          submitted();
+          assert(calls === 2, "duplicate submission while pending is suppressed");
+          await settle(false, { ok: false, error: "Command rejected" });
+          assert(draft.value === "newer typing" && client.prefs.state.recoveries[0].text === "newer typing", "rejection retains submitted text");
+          assert(MisaClient.memory(store, "misa.preferences.demo").state.recoveries.length === 1, "recovery copy survives reload without replay");
+          submitted();
+          await settle(true, { ok: true, report: '<p id="local-report">Read-only report</p>' });
+          assert(draft.value === "", "unchanged acknowledged draft clears");
+          assert(doc.querySelector("dialog[open]") && doc.getElementById("local-report"), "read response opens a local report");
+          doc.querySelector("dialog button").click();
+          assert(!doc.querySelector("dialog") && calls === 3, "closing a report sends no domain command");
+          draft.value = "uncertain submission";
+          draft.dispatchEvent(new Event("input", { bubbles: true }));
+          submitted();
+          reply({ ok: true, json: async function () { throw Error("Reply lost"); } });
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(draft.value === "uncertain submission" && calls === 4, "lost reply retains the draft and never retries the mutation");
+          assert(client.prefs.state.recoveries.some(function (entry) { return entry.text === "uncertain submission" && entry.reason.includes("Check the session"); }), "uncertain submissions remain explicitly recoverable");
+          doc.getElementById("main").innerHTML = "";
+          const multi = function (documents) { client.transaction([{ kind: "documents", data: JSON.stringify(documents) }]); };
+          const presentation = function (id, prefix, html) { return { id, prefix, messages: [
+            { kind: "snapshot", data: html }, { kind: "streams", data: "[]" }
+          ] }; };
+          let mixedPublication = false;
+          const composedObserver = new MutationObserver(function () {
+            if (!!doc.getElementById("conversation-value") !== !!doc.getElementById("status:value")) mixedPublication = true;
+          });
+          composedObserver.observe(doc.getElementById("main"), { childList: true, subtree: true });
+          multi([
+            presentation("conversation", "", '<p id="conversation-value">Conversation</p>'),
+            presentation("status", "status:", '<p id="status:value">Status</p>')
+          ]);
+          await Promise.resolve();
+          assert(!mixedPublication && doc.getElementById("status:value"), "selected documents become visible in one publication");
+          composedObserver.disconnect();
+          multi(["conversation", "status"].map(function (id) { return {
+            id, prefix: id === "status" ? "status:" : "", messages: [{ kind: "streams", data: JSON.stringify([{ id: "answer.text", role: "assistant", text: id }]) }]
+          }; }));
+          multi([{ id: "status", prefix: "status:", messages: [{ kind: "stream", data: JSON.stringify({ update: "append", id: "answer.text", offset: 6, text: " updated" }) }] }]);
+          assert(doc.querySelector('[data-presentation="conversation"] pre').textContent === "conversation", "same stream identity in another document stays independent");
+          assert(doc.querySelector('[data-presentation="status"] pre').textContent === "status updated", "document stream append targets its own live state");
+          let multiFailed = false;
+          try { multi([{ id: "status", prefix: "status:", messages: [{ kind: "changes", data: '[{"op":"remove","id":"missing"}]' }] }]); } catch (_) { multiFailed = true; }
+          assert(multiFailed && doc.getElementById("main").hidden, "invalid selected document hides the complete composition");
+          let partialRepair = false;
+          try { multi([presentation("status", "status:", '<p id="status:value">Partial</p>')]); } catch (_) { partialRepair = true; }
+          assert(partialRepair && doc.getElementById("main").hidden, "one document replacement cannot revive an invalid composition");
+          multi([presentation("conversation", "", '<p id="conversation-value">Recovered</p>'), presentation("status", "status:", '<p id="status:value">Current</p>')]);
+          assert(!doc.getElementById("main").hidden, "complete replacement repairs the selected composition");
+          client.transaction([
+            { kind: "selection", data: '["conversation"]' },
+            { kind: "documents", data: JSON.stringify([presentation("conversation", "", '<p id="conversation-value">Still selected</p>')]) }
+          ]);
+          assert(!doc.querySelector('[data-presentation="status"]') && doc.getElementById("conversation-value").textContent === "Still selected", "selection replacement removes only deselected documents");
+          const prefFrame = document.createElement("iframe");
+          document.body.appendChild(prefFrame);
+          const prefDoc = prefFrame.contentDocument;
+          prefDoc.body.dataset.session = "new-runtime:new-instance";
+          prefDoc.body.dataset.preferences = "daemon:session";
+          prefDoc.body.innerHTML = '<main id="main"></main><form data-presentation-choice action="./presentations"><input name="id" value="status"><select name="choice"><option value="auto">Auto</option><option value="hide">Hidden</option></select><button>Apply</button></form>';
+          store.setItem("misa.presentations.daemon:session", '{"status":"hide"}');
+          let preferenceCalls = 0, preferenceAccepted = true;
+          MisaClient.start(prefDoc, { localStorage: store, scrollY: 0, innerHeight: 800, scrollTo() {}, fetch: async function () {
+            preferenceCalls++; return { ok: preferenceAccepted, json: async function () { return { ok: preferenceAccepted, error: "Unavailable" }; } };
+          } });
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          const prefForm = prefDoc.querySelector("form");
+          assert(prefForm.elements.choice.value === "hide" && preferenceCalls === 1, "saved choices restore across runtime and instance changes");
+          prefForm.elements.choice.value = "auto";
+          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(preferenceCalls === 2 && JSON.parse(store.getItem("misa.presentations.daemon:session")).status === "auto", "only acknowledged choices persist and pending duplicate changes are suppressed");
+          preferenceAccepted = false;
+          prefForm.elements.choice.value = "hide";
+          prefForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(prefForm.elements.choice.value === "auto" && JSON.parse(store.getItem("misa.presentations.daemon:session")).status === "auto", "failed changes retain confirmed preference and control state");
+          const copyFrame = document.createElement("iframe");
+          document.body.appendChild(copyFrame);
+          const copyDoc = copyFrame.contentDocument;
+          copyDoc.body.dataset.session = "old-instance";
+          copyDoc.body.innerHTML = '<main id="main"><form id="composer"><textarea name="prompt"></textarea></form></main>';
+          store.setItem("misa.preferences.old-instance", '{"draft":"copied thought"}');
+          let claimReply, copiedLocation;
+          MisaClient.start(copyDoc, { localStorage: store, location: { pathname: "/view/original/", replace(value) { copiedLocation = value; } }, fetch() {
+            return new Promise(function (resolve) { claimReply = resolve; });
+          } });
+          assert(copyDoc.body.inert, "copied tab cannot interact before acquiring its own presentation");
+          claimReply({ ok: true, json: async function () { return { url: "/view/copy/", memory: "new-instance" }; } });
+          await new Promise(function (resolve) { setTimeout(resolve, 0); });
+          assert(copiedLocation === "/view/copy/" && JSON.parse(store.getItem("misa.preferences.new-instance")).draft === "copied thought", "copied tab redirects to independent instance and carries initial draft");
+          store.setItem("misa.preferences.new-instance", '{"draft":"independent edit"}');
+          assert(JSON.parse(store.getItem("misa.preferences.old-instance")).draft === "copied thought", "copied draft does not share future mutations");
           document.body.dataset.result = "passed";
           document.body.append(checks.length + " browser checks passed");
         } catch (error) {

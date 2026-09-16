@@ -73,6 +73,24 @@ main {
 .n-status,
 .n-turn { color: var(--fg-muted); font-size: 0.85rem; }
 
+/* Keep status values and their controls as semantic DOM children. The browser
+ * chooses wrapping; terminal column measurement is not a layout contract here. */
+.n-status\.indicators {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: baseline;
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+.n-status\.indicators > section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+.n-status\.indicators form { margin: 0; }
+
 .n-notice { color: var(--fg-muted); font-size: 0.9rem; }
 .n-notice\.warn { color: var(--tool); }
 .n-notice\.error, .n-error, .n-tool\.result\.error { color: var(--error); }

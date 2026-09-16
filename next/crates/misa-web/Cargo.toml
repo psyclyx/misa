@@ -7,19 +7,25 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["query"] }
 futures.workspace = true
 serde_json.workspace = true
 misa-transport.workspace = true
+misa-client.workspace = true
+misa-protocol.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
 misa-value.workspace = true
+misa-kit = { path = "../misa-kit" }
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+iroh.workspace = true
+misa-daemon = { path = "../misa-daemon" }
 misa-session.workspace = true
 misa-kernel.workspace = true
 misa-reframe.workspace = true

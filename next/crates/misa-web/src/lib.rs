@@ -48,7 +48,7 @@ use tokio_stream::StreamExt as _;
 use axum::response::sse::KeepAlive;
 use misa_proto::view::{ActionOn, BlobRef, FieldKind, Kind, Node, Span, SpanKind, State as NodeState};
 use misa_proto::wire::{Intent, SessionInfo};
-use misa_proto::{SubId, Query};
+use misa_value::Value;
 #[cfg(test)]
 use misa_session::Runtime;
 #[cfg(test)]
@@ -67,9 +67,20 @@ pub const SCRIPT: &str = include_str!("app.js");
 /// form is a form. That is the whole of the mapping, and it is why this renderer is
 /// legible.
 pub fn render_main(view: &Node) -> String {
+    render_scoped(view, "")
+}
+
+/// Render one document without changing the domain identities carried by forms.
+/// The prefix is generated locally by the presentation instance, never by a
+/// plugin. Tree-operation targets use the same prefix as their rendered nodes.
+pub(crate) fn render_scoped(view: &Node, prefix: &str) -> String {
     let mut out = String::new();
-    render_node(view, &mut out);
+    render_node(view, prefix, &mut out);
     out
+}
+
+fn render_report(title: &str, value: &Value) -> String {
+    render_scoped(&misa_client::request::report(title, value), &format!("report-{}:", next_id()))
 }
 
 /// A document a browser can open directly, with or without JavaScript.
@@ -87,9 +98,9 @@ pub fn document_with(session: &SessionInfo, region: &str, lead: &str) -> String 
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
-<title>{title}</title>\n<link rel=\"stylesheet\" href=\"/style.css\">\n\
-</head>\n<body data-session=\"{session_id}\">\n{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
-<script src=\"/app.js\" defer></script>\n</body>\n</html>\n",
+<title>{title}</title>\n<link rel=\"stylesheet\" href=\"./style.css\">\n\
+</head>\n<body data-session=\"{session_id}\">\n<nav><a href=\"/daemons\">Daemons and sessions</a></nav>{toolbar}<main id=\"main\">{lead}{region}</main>\n{declarations}\
+<script src=\"./app.js\" defer></script>\n</body>\n</html>\n",
         title = escape(&session.title),
         session_id = escape(&session.id),
         toolbar = toolbar(),
@@ -116,7 +127,7 @@ fn lead(pending: &[BlobRef]) -> String {
     let mut out = String::from("<aside class=\"attachments\">");
     if !pending.is_empty() {
         out.push_str(&format!(
-            "<form method=\"post\" action=\"/detach\"><p>{} attachment{} ready to send",
+            "<form method=\"post\" action=\"./detach\"><p>{} attachment{} ready to send",
             pending.len(),
             if pending.len() == 1 { "" } else { "s" }
         ));
@@ -132,7 +143,7 @@ fn lead(pending: &[BlobRef]) -> String {
         out.push_str("</p><button type=\"submit\">Discard</button></form>");
     }
     out.push_str(
-        "<form method=\"post\" action=\"/attach\" enctype=\"multipart/form-data\">\
+        "<form method=\"post\" action=\"./attach\" enctype=\"multipart/form-data\">\
 <label>Attach a file <input type=\"file\" name=\"file\"></label> \
 <button type=\"submit\">Upload</button></form></aside>",
     );
@@ -171,12 +182,12 @@ pub fn declarations(session: &SessionInfo) -> String {
     out
 }
 
-fn render_node(node: &Node, out: &mut String) {
+fn render_node(node: &Node, prefix: &str, out: &mut String) {
     let role = escape(&node.role);
     let id = if node.id.is_empty() {
         String::new()
     } else {
-        format!(" id=\"{}\"", escape(&node.id))
+        format!(" id=\"{}{}\"", escape(prefix), escape(&node.id))
     };
     let state = node
         .state
@@ -196,7 +207,7 @@ fn render_node(node: &Node, out: &mut String) {
     let submit = node.actions.iter().find(|action| action.on == ActionOn::Submit);
     if let Some(action) = submit {
         out.push_str(&format!(
-            "<form class=\"n-{role}\"{id}{state} method=\"post\" action=\"/intent\">\
+            "<form class=\"n-{role}\"{id}{state} method=\"post\" action=\"./intent\">\
 <input type=\"hidden\" name=\"node\" value=\"{node_id}\">\
 <input type=\"hidden\" name=\"action\" value=\"{action}\">",
             role = role,
@@ -239,7 +250,7 @@ fn render_node(node: &Node, out: &mut String) {
             for item in items {
                 items_out.push_str("<li>");
                 for child in item {
-                    render_node(child, &mut items_out);
+                    render_node(child, prefix, &mut items_out);
                 }
                 items_out.push_str("</li>");
             }
@@ -335,7 +346,7 @@ fn render_node(node: &Node, out: &mut String) {
         Kind::Image { blob, alt, .. } => {
             // The browser renders the shared image node and keeps its alternative text.
             out.push_str(&format!(
-                "<img src=\"/blob/{hash}\" alt=\"{alt}\">",
+                "<img src=\"./blob/{hash}\" alt=\"{alt}\">",
                 hash = escape(&blob.hash),
                 alt = escape(alt)
             ));
@@ -362,7 +373,7 @@ fn render_node(node: &Node, out: &mut String) {
     }
 
     for child in &node.children {
-        render_node(child, out);
+        render_node(child, prefix, out);
     }
 
     // A node that is not a form may still offer a click action, and a button that is not in a
@@ -371,11 +382,11 @@ fn render_node(node: &Node, out: &mut String) {
     if submit.is_none() {
         for action in &node.actions {
             if action.id == "attachment.save" {
-                out.push_str(&format!("<form method=\"post\" action=\"/download\"><input type=\"hidden\" name=\"node\" value=\"{}\"><button type=\"submit\">{}</button></form>", escape(&node.id), escape(action.label.as_deref().unwrap_or("Save attachment"))));
+                out.push_str(&format!("<form method=\"post\" action=\"./download\"><input type=\"hidden\" name=\"node\" value=\"{}\"><button type=\"submit\">{}</button></form>", escape(&node.id), escape(action.label.as_deref().unwrap_or("Save attachment"))));
                 continue;
             }
             out.push_str(&format!(
-                "<form class=\"n-{role}.action\" method=\"post\" action=\"/intent\">\
+                "<form class=\"n-{role}.action\" method=\"post\" action=\"./intent\">\
 <input type=\"hidden\" name=\"node\" value=\"{node_id}\">\
 <input type=\"hidden\" name=\"action\" value=\"{action}\">\
 <button type=\"submit\">{label}</button></form>",
@@ -596,7 +607,7 @@ pub enum Source {
     #[cfg(test)]
     Local(Arc<misa_kernel::Blobs>),
     /// The bytes are on the daemon that hosts the session.
-    Remote(Arc<misa_transport::blob::Store>),
+    Remote(Arc<misa_client::transfers::Transfers>),
 }
 
 impl Source {
@@ -657,6 +668,7 @@ async fn blob_response(source: Option<&Source>, hash: &str) -> Response {
     }
 }
 
+#[cfg(test)]
 fn save_intent(node: String) -> misa_proto::wire::Intent {
     misa_proto::wire::Intent::Action {
         node,
@@ -720,28 +732,24 @@ async fn local_download(
     }
 }
 
-struct DownloadRequest {
-    node: String,
-    reply: tokio::sync::oneshot::Sender<Result<misa_proto::wire::Download, String>>,
-}
-
 async fn remote_download(
     State(state): State<Arc<Remote>>,
     Form(fields): Form<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (reply, answer) = tokio::sync::oneshot::channel();
-    if state
-        .downloads
-        .send(DownloadRequest { node: fields.get("node").cloned().unwrap_or_default(), reply })
-        .await
-        .is_err()
-    {
-        return (StatusCode::BAD_GATEWAY, "The session is disconnected").into_response();
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(20), answer).await {
-        Ok(Ok(Ok(download))) => download_response(state.blobs.as_deref(), download).await,
-        Ok(Ok(Err(error))) => (StatusCode::BAD_REQUEST, error).into_response(),
-        _ => (StatusCode::GATEWAY_TIMEOUT, "The session did not answer the save request").into_response(),
+    let input = Value::map([("node", Value::str(fields.get("node").map(String::as_str).unwrap_or("")))]);
+    let result = async {
+        let prepared = state.interaction.invoke("session.attachment.resolve", input).map_err(|fault| fault.message)?;
+        let value = match remote::invoke(&state, prepared).await? {
+            misa_proto::invocation::Outcome::Completed { value } => value,
+            misa_proto::invocation::Outcome::Rejected { fault }
+            | misa_proto::invocation::Outcome::Indeterminate { fault } => return Err(fault.message),
+            misa_proto::invocation::Outcome::Accepted { .. } => return Err("Attachment resolution did not complete".into()),
+        };
+        misa_client::interface::decode::<BlobRef>(&value).map_err(|fault| fault.message)
+    }.await;
+    match result {
+        Ok(blob) => download_response(state.blobs.as_deref(), misa_proto::wire::Download { blob: Some(blob), name: "attachment.bin".into(), error: String::new() }).await,
+        Err(error) => (StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
 
@@ -782,7 +790,7 @@ async fn attach_file(State(app): State<Arc<App>>, multipart: Multipart) -> Respo
 #[cfg(test)]
 async fn detach(State(app): State<Arc<App>>) -> Response {
     app.pending.lock().expect("the pending list is never poisoned").clear();
-    Redirect::to("/").into_response()
+    Redirect::to("./").into_response()
 }
 
 /// What a file input's submission becomes.
@@ -816,7 +824,7 @@ async fn upload(
     match source.put(bytes.to_vec(), media.as_deref()).await {
         Ok(blob) => {
             pending.lock().expect("the pending list is never poisoned").push(blob);
-            Redirect::to("/").into_response()
+            Redirect::to("./").into_response()
         }
         Err(message) => upload_fault(&message),
     }
@@ -867,7 +875,7 @@ async fn intent(State(app): State<Arc<App>>, Form(form): Form<HashMap<String, St
     }
     // Post, redirect, get: a form submission is a request for a new document, and the
     // browser should end up with a URL it can bookmark and reload.
-    Redirect::to("/").into_response()
+    Redirect::to("./").into_response()
 }
 
 /// The composer's action, which is the one action this client understands by name.
@@ -884,6 +892,7 @@ const COMPOSER: &str = "composer.submit";
 /// business. Except when this client is holding attachments, which a form of text fields cannot
 /// carry — then the submission is made the way the protocol declares submissions with
 /// attachments, which is the one intent that can name bytes.
+#[cfg(test)]
 fn submitted_intent(form: &HashMap<String, String>, pending: &[BlobRef]) -> Intent {
     let action = form.get("action").map(String::as_str).unwrap_or_default();
     if !pending.is_empty() && action == COMPOSER {
@@ -964,98 +973,37 @@ async fn listen(app: Arc<App>, address: std::net::SocketAddr) -> Result<(), Stri
 /// [`render_main`] the local path uses, and the only difference is where the view
 /// arrives from.
 pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), String> {
-    // A ticket, or a pairing string: whatever the daemon printed or the QR said.
-    let (parsed, code) = misa_proto::Pairing::given(&ticket)?;
-    let endpoint = misa_transport::iroh::bind_for(&parsed.node).await?;
-    let target = misa_transport::iroh::address_of(&parsed.node)?;
-    if let Some(code) = &code {
-        let message = misa_transport::iroh::Client::pair(&endpoint, target.clone(), code, "a browser").await?;
-        tracing::info!(%message, "paired");
-    }
-    // The address the session is reached at serves that session's blobs too: a ticket names one
-    // node, so a client that can reach a session can fetch what its views point at.
-    let blobs = Arc::new(Source::Remote(misa_transport::blob::Store::new(endpoint.clone(), target.clone())));
-    let info = misa_proto::ClientInfo::new("misa-web", env!("CARGO_PKG_VERSION"));
-    let mut client = misa_transport::iroh::Client::connect(&endpoint, target, info, &parsed.session).await?;
-    client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await?;
-
-    let session = client.session();
-    let region = Region::new();
-
-    // One task owns the connection, because a client is a stream and an intent is a write
-    // to the same stream. A browser's form submission arrives on a channel, which is what
-    // makes it indistinguishable from an intent sent by a terminal: both land here.
-    let (intents, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<misa_proto::wire::Intent>();
-    let stream = region.clone();
-    let (downloads, mut download_requests) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
-    tokio::spawn(async move {
-        let mut pending_downloads = std::collections::HashMap::<u64, tokio::sync::oneshot::Sender<Result<misa_proto::wire::Download, String>>>::new();
-        loop {
-            tokio::select! {
-                message = client.next() => match message {
-                    Ok(Some(misa_proto::SessionMsg::Download { id, download })) => {
-                        if let Some(reply) = pending_downloads.remove(&id) { let _ = reply.send(Ok(download)); }
-                    }
-                    Ok(Some(misa_proto::SessionMsg::Fault { id: Some(id), fault })) => {
-                        if let Some(reply) = pending_downloads.remove(&id) { let _ = reply.send(Err(fault.message)); }
-                    }
-                    Ok(Some(message)) => match stream.receive(&message) {
-                        Ok(true) => {},
-                        Err(_) => { let _ = client.subscribe(SubId(1), Query::new(misa_proto::VIEW_QUERY)).await; },
-                        Ok(false) => {},
-                    },
-
-                    Ok(None) | Err(_) => return,
-                },
-                request = download_requests.recv() => if let Some(request) = request {
-                    let id = next_id();
-                    pending_downloads.insert(id, request.reply);
-                    if client.intent(id, save_intent(request.node)).await.is_err() { return; }
-                },
-                intent = outgoing.recv() => match intent {
-                    Some(intent) => {
-                        if client.intent(next_id(), intent).await.is_err() {
-                            return;
-                        }
-                    }
-                    None => return,
-                },
-            }
-        }
-    });
-
-    let listener = tokio::net::TcpListener::bind(address).await.map_err(|err| err.to_string())?;
-    tracing::info!("serving at http://{}", listener.local_addr().map_err(|err| err.to_string())?);
-
-    let state = Arc::new(Remote {
-        region,
-        session,
-        intents,
-        downloads,
-        blobs: Some(blobs),
-        pending: Arc::new(std::sync::Mutex::new(Vec::new())),
-    });
-    axum::serve(listener, remote_router(state)).await.map_err(|err| err.to_string())
+    hub::serve(&[ticket.to_string()], address).await
 }
+
+pub mod hub;
+
+mod remote;
+mod presentations;
+mod requests;
+mod activity;
+use remote::connect as connect_session;
 
 mod updates;
 pub use updates::Region;
 
 /// A session reached over iroh, with no kernel in this process.
 pub struct Remote {
-    downloads: tokio::sync::mpsc::Sender<DownloadRequest>,
+    activity: activity::Activity,
+    claimed: std::sync::atomic::AtomicBool,
+    presentation_changes: tokio::sync::mpsc::Sender<presentations::Change>,
+    presentation_gate: tokio::sync::Mutex<()>,
+    preferences: Arc<std::sync::Mutex<misa_client::composition::Preferences>>,
     region: Region,
     session: Option<SessionInfo>,
-    /// Where an intent from the browser goes: to the task that owns the connection.
-    intents: tokio::sync::mpsc::UnboundedSender<misa_proto::wire::Intent>,
-    /// Where an `<img>` goes to get its bytes, and where an upload goes: the daemon's blob
-    /// store, over its own connection, which is the one part of this process that is not the
-    /// session stream.
+    daemon: Arc<misa_client::daemons::Daemon>,
+    interaction: Arc<misa_client::interaction::Interaction>,
+    task: tokio::task::AbortHandle,
+    instance: String,
     blobs: Option<Arc<Source>>,
-    /// The blobs this process has uploaded and not yet sent, shared with the strip that shows
-    /// them.
     pending: Arc<std::sync::Mutex<Vec<BlobRef>>>,
 }
+impl Drop for Remote { fn drop(&mut self) { self.task.abort(); } }
 
 /// A correlation id for an intent this process sends.
 fn next_id() -> u64 {
@@ -1073,6 +1021,12 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/", get(remote_page))
         .route("/events", get(remote_events))
         .route("/intent", post(remote_intent))
+        .route("/presentations", post(presentations::configure))
+        .route("/requests", get(requests::list))
+        .route("/request", post(requests::open))
+        .route("/request/events", get(requests::events))
+        .route("/request.js", get(|| async { ([("content-type", "text/javascript")], include_str!("request.js")) }))
+        .route("/respond", post(requests::respond))
         .route("/attach", post(remote_attach))
         .route("/detach", post(remote_detach))
         .route("/blob/{hash}", get(remote_blob))
@@ -1088,16 +1042,53 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
 /// talking to — and neither can a test.
 async fn remote_intent(
     State(state): State<Arc<Remote>>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    let mut pending = state.pending.lock().expect("the pending list is never poisoned");
-    let intent = submitted_intent(&form, &pending);
+    let json = headers.get(header::ACCEPT).and_then(|value| value.to_str().ok()).is_some_and(|value| value.contains("application/json"));
+    let refused = |error: String| {
+        if json { return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"ok":false,"error":error}))).into_response(); }
+        (StatusCode::BAD_REQUEST, Html(format!("<!doctype html><html><body><p role=\"alert\">{}</p><textarea readonly>{}</textarea><a href=\"./\">Back to session</a></body></html>", escape(&error), escape(form.get("prompt").map(String::as_str).unwrap_or(""))))).into_response()
+    };
+    let submitted = state.pending.lock().expect("pending attachments").clone();
+    let intent = match remote::submitted(&state, &form, &submitted) { Ok(intent) => intent, Err(error) => return refused(error) };
     let spent = spent(&intent);
-    let _ = state.intents.send(intent);
-    if spent {
-        pending.clear();
+    let result = match remote::prepare(&state.interaction, intent) {
+        Ok(misa_client::interaction::Prepared::Read { member }) => {
+            let title = member.query.id.clone();
+            let selection = misa_proto::observation::Selection { scope: state.interaction.interface.scope.clone(), members: std::collections::BTreeMap::from([("report".into(), member)]) };
+            return match state.daemon.client.read(selection, std::time::Duration::from_secs(20)).await {
+                Ok(result) => match misa_client::interface::data(&result, "report") {
+                    Ok(value) if json => axum::Json(serde_json::json!({"ok":true,"report":render_report(&title, value)})).into_response(),
+                    Ok(value) => Html(format!("<!doctype html><html><head><link rel=\"stylesheet\" href=\"./style.css\"></head><body><main>{}<a href=\"./\">Back to session</a></main></body></html>", render_report(&title, value))).into_response(),
+                    Err(fault) => (StatusCode::BAD_GATEWAY, fault.message).into_response(),
+                },
+                Err(fault) => (StatusCode::BAD_GATEWAY, fault.message).into_response(),
+            };
+        },
+        Ok(prepared) => remote::invoke(&state, prepared).await,
+        Err(error) => return refused(error),
+    };
+    match result {
+        Ok(outcome @ (misa_proto::invocation::Outcome::Completed { .. } | misa_proto::invocation::Outcome::Accepted { .. })) => {
+            if spent { state.pending.lock().expect("pending attachments").retain(|blob| !submitted.contains(blob)); }
+            if json { axum::Json(serde_json::json!({"ok":true,"outcome":outcome})).into_response() } else { Redirect::to("./").into_response() }
+        },
+        Ok(outcome) => {
+            let (status, message) = match &outcome {
+                misa_proto::invocation::Outcome::Rejected { fault } => (StatusCode::BAD_REQUEST, &fault.message),
+                misa_proto::invocation::Outcome::Indeterminate { fault } => (StatusCode::BAD_GATEWAY, &fault.message),
+                _ => unreachable!(),
+            };
+            if json { (status, axum::Json(serde_json::json!({"ok":false,"error":message,"outcome":outcome}))).into_response() } else { refused(message.clone()) }
+        },
+        Err(error) => {
+            let outcome = misa_proto::invocation::Outcome::Indeterminate {
+                fault: misa_proto::Fault::new("invocation_unconfirmed", &error),
+            };
+            if json { (StatusCode::BAD_GATEWAY, axum::Json(serde_json::json!({"ok":false,"error":error,"outcome":outcome}))).into_response() } else { refused(error) }
+        },
     }
-    Redirect::to("/").into_response()
 }
 
 /// One uploaded file, put in the daemon's store over the blob connection.
@@ -1107,7 +1098,7 @@ async fn remote_attach(State(state): State<Arc<Remote>>, multipart: Multipart) -
 
 async fn remote_detach(State(state): State<Arc<Remote>>) -> Response {
     state.pending.lock().expect("the pending list is never poisoned").clear();
-    Redirect::to("/").into_response()
+    Redirect::to("./").into_response()
 }
 
 /// One blob, asked of the daemon this process is attached to.
@@ -1117,9 +1108,9 @@ async fn remote_blob(State(state): State<Arc<Remote>>, Path(hash): Path<String>)
 
 async fn remote_page(State(state): State<Arc<Remote>>) -> Html<String> {
     let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
-    let session = state.session.clone();
+    let session = state.session.clone().map(|mut session| { session.id = format!("{}:{}:{}", state.daemon.identity(), state.interaction.interface.scope.incarnation, state.instance); session });
     match session {
-        Some(session) => Html(document_with(&session, &state.region.get(), &lead)),
+        Some(session) => Html(document_with(&session, &state.region.get(), &lead).replacen("<body ", &format!("<body data-preferences=\"{}\" ", escape(&format!("{}:{}", state.daemon.identity(), state.session.as_ref().map(|session| session.id.as_str()).unwrap_or("")))), 1).replacen("<main", &format!("{}<section id=\"activity\" aria-label=\"Operations and requests\">{}</section><main", presentations::controls(&state), state.region.activity_html()), 1).replace("</nav>", "<form method=\"post\" action=\"./close\"><button>Close presentation</button></form></nav>")),
         None => Html(format!("<!doctype html><html><body><main id=\"main\">{lead}{}</main></body></html>", state.region.get())),
     }
 }
@@ -1128,7 +1119,7 @@ async fn remote_events(
     State(state): State<Arc<Remote>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
-    state.region.events(lead)
+    state.region.events(lead, state.clone())
 }
 
 /// The stream a browser reads: the region it should be showing, then every change
@@ -1174,7 +1165,7 @@ mod tests {
             }
         }).await.expect("attachment was not durably recorded");
         let html = render_main(&tree);
-        assert!(html.contains("action=\"/download\""));
+        assert!(html.contains("action=\"./download\""));
         assert!(html.contains("Save attachment"));
         let app = App::new(runtime).with_blobs(Arc::new(Source::Local(blobs)));
         let response = local_download(State(app), Form(std::collections::HashMap::from([("node".into(), node)]))).await;
@@ -1322,7 +1313,7 @@ mod tests {
         // The upload form is there even with nothing pending, because a client that could only
         // attach once it already had an attachment could never attach the first one.
         let empty = lead(&[]);
-        assert!(empty.contains("action=\"/attach\""), "{empty}");
+        assert!(empty.contains("action=\"./attach\""), "{empty}");
         assert!(empty.contains("multipart/form-data"), "{empty}");
         assert!(!empty.contains("/detach"), "{empty}");
 
@@ -1334,7 +1325,7 @@ mod tests {
         assert!(strip.contains("2 attachments"), "{strip}");
         assert!(strip.contains(&"a".repeat(64)), "{strip}");
         assert!(strip.contains("image/png"), "{strip}");
-        assert!(strip.contains("action=\"/detach\""), "{strip}");
+        assert!(strip.contains("action=\"./detach\""), "{strip}");
         // The bytes are never in the document: only their names are, which is what keeps a
         // transcript and a strip small however large the file is.
         assert!(strip.len() < 1_000, "{strip}");
@@ -1406,7 +1397,7 @@ mod tests {
     #[test]
     fn a_form_is_a_form_and_works_without_the_script() {
         let html = render_main(&view());
-        assert!(html.contains("method=\"post\" action=\"/intent\""), "{html}");
+        assert!(html.contains("method=\"post\" action=\"./intent\""), "{html}");
         assert!(html.contains("<textarea name=\"prompt\""), "{html}");
         assert!(
             html.contains("<input type=\"hidden\" name=\"action\" value=\"composer.submit\">"),
@@ -1477,7 +1468,7 @@ mod tests {
         assert!(html.contains("<dt>code</dt><dd>AAAA-BBBB</dd>"), "{html}");
         assert!(!html.contains("<input type=\"text\" name=\"row.0\""), "a row became an input: {html}");
         assert!(
-            html.contains("method=\"post\" action=\"/intent\"") && html.contains("value=\"panel.close\""),
+            html.contains("method=\"post\" action=\"./intent\"") && html.contains("value=\"panel.close\""),
             "a panel's button does not post anything: {html}"
         );
         assert!(html.contains("value=\"authorize\""), "the form does not name the node: {html}");
@@ -1562,6 +1553,50 @@ mod tests {
             }
             other => panic!("expected an action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn document_namespaces_do_not_rewrite_command_targets() {
+        let node = Node::section("plugin.panel").id("root")
+            .child(Node::new("items", Kind::List {
+                ordered: false,
+                items: vec![vec![Node::text("item", [Span::plain("Pet")]).id("item")]],
+            }).id("list"))
+            .action(Action {
+                id: "pet.feed".into(), on: ActionOn::Click,
+                label: Some("Feed".into()), args: Value::Null,
+            });
+        let first = render_scoped(&node, "panel-1:");
+        let second = render_scoped(&node, "panel-2:");
+        for (html, prefix) in [(&first, "panel-1:"), (&second, "panel-2:")] {
+            for id in ["root", "list", "item"] {
+                assert!(html.contains(&format!("id=\"{prefix}{id}\"")), "{html}");
+            }
+            assert!(html.contains("name=\"node\" value=\"root\""), "{html}");
+            assert!(html.contains("name=\"action\" value=\"pet.feed\""), "{html}");
+        }
+        assert!(!first.contains("panel-2:"));
+        assert!(!second.contains("panel-1:"));
+    }
+
+    #[test]
+    fn status_keeps_semantic_children_and_actions_in_the_dom() {
+        let node = Node::section("status.indicators").id("status")
+            .child(Node::section("indicator.plan").id("plan")
+                .child(Node::new("value.money", Kind::Fact { value: Value::Int(1_240_000) }).id("cost"))
+                .action(Action {
+                    id: "usage.open".into(),
+                    on: ActionOn::Click,
+                    label: Some("Usage details".into()),
+                    args: Value::Null,
+                }));
+        let html = render_main(&node);
+        assert!(html.contains("id=\"plan\""), "{html}");
+        assert!(html.contains("id=\"cost\""), "{html}");
+        assert!(html.contains("<data value=\"1240000\">$1.24</data>"), "{html}");
+        assert!(html.contains("name=\"node\" value=\"plan\""), "{html}");
+        assert!(html.contains("name=\"action\" value=\"usage.open\""), "{html}");
+        assert!(html.contains(">Usage details</button>"), "{html}");
     }
 
     #[test]
