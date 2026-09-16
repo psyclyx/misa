@@ -120,7 +120,7 @@ async fn directory(State(hub): State<Shared>) -> Html<String> {
     if !hub.sessions.is_empty() {
         html.push_str("<section><h2>Retained presentations</h2><p>Close unused presentations to release their observations. Session work continues.</p>");
         for (key, instance) in &hub.sessions {
-            let title = instance.remote.session.as_ref().map(|session| session.title.as_str()).unwrap_or("Session");
+            let title = &instance.remote.session.title;
             html.push_str(&format!("<form method=\"post\" action=\"/view/{}/close\"><span>{} · {}</span> <button>Close presentation</button></form>", super::escape(key), super::escape(title), super::escape(key)));
         }
         html.push_str("</section>");
@@ -237,7 +237,7 @@ async fn dispatch(State(hub): State<Shared>, mut request: Request) -> Response {
         if remote.claimed.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok() {
             return axum::Json(serde_json::json!({"url":format!("/view/{key}/")})).into_response();
         }
-        let Some(session) = &remote.session else { return (axum::http::StatusCode::BAD_REQUEST, "No session selected").into_response(); };
+        let session = &remote.session;
         let preferences = remote.preferences.lock().unwrap().clone();
         let fork = match super::remote::connect_with(&remote.daemon, &session.id, preferences).await {
             Ok(fork) => fork,

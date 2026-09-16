@@ -50,25 +50,6 @@ pub(crate) async fn connect_with(daemon: &Arc<Daemon>, session_id: &str, initial
         )
         .await
         .map_err(|fault| fault.message)?) };
-    let info = misa_proto::SessionInfo {
-        id: entry.id,
-        title: entry.title,
-        conversation: None,
-        created_ms: 0,
-        policy: vec![],
-        queries: interaction.interface.queries.keys().cloned().collect(),
-        commands: interaction
-            .shortcuts
-            .iter()
-            .map(|shortcut| misa_proto::wire::Command {
-                id: shortcut.id.clone(),
-                label: shortcut.label.clone(),
-                description: shortcut.description.clone(),
-                args: shortcut.args.clone(),
-            })
-            .collect(),
-        sources: vec![],
-    };
     let region = Region::new();
     if observation.is_none() { region.set("<p>No supported content is selected. Choose a supported variant in Presentations.</p>".into()); }
     let activity = super::activity::start(&daemon.client, &interaction.interface, region.clone()).await.map_err(|fault| fault.message)?;
@@ -112,7 +93,7 @@ pub(crate) async fn connect_with(daemon: &Arc<Daemon>, session_id: &str, initial
         preferences,
         region,
         instance,
-        session: Some(info),
+        session: entry,
         daemon: daemon.clone(),
         interaction,
         task: task.abort_handle(),
@@ -146,13 +127,9 @@ pub fn submitted(
         return Ok(super::intent_from_form(form));
     }
     let text = form.get("prompt").map(String::as_str).unwrap_or("");
-    let commands = remote
-        .session
-        .as_ref()
-        .map(|session| session.commands.as_slice())
-        .unwrap_or(&[]);
+    let commands = declarations(&remote.interaction);
     use misa_kit::intent::Parsed;
-    match misa_kit::intent::parse(text, commands) {
+    match misa_kit::intent::parse(text, &commands) {
         Parsed::Prompt(text) => Ok(Intent::Prompt {
             text,
             attachments: attachments.to_vec(),
@@ -518,4 +495,9 @@ mod tests {
         endpoint.close().await;
         router.shutdown().await.unwrap();
     }
+}
+
+/// Adapt installed shortcuts to the local composer parser; these are not session metadata.
+pub(crate) fn declarations(interaction: &Interaction) -> Vec<misa_proto::wire::Command> {
+    interaction.shortcuts.iter().map(|shortcut| misa_proto::wire::Command { id: shortcut.id.clone(), label: shortcut.label.clone(), description: shortcut.description.clone(), args: shortcut.args.clone() }).collect()
 }
