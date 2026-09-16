@@ -41,6 +41,8 @@ use misa_value::Value;
 /// What a line amounts to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Parsed {
+    /// Malformed local syntax is retained in the composer, never submitted.
+    Invalid { message: String },
     /// Ordinary text, to be submitted as a prompt.
     Prompt(String),
     /// A command, with its arguments named by the declaration.
@@ -59,6 +61,60 @@ pub enum Parsed {
     Empty,
 }
 
+/// Literal command words, also usable while a quoted argument is being typed.
+/// No variable, command, glob, or environment expansion is performed.
+pub struct Words {
+    pub values: Vec<String>,
+    pub error: Option<&'static str>,
+    pub trailing_space: bool,
+}
+
+pub fn words(input: &str) -> Words {
+    let mut values = Vec::new();
+    let mut value = String::new();
+    let mut quote = None;
+    let mut escape = false;
+    let mut started = false;
+    let mut trailing_space = false;
+    for ch in input.chars() {
+        if escape {
+            value.push(ch);
+            escape = false;
+        } else if ch == '\\' && quote != Some('\'') {
+            escape = true;
+            started = true;
+        } else if let Some(delimiter) = quote {
+            if ch == delimiter { quote = None; } else { value.push(ch); }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            started = true;
+        } else if ch.is_whitespace() {
+            if started { values.push(std::mem::take(&mut value)); started = false; }
+            trailing_space = true;
+            continue;
+        } else {
+            value.push(ch);
+            started = true;
+        }
+        trailing_space = false;
+    }
+    if started { values.push(value); }
+    Words {
+        values,
+        error: if escape { Some("Finish the escaped character") } else if quote.is_some() { Some("Close the quoted argument") } else { None },
+        trailing_space,
+    }
+}
+
+/// Emit one literal argument that the local parser can read without expansion.
+pub fn quote(value: &str) -> String {
+    if !value.is_empty() && value.chars().all(|ch| !ch.is_whitespace() && !matches!(ch,'\''|'"'|'\\')) {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 /// Parse a line against the declarations.
 ///
 /// The first line only: a message with a newline in it is a prompt, because a
@@ -75,21 +131,23 @@ pub fn parse(line: &str, commands: &[Command]) -> Parsed {
     if rest.contains('\n') {
         return Parsed::Prompt(line.to_string());
     }
-    let mut words = rest.split_whitespace();
-    let name = words.next().unwrap_or_default().to_string();
-    let values: Vec<&str> = words.collect();
+    let words = words(rest);
+    if let Some(message) = words.error { return Parsed::Invalid { message: message.into() }; }
+    let name = words.values.first().cloned().unwrap_or_default();
+    let values = &words.values[words.values.len().min(1)..];
     let Some(declared) = commands.iter().find(|command| command.id == name) else {
         return Parsed::Unknown { name };
     };
+    if values.len() > declared.args.len() {
+        return Parsed::Invalid { message: format!("/{name} has too many arguments; quote a value containing spaces") };
+    }
 
     // Positional arguments in the order they are declared, which is the order a
     // person types them, so no frontend has to invent a syntax for naming one.
     let mut given = Vec::new();
     for (index, arg) in declared.args.iter().enumerate() {
-        if let Some(value) = values.get(index)
-            && !value.is_empty()
-        {
-            given.push((arg.name.clone(), (*value).to_string()));
+        if let Some(value) = values.get(index) {
+            given.push((arg.name.clone(), value.clone()));
         }
     }
     let mut args = std::collections::BTreeMap::new();
@@ -120,7 +178,7 @@ pub fn intent(parsed: &Parsed) -> Option<Intent> {
         }),
         // A line that is not ready is not sent: the client opens the picker its
         // declaration pointed at, which is the whole reason this returns nothing.
-        Parsed::Needs { .. } | Parsed::Unknown { .. } | Parsed::Empty => None,
+        Parsed::Needs { .. } | Parsed::Unknown { .. } | Parsed::Empty | Parsed::Invalid { .. } => None,
     }
 }
 
@@ -137,6 +195,33 @@ mod tests {
             Command::new("resume", "Resume", "load a conversation")
                 .arg(Arg::new("conversation", "Conversation").from("conversations")),
         ]
+    }
+
+    #[test]
+    fn literal_arguments_round_trip_without_expansion() {
+        for value in ["two words", "quote' and \"double\"", "", "back\\slash", "雪 路", "$HOME;`command`", "tabs\there"] {
+            let parsed = parse(&format!("/model {}", quote(value)), &commands());
+            let Parsed::Command { args, .. } = parsed else { panic!("{parsed:?}"); };
+            assert_eq!(args.get("model").and_then(Value::as_str), Some(value));
+        }
+        for line in ["/model two\\ words", "/model 'two 'words", "/model \"two words\""] {
+            let Parsed::Command { args,.. } = parse(line,&commands()) else { panic!("{line}"); };
+            assert_eq!(args.get("model").and_then(Value::as_str),Some("two words"));
+        }
+    }
+
+    #[test]
+    fn malformed_or_surplus_arguments_never_submit_but_partial_prefix_survives() {
+        for line in ["/model 'two words", "/model two\\", "/model two words"] {
+            let parsed = parse(line,&commands());
+            assert!(matches!(parsed,Parsed::Invalid { .. }));
+            assert!(intent(&parsed).is_none());
+        }
+        let partial = words("model 'two words");
+        assert_eq!(partial.values, ["model", "two words"]);
+        assert!(partial.error.is_some());
+        assert!(!partial.trailing_space);
+        assert!(words("model 'two words' ").trailing_space);
     }
 
     #[test]
@@ -320,4 +405,3 @@ impl Intent {
         }
     }
 }
-

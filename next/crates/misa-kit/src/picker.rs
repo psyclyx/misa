@@ -220,7 +220,7 @@ impl Picker {
     /// The line an accepted argument completes.
     pub fn fill_text(accepted: &Accepted) -> String {
         match &accepted.accept {
-            Accept::Argument { command, .. } => format!("/{} {}", command, accepted.value),
+            Accept::Argument { command, .. } => format!("/{} {}", command, crate::intent::quote(&accepted.value)),
             Accept::Run => accepted.value.clone(),
             Accept::Action { .. } => accepted.value.clone(),
         }

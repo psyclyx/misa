@@ -329,8 +329,12 @@ impl Screen {
 
     /// Open the picker a command's next argument needs.
     fn open_argument_picker(&mut self, command: &str, argument: &str, source: &str) {
-        if self.editor.text().trim() == format!("/{command}") || !self.editor.text().starts_with(&format!("/{command} ")) {
+        let words = line::words(self.editor.text().trim_start_matches('/'));
+        let index = self.commands.iter().find(|item| item.id == command).and_then(|item| item.args.iter().position(|item| item.name == argument)).unwrap_or(0);
+        if words.values.first().map(String::as_str) != Some(command) {
             self.editor.set_text(format!("/{command} "));
+        } else if words.values.len() <= index+1 && !words.trailing_space {
+            self.editor.set_text(format!("{} ", self.editor.text()));
         }
         self.pending_command = Some(command.to_string());
         let accept = Accept::Argument { command: command.to_string(), argument: argument.to_string() };
@@ -342,6 +346,9 @@ impl Screen {
         );
         if let Some((items, truncated)) = self.resident.get(source) {
             self.picker.as_mut().unwrap().set_items(items.clone(), *truncated);
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            picker.set_query(Self::picker_query(self.editor.text(), &picker.accept, &self.commands));
         }
     }
 
@@ -700,6 +707,7 @@ impl Screen {
             };
         }
         match line::parse(&text, &self.commands) {
+            line::Parsed::Invalid { message } => { self.notice = Some(message); KeyOut::Local }
             line::Parsed::Empty => KeyOut::Local,
             line::Parsed::Needs { command, argument, source, .. } => {
                 // A command that cannot run yet is not sent. The declaration said
@@ -736,16 +744,17 @@ impl Screen {
     /// Tab: complete the argument the cursor is in, if the declaration says one can
     /// be completed.
     fn complete_argument(&mut self) -> KeyOut {
-        let text = self.editor.text().trim().to_string();
+        let text = self.editor.text().trim_start().to_string();
         let Some(rest) = text.strip_prefix('/') else {
             return KeyOut::Local;
         };
-        let mut words = rest.split_whitespace();
-        let name = words.next().unwrap_or_default().to_string();
+        let words = line::words(rest);
+        let name = words.values.first().cloned().unwrap_or_default();
         let Some(command) = self.commands.iter().find(|command| command.id == name).cloned() else {
             return KeyOut::Local;
         };
-        let position = words.count();
+        let count = words.values.len().saturating_sub(1);
+        let position = if words.trailing_space { count } else { count.saturating_sub(1) };
         let Some(argument) = command.args.get(position) else {
             return KeyOut::Local;
         };
@@ -756,7 +765,7 @@ impl Screen {
                     // A resident source the client holds nothing for yet: the first
                     // prefix is not a keystroke of latency, it is the one ask that
                     // makes every later keystroke local.
-                    return KeyOut::Complete { source, prefix: String::new() };
+                    return KeyOut::Complete { source, prefix: self.picker.as_ref().unwrap().query.clone() };
                 }
                 KeyOut::Local
             }
@@ -831,12 +840,12 @@ impl Screen {
             }
             Key::Char(character) => {
                 self.editor.type_char(character);
-                picker.set_query(Self::picker_query(self.editor.text(), &picker.accept))
+                picker.set_query(Self::picker_query(self.editor.text(), &picker.accept, &self.commands))
             }
             Key::Backspace | Key::Delete | Key::Eof => {
                 if key == Key::Backspace { self.editor.backspace(); } else { self.editor.delete(); }
                 if self.editor.is_empty() { picker.cancel() }
-                else { picker.set_query(Self::picker_query(self.editor.text(), &picker.accept)) }
+                else { picker.set_query(Self::picker_query(self.editor.text(), &picker.accept, &self.commands)) }
             }
             Key::Motion(motion) => { self.editor.move_cursor(motion); PickerEffect::None }
             Key::Quit => return KeyOut::Quit,
@@ -846,17 +855,20 @@ impl Screen {
         self.picker_effect(effect)
     }
 
-    fn picker_query<'a>(text: &'a str, accept: &Accept) -> &'a str {
+    fn picker_query(text: &str, accept: &Accept, commands: &[line::Command]) -> String {
         match accept {
-            Accept::Argument { .. } => text.split_once(char::is_whitespace).map_or("", |(_, rest)| rest),
-            _ => text.strip_prefix('/').or_else(|| text.strip_prefix(':')).unwrap_or(text),
+            Accept::Argument { command, argument } => {
+                let index = commands.iter().find(|item| &item.id == command).and_then(|item| item.args.iter().position(|item| &item.name == argument));
+                index.and_then(|index| line::words(text.trim_start_matches('/')).values.get(index+1).cloned()).unwrap_or_default()
+            },
+            _ => text.strip_prefix('/').or_else(|| text.strip_prefix(':')).unwrap_or(text).into(),
         }
     }
 
     pub fn paste(&mut self, text: &str) -> KeyOut {
         self.editor.insert(text);
         let effect = self.picker.as_mut().map(|picker|
-            picker.set_query(Self::picker_query(self.editor.text(), &picker.accept)));
+            picker.set_query(Self::picker_query(self.editor.text(), &picker.accept, &self.commands)));
         effect.map_or(KeyOut::Local, |effect| self.picker_effect(effect))
     }
 
@@ -884,8 +896,12 @@ impl Screen {
                 self.save();
                 // An accepted argument completes the line rather than sending it, so
                 // somebody can add the next argument or edit what they got.
-                if matches!(accepted.accept, Accept::Argument { .. }) {
-                    let text = Picker::fill_text(&accepted);
+                if let Accept::Argument { command, argument } = &accepted.accept {
+                    let index = self.commands.iter().find(|item| &item.id == command).and_then(|item| item.args.iter().position(|item| &item.name == argument)).unwrap_or(0);
+                    let mut values = line::words(self.editor.text().trim_start_matches('/')).values.into_iter().skip(1).collect::<Vec<_>>();
+                    values.resize(values.len().max(index+1), String::new());
+                    values[index] = accepted.value.clone();
+                    let text = format!("/{command} {}", values.iter().map(|value| line::quote(value)).collect::<Vec<_>>().join(" "));
                     self.editor.set_text(text);
                     self.notice = Some(format!("{} → {}", accepted.label, accepted.value));
                     // A command whose arguments are all filled is complete, so it is
@@ -1575,6 +1591,30 @@ mod tests {
         }], false);
         screen.key(Key::Char('s'));
         assert_eq!(screen.key(Key::Char('c')), KeyOut::Local, "a held source was asked again");
+    }
+
+    #[test]
+    fn quoted_argument_completion_keeps_prior_arguments_and_decoded_prefix() {
+        let mut screen = screen();
+        screen.commands.push(line::Command::new("visit", "Visit", "")
+            .arg(line::Arg::new("daemon", "Daemon").required())
+            .arg(line::Arg::new("session", "Session").required().from("models")));
+        screen.editor.set_text("/visit 'daemon one' 'child se");
+        assert_eq!(screen.key(Key::Tab), KeyOut::Complete { source: "models".into(), prefix: "child se".into() });
+        screen.candidates("models", vec![Choice { value: "child session's name".into(), label: "Child".into(), detail: None }], false);
+        let KeyOut::Intent(Intent::Command { name,args }) = screen.key(Key::Submit) else { panic!("expected completed visit"); };
+        assert_eq!(name,"visit");
+        assert_eq!(args.get("daemon").and_then(misa_value::Value::as_str),Some("daemon one"));
+        assert_eq!(args.get("session").and_then(misa_value::Value::as_str),Some("child session's name"));
+    }
+
+    #[test]
+    fn unfinished_quoted_argument_stays_in_the_composer() {
+        let mut screen = screen();
+        screen.editor.set_text("/model 'two words");
+        assert_eq!(screen.submit(), KeyOut::Local);
+        assert_eq!(screen.editor.text(),"/model 'two words");
+        assert!(screen.notice.as_ref().unwrap().contains("quoted"));
     }
 
     #[test]

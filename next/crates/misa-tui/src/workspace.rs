@@ -887,7 +887,7 @@ fn overview_rows(daemon: &str, snapshot: &misa_client::overview::Snapshot) -> Ve
                 nodes.push(text(
                     format!("request-{daemon}-{}-{}", entry.id, nodes.len()),
                     "notice",
-                    format!("  {kind} in {id} · /attention {daemon} {id} {} {} {}",request.scope.incarnation,request.request.get("id").and_then(misa_value::Value::as_str).unwrap_or("unknown"),request.request.get("generation").and_then(misa_value::Value::as_i64).unwrap_or(0)),
+                    format!("  {kind} in {id} · /attention {} {} {} {} {}",misa_kit::intent::quote(daemon),misa_kit::intent::quote(id),misa_kit::intent::quote(&request.scope.incarnation),misa_kit::intent::quote(request.request.get("id").and_then(misa_value::Value::as_str).unwrap_or("unknown")),request.request.get("generation").and_then(misa_value::Value::as_i64).unwrap_or(0)),
                 ));
             }
         }
@@ -921,7 +921,7 @@ fn overview_rows(daemon: &str, snapshot: &misa_client::overview::Snapshot) -> Ve
         ));
     }
     for work in &snapshot.work {
-        nodes.push(text(format!("work-actions-{daemon}-{}",work.id),"notice",format!("  /work-command {daemon} {} operation.cancel {} · /work-command {daemon} {} daemon.work.forget {}",snapshot.scope.incarnation,work.id,snapshot.scope.incarnation,work.id)));
+        nodes.push(text(format!("work-actions-{daemon}-{}",work.id),"notice",format!("  /work-command {} {} operation.cancel {} · /work-command {} {} daemon.work.forget {}",misa_kit::intent::quote(daemon),misa_kit::intent::quote(&snapshot.scope.incarnation),misa_kit::intent::quote(&work.id),misa_kit::intent::quote(daemon),misa_kit::intent::quote(&snapshot.scope.incarnation),misa_kit::intent::quote(&work.id))));
     }
     for (id, fault) in &snapshot.unavailable {
         nodes.push(text(
