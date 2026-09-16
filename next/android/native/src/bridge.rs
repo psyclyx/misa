@@ -30,6 +30,103 @@ struct Instance {
     commands: tokio::sync::mpsc::Sender<Value>,
     task: tokio::task::AbortHandle,
 }
+async fn daemon_command(daemon: Arc<Daemon>, request: Value) -> Result<Value, String> {
+    use misa_client::{form::Form, interface::Interface};
+    use misa_proto::invocation::Outcome;
+    let interface = Interface::load(&daemon.client, daemon.client.welcome().scope)
+        .await
+        .map_err(|fault| fault.message)?;
+    let kind = request["local"].as_str().unwrap_or_default();
+    if kind == "daemon_commands" {
+        let commands: Vec<_> = interface
+            .commands
+            .keys()
+            .filter(|id| Form::command(&interface, id).is_ok())
+            .cloned()
+            .collect();
+        return Ok(
+            json!({"kind":"daemon_commands","daemon":daemon.identity(),"commands":commands}),
+        );
+    }
+    let id = request["command"]
+        .as_str()
+        .ok_or("Missing daemon command")?;
+    let form = Form::command(&interface, id).map_err(|fault| fault.message)?;
+    if kind == "daemon_form" {
+        let mut drafts = BTreeMap::new();
+        if let Some(operation) = request["operation"].as_str() {
+            let scope: Scope = serde_json::from_value(request["scope"].clone())
+                .map_err(|error| error.to_string())?;
+            if scope != interface.scope {
+                return Err("Work owner changed; refresh the directory".into());
+            }
+            let detail = misa_client::operation::detail(&daemon.client, &interface, operation)
+                .await
+                .map_err(|fault| fault.message)?
+                .ok_or("Work result is no longer available")?;
+            drafts.insert("operation", operation.to_string());
+            drafts.insert("generation", detail.generation.to_string());
+        }
+        return Ok(
+            json!({"kind":"daemon_form","daemon":daemon.identity(),"scope":interface.scope,"action":id,"fields":form.fields,"drafts":drafts}),
+        );
+    }
+    let scope: Scope =
+        serde_json::from_value(request["scope"].clone()).map_err(|error| error.to_string())?;
+    if scope != interface.scope {
+        return Err("Daemon restarted; reopen its command form".into());
+    }
+    let drafts = serde_json::from_value::<BTreeMap<String, String>>(request["drafts"].clone())
+        .map_err(|error| error.to_string())?;
+    let (command, input) = form.prepare(&drafts).map_err(|fault| fault.message)?;
+    let outcome = daemon
+        .client
+        .invoke(
+            scope,
+            interface.commands[&command].clone(),
+            input,
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .map_err(|fault| fault.message)?
+        .outcome;
+    let (level, text) = match outcome {
+        Outcome::Completed { value } => {
+            return Ok(
+                json!({"kind":"daemon_report","daemon":daemon.identity(),"view":misa_client::request::report(id,&value)}),
+            );
+        }
+        Outcome::Rejected { fault } => ("error", format!("Rejected: {}", fault.message)),
+        Outcome::Indeterminate { fault } => (
+            "error",
+            format!(
+                "Outcome unknown: {}; reconcile before retrying",
+                fault.message
+            ),
+        ),
+        Outcome::Accepted { operation } => {
+            let watch = misa_client::operation::Watch::open(
+                &daemon.client,
+                &interface,
+                operation.clone(),
+                false,
+            )
+            .await
+            .unwrap_or_else(|fault| misa_client::operation::Watch::failed(operation, fault));
+            match watch.wait().await.outcome {
+                misa_client::operation::Terminal::Finished { state, .. } => {
+                    ("info", format!("Operation {state}"))
+                }
+                misa_client::operation::Terminal::Expired => (
+                    "error",
+                    "Operation result expired; completion unknown".into(),
+                ),
+                misa_client::operation::Terminal::Fault(fault) => ("error", fault.message),
+            }
+        }
+    };
+    Ok(json!({"kind":"notice","level":level,"text":format!("{} · {text}",daemon.identity())}))
+}
 pub async fn run(
     ticket: String,
     storage: PathBuf,
@@ -85,12 +182,14 @@ async fn workspace(
     let mut connections = tokio::task::JoinSet::new();
     let mut lifecycle = tokio::task::JoinSet::new();
     let mut archives = tokio::task::JoinSet::new();
+    let mut daemon_commands = tokio::task::JoinSet::new();
     let mut overview_tasks = tokio::task::JoinSet::<(
         String,
         Scope,
         Result<misa_client::overview::Overview, misa_proto::Fault>,
     )>::new();
     let mut overview_attempts = BTreeMap::new();
+    let mut overview_retry = BTreeMap::<String, tokio::time::Instant>::new();
     let mut overviews = BTreeMap::<String, Arc<misa_client::overview::Overview>>::new();
     let mut overview_watching = BTreeMap::<String, tokio::task::AbortHandle>::new();
     let mut watchers = tokio::task::JoinSet::new();
@@ -167,6 +266,13 @@ async fn workspace(
             dirty.notify_one();
         }
         tokio::select! {
+            result=daemon_commands.join_next(),if !daemon_commands.is_empty()=>{
+                match result.expect("pending daemon command") {
+                    Ok(Ok(event))=>mailbox.event(event).await,
+                    Ok(Err(text))=>mailbox.event(json!({"kind":"notice","level":"error","text":text})).await,
+                    Err(error)=>mailbox.event(json!({"kind":"notice","level":"error","text":error.to_string()})).await,
+                }
+            },
             result=overview_tasks.join_next(),if !overview_tasks.is_empty()=>{
                 if let Some(Ok((identity,scope,result)))=result {
                     if registry.connected().await.iter().any(|daemon|daemon.identity()==identity&&daemon.client.welcome().scope==scope) {
@@ -176,7 +282,12 @@ async fn workspace(
                                 let mut changes=overview.watch();let dirty=dirty.clone();
                                 overview_watching.insert(identity.clone(),watchers.spawn(async move{while changes.changed().await.is_ok(){dirty.notify_one();}}));
                                 overviews.insert(identity,Arc::new(overview));
-                            },Err(fault)=>mailbox.event(json!({"kind":"notice","text":format!("Daemon overview unavailable: {}",fault.message)})).await,
+                            },Err(fault)=>{
+                                overview_attempts.remove(&identity);
+                                overview_retry.insert(identity,tokio::time::Instant::now()+std::time::Duration::from_secs(1));
+                                let wake=dirty.clone();watchers.spawn(async move{tokio::time::sleep(std::time::Duration::from_secs(1)).await;wake.notify_one();});
+                                mailbox.event(json!({"kind":"notice","text":format!("Daemon overview unavailable: {}",fault.message)})).await;
+                            },
                         }
                     }
                     dirty.notify_one();
@@ -206,42 +317,59 @@ async fn workspace(
                 let identities:BTreeSet<_>=connected.iter().map(|daemon|daemon.identity().to_string()).collect();
                 overviews.retain(|identity,_|identities.contains(identity));
                 overview_attempts.retain(|identity,_|identities.contains(identity));
+                overview_retry.retain(|identity,_|identities.contains(identity));
                 overview_watching.retain(|identity,task|if identities.contains(identity){true}else{task.abort();false});
                 watching.retain(|identity,task:&mut tokio::task::AbortHandle|if identities.contains(identity){true}else{task.abort();false});
                 let mut rows=vec![];
+                let mut available_instances=BTreeSet::new();
                 for daemon in connected {
                     let scope=daemon.client.welcome().scope;
-                    if overview_attempts.get(daemon.identity())!=Some(&scope)&&overview_tasks.len()<4 {
+                    if overview_attempts.get(daemon.identity())!=Some(&scope)&&overview_tasks.len()<4&&overview_retry.get(daemon.identity()).is_none_or(|at|*at<=tokio::time::Instant::now()) {
                         let owner=daemon.clone();overview_attempts.insert(daemon.identity().to_string(),scope.clone());
                         overview_tasks.spawn(async move {(owner.identity().to_string(),scope,misa_client::overview::Overview::open(&owner.client).await)});
                     }
                     if !watching.contains_key(daemon.identity()) { let mut changed=daemon.watch();let dirty=dirty.clone();let task=watchers.spawn(async move{while changed.changed().await.is_ok(){dirty.notify_one();}});watching.insert(daemon.identity().to_string(),task); }
                     let snapshot=daemon.sessions().map_err(|fault|fault.message)?;
+                    if matches!(snapshot.status,misa_protocol::observation::Status::Current) {
+                        for (id,instance) in &instances {
+                            if instance.daemon==daemon.identity()&&snapshot.sessions.iter().any(|entry|entry.scope()==instance.entry.scope()&&entry.availability==misa_proto::directory::Availability::Current) { available_instances.insert(id.clone()); }
+                        }
+                    }
                     if let Some(hint)=initial.get(daemon.identity()) {
                         if let Some(entry)=snapshot.sessions.iter().find(|entry|&entry.id==hint) { choose=Some((daemon.clone(),entry.clone()));initial.remove(daemon.identity()); }
                     }
                     let overview=overviews.get(daemon.identity()).and_then(|overview|overview.snapshot().ok());
                     let sessions:Vec<_>=snapshot.sessions.iter().map(|entry|{
                         let mut value=json!(entry);
+                        value["summary"]=json!("Overview unavailable");
                         if let Some(overview)=&overview {if let Some(row)=overview.rows.iter().find(|row|row.scope==entry.scope()) {
-                            value["summary"]=json!(format!("{} · {} · {} request(s) · {} tokens · ${:.4}",crate::session::freshness(&overview.status),if row.working{"working"}else{"idle"},row.attention,row.inclusive_usage.input_tokens.saturating_add(row.inclusive_usage.output_tokens),row.inclusive_usage.cost_micros as f64/1_000_000.0));
+                            let freshness=if matches!(overview.status,misa_protocol::observation::Status::Current){match row.availability{misa_proto::directory::Availability::Current=>"current",misa_proto::directory::Availability::Stale=>"stale",misa_proto::directory::Availability::Unavailable=>"unavailable"}}else{crate::session::freshness(&overview.status)};
+                            value["summary"]=json!(format!("{} · {} · {} request(s) · {} tokens · ${:.4} · {} blocking · {} unavailable{}",freshness,if row.working{"working"}else{"idle"},row.attention,row.inclusive_usage.input_tokens.saturating_add(row.inclusive_usage.output_tokens),row.inclusive_usage.cost_micros as f64/1_000_000.0,row.blocking.len(),row.unavailable.len(),if row.cyclic{" · cycle"}else{""}));
+                            value["requests"]=json!(row.requests.iter().map(|request|json!({"scope":request.scope,"request":request.request,"available":freshness=="current"&&request.availability==misa_proto::directory::Availability::Current})).collect::<Vec<_>>());
                         }}
                         value
                     }).collect();
-                    rows.push(json!({"daemon":daemon.identity(),"freshness":crate::session::freshness(&snapshot.status),"sessions":sessions}));
+                    let work:Vec<_>=overview.as_ref().map(|overview|overview.work.iter().map(|work|json!({"id":work.id,"scope":overview.scope,"state":work.state,"blocking":work.blocking,"available":matches!(overview.status,misa_protocol::observation::Status::Current)&&matches!(snapshot.status,misa_protocol::observation::Status::Current)})).collect()).unwrap_or_default();
+                    rows.push(json!({"daemon":daemon.identity(),"freshness":crate::session::freshness(&snapshot.status),"sessions":sessions,"work":work}));
                 }
-                let retained:Vec<_>=instances.iter().map(|(id,instance)|json!({"instance":id,"daemon":instance.daemon,"scope":instance.entry.scope(),"title":instance.entry.title,"available":!instance.commands.is_closed()})).collect();
+                let retained:Vec<_>=instances.iter().map(|(id,instance)|json!({"instance":id,"daemon":instance.daemon,"scope":instance.entry.scope(),"title":instance.entry.title,"available":!instance.commands.is_closed()&&available_instances.contains(id)})).collect();
                 mailbox.event(json!({"kind":"directory","daemons":rows,"instances":retained})).await;
             },
             command=inbox.recv()=>{
                 let Some(command)=command else { for daemon in registry.connected().await{registry.disconnect(daemon.identity()).await;}return Ok(()); };
                 match command.get("local").and_then(Value::as_str) {
+                    Some("daemon_commands"|"daemon_form"|"daemon_invoke")=>{
+                        if daemon_commands.len()>=4 {mailbox.event(json!({"kind":"notice","level":"error","text":"Daemon commands are busy"})).await;continue;}
+                        if let Some(daemon)=registry.connected().await.into_iter().find(|daemon|Some(daemon.identity())==command["daemon"].as_str()) {
+                            daemon_commands.spawn(daemon_command(daemon,command));
+                        } else {mailbox.event(json!({"kind":"notice","level":"error","text":"Daemon is no longer connected"})).await;}
+                    },
                     Some("archives")=>if archives.len()<4 {
                         if let Some(daemon)=registry.connected().await.into_iter().find(|daemon|Some(daemon.identity())==command["daemon"].as_str()) {
                             let prefix=command["prefix"].as_str().unwrap_or_default().to_string();
                             archives.spawn(async move {let result=misa_client::lifecycle::conversations(&daemon,&prefix,32).await.map_err(|fault|fault.message);(daemon.identity().to_string(),prefix,result)});
-                        }
-                    },
+                        } else {mailbox.event(json!({"kind":"notice","level":"error","text":"Daemon is no longer connected"})).await;}
+                    } else {mailbox.event(json!({"kind":"notice","level":"error","text":"Saved conversation requests are busy; retry shortly"})).await;},
                     Some("lifecycle")=>{
                         if lifecycle.len()>=4 {mailbox.event(json!({"kind":"notice","text":"Daemon commands are busy"})).await;continue;}
                         if let Some(daemon)=registry.connected().await.into_iter().find(|daemon|Some(daemon.identity())==command["daemon"].as_str()) {
@@ -255,13 +383,13 @@ async fn workspace(
                                     misa_proto::invocation::Outcome::Accepted{operation}=>Err(format!("Operation {} accepted; reconcile before retrying",operation.id)),
                                 }
                             });
-                        }
+                        } else {mailbox.event(json!({"kind":"notice","level":"error","text":"Daemon is no longer connected"})).await;}
                     },
-                    Some("connect")=>if connections.len()<4 { if let Some(target)=command["target"].as_str(){connections.spawn(connect(registry.clone(),target.into(),command["select"].as_bool().unwrap_or(true)));} },
+                    Some("connect")=>if connections.len()<4 { if let Some(target)=command["target"].as_str(){connections.spawn(connect(registry.clone(),target.into(),command["select"].as_bool().unwrap_or(true)));} }else{mailbox.event(json!({"kind":"notice","level":"error","text":"Connection attempts are busy; retry shortly"})).await;},
                     Some("disconnect")=>if let Some(identity)=command["daemon"].as_str(){registry.disconnect(identity).await;for(id,instance)in&instances{if instance.daemon==identity{instance.task.abort();Events{mailbox:mailbox.clone(),instance:id.clone()}.send(json!({"kind":"state","state":"closed","message":"Disconnected; pending outcomes may be unknown. Remote operations remain owned by the daemon."})).await;}}dirty.notify_one();},
                     Some("select")=>{
                         if let Some(id)=command["instance"].as_str().filter(|id|instances.contains_key(*id)) { let instance=&instances[id];selected=Some(id.into());mailbox.event(json!({"kind":"selected","instance":id,"daemon":instance.daemon,"scope":instance.entry.scope(),"title":instance.entry.title})).await; }
-                        else if let (Some(identity),Ok(scope))=(command["daemon"].as_str(),serde_json::from_value::<Scope>(command["scope"].clone())) { for daemon in registry.connected().await {if daemon.identity()==identity {if let Some(entry)=daemon.sessions().map_err(|fault|fault.message)?.sessions.into_iter().find(|entry|entry.scope()==scope){choose=Some((daemon,entry));break;}}} }
+                        else if let (Some(identity),Ok(scope))=(command["daemon"].as_str(),serde_json::from_value::<Scope>(command["scope"].clone())) { for daemon in registry.connected().await {if daemon.identity()==identity {let snapshot=daemon.sessions().map_err(|fault|fault.message)?;if matches!(snapshot.status,misa_protocol::observation::Status::Current){if let Some(entry)=snapshot.sessions.into_iter().find(|entry|entry.scope()==scope&&entry.availability==misa_proto::directory::Availability::Current){choose=Some((daemon,entry));break;}}}}if choose.is_none(){mailbox.event(json!({"kind":"notice","level":"error","text":"Selected session is stale or no longer available"})).await;} }
                     },
                     Some("close")=>if let Some(id)=command["instance"].as_str(){if let Some(instance)=instances.remove(id){instance.task.abort();}if selected.as_deref()==Some(id){selected=None;}mailbox.event(json!({"kind":"instance_closed","instance":id})).await;dirty.notify_one();},
                     _=>{

@@ -1574,6 +1574,7 @@ dependencies = [
  "iroh",
  "jni 0.21.1",
  "misa-client",
+ "misa-kit",
  "misa-proto",
  "misa-protocol",
  "misa-transport",
@@ -1595,6 +1596,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "misa-kit"
+version = "0.1.0"
+dependencies = [
+ "misa-proto",
+ "misa-value",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

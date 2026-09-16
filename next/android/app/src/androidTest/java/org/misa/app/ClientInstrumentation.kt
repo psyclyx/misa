@@ -34,13 +34,14 @@ class ClientInstrumentation : Instrumentation() {
             val second = options.getString("ticket2")?.takeIf { it.isNotEmpty() }
             second?.let { relationships(ticket, it) }
             if (options.getString("plugin") == "true") contributedForm(ticket)
+            second?.let { workspaceUiState(ticket, it) }
             result.putString(
                 "stream",
                 "\nPASS: incremental canonical/live updates, persistent reconnect, offline canonical cache, blob upload/fetch, directed save destination${if(second!=null) ", two daemon identities, private tool and credential workflows" else ""}\n",
             )
             result.putInt(
                 "tests",
-                (if (second == null) 6 else 8) +
+                (if (second == null) 6 else 9) +
                     (if (options.getString("plugin") == "true") 1 else 0),
             )
             finish(Activity.RESULT_OK, result)
@@ -268,7 +269,9 @@ class ClientInstrumentation : Instrumentation() {
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
                 while (
                     root.listFiles().orEmpty().none {
-                        it.name.startsWith("view-") && it.readText().contains("android-first")
+                        it.name.startsWith("view-") &&
+                            it.name.endsWith(".json") &&
+                            it.readText().contains("android-first")
                     }
                 ) {
                     check(System.nanoTime() < deadline) { "canonical checkpoint was not saved" }
@@ -557,9 +560,256 @@ class ClientInstrumentation : Instrumentation() {
                         it.optJSONObject("model") == null
                 }
                 client.waitFor("notice") { it.optString("text") == "Operation succeeded" }
+                client.send(
+                    JSONObject()
+                        .put("local", "form")
+                        .put("instance", instance)
+                        .put("action", "pet.ask-feed")
+                        .put("direct", true)
+                        .put("drafts", JSONObject())
+                        .toString()
+                )
+                val cancelled =
+                    client
+                        .waitFor("request") { event ->
+                            event.optJSONObject("model")?.let {
+                                it.optJSONObject("form") != null &&
+                                    it.getString("id") != request.getString("id")
+                            } == true
+                        }
+                        .getJSONObject("model")
+                client.send(
+                    JSONObject()
+                        .put("local", "request")
+                        .put("instance", instance)
+                        .put("request", cancelled.getString("id"))
+                        .put("generation", cancelled.getLong("generation"))
+                        .put("action", "cancel")
+                        .put("fields", JSONObject().put("amount", "invalid populated draft"))
+                        .toString()
+                )
+                client.waitFor("request") {
+                    it.optString("id") == cancelled.getString("id") &&
+                        it.optJSONObject("model") == null
+                }
+                client.waitFor("notice") { it.optString("text") == "Operation cancelled" }
             }
         } finally {
             directory.deleteRecursively()
+        }
+    }
+
+    private fun <T> main(block: () -> T): T {
+        var result: Result<T>? = null
+        runOnMainSync { result = runCatching(block) }
+        return result!!.getOrThrow()
+    }
+
+    private fun workspaceUiState(first: String, second: String) {
+        val app = targetContext.applicationContext as android.app.Application
+        val failNext = java.util.concurrent.atomic.AtomicBoolean(false)
+        val failed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val latestComposition = java.util.concurrent.atomic.AtomicLong(0)
+        val failFrom = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
+        val model = main {
+            MisaViewModel(app) { raw ->
+                val event = JSONObject(raw)
+                if (event.optString("kind") == "composition")
+                    latestComposition.set(event.getLong("composition"))
+                val change = event.optJSONObject("documents")?.optJSONObject("conversation")
+                if (
+                    event.optString("kind") == "transaction" &&
+                        event.optLong("composition") >= failFrom.get() &&
+                        change?.optString("mode") == "reset" &&
+                        failNext.compareAndSet(true, false)
+                ) {
+                    val tree = change.getJSONObject("tree")
+                    tree.put("id", tree.getJSONArray("children").getJSONObject(0).getString("id"))
+                    failed.set(true)
+                }
+                event
+            }
+        }
+        fun awaitState(accept: (UiState) -> Boolean): UiState {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45)
+            while (System.nanoTime() < deadline) {
+                val state = model.state.value
+                if (accept(state)) return state
+                Thread.sleep(20)
+            }
+            error(
+                "Timed out waiting for local workspace: ${model.state.value.message}, ${model.state.value.notices}"
+            )
+        }
+        try {
+            main { model.connect(first) }
+            val initial = awaitState { it.connected && it.panels.containsKey("status") }
+            main { model.daemonCommands(initial.daemon) }
+            awaitState { state ->
+                state.daemonCommands[initial.daemon]
+                    .orEmpty()
+                    .containsAll(listOf("operation.cancel", "daemon.work.forget"))
+            }
+            main { model.daemonForm(initial.daemon, "daemon.work.forget") }
+            val daemonForm = awaitState { it.form?.daemon == initial.daemon }.form!!
+            check(daemonForm.fields.map { it.id }.containsAll(listOf("operation", "generation")))
+            main {
+                model.submitForm(
+                    daemonForm,
+                    mapOf("operation" to "android-nonexistent-operation", "generation" to "1"),
+                )
+            }
+            awaitState { it.notices.any { notice -> notice.text.contains("Rejected:") } }
+            main { model.dismissForm() }
+            check(initial.session!!.sources.any { it.id == "providers" })
+            check(
+                initial.session.commands.none {
+                    it.id == "credentials.resolve" ||
+                        it.id == "input.resolve" ||
+                        it.id == "input.cancel"
+                }
+            )
+            main { model.complete("providers", "anth") }
+            awaitState { it.completions.any { choice -> choice.first == "anthropic" } }
+            main {
+                model.draft("kept while reading usage")
+                model.command("usage")
+            }
+            val reported = awaitState { it.report != null }
+            fun typed(node: Node): Boolean = node.shape is Shape.Fact || node.children.any(::typed)
+            check(typed(reported.report!!) && reported.draft == "kept while reading usage")
+            main { model.dismissReport() }
+            val beforeFailure = model.state.value.view!!.id
+            failFrom.set(latestComposition.get() + 1)
+            failNext.set(true)
+            main { model.presentation("conversation", "auto") }
+            awaitState {
+                failed.get() &&
+                    it.renderProblem == null &&
+                    it.view?.id == beforeFailure &&
+                    it.notices.any { notice ->
+                        notice.text.startsWith("Presentation cache failed:")
+                    }
+            }
+            val field = initial.panels.getValue("status").children.first().id
+            main {
+                model.theme("light")
+                model.statusField(field, false)
+            }
+            val restored = main { MisaViewModel(app) }
+            check(
+                restored.state.value.theme == "light" && field in restored.state.value.hiddenStatus
+            )
+            main { model.statusField(field, true) }
+            if (options.getString("plugin") == "true") {
+                check("plugin.pet.companion" !in initial.panels)
+                check(initial.session.commands.any { it.id == "pet.ask-feed" })
+                main { model.presentation("plugin.pet.companion", "auto") }
+                awaitState { it.panels["plugin.pet.companion"]?.shape is Shape.Meter }
+                main { model.presentation("plugin.pet.companion", "variant", "portable") }
+                awaitState { it.panels["plugin.pet.companion"]?.shape is Shape.Status }
+                main { model.presentation("plugin.pet.companion", "hidden") }
+                awaitState { "plugin.pet.companion" !in it.panels }
+            }
+            main { model.command("login", listOf("provider" to "anthropic")) }
+            val owner = awaitState { it.requests.any { request -> request.secret } }
+            val request = owner.requests.first { it.secret }
+            main { model.connect(second) }
+            awaitState { it.connected && it.daemon != owner.daemon }
+            val directory = awaitState {
+                it.daemons
+                    .flatMap { daemon -> daemon.sessions }
+                    .flatMap { session -> session.requests }
+                    .any { target ->
+                        target.daemon == owner.daemon && target.id == request.id && target.available
+                    }
+            }
+            val target =
+                directory.daemons
+                    .flatMap { it.sessions }
+                    .flatMap { it.requests }
+                    .first { it.daemon == owner.daemon && it.id == request.id }
+            main { model.navigateRequest(target.copy(available = false)) }
+            check(model.state.value.daemon != owner.daemon)
+            main { model.navigateRequest(target) }
+            val focused = awaitState { it.daemon == owner.daemon && it.requestFocus == request.id }
+            check(
+                focused.requests.any { it.id == request.id && it.generation == target.generation }
+            )
+            main {
+                model.consumeRequestFocus()
+                model.request(request, "cancel", "unused invalid draft")
+            }
+            awaitState { it.requests.none { it.id == request.id } }
+            if (options.getString("restart") == "true") {
+                val oldInstance = model.state.value.instance
+                val control = File(targetContext.filesDir, "restart-control")
+                val replacement = File(targetContext.filesDir, "restart-ticket")
+                replacement.delete()
+                try {
+                    control.writeText("stop")
+                    val stale = awaitState { state ->
+                        state.daemons.any { it.id == owner.daemon && it.freshness != "current" } &&
+                            state.daemons.any {
+                                it.id != owner.daemon && it.freshness == "current"
+                            } &&
+                            !state.connected
+                    }
+                    check(stale.instance == oldInstance && stale.view != null)
+                    control.writeText("start")
+                    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45)
+                    while (!replacement.exists() || replacement.length() == 0L) {
+                        check(System.nanoTime() < deadline) { "Harness did not restart daemon" }
+                        Thread.sleep(20)
+                    }
+                    val refreshed = replacement.readText().trim()
+                    // Refresh the address of the relationship, without choosing its session hint.
+                    main { model.connect(refreshed.removePrefix("misa:").substringBeforeLast(":")) }
+                    val restarted = awaitState { state ->
+                        state.daemons.any { daemon ->
+                            daemon.id == owner.daemon &&
+                                daemon.freshness == "current" &&
+                                daemon.sessions.any { session ->
+                                    session.scope.getJSONObject("id").getString("id") ==
+                                        target.scope.getJSONObject("id").getString("id") &&
+                                        session.scope.getString("incarnation") !=
+                                            target.scope.getString("incarnation")
+                                }
+                        }
+                    }
+                    check(restarted.instance == oldInstance && !restarted.connected)
+                    val targets =
+                        JSONObject(
+                            app.getSharedPreferences("client", 0)
+                                .getString("relationshipTargets", "{}")!!
+                        )
+                    check(
+                        targets.getString(owner.daemon) ==
+                            refreshed.removePrefix("misa:").substringBeforeLast(":")
+                    )
+                    check(restarted.instances.any { it.id == oldInstance && !it.available })
+                    val fresh =
+                        restarted.daemons
+                            .first { it.id == owner.daemon }
+                            .sessions
+                            .first {
+                                it.scope.getJSONObject("id").getString("id") ==
+                                    target.scope.getJSONObject("id").getString("id")
+                            }
+                    main { model.select(owner.daemon, fresh.scope) }
+                    awaitState { it.connected && it.instance != oldInstance }
+                    main { model.selectInstance(oldInstance) }
+                    val retained = awaitState { it.instance == oldInstance }
+                    check(!retained.connected && retained.draft == "kept while reading usage")
+                    main { model.select(owner.daemon, fresh.scope) }
+                    awaitState { it.connected && it.instance != oldInstance }
+                } finally {
+                    control.delete()
+                    replacement.delete()
+                }
+            }
+        } finally {
+            main { model.pause() }
         }
     }
 

@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 misa-client = { path = "../../crates/misa-client" }
+misa-kit = { path = "../../crates/misa-kit" }
 jni = "0.21"
 misa-transport = { path = "../../crates/misa-transport" }
 misa-proto = { path = "../../crates/misa-proto" }

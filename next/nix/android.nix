@@ -54,6 +54,8 @@ let
   };
   # Only the JNI crate's normal path dependencies enter an Android build.
   nativeCrates = [
+    "misa-client"
+    "misa-kit"
     "misa-proto"
     "misa-protocol"
     "misa-transport"

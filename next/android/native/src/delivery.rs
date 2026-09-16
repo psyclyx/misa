@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 type Pending = Box<dyn FnOnce() -> Value + Send>;
@@ -66,6 +66,7 @@ pub struct Documents {
     readers: Mutex<Vec<(String, document::Reader)>>,
     queued: AtomicBool,
     generation: u64,
+    render: AtomicU64,
 }
 impl Documents {
     pub fn new(
@@ -78,6 +79,7 @@ impl Documents {
             observation,
             instance,
             generation,
+            render: AtomicU64::new(0),
             readers: Mutex::new(
                 members
                     .into_iter()
@@ -94,9 +96,24 @@ impl Documents {
         let feed = self.clone();
         mailbox.push(Box::new(move || feed.capture())).await;
     }
+    /// Rebuild only the local render cache. The shared replica and its resume
+    /// checkpoint remain authoritative and unchanged.
+    pub fn invalidate(&self) -> Result<(), String> {
+        let mut readers = self.readers.lock().unwrap();
+        self.render
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .map_err(|_| "Render generations exhausted")?;
+        for (_, reader) in readers.iter_mut() {
+            reader.invalidate();
+        }
+        Ok(())
+    }
     fn capture(&self) -> Value {
         self.queued.store(false, Ordering::Release);
         let mut readers = self.readers.lock().unwrap();
+        let render = self.render.load(Ordering::Acquire);
         let updates = document::capture_many(
             &self.observation,
             readers
@@ -106,7 +123,7 @@ impl Documents {
         .into_iter()
         .map(|(slot, update)| (slot, encode(update)))
         .collect::<serde_json::Map<_, _>>();
-        json!({"kind":"transaction","instance":self.instance,"composition":self.generation,"documents":updates})
+        json!({"kind":"transaction","instance":self.instance,"composition":self.generation,"render":render,"documents":updates})
     }
 }
 fn encode(update: document::Update) -> Value {

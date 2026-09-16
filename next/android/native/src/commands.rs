@@ -5,7 +5,8 @@ use misa_client::{
     interaction::{Interaction, Prepared},
     interface,
 };
-use misa_proto::{Intent, invocation::Outcome, observation::Selection, view::BlobRef};
+use misa_kit::intent::Intent;
+use misa_proto::{invocation::Outcome, observation::Selection, view::BlobRef};
 use misa_value::Value;
 use serde_json::{Value as Json, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -49,12 +50,9 @@ pub async fn execute(
                 )
                 .await
                 .map_err(|fault| fault.message)?;
-            Ok(report(
-                &title,
-                interface::data(&result, "result")
-                    .map_err(|fault| fault.message)?
-                    .clone(),
-            ))
+            Ok(
+                json!({"kind":"report","title":title,"view":interface::report(&result,"result",&title).map_err(|fault|fault.message)?}),
+            )
         }
         Prepared::Invoke { command, input } => {
             let title = command.id.clone();

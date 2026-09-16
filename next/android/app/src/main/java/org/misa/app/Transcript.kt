@@ -430,6 +430,7 @@ private fun roleSurface(role: String): Color? =
     }
 
 /** Inline runs, as one styled string. */
+@Composable
 private fun inline(spans: List<Span>): AnnotatedString = buildAnnotatedString {
     spans.forEach { span ->
         when (span.kind) {
@@ -459,6 +460,7 @@ private fun inline(spans: List<Span>): AnnotatedString = buildAnnotatedString {
 }
 
 /** A code block with its captures painted. */
+@Composable
 private fun highlight(shape: Shape.Code): AnnotatedString = buildAnnotatedString {
     var cursor = 0
     shape.captures
@@ -483,26 +485,27 @@ private fun highlight(shape: Shape.Code): AnnotatedString = buildAnnotatedString
  * token this frontend has not does not make a code block unreadable. *Which* colours is the
  * client's business; that a keyword is not a string is the session's.
  */
+@Composable
 private fun tokenColor(name: String): Color =
     when (name) {
         "keyword",
         "storage",
         "conditional",
-        "repeat" -> Color(0xFFC678DD)
+        "repeat" -> MaterialTheme.colorScheme.primary
         "string",
-        "char" -> Color(0xFF98C379)
+        "char" -> MaterialTheme.colorScheme.tertiary
         "function",
-        "method" -> Color(0xFF61AFEF)
+        "method" -> MaterialTheme.colorScheme.secondary
         "type",
         "class",
-        "struct" -> Color(0xFFE5C07B)
+        "struct" -> MaterialTheme.colorScheme.primary
         "number",
         "constant",
-        "boolean" -> Color(0xFFD19A66)
-        "comment" -> Color(0xFF7F848E)
+        "boolean" -> MaterialTheme.colorScheme.tertiary
+        "comment" -> MaterialTheme.colorScheme.onSurfaceVariant
         "operator",
-        "punctuation" -> Color(0xFF56B6C2)
-        else -> Color(0xFFABB2BF)
+        "punctuation" -> MaterialTheme.colorScheme.secondary
+        else -> MaterialTheme.colorScheme.onSurface
     }
 
 private val imageSlots = kotlinx.coroutines.sync.Semaphore(8)

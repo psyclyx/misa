@@ -7,7 +7,8 @@ use misa_client::{
     interface::{self, Interface},
     request::Model,
 };
-use misa_proto::{Intent, directory::Entry, observation::Selection};
+use misa_kit::intent::Intent;
+use misa_proto::{directory::Entry, observation::Selection};
 use misa_protocol::observation::{MemberState, Status};
 use misa_value::Value;
 use serde_json::{Value as Json, json};
@@ -16,6 +17,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+
+fn capabilities() -> [String; 1] {
+    ["semantic.meter@1".into()]
+}
 
 pub fn freshness(status: &Status) -> &'static str {
     match status {
@@ -49,7 +54,7 @@ async fn compose(
 ) -> Result<(Arc<Documents>, String), String> {
     let selected = preferences.reconcile(
         &interaction.interface.presentations,
-        &[],
+        &capabilities(),
         &["conversation", "status"],
     );
     for (id, fault) in selected.unavailable {
@@ -63,7 +68,7 @@ async fn compose(
             "conversation".into(),
             interaction
                 .interface
-                .presentation("conversation", &[])
+                .presentation("conversation", &capabilities())
                 .map_err(|fault| fault.message)?,
         );
     }
@@ -102,7 +107,7 @@ async fn compose(
         .observe(selection, checkpoint)
         .await
         .map_err(|fault| fault.message)?;
-    events.send(json!({"kind":"composition","composition":generation,"catalog":interaction.interface.presentations,"preferences":preferences,"slots":slots.iter().map(|(id,_)|id).collect::<Vec<_>>()})).await;
+    events.send(json!({"kind":"composition","composition":generation,"catalog":interaction.interface.presentations,"capabilities":capabilities(),"preferences":preferences,"slots":slots.iter().map(|(id,_)|id).collect::<Vec<_>>()})).await;
     Ok((
         Arc::new(Documents::new(
             observation,
@@ -183,8 +188,13 @@ pub async fn run(
     .await?;
     let mut changes = feed.observation.watch();
     let mut commands:Vec<_>=interaction.shortcuts.iter().map(|shortcut|json!({"id":shortcut.id,"label":shortcut.label,"description":shortcut.description,"args":shortcut.args})).collect();
-    for id in interaction.interface.commands.keys().filter(|id| !interaction.shortcuts.iter().any(|shortcut| &shortcut.id == *id)) {
-        if misa_client::form::Form::command(&interaction.interface,id).is_ok() {
+    for id in interaction.interface.commands.keys().filter(|id| {
+        !interaction
+            .shortcuts
+            .iter()
+            .any(|shortcut| &shortcut.id == *id)
+    }) {
+        if misa_client::form::Form::command(&interaction.interface, id).is_ok() {
             commands.push(json!({"id":id,"label":"Command","description":"Open declared input form","args":[]}));
         }
     }
@@ -311,11 +321,18 @@ pub async fn run(
             result=jobs.join_next(),if !jobs.is_empty()=>{if let Some(Ok(event))=result{events.send(event).await;}},
             command=inbox.recv()=>{
                 let Some(command)=command else{return Ok(())};
+                if command["local"]=="refresh" {
+                    if command["composition"].as_u64()==Some(generation) {
+                        feed.invalidate()?;
+                        feed.notify(&events.mailbox).await;
+                    }
+                    continue;
+                }
                 if command["local"]=="presentation"{
                     let id=command["id"].as_str().unwrap_or_default();
                     let choice=serde_json::from_value::<Choice>(command["choice"].clone()).map_err(|error|error.to_string());
                     let mut next=prefs.clone();
-                    let result=choice.and_then(|choice|next.set(&interaction.interface.presentations,&[],id,choice).map_err(|fault|fault.message));
+                    let result=choice.and_then(|choice|next.set(&interaction.interface.presentations,&capabilities(),id,choice).map_err(|fault|fault.message));
                     if let Err(error)=result{events.notice(error).await;continue;}
                     let next_generation=generation.checked_add(1).ok_or("Composition generations exhausted")?;
                     match compose(&daemon,&interaction,files.clone(),&events,&next,next_generation).await{
@@ -349,7 +366,7 @@ pub async fn run(
                             Some("fetch")=>crate::commands::fetch(&daemon,files,command["hash"].as_str().unwrap_or_default().into(),None).await,
                             Some("upload")=>{let path=std::path::PathBuf::from(command["path"].as_str().unwrap_or_default());let upload=crate::files::UploadFile(path);let bytes=tokio::task::spawn_blocking(move||{let bytes=crate::files::upload_bytes(&upload.0);drop(upload);bytes}).await.map_err(|error|error.to_string())??;let reference=daemon.blobs.share(bytes,command["media"].as_str()).await?;Ok(json!({"kind":"uploaded","name":command["name"],"blob":reference}))},
                             Some("request")=>{let model=request_model.ok_or("Request generation is no longer available")?;let fields=serde_json::from_value::<BTreeMap<String,String>>(command["fields"].clone()).map_err(|error|error.to_string())?;let prepared=model.prepare_drafts(command["action"].as_str().unwrap_or_default(),&fields,&interaction.interface).map_err(|fault|fault.message)?;crate::commands::execute(&daemon,&interaction,prepared).await},
-                            Some("complete")=>{let member=interaction.complete(command["source"].as_str().unwrap_or_default(),command["prefix"].as_str().unwrap_or_default(),64).map_err(|fault|fault.message)?;let result=daemon.client.read(Selection{scope:interaction.interface.scope.clone(),members:BTreeMap::from([("result".into(),member)])},Duration::from_secs(10)).await.map_err(|fault|fault.message)?;Ok(json!({"kind":"completion","request":command["request"],"items":interface::data(&result,"result").map_err(|fault|fault.message)?}))},
+                            Some("complete")=>{let member=interaction.complete(command["source"].as_str().unwrap_or_default(),command["prefix"].as_str().unwrap_or_default(),misa_proto::preparation::DEFAULT_CANDIDATES).map_err(|fault|fault.message)?;let result=daemon.client.read(Selection{scope:interaction.interface.scope.clone(),members:BTreeMap::from([("result".into(),member)])},Duration::from_secs(10)).await.map_err(|fault|fault.message)?;Ok(json!({"kind":"completion","request":command["request"],"items":interface::data(&result,"result").map_err(|fault|fault.message)?}))},
                             Some(_)=>Err("Unknown local action".into()),
                             None=>{let intent=serde_json::from_value::<Intent>(command.clone()).map_err(|error|error.to_string())?;if let Intent::Action{action,node,..}=&intent{if action=="attachment.save"{return crate::commands::save(&daemon,&interaction,files,node.clone()).await;}}let prepared=crate::commands::prepare(&interaction,intent)?;crate::commands::execute(&daemon,&interaction,prepared).await},
                         }

@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -76,8 +78,20 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         link.value = fromIntent(intent)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                val state by model.state.collectAsStateWithLifecycle()
+            val state by model.state.collectAsStateWithLifecycle()
+            val dark = state.theme == "dark" || (state.theme == "system" && isSystemInDarkTheme())
+            LaunchedEffect(dark) {
+                enableEdgeToEdge(
+                    statusBarStyle =
+                        if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                        else
+                            SystemBarStyle.light(
+                                android.graphics.Color.TRANSPARENT,
+                                android.graphics.Color.TRANSPARENT,
+                            )
+                )
+            }
+            MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
                 val expanded by model.expanded.collectAsStateWithLifecycle()
                 val opened by link.collectAsStateWithLifecycle()
                 val upload =
@@ -230,7 +244,13 @@ private fun Session(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(state.session?.title?.ifEmpty { state.session.id } ?: "session") },
+                title = {
+                    Text(
+                        state.session?.title?.ifEmpty { state.session.id } ?: "session",
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                },
                 actions = {
                     if (!state.connected) TextButton(onClick = onReconnect) { Text("Reconnect") }
                     TextButton(onClick = { onCancel() }, enabled = state.connected) { Text("Stop") }
