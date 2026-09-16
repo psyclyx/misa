@@ -67,6 +67,10 @@ fn render(daemon: &str, snapshot: &Snapshot) -> String {
             for request in &row.requests {
                 let kind = request.request.get("kind").and_then(misa_value::Value::as_str).unwrap_or("input");
                 html.push_str(&format!("<p>Awaiting {} · {}</p>", escape(kind), escape(&format!("{:?}", request.scope.id))));
+                if let (misa_proto::observation::ScopeId::Session { id: session }, Some(id), Some(generation)) = (&request.scope.id, request.request.get("id").and_then(misa_value::Value::as_str), request.request.get("generation").and_then(misa_value::Value::as_i64)) {
+                    let enabled = available && request.availability == Availability::Current;
+                    html.push_str(&format!("<form method=\"post\" action=\"/choose\"><input type=\"hidden\" name=\"daemon\" value=\"{}\"><input type=\"hidden\" name=\"session\" value=\"{}\"><input type=\"hidden\" name=\"incarnation\" value=\"{}\"><input type=\"hidden\" name=\"request\" value=\"{}\"><input type=\"hidden\" name=\"generation\" value=\"{}\"><button {}>Respond to {}</button></form>", escape(daemon), escape(session), escape(&request.scope.incarnation), escape(id), generation, if enabled { "" } else { "disabled" }, escape(kind)));
+                }
             }
             html.push_str(&format!("<p>Usage including related work: {} input / {} output tokens</p>", row.inclusive_usage.input_tokens, row.inclusive_usage.output_tokens));
         } else { html.push_str("<p>Work summary unavailable</p>"); }
@@ -99,9 +103,19 @@ mod tests {
             work: vec![Work { id: "child".into(), parent: scope, child: None, state: "running".into(), lifetime: "independent".into(), blocking: false, parent_operation: None, child_operation: None, conversation: None, usage }],
             unavailable: Default::default(),
         };
+        snapshot.rows[0].requests.push(misa_client::overview::Attention {
+            scope: Scope { id: misa_proto::observation::ScopeId::Session { id: "child-session".into() }, incarnation: "child-owner".into() },
+            source_position: 6, availability: Availability::Current,
+            request: Value::map([("id", Value::str("child-request")), ("generation", Value::Int(7)), ("kind", Value::str("approval"))]),
+        });
         let current = render("daemon", &snapshot);
         assert!(current.contains("Working · 1 awaiting input · 1 blocking children"));
         assert!(current.contains("child: running · independent"));
+        assert!(current.contains("name=\"session\" value=\"child-session\""));
+        assert!(current.contains("name=\"incarnation\" value=\"child-owner\""));
+        assert!(current.contains("name=\"request\" value=\"child-request\""));
+        assert!(current.contains("name=\"generation\" value=\"7\""));
+        assert!(current.contains("<button >Respond to approval</button>"));
         assert!(current.contains("Parent &lt;session&gt;"));
         assert!(current.contains("name=\"incarnation\" value=\"one\""));
         snapshot.status = Status::Stale(misa_proto::Fault::new("offline", "Disconnected"));
@@ -109,5 +123,6 @@ mod tests {
         assert!(stale.contains("button disabled"));
         assert!(stale.contains("State unavailable"));
         assert!(!stale.contains("Working ·"));
+        assert!(stale.contains("<button disabled>Respond to approval</button>"));
     }
 }

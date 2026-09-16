@@ -37,10 +37,16 @@ pub(crate) async fn list(State(remote): State<Arc<Remote>>) -> Response {
     if body.is_empty() { body.push_str("<p>No pending requests.</p>"); }
     page(StatusCode::OK, "Pending requests", body)
 }
+pub(crate) async fn navigate(State(remote): State<Arc<Remote>>, Query(fields): Query<HashMap<String,String>>) -> Response {
+    open(State(remote), Form(fields)).await
+}
 pub(crate) async fn open(State(remote): State<Arc<Remote>>, Form(fields): Form<HashMap<String,String>>) -> Response {
     let model = match model(&remote, fields.get("id").map(String::as_str).unwrap_or("")).await {
         Ok(model) => model, Err(error) => return page(StatusCode::BAD_REQUEST, "Request unavailable", escape(&error)),
     };
+    if fields.get("generation").is_some_and(|expected| expected.parse::<i64>().ok() != Some(model.generation)) {
+        return page(StatusCode::CONFLICT, "Request changed", "This request changed after the overview was read. Open the current request from Pending requests.".into());
+    }
     let mut body = crate::render_scoped(&model.body, "private-request:");
     body.push_str(&format!("<p id=\"request-status\" role=\"status\"></p><form id=\"private-request\" method=\"post\" action=\"./respond\" autocomplete=\"off\"><input type=\"hidden\" name=\"id\" value=\"{}\"><input type=\"hidden\" name=\"generation\" value=\"{}\">", escape(&model.id), model.generation));
     if let Some(input) = &model.input {

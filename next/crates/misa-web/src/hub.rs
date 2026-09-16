@@ -177,6 +177,11 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
     let (Some(id), Some(session), Some(incarnation)) = (form.get("daemon"), form.get("session"), form.get("incarnation")) else {
         return (axum::http::StatusCode::BAD_REQUEST, "Choose a current daemon and session from the overview").into_response();
     };
+    let request = match (form.get("request"), form.get("generation")) {
+        (None, None) => None,
+        (Some(id), Some(generation)) if generation.parse::<i64>().is_ok() && id.len() <= 2048 => Some((id, generation)),
+        _ => return (axum::http::StatusCode::BAD_REQUEST, "Choose a current request from the overview").into_response(),
+    };
     let daemon = hub.lock().await.daemons.get(id).cloned();
     let Some(daemon) = daemon else {
         return "Unknown daemon".into_response();
@@ -201,7 +206,11 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
                     used: Instant::now(),
                 },
             );
-            Redirect::to(&format!("/view/{key}/")).into_response()
+            let destination = if let Some((id, generation)) = request {
+                let encoded: String = id.bytes().map(|byte| format!("%{byte:02X}")).collect();
+                format!("/view/{key}/request?id={encoded}&generation={generation}")
+            } else { format!("/view/{key}/") };
+            Redirect::to(&destination).into_response()
         }
         Err(error) => (axum::http::StatusCode::BAD_GATEWAY, error).into_response(),
     }

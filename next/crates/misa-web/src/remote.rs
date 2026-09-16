@@ -206,6 +206,10 @@ mod tests {
             Command { preparation: Default::default(), id: "example.form".into(), input: Schema::Record { fields: BTreeMap::from([("value".into(), Field { schema: form_schema.clone(), optional: false })]), allow_unknown: false }, result: Schema::Value },
             move |_, _, invocation| { collected.lock().unwrap().push(invocation.input.clone()); Outcome::Completed { value: Value::Null } },
         ));
+        let contribution = contribution.with_command(misa_session::commands::CommandRegistration::new(
+            Command { preparation: Default::default(), id: "example.uncertain".into(), input: Schema::Record { fields: BTreeMap::new(), allow_unknown: false }, result: Schema::Value },
+            |_, _, _| Outcome::Indeterminate { fault: misa_proto::Fault::new("uncertain", "Command may have taken effect") },
+        )).with_binding(Binding { id: "example.uncertain".into(), binding: ActionBinding { command: "example.uncertain".into(), bound: BTreeMap::new(), inputs: BTreeMap::new() } });
         let runtime = misa_session::Runtime::start_with(
             "web",
             "Web",
@@ -396,6 +400,11 @@ mod tests {
         let form = |path: &str, fields: &str| axum::http::Request::builder().method("POST").uri(path)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(axum::body::Body::from(fields.to_owned())).unwrap();
+        let uncertain = super::super::remote_router(remote.clone()).oneshot(form("/intent", "action=example.uncertain&prompt=retained+draft")).await.unwrap();
+        assert_eq!(uncertain.status(), axum::http::StatusCode::BAD_GATEWAY);
+        let html = axum::body::to_bytes(uncertain.into_body(), 65536).await.unwrap();
+        let html = std::str::from_utf8(&html).unwrap();
+        assert!(html.contains("may have taken effect") && html.contains("retained draft"));
         for (path, expected) in [("/commands", "example.form"), ("/command?command=example.form", "field.value")] {
             let response = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri(path).body(axum::body::Body::empty()).unwrap()).await.unwrap();
             assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -426,6 +435,10 @@ mod tests {
             misa_proto::input::Form { title: "Choose a feeding count".into(), input: form_schema, fields: BTreeMap::from([("count".into(), misa_proto::input::Field { label: "Number of portions".into() })]) },
             ActionBinding { command: "example.form".into(), bound: BTreeMap::new(), inputs: BTreeMap::from([("value".into(), "value".into())]) }, 60_000,
         ) else { panic!("custom request must be accepted"); };
+        let stale_link = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri(format!("/request?id={}&generation=2", custom.id)).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(stale_link.status(), axum::http::StatusCode::CONFLICT);
+        let current_link = super::super::remote_router(remote.clone()).oneshot(axum::http::Request::builder().uri(format!("/request?id={}&generation=1", custom.id)).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(current_link.status(), axum::http::StatusCode::OK);
         let opened = super::super::remote_router(remote.clone()).oneshot(form("/request", &format!("id={}", custom.id))).await.unwrap();
         assert_eq!(opened.status(), axum::http::StatusCode::OK);
         let html = axum::body::to_bytes(opened.into_body(), 65536).await.unwrap();

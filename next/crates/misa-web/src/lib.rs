@@ -268,7 +268,7 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/intent", post(remote_intent))
         .route("/presentations", post(presentations::configure))
         .route("/requests", get(requests::list))
-        .route("/request", post(requests::open))
+        .route("/request", get(requests::navigate).post(requests::open))
         .route("/request/events", get(requests::events))
         .route("/request.js", get(|| async { ([("content-type", "text/javascript")], include_str!("request.js")) }))
         .route("/respond", post(requests::respond))
@@ -299,9 +299,12 @@ async fn remote_intent(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     let json = headers.get(header::ACCEPT).and_then(|value| value.to_str().ok()).is_some_and(|value| value.contains("application/json"));
+    let failure = |status: StatusCode, error: &str| {
+        (status, Html(format!("<!doctype html><html><body><p role=\"alert\">{}</p><textarea readonly>{}</textarea><a href=\"./\">Back to session</a></body></html>", escape(error), escape(form.get("prompt").map(String::as_str).unwrap_or(""))))).into_response()
+    };
     let refused = |error: String| {
         if json { return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"ok":false,"error":error}))).into_response(); }
-        (StatusCode::BAD_REQUEST, Html(format!("<!doctype html><html><body><p role=\"alert\">{}</p><textarea readonly>{}</textarea><a href=\"./\">Back to session</a></body></html>", escape(&error), escape(form.get("prompt").map(String::as_str).unwrap_or(""))))).into_response()
+        failure(StatusCode::BAD_REQUEST, &error)
     };
     let submitted = state.pending.lock().expect("pending attachments").clone();
     if form.get("action").map(String::as_str) == Some(COMPOSER) {
@@ -355,13 +358,13 @@ async fn remote_intent(
                 misa_proto::invocation::Outcome::Indeterminate { fault } => (StatusCode::BAD_GATEWAY, &fault.message),
                 _ => unreachable!(),
             };
-            if json { (status, axum::Json(serde_json::json!({"ok":false,"error":message,"outcome":outcome}))).into_response() } else { refused(message.clone()) }
+            if json { (status, axum::Json(serde_json::json!({"ok":false,"error":message,"outcome":outcome}))).into_response() } else { failure(status, message) }
         },
         Err(error) => {
             let outcome = misa_proto::invocation::Outcome::Indeterminate {
                 fault: misa_proto::Fault::new("invocation_unconfirmed", &error),
             };
-            if json { (StatusCode::BAD_GATEWAY, axum::Json(serde_json::json!({"ok":false,"error":error,"outcome":outcome}))).into_response() } else { refused(error) }
+            if json { (StatusCode::BAD_GATEWAY, axum::Json(serde_json::json!({"ok":false,"error":error,"outcome":outcome}))).into_response() } else { failure(StatusCode::BAD_GATEWAY, &format!("Command outcome unknown: {error}. It may have taken effect; check session activity before submitting again.")) }
         },
     }
 }
