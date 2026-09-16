@@ -978,7 +978,6 @@ mod activity;
 mod overview;
 mod actions;
 mod commands;
-use remote::connect as connect_session;
 
 mod updates;
 pub use updates::Region;

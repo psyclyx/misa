@@ -38,6 +38,9 @@
   function start(doc, browser) {
     var main = doc.getElementById("main");
     if (!main) return;
+    if (browser.location && /^\/view\/[^/]+\/$/.test(browser.location.pathname) && doc.body.dataset.session) {
+      try { browser.localStorage.setItem("misa.view." + browser.location.pathname.split("/")[2], doc.body.dataset.session); } catch (_) {}
+    }
     if (browser.fetch && browser.location && /^\/view\/[^/]+\/$/.test(browser.location.pathname) && !doc.body.dataset.claimed) {
       doc.body.inert = true;
       browser.fetch("./claim", { method: "POST" }).then(async function (response) {

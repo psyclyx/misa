@@ -5,6 +5,8 @@
     <script src="../src/request.js"></script>
     <script src="../src/commands.js"></script>
     <script src="../src/overview.js"></script>
+    <script src="../src/opening.js"></script>
+    <script src="../src/recovery.js"></script>
     <script>
       (async function () {
         const checks = [];
@@ -397,6 +399,20 @@
           store.setItem("misa.preferences.new-instance", '{"draft":"independent edit"}');
           assert(JSON.parse(store.getItem("misa.preferences.old-instance")).draft === "copied thought", "copied draft does not share future mutations");
           const overviewDoc = document.implementation.createHTMLDocument("overview");
+          const recoveryDoc = document.implementation.createHTMLDocument("expired");
+          recoveryDoc.body.dataset.expiredView = "lost";
+          recoveryDoc.body.innerHTML = '<section id="recovery"></section>';
+          store.setItem("misa.view.lost", "peer:run:lost");
+          store.setItem("misa.preferences.peer:run:lost", JSON.stringify({draft:"<unsent thought>",recoveries:[{text:"uncertain prompt",reason:"Submission not confirmed"}]}));
+          MisaRecovery.start(recoveryDoc, {localStorage:store, fetch(){throw Error("recovery must never submit");}});
+          assert(recoveryDoc.querySelectorAll("textarea").length === 2 && recoveryDoc.querySelector("textarea").value === "<unsent thought>", "expired views recover local drafts and uncertain submissions as literal text");
+          assert(recoveryDoc.querySelector("textarea").readOnly && recoveryDoc.body.textContent.includes("Nothing has been resent"), "expired recovery is explicit and cannot replay commands");
+          const openingDoc = document.implementation.createHTMLDocument("opening");
+          openingDoc.body.innerHTML = '<form method="post" action="/choose"><input name="daemon" value="peer"><input name="session" value="session"></form>';
+          store.setItem("misa.presentations.peer:session", '{"status":"hide"}');
+          MisaOpening.start(openingDoc, {localStorage: store});
+          openingDoc.querySelector("form").dispatchEvent(new Event("submit", {bubbles:true,cancelable:true}));
+          assert(openingDoc.querySelector('[name="preferences"]').value === '{"status":"hide"}', "opening submits saved choices before content observation");
           overviewDoc.body.innerHTML = '<input id="local-draft" value="new session name"><p id="overview-status"></p><div id="overview"></div>';
           let overviewEvents;
           MisaOverview.start(overviewDoc, function () { overviewEvents = this; });

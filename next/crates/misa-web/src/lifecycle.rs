@@ -7,7 +7,7 @@ use misa_proto::invocation::Outcome;
 use crate::{escape, actions};
 
 fn page(status: StatusCode, title: &str, body: String) -> Response {
-    (status, [("cache-control", "no-store")], Html(format!("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>{}</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body><main><h1>{}</h1>{}<p><a href=\"/daemons\">Daemon overview</a></p></main></body></html>", escape(title), escape(title), body))).into_response()
+    (status, [("cache-control", "no-store")], Html(format!("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>{}</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body><main><h1>{}</h1>{}<p><a href=\"/daemons\">Daemon overview</a></p></main><script src=\"/opening.js\"></script></body></html>", escape(title), escape(title), body))).into_response()
 }
 fn command(fields: &BTreeMap<String,String>) -> Result<&str, &'static str> {
     match fields.get("action_id").or_else(||fields.get("command")).map(String::as_str) {
@@ -38,11 +38,12 @@ pub(super) async fn perform(State(hub): State<Shared>, Form(fields): Form<BTreeM
     if fields.get("owner") != Some(&interface.scope.incarnation) { return page(StatusCode::CONFLICT, "Daemon changed", "Reopen the command form against the current daemon before submitting.".into()); }
     let prepared = CommandForm::command(&interface, command).and_then(|model| model.prepare(&fields.iter().filter_map(|(key,value)| key.strip_prefix("field.").map(|id|(id.into(),value.clone()))).collect()));
     let (_, input) = match prepared { Ok(value) => value, Err(fault) => return page(StatusCode::BAD_REQUEST, "Command not sent", escape(&fault.message)) };
+    let preferences = match crate::presentations::initial(fields.get("preferences").map(String::as_str)) { Ok(value) => value, Err(error) => return page(StatusCode::BAD_REQUEST, "Command not sent", escape(&error)) };
     let outcome = daemon.client.invoke(interface.scope.clone(), interface.commands[command].clone(), input, Duration::from_secs(30)).await;
     match outcome.map(|reply|reply.outcome) {
         Ok(Outcome::Completed { value }) if command != "daemon.session.close" => {
             let entry = match misa_client::lifecycle::opened(&daemon, &value).await { Ok(entry) => entry, Err(fault) => return page(StatusCode::BAD_GATEWAY, "Session opened; navigation unavailable", escape(&fault.message)) };
-            let remote = match crate::connect_session(&daemon, &entry.id).await { Ok(remote) => remote, Err(error) => return page(StatusCode::BAD_GATEWAY, "Session opened; navigation unavailable", escape(&error)) };
+            let remote = match crate::remote::connect_with(&daemon, &entry.id, preferences).await { Ok(remote) => remote, Err(error) => return page(StatusCode::BAD_GATEWAY, "Session opened; navigation unavailable", escape(&error)) };
             if remote.interaction.interface.scope != entry.scope() { return page(StatusCode::CONFLICT, "Session changed", "The opened session owner has already changed. Return to the overview.".into()); }
             let key = remote.instance.clone();
             let mut hub = hub.lock().await;

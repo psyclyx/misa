@@ -10,7 +10,14 @@ use misa_proto::{Intent, invocation::Outcome, observation::Selection};
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remote>, String> {
+#[cfg(test)]
+async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remote>, String> {
+    connect_with(daemon, session_id, Default::default()).await
+}
+pub(crate) async fn connect_with(daemon: &Arc<Daemon>, session_id: &str, initial: misa_client::composition::Preferences) -> Result<Arc<Remote>, String> {
+    let mut identity = [0u8; 16];
+    getrandom::fill(&mut identity).map_err(|error| format!("Unable to create presentation identity: {error}"))?;
+    let instance = identity.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let snapshot = daemon.sessions().map_err(|fault| fault.message)?;
     if !matches!(snapshot.status, misa_protocol::observation::Status::Current) {
         return Err("Daemon directory is not current".into());
@@ -23,9 +30,8 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
     let interface = Interface::load(&daemon.client, entry.scope())
         .await
         .map_err(|fault| fault.message)?;
-    let members = misa_client::composition::Preferences::default()
-        .resolve(&interface.presentations, &[], &["conversation", "status"])
-        .map_err(|fault| fault.message)?;
+    let selected = initial.reconcile(&interface.presentations, &super::presentations::capabilities(), &["conversation", "status"]);
+    let members = selected.members;
     let mut readers: BTreeMap<_, _> = members.keys().map(|id| (id.clone(), misa_client::document::Reader::new(id))).collect();
     let scope = interface.scope.clone();
     let interaction = Arc::new(
@@ -33,7 +39,7 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
             .await
             .map_err(|fault| fault.message)?,
     );
-    let mut observation = daemon
+    let mut observation = if members.is_empty() { None } else { Some(daemon
         .client
         .observe(
             Selection {
@@ -43,7 +49,7 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
             None,
         )
         .await
-        .map_err(|fault| fault.message)?;
+        .map_err(|fault| fault.message)?) };
     let info = misa_proto::SessionInfo {
         id: entry.id,
         title: entry.title,
@@ -64,14 +70,15 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
         sources: vec![],
     };
     let region = Region::new();
+    if observation.is_none() { region.set("<p>No supported content is selected. Choose a supported variant in Presentations.</p>".into()); }
     let activity = super::activity::start(&daemon.client, &interaction.interface, region.clone()).await.map_err(|fault| fault.message)?;
     let stream = region.clone();
-    let preferences = Arc::new(std::sync::Mutex::new(misa_client::composition::Preferences::default()));
+    let preferences = Arc::new(std::sync::Mutex::new(initial));
     let saved_preferences = preferences.clone();
     let (presentation_changes, mut changes) = tokio::sync::mpsc::channel::<super::presentations::Change>(1);
     let task = tokio::spawn(async move {
         loop {
-            let updates = misa_client::document::capture_many(&observation, readers.iter_mut().map(|(id, reader)| (id.as_str(), reader)));
+            let updates = observation.as_ref().map(|observation| misa_client::document::capture_many(observation, readers.iter_mut().map(|(id, reader)| (id.as_str(), reader)))).unwrap_or_default();
             if !updates.is_empty() {
                 if let Err(error) = stream.observed_documents(updates) {
                     stream.set(format!("<p role=\"alert\">{}</p>", super::escape(&error)));
@@ -80,14 +87,14 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
                 }
             }
             tokio::select! {
-                changed = observation.changed() => { if changed.is_err() { break; } }
+                changed = async { match observation.as_mut() { Some(observation) => observation.changed().await, None => std::future::pending().await } } => { if changed.is_err() { break; } }
                 change = changes.recv() => {
                     let Some(change) = change else { break; };
                     let mut next_readers: BTreeMap<_, _> = change.members.iter().map(|id| (id.clone(), misa_client::document::Reader::new(id))).collect();
                     let updates = misa_client::document::capture_many(&change.observation, next_readers.iter_mut().map(|(id, reader)| (id.as_str(), reader)));
                     let result = stream.replace_documents(updates);
                     if result.is_ok() {
-                        observation = change.observation;
+                        observation = Some(change.observation);
                         readers = next_readers;
                         *saved_preferences.lock().unwrap() = change.preferences;
                     }
@@ -104,7 +111,7 @@ pub async fn connect(daemon: &Arc<Daemon>, session_id: &str) -> Result<Arc<Remot
         presentation_gate: tokio::sync::Mutex::new(()),
         preferences,
         region,
-        instance: super::next_id().to_string(),
+        instance,
         session: Some(info),
         daemon: daemon.clone(),
         interaction,
@@ -282,6 +289,18 @@ mod tests {
             .is_err()
         );
         use tower::ServiceExt;
+        let obsolete = connect_with(&daemon, "web", misa_client::composition::Preferences(BTreeMap::from([
+            ("conversation".into(), misa_client::composition::Choice::Variant("removed".into())),
+            ("status".into(), misa_client::composition::Choice::Hidden),
+        ]))).await.unwrap();
+        assert!(obsolete.region.get().contains("No supported content"));
+        assert!(super::super::presentations::controls(&obsolete).contains("removed (unavailable)"));
+        let repaired = super::super::remote_router(obsolete.clone()).oneshot(axum::http::Request::builder().method("POST").uri("/presentations")
+            .header("content-type", "application/x-www-form-urlencoded").body(axum::body::Body::from("id=conversation&choice=auto")).unwrap()).await.unwrap();
+        assert_eq!(repaired.status(), axum::http::StatusCode::SEE_OTHER);
+        assert!(obsolete.region.get().contains("data-presentation=\"conversation\""));
+        assert!(!obsolete.region.get().contains("data-presentation=\"status\""));
+        drop(obsolete);
         let request = |prompt: &str| {
             axum::http::Request::builder()
                 .method("POST")

@@ -84,6 +84,8 @@ pub async fn serve(targets: &[String], address: std::net::SocketAddr) -> Result<
         .route("/daemons", get(directory))
         .route("/daemons/events", get(events))
         .route("/overview.js", get(|| async { ([("content-type", "text/javascript")], include_str!("overview.js")) }))
+        .route("/opening.js", get(|| async { ([("content-type", "text/javascript")], include_str!("opening.js")) }))
+        .route("/recovery.js", get(|| async { ([("content-type", "text/javascript")], include_str!("recovery.js")) }))
         .route("/connect", post(connect))
         .route("/choose", post(choose))
         .route("/lifecycle", get(lifecycle::open).post(lifecycle::perform))
@@ -123,7 +125,7 @@ async fn directory(State(hub): State<Shared>) -> Html<String> {
         }
         html.push_str("</section>");
     }
-    html.push_str("</main><script src=\"/overview.js\"></script></body></html>");
+    html.push_str("</main><script src=\"/opening.js\"></script><script src=\"/overview.js\"></script></body></html>");
     Html(html)
 }
 
@@ -172,7 +174,11 @@ async fn choose(State(hub): State<Shared>, Form(form): Form<BTreeMap<String, Str
     let Some(daemon) = daemon else {
         return "Unknown daemon".into_response();
     };
-    match super::connect_session(&daemon, session).await {
+    let preferences = match super::presentations::initial(form.get("preferences").map(String::as_str)) {
+        Ok(preferences) => preferences,
+        Err(error) => return (axum::http::StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    match super::remote::connect_with(&daemon, session, preferences).await {
         Ok(remote) => {
             if form.get("incarnation").is_some_and(|incarnation| incarnation != &remote.interaction.interface.scope.incarnation) {
                 return (axum::http::StatusCode::CONFLICT, "Session changed; choose its current owner from the overview").into_response();
@@ -225,14 +231,15 @@ async fn dispatch(State(hub): State<Shared>, mut request: Request) -> Response {
         })
     };
     let Some(remote) = remote else {
-        return Redirect::to("/daemons").into_response();
+        return (axum::http::StatusCode::GONE, [("cache-control", "no-store")], Html(format!("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>Presentation expired</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body data-expired-view=\"{}\"><main><h1>Presentation expired</h1><p>This local view is no longer retained. Session work may still be running.</p><p><a href=\"/daemons\">Choose a current session</a></p><section id=\"recovery\" aria-label=\"Local draft recovery\"><p>Enable JavaScript to read any drafts retained in this browser.</p></section></main><script src=\"/recovery.js\"></script></body></html>", super::escape(key)))).into_response();
     };
     if suffix == "claim" && request.method() == axum::http::Method::POST {
         if remote.claimed.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok() {
             return axum::Json(serde_json::json!({"url":format!("/view/{key}/")})).into_response();
         }
         let Some(session) = &remote.session else { return (axum::http::StatusCode::BAD_REQUEST, "No session selected").into_response(); };
-        let fork = match super::connect_session(&remote.daemon, &session.id).await {
+        let preferences = remote.preferences.lock().unwrap().clone();
+        let fork = match super::remote::connect_with(&remote.daemon, &session.id, preferences).await {
             Ok(fork) => fork,
             Err(error) => return (axum::http::StatusCode::BAD_GATEWAY, error).into_response(),
         };
@@ -326,6 +333,7 @@ mod tests {
                 Form(BTreeMap::from([
                     ("daemon".into(), id.clone()),
                     ("session".into(), session.into()),
+                    ("preferences".into(), "{\"status\":\"hide\"}".into()),
                 ])),
             )
             .await;
@@ -339,6 +347,9 @@ mod tests {
             );
         }
         assert_ne!(paths[0], paths[1]);
+        for instance in hub.lock().await.sessions.values() {
+            assert_eq!(instance.remote.preferences.lock().unwrap().0.get("status"), Some(&misa_client::composition::Choice::Hidden));
+        }
         let mut claimed_paths = Vec::new();
         for _ in 0..2 {
             let response = dispatch(State(hub.clone()), Request::builder().method("POST")
@@ -350,6 +361,9 @@ mod tests {
             if claimed_paths.len() == 2 { assert!(claim["memory"].as_str().unwrap().ends_with(claimed_paths[1].trim_end_matches('/').rsplit('/').next().unwrap())); }
         }
         assert_eq!(claimed_paths[0], paths[0]);
+        for instance in hub.lock().await.sessions.values() {
+            assert_eq!(instance.remote.preferences.lock().unwrap().0.get("status"), Some(&misa_client::composition::Choice::Hidden), "forks preserve preferences before observing content");
+        }
         assert_ne!(claimed_paths[1], paths[0], "copied URL gets an independent presentation");
         {
             let hub = hub.lock().await;
@@ -411,6 +425,10 @@ mod tests {
         assert!(std::str::from_utf8(&body).unwrap().contains("Presentation closed; session work continues"));
         hub.lock().await.expire();
         assert!(hub.lock().await.sessions.is_empty());
+        let expired = dispatch(State(hub.clone()), Request::builder().uri(&paths[0]).body(Body::empty()).unwrap()).await;
+        assert_eq!(expired.status(), StatusCode::GONE);
+        let html = axum::body::to_bytes(expired.into_body(), 65536).await.unwrap();
+        assert!(std::str::from_utf8(&html).unwrap().contains("data-expired-view="));
         drop(hub);
         endpoint.close().await;
         router.shutdown().await.unwrap();
