@@ -17,6 +17,7 @@ impl Store {
                 ("id", Value::str(&record.id)),
                 ("principal", Value::str(&record.principal)),
                 ("provider", Value::str(&record.provider)),
+                ("account", Value::str(&record.account)),
                 ("oauth", Value::Bool(record.oauth)),
                 ("state", Value::str(record.phase.name())),
                 ("generation", Value::Int(record.generation)),
@@ -139,11 +140,14 @@ impl Runtime {
         // A failed local delivery is handled just like a negative disk acknowledgment.
         if self
             .to_kernel
-            .send(Request::Append {
-                conversation,
-                kind: KIND.into(),
-                data: Value::Map(Arc::new(fields)),
-            }, &outcome.admission)
+            .send(
+                Request::Append {
+                    conversation,
+                    kind: KIND.into(),
+                    data: Value::Map(Arc::new(fields)),
+                },
+                &outcome.admission,
+            )
             .is_err()
         {
             outcome.effects.push(
@@ -232,13 +236,15 @@ impl Runtime {
                 let changed = Event::new("operations/changed")
                     .with("summary", candidate.summary())
                     .with("requests", candidate.requests());
-                let mut publication = self.dispatch_admitted(&mut state, changed, crate::kernel_queue::Class::Control);
+                let mut publication = self.dispatch_admitted(
+                    &mut state,
+                    changed,
+                    crate::kernel_queue::Class::Control,
+                );
                 if !publication.committed() {
-                    if let Some(fault) = publication
-                        .as_faults()
-                        .into_iter()
-                        .find(|fault| matches!(fault.code.as_str(), "composition.busy" | "admission.busy"))
-                    {
+                    if let Some(fault) = publication.as_faults().into_iter().find(|fault| {
+                        matches!(fault.code.as_str(), "composition.busy" | "admission.busy")
+                    }) {
                         // Release this checkpoint's effects once, so the pending
                         // plugin journal write can finish. Existing automatic
                         // report deferral will retry only the publication.
@@ -265,11 +271,7 @@ impl Runtime {
                     }
                 } else {
                     state.operations = candidate;
-                    self.queue_operation_checkpoint(
-                        &mut state,
-                        &mut publication,
-                        &mut None,
-                    );
+                    self.queue_operation_checkpoint(&mut state, &mut publication, &mut None);
                     deferred.effects.extend(publication.inner.effects);
                     deferred.admission.extend(publication.admission);
                     self.rev.send_replace(state.state.rev());
@@ -365,7 +367,10 @@ impl Runtime {
             deferred
         };
         self.perform(&crate::kernel_queue::Outcome {
-            inner: misa_reframe::Outcome {effects: deferred.effects, ..Default::default()},
+            inner: misa_reframe::Outcome {
+                effects: deferred.effects,
+                ..Default::default()
+            },
             admission: deferred.admission.clone(),
         });
         if let Some(request) = deferred.request {
@@ -411,6 +416,14 @@ pub(super) fn restore(event: Event) -> (Event, Option<Store>) {
                     id,
                     principal: text(value, "principal").into(),
                     provider: text(value, "provider").into(),
+                    account: {
+                        let account = text(value, "account");
+                        if account.is_empty() {
+                            "default".into()
+                        } else {
+                            account.into()
+                        }
+                    },
                     oauth: value.get("oauth").and_then(Value::as_bool).unwrap_or(false),
                     generation: value.get("generation").and_then(Value::as_i64).unwrap_or(1)
                         + i64::from(recovered == Phase::Interrupted),

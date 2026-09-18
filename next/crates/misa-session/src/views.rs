@@ -23,8 +23,8 @@
 
 use std::sync::Arc;
 
-use misa_proto::view::{Action, ActionOn, BlobRef, Field, FieldKind, Kind, Node, Span, State};
 use crate::Level;
+use misa_proto::view::{Action, ActionOn, BlobRef, Field, FieldKind, Kind, Node, Span, State};
 use misa_reframe::{Inputs, Query, Registry, Subscription, read_query};
 use misa_value::Value;
 
@@ -55,6 +55,11 @@ pub fn initial_state(id: &str, provider: &str, model: &str, created_ms: i64) -> 
                 ("conversation", Value::str(id)),
                 ("provider", Value::str(provider)),
                 ("model", Value::str(model)),
+                (
+                    "effort",
+                    crate::catalog::default_effort(&Value::Null, provider, model)
+                        .map_or(Value::Null, |effort| Value::str(effort)),
+                ),
                 ("status", Value::str("idle")),
                 ("turn", Value::Int(0)),
                 ("requests", Value::Int(0)),
@@ -81,24 +86,97 @@ pub fn subscriptions(registry: Registry) -> Registry {
             "session.summary.base",
             read_query(|db, _query| {
                 let session = db.get("session");
-                let text = |name: &str| session.and_then(|value| value.get(name)).and_then(Value::as_str).unwrap_or("");
-                let requests = db.get("input_requests").and_then(Value::as_list).unwrap_or(&[]).iter()
-                    .filter(|request| request.get("state").and_then(Value::as_str) == Some("awaiting_input")).cloned().collect::<Vec<_>>();
-                let running_tools = session.and_then(|session| session.get("running_tools")).and_then(Value::as_list).map_or(0, |tools| tools.len());
-                let pending_tools = requests.iter().filter(|request| request.get("kind").and_then(Value::as_str) == Some("tool_approval")).count();
-                let transaction_work = db.get("command_operations").and_then(Value::as_list).unwrap_or(&[]).iter().any(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true));
-                let working = transaction_work || match text("status") { "idle" => false, "tools" => running_tools > pending_tools, _ => true };
-                let operations = db.get("prompt_operations").and_then(Value::as_list).unwrap_or(&[]).iter()
-                    .filter(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true))
-                    .chain(db.get("command_operations").and_then(Value::as_list).unwrap_or(&[]).iter().filter(|operation| operation.get("terminal").and_then(Value::as_bool) != Some(true)))
-                    .chain(db.get("operations").and_then(Value::as_list).unwrap_or(&[]).iter().filter(|operation|
-                        matches!(operation.get("state").and_then(Value::as_str), Some("running" | "awaiting_input" | "submitting" | "cancelling"))))
-                    .map(|operation| Value::map([
-                        ("id", operation.get("id").cloned().unwrap_or(Value::Null)),
-                        ("kind", operation.get("kind").cloned().unwrap_or(Value::Null)),
-                        ("state", operation.get("state").cloned().unwrap_or(Value::Null)),
-                        ("generation", operation.get("generation").cloned().unwrap_or(Value::Int(1))),
-                    ]));
+                let text = |name: &str| {
+                    session
+                        .and_then(|value| value.get(name))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                };
+                let requests = db
+                    .get("input_requests")
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|request| {
+                        request.get("state").and_then(Value::as_str) == Some("awaiting_input")
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let running_tools = session
+                    .and_then(|session| session.get("running_tools"))
+                    .and_then(Value::as_list)
+                    .map_or(0, |tools| tools.len());
+                let pending_tools = requests
+                    .iter()
+                    .filter(|request| {
+                        request.get("kind").and_then(Value::as_str) == Some("tool_approval")
+                    })
+                    .count();
+                let transaction_work = db
+                    .get("command_operations")
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|operation| {
+                        operation.get("terminal").and_then(Value::as_bool) != Some(true)
+                    });
+                let working = transaction_work
+                    || match text("status") {
+                        "idle" => false,
+                        "tools" => running_tools > pending_tools,
+                        _ => true,
+                    };
+                let operations = db
+                    .get("prompt_operations")
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|operation| {
+                        operation.get("terminal").and_then(Value::as_bool) != Some(true)
+                    })
+                    .chain(
+                        db.get("command_operations")
+                            .and_then(Value::as_list)
+                            .unwrap_or(&[])
+                            .iter()
+                            .filter(|operation| {
+                                operation.get("terminal").and_then(Value::as_bool) != Some(true)
+                            }),
+                    )
+                    .chain(
+                        db.get("operations")
+                            .and_then(Value::as_list)
+                            .unwrap_or(&[])
+                            .iter()
+                            .filter(|operation| {
+                                matches!(
+                                    operation.get("state").and_then(Value::as_str),
+                                    Some(
+                                        "running" | "awaiting_input" | "submitting" | "cancelling"
+                                    )
+                                )
+                            }),
+                    )
+                    .map(|operation| {
+                        Value::map([
+                            ("id", operation.get("id").cloned().unwrap_or(Value::Null)),
+                            (
+                                "kind",
+                                operation.get("kind").cloned().unwrap_or(Value::Null),
+                            ),
+                            (
+                                "state",
+                                operation.get("state").cloned().unwrap_or(Value::Null),
+                            ),
+                            (
+                                "generation",
+                                operation
+                                    .get("generation")
+                                    .cloned()
+                                    .unwrap_or(Value::Int(1)),
+                            ),
+                        ])
+                    });
                 Value::map([
                     ("id", Value::str(text("id"))),
                     ("activity", Value::str(text("status"))),
@@ -111,21 +189,56 @@ pub fn subscriptions(registry: Registry) -> Registry {
                 ])
             }),
         )
-        .subscription("session.usage.total",Subscription::Derived {
-            inputs:Inputs::Fixed(vec![Query::new("session.attempts")]),
-            compute:std::sync::Arc::new(|inputs,_,_|Ok({
-                let rows=inputs.first().and_then(Value::as_list).unwrap_or(&[]);
-                Value::map(["input_tokens","output_tokens","cost_micros"].into_iter().map(|key|(key,Value::Int(rows.iter().filter_map(|row|row.get(key).and_then(Value::as_i64)).fold(0i64,i64::saturating_add)))))
-            })),
-        })
-        .subscription(crate::observation::SUMMARY,Subscription::Derived {
-            inputs:Inputs::Fixed(vec![Query::new("session.summary.base"),Query::new("session.usage.total")]),
-            compute:std::sync::Arc::new(|inputs,_,_|Ok({
-                let mut summary=inputs.first().and_then(Value::as_map).cloned().unwrap_or_default();
-                summary.insert("usage".into(),inputs.get(1).cloned().unwrap_or(Value::Null));
-                Value::Map(std::sync::Arc::new(summary))
-            })),
-        })
+        .subscription(
+            "session.usage.total",
+            Subscription::Derived {
+                inputs: Inputs::Fixed(vec![Query::new("session.attempts")]),
+                compute: std::sync::Arc::new(|inputs, _, _| {
+                    Ok({
+                        let rows = inputs.first().and_then(Value::as_list).unwrap_or(&[]);
+                        Value::map(
+                            ["input_tokens", "output_tokens", "cost_micros"]
+                                .into_iter()
+                                .map(|key| {
+                                    (
+                                        key,
+                                        Value::Int(
+                                            rows.iter()
+                                                .filter_map(|row| {
+                                                    row.get(key).and_then(Value::as_i64)
+                                                })
+                                                .fold(0i64, i64::saturating_add),
+                                        ),
+                                    )
+                                }),
+                        )
+                    })
+                }),
+            },
+        )
+        .subscription(
+            crate::observation::SUMMARY,
+            Subscription::Derived {
+                inputs: Inputs::Fixed(vec![
+                    Query::new("session.summary.base"),
+                    Query::new("session.usage.total"),
+                ]),
+                compute: std::sync::Arc::new(|inputs, _, _| {
+                    Ok({
+                        let mut summary = inputs
+                            .first()
+                            .and_then(Value::as_map)
+                            .cloned()
+                            .unwrap_or_default();
+                        summary.insert(
+                            "usage".into(),
+                            inputs.get(1).cloned().unwrap_or(Value::Null),
+                        );
+                        Value::Map(std::sync::Arc::new(summary))
+                    })
+                }),
+            },
+        )
         .subscription(
             "session.status",
             read_query(|db, _query| db.get("session").cloned().unwrap_or(Value::Null)),
@@ -142,18 +255,22 @@ pub fn subscriptions(registry: Registry) -> Registry {
             "session.spend",
             Subscription::Derived {
                 inputs: Inputs::Fixed(vec![Query::new("session.attempts")]),
-                compute: std::sync::Arc::new(|inputs, _query, _previous| Ok({
-                    let micros: i64 = inputs
-                        .first()
-                        .and_then(Value::as_list)
-                        .map(|rows| {
-                            rows.iter()
-                                .filter_map(|row| row.get("cost_micros").and_then(Value::as_i64))
-                                .sum()
-                        })
-                        .unwrap_or(0);
-                    Value::Int(micros)
-                })),
+                compute: std::sync::Arc::new(|inputs, _query, _previous| {
+                    Ok({
+                        let micros: i64 = inputs
+                            .first()
+                            .and_then(Value::as_list)
+                            .map(|rows| {
+                                rows.iter()
+                                    .filter_map(|row| {
+                                        row.get("cost_micros").and_then(Value::as_i64)
+                                    })
+                                    .sum()
+                            })
+                            .unwrap_or(0);
+                        Value::Int(micros)
+                    })
+                }),
             },
         )
 }
@@ -183,10 +300,14 @@ impl Section {
     ) -> Self {
         let memo = std::sync::Mutex::new((misa_reframe::Scope::new(), None::<Node>));
         Self {
-            namespace: namespace.into(), inputs: vec![misa_value::Path::root()],
+            namespace: namespace.into(),
+            inputs: vec![misa_value::Path::root()],
             build: Arc::new(move |db| {
                 let mut memo = memo.lock().map_err(|_| "View query scope is poisoned")?;
-                let changed = memo.0.evaluate(db, &registry, &query).map_err(|fault| fault.message)?;
+                let changed = memo
+                    .0
+                    .evaluate(db, &registry, &query)
+                    .map_err(|fault| fault.message)?;
                 if changed.is_some() || memo.1.is_none() {
                     let value = memo.0.current(&query).ok_or("View query has no value")?;
                     memo.1 = Some(project(&value)?);
@@ -199,7 +320,10 @@ impl Section {
 
 impl std::fmt::Debug for Section {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Section").field("namespace", &self.namespace).finish()
+        formatter
+            .debug_struct("Section")
+            .field("namespace", &self.namespace)
+            .finish()
     }
 }
 
@@ -223,8 +347,12 @@ pub fn document(db: &Value, sections: &[Section]) -> Node {
     if let Some(notices) = notices(db) {
         root.children.push(notices);
     }
-    if let Some(queue) = queue(db) { root.children.push(queue); }
-    if let Some(attachments) = attachments(db) { root.children.push(attachments); }
+    if let Some(queue) = queue(db) {
+        root.children.push(queue);
+    }
+    if let Some(attachments) = attachments(db) {
+        root.children.push(attachments);
+    }
     root.children.push(agent::composer());
     if let Some(cancel) = cancel(db) {
         root.children.push(cancel);
@@ -256,37 +384,120 @@ pub(crate) fn transcript(db: &Value) -> Node {
     };
     let mut node = Node::section("transcript").id("transcript");
     let mut group: Option<Node> = None;
+    let mut attempt: Option<Value> = None;
     for message in messages.iter() {
-        let Some(child) = message_node(message) else { continue };
+        let Some(child) = message_node(message) else {
+            continue;
+        };
         if text_at(message, "role") == "user" || group.is_none() {
             if let Some(previous) = group.take() {
-                node.children.push(finish_group(previous));
+                node.children.push(finish_group(previous, attempt.take()));
             }
-            let id = format!("group.{}", message.get("seq").and_then(Value::as_i64).unwrap_or(0));
-            group = Some(Node::section("message.group").id(&id).child(
-                Node::text("message.group.header", [Span::plain("Conversation turn")]).id(format!("{id}.header")),
-            ));
+            let id = format!(
+                "group.{}",
+                message.get("seq").and_then(Value::as_i64).unwrap_or(0)
+            );
+            group = Some(Node::section("message.group").id(&id));
         }
-        group.as_mut().expect("a message has a group").children.push(child);
+        if text_at(message, "role") == "assistant" {
+            attempt = message.get("attempt").cloned();
+        }
+        group
+            .as_mut()
+            .expect("a message has a group")
+            .children
+            .push(child);
     }
     if let Some(group) = group {
-        node.children.push(finish_group(group));
+        node.children.push(finish_group(group, attempt));
     }
     if node.children.is_empty() {
         node.children.push(Node::new(
             "transcript.empty",
-            Kind::Status { text: "nothing said yet".into() },
+            Kind::Status {
+                text: "nothing said yet".into(),
+            },
         ));
     }
     node
 }
 
-/// A run's boundary and count are semantic facts; surfaces choose their decoration.
-pub(crate) fn finish_group(mut group: Node) -> Node {
-    let count = group.children.len().saturating_sub(1);
-    group.children.push(Node::new("message.group.footer", Kind::Fact { value: Value::Int(count as i64) })
-        .id(format!("{}.footer", group.id)).label("messages"));
+/// A message group's footer is shared semantic accounting, not an operation log.
+pub(crate) fn finish_group(mut group: Node, attempt: Option<Value>) -> Node {
+    if let Some(attempt) = attempt {
+        group.children.push(attempt_footer(&group.id, &attempt));
+    }
     group
+}
+
+/// Build the settled-attempt facts independently so incremental and snapshot views
+/// have the same turn boundary.
+pub(crate) fn attempt_footer(group_id: &str, attempt: &Value) -> Node {
+    let mut footer = Node::new("message.group.footer", Kind::Rule)
+        .id(format!("{group_id}.footer"));
+    if let Some(started) = attempt.get("started_ms").and_then(Value::as_i64) {
+        footer.children.push(Node::new(
+            "value.timestamp",
+            Kind::Fact {
+                value: Value::Int(started),
+            },
+        ));
+    }
+    match attempt.get("status").and_then(Value::as_str) {
+        Some("streaming" | "running") => footer.children.push(Node::new(
+            "value.text",
+            Kind::Text {
+                spans: vec![Span::plain(
+                    attempt
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )],
+            },
+        )),
+        Some("error") => footer.children.push(Node::new(
+            "value.text",
+            Kind::Text {
+                spans: vec![Span::plain("failed")],
+            },
+        )),
+        Some("cancelled") => footer.children.push(Node::new(
+            "value.text",
+            Kind::Text {
+                spans: vec![Span::plain("interrupted")],
+            },
+        )),
+        _ => {}
+    }
+    if let Some(elapsed) = attempt.get("elapsed_ms").and_then(Value::as_i64) {
+        footer.children.push(Node::new(
+            "value.duration",
+            Kind::Fact {
+                value: Value::Int(elapsed),
+            },
+        ));
+        let output = attempt
+            .get("output_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if elapsed > 0 && output > 0 {
+            footer.children.push(Node::new(
+                "value.rate",
+                Kind::Fact {
+                    value: Value::Float(output as f64 * 1000.0 / elapsed as f64),
+                },
+            ));
+        }
+    }
+    if let Some(cost) = attempt.get("cost_micros").and_then(Value::as_i64) {
+        footer.children.push(Node::new(
+            "value.money",
+            Kind::Fact {
+                value: Value::Int(cost),
+            },
+        ));
+    }
+    footer
 }
 
 pub(crate) fn message_node(message: &Value) -> Option<Node> {
@@ -308,7 +519,8 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
             // expects anyway.
             let mut node = Node::section("message.user").id(&id);
             node.state = state;
-            node.children.extend(body("message.user", &id, text_at(message, "text")));
+            node.children
+                .extend(body("message.user", &id, text_at(message, "text")));
             for (position, attachment) in message_attachments(message).into_iter().enumerate() {
                 let mut attachment = attachment_node(&attachment, position);
                 attachment.id = format!("{id}.{}", attachment.id);
@@ -320,11 +532,25 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
         // else the loop learns on its own. In the transcript rather than the notice list,
         // because somebody reading back should be able to see what the model was told and when.
         "system" => {
-            let mut node = Node::text("message.system", [Span::plain(text_at(message, "text"))]).id(&id);
+            let mut node =
+                Node::text("message.system", [Span::plain(text_at(message, "text"))]).id(&id);
             node.state = state;
             Some(node)
         }
         "assistant" => {
+            let error = text_at(message, "error");
+            if !error.is_empty() {
+                let text = text_at(message, "text");
+                let text = if text.is_empty() {
+                    compact_error(error)
+                } else {
+                    format!("{text}\n\n{}", compact_error(error))
+                };
+                let mut node = Node::section("error").id(&id);
+                node.state = state;
+                node.children.extend(body("error", &id, &text));
+                return Some(node);
+            }
             let mut node = Node::section("message.assistant").id(&id);
             node.state = state;
             // Thinking first, because that is the order it happened in, and collapsed because
@@ -341,16 +567,19 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
                                 Span::strong("thinking".to_string()),
                                 Span::plain(format!(" · {}", preview(&thinking))),
                             ],
-
                         },
                     )
                     .id(format!("{id}.thinking"))
-                    .child(Node::text("message.assistant.thinking.text", [Span::plain(thinking)])),
+                    .child(Node::text(
+                        "message.assistant.thinking.text",
+                        [Span::plain(thinking)],
+                    )),
                 );
             }
             // The first text node carries the id a streamed delta appends to, so a
             // client can grow an answer in place.
-            node.children.extend(body("message.assistant", &id, text_at(message, "text")));
+            node.children
+                .extend(body("message.assistant", &id, text_at(message, "text")));
             for (position, call) in calls(message).into_iter().enumerate() {
                 node.children.push(call_node(&id, &call, position));
             }
@@ -376,7 +605,6 @@ pub(crate) fn call_node(message: &str, call: &Value, position: usize) -> Node {
         "tool.call",
         Kind::Collapsible {
             summary: vec![Span::strong(name.to_string()), Span::plain(" ")],
-
         },
     )
     .id(&id)
@@ -394,7 +622,10 @@ pub(crate) fn call_node(message: &str, call: &Value, position: usize) -> Node {
             fields: vec![Field {
                 id: format!("{id}.args"),
                 label: "Arguments".into(),
-                value: clip(&format!("{}", call.get("args").cloned().unwrap_or(Value::Null)), 512),
+                value: clip(
+                    &format!("{}", call.get("args").cloned().unwrap_or(Value::Null)),
+                    512,
+                ),
                 hint: None,
                 read_only: true,
                 secret: false,
@@ -413,15 +644,34 @@ pub(crate) fn call_node(message: &str, call: &Value, position: usize) -> Node {
         // lines mean added, removed, and where a hunk begins.
         let mut child = if is_unified_diff(&text) {
             Node::new(
-                if ok { "tool.result.diff" } else { "tool.result.error.diff" },
-                Kind::Code { lang: None, text, captures: Vec::new() },
+                if ok {
+                    "tool.result.diff"
+                } else {
+                    "tool.result.error.diff"
+                },
+                Kind::Code {
+                    lang: None,
+                    text,
+                    captures: Vec::new(),
+                },
             )
         } else {
-            Node::text(if ok { "tool.result" } else { "tool.result.error" }, [Span::plain(text)])
+            Node::text(
+                if ok {
+                    "tool.result"
+                } else {
+                    "tool.result.error"
+                },
+                [Span::plain(text)],
+            )
         }
         .id(format!("{id}.result"))
         .state(if ok { State::Done } else { State::Failed });
-        child.label = Some(if ok { "Result".into() } else { "Failure".into() });
+        child.label = Some(if ok {
+            "Result".into()
+        } else {
+            "Failure".into()
+        });
         node.children.push(child);
     }
     node
@@ -467,7 +717,9 @@ pub(crate) fn section_node(section: &Section, db: &Value) -> Node {
         // with nothing would be a session whose view a plugin can break.
         Err(reason) => Node::new(
             "plugin.failed",
-            Kind::Status { text: format!("{} could not present itself: {reason}", section.namespace) },
+            Kind::Status {
+                text: format!("{} could not present itself: {reason}", section.namespace),
+            },
         )
         .id(format!("{role}.failed")),
     });
@@ -483,7 +735,11 @@ pub(crate) fn section_node(section: &Section, db: &Value) -> Node {
 /// a client that remembers which nodes it opened keeps remembering the right ones.
 fn namespaced(prefix: &str, mut node: Node) -> Node {
     node.id = format!("{prefix}.{}", node.id);
-    node.children = node.children.into_iter().map(|child| namespaced(prefix, child)).collect();
+    node.children = node
+        .children
+        .into_iter()
+        .map(|child| namespaced(prefix, child))
+        .collect();
     node
 }
 
@@ -521,7 +777,8 @@ pub(crate) fn panel(db: &Value) -> Option<Node> {
     node.label = Some(text_at(panel, "title").to_string());
     let text = text_at(panel, "text");
     if !text.is_empty() {
-        node.children.push(Node::text("panel.text", [Span::plain(text)]));
+        node.children
+            .push(Node::text("panel.text", [Span::plain(text)]));
     }
 
     // Rows are what a session has to say and a person has to copy: a code, an address, a
@@ -534,8 +791,16 @@ pub(crate) fn panel(db: &Value) -> Option<Node> {
                 list.children.push(
                     Node::section("panel.row")
                         .id(format!("panel.row.{position}"))
-                        .child(Node::text("panel.label", [Span::plain(text_at(row, "label"))]))
-                        .child(Node::new(role, Kind::Fact { value: row.get("value").cloned().unwrap_or(Value::Null) })),
+                        .child(Node::text(
+                            "panel.label",
+                            [Span::plain(text_at(row, "label"))],
+                        ))
+                        .child(Node::new(
+                            role,
+                            Kind::Fact {
+                                value: row.get("value").cloned().unwrap_or(Value::Null),
+                            },
+                        )),
                 );
                 continue;
             }
@@ -576,12 +841,18 @@ pub(crate) fn panel(db: &Value) -> Option<Node> {
             hint: None,
             kind: FieldKind::Inline,
             read_only: false,
-            secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
+            secret: field
+                .get("secret")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
         .collect();
     if !fields.is_empty() {
         let mut form = Node::new("panel.input", Kind::Fields { fields }).id("panel.input");
-        if actions.iter().any(|action| text_at(action, "id") == "panel.submit") {
+        if actions
+            .iter()
+            .any(|action| text_at(action, "id") == "panel.submit")
+        {
             form.actions.push(Action {
                 id: "panel.submit".into(),
                 on: ActionOn::Submit,
@@ -612,7 +883,7 @@ pub(crate) fn notices(db: &Value) -> Option<Node> {
     if rows.is_empty() {
         return None;
     }
-    let mut node = Node::section("notices").id("notices").child(count_fact("notices", rows.len()));
+    let mut node = Node::section("notices").id("notices");
     for notice in rows.iter().rev().take(4) {
         let level = text_at(notice, "level");
         node.children.push(
@@ -622,7 +893,9 @@ pub(crate) fn notices(db: &Value) -> Option<Node> {
                     "warn" => "notice.warn",
                     _ => "notice",
                 },
-                Kind::Status { text: text_at(notice, "text").to_string() },
+                Kind::Status {
+                    text: text_at(notice, "text").to_string(),
+                },
             )
             .id(notice_id(notice)),
         );
@@ -631,54 +904,98 @@ pub(crate) fn notices(db: &Value) -> Option<Node> {
 }
 
 pub(crate) fn notice_id(notice: &Value) -> String {
-    format!("notice.{}", notice.get("id").and_then(Value::as_i64).unwrap_or(0))
+    format!(
+        "notice.{}",
+        notice.get("id").and_then(Value::as_i64).unwrap_or(0)
+    )
 }
 
 pub(crate) fn queue(db: &Value) -> Option<Node> {
     let rows = db.get("session")?.get("queue")?.as_list()?;
-    if rows.is_empty() { return None; }
-    let mut node = Node::section("queue").id("queue").child(count_fact("queue", rows.len()));
-    for row in rows { node.children.push(queue_item(row)); }
+    if rows.is_empty() {
+        return None;
+    }
+    let mut node = Node::section("queue")
+        .id("queue")
+        .child(count_fact("queue", rows.len()));
+    for row in rows {
+        node.children.push(queue_item(row));
+    }
+    // The stock queue exposes the same two decisions as the reference: restore the
+    // pending input for editing, or steer it into the active turn. The latter is a
+    // client key binding (Alt-Enter), so it is represented by the shared affordance
+    // rather than a second destructive queue mutation.
     node.actions = vec![
-        Action { id: "queue.take".into(), on: ActionOn::Click, label: Some("Take back".into()), args: Value::Null },
-        Action { id: "queue.clear".into(), on: ActionOn::Click, label: Some("Clear queue".into()), args: Value::Null },
+        Action {
+            id: "queue.edit".into(),
+            on: ActionOn::Click,
+            label: Some("Edit pending message".into()),
+            args: Value::Null,
+        },
+        Action {
+            id: "queue.steer".into(),
+            on: ActionOn::Click,
+            label: Some("Send now".into()),
+            args: Value::Null,
+        },
     ];
     Some(node)
 }
 
 pub(crate) fn queue_item(row: &Value) -> Node {
-    Node::text("queue.item", [Span::plain(text_at(row, "text"))])
-        .id(format!("queue.{}", row.get("id").and_then(Value::as_i64).unwrap_or(0)))
+    Node::text("queue.item", [Span::plain(text_at(row, "text"))]).id(format!(
+        "queue.{}",
+        row.get("id").and_then(Value::as_i64).unwrap_or(0)
+    ))
 }
 
 pub(crate) fn attachments(db: &Value) -> Option<Node> {
     let rows = db.get("session")?.get("attachments")?.as_list()?;
-    if rows.is_empty() { return None; }
-    let mut node = Node::section("attachments").id("attachments").child(count_fact("attachments", rows.len()));
-    for (position, row) in rows.iter().enumerate() { node.children.push(attachment_node(row, position)); }
+    if rows.is_empty() {
+        return None;
+    }
+    let mut node = Node::section("attachments")
+        .id("attachments")
+        .child(count_fact("attachments", rows.len()));
+    for (position, row) in rows.iter().enumerate() {
+        node.children.push(attachment_node(row, position));
+    }
     Some(node)
 }
 
 pub(crate) fn count_fact(owner: &str, count: usize) -> Node {
-    Node::new(format!("{owner}.count"), Kind::Fact { value: Value::Int(count as i64) })
-        .id(format!("{owner}.count")).label(owner)
+    Node::new(
+        format!("{owner}.count"),
+        Kind::Fact {
+            value: Value::Int(count as i64),
+        },
+    )
+    .id(format!("{owner}.count"))
+    .label(owner)
 }
 
 /// The one agent action a view offers while a turn is in flight.
 pub(crate) fn cancel(db: &Value) -> Option<Node> {
-    let status = db.get("session").map(|session| text_at(session, "status"))?;
+    let status = db
+        .get("session")
+        .map(|session| text_at(session, "status"))?;
     if status == "idle" {
         return None;
     }
     Some(
-        Node::new("turn", Kind::Status { text: format!("working ({status})") })
-            .id("turn")
-            .action(Action {
-                id: "turn.cancel".into(),
-                on: ActionOn::Click,
-                label: Some("Stop".into()),
-                args: Value::Null,
-            }),
+        Node::new(
+            "turn",
+            Kind::Status {
+                text: format!("working ({status})"),
+            },
+        )
+        .id("turn")
+        .action(Action {
+            id: "turn.cancel".into(),
+            on: ActionOn::Click,
+            label: Some("Stop".into()),
+            args: Value::Null,
+        }),
     )
 }
 
@@ -699,6 +1016,34 @@ fn body(prefix: &str, id: &str, text: &str) -> Vec<Node> {
         first.id = format!("{id}.text");
     }
     blocks
+}
+
+/// Provider failures often arrive as an HTTP prefix followed by a JSON envelope.
+/// Keep the useful message and provider detail in the transcript, but do not expose
+/// request metadata, user ids, or the wire representation as if it were model prose.
+fn compact_error(raw: &str) -> String {
+    let raw = raw.trim();
+    let Some(separator) = raw.find(": {") else {
+        return raw.to_string();
+    };
+    let prefix = raw[..separator].trim();
+    let payload = &raw[separator + 2..];
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return raw.to_string();
+    };
+    let error = value.get("error").unwrap_or(&value);
+    let message = error.get("message").and_then(serde_json::Value::as_str);
+    let detail = error
+        .pointer("/metadata/raw")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| error.get("detail").and_then(serde_json::Value::as_str));
+    match (message, detail) {
+        (Some(message), Some(detail)) if message != detail => {
+            format!("{prefix}: {message} — {detail}")
+        }
+        (Some(message), _) => format!("{prefix}: {message}"),
+        _ => raw.to_string(),
+    }
 }
 
 fn calls(message: &Value) -> Vec<Value> {
@@ -730,7 +1075,11 @@ fn clip(text: &str, limit: usize) -> String {
 /// page is a summary of the page. Eighty characters is about what fits beside a role in a
 /// terminal and in a browser.
 fn preview(text: &str) -> String {
-    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
+    let first = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     match first.char_indices().nth(80) {
         Some((end, _)) => format!("{}…", &first[..end]),
         None => first.to_string(),
@@ -739,12 +1088,24 @@ fn preview(text: &str) -> String {
 
 /// An image reference and its alternative text, independent of the client.
 pub fn image_node(blob: BlobRef, alt: &str, width: u32, height: u32) -> Node {
-    Node::new("image", Kind::Image { blob, alt: alt.to_string(), width, height })
+    Node::new(
+        "image",
+        Kind::Image {
+            blob,
+            alt: alt.to_string(),
+            width,
+            height,
+        },
+    )
 }
 
 /// The attachments a message carries, in the order they were attached.
 fn message_attachments(message: &Value) -> Vec<Value> {
-    message.get("attachments").and_then(Value::as_list).map(<[Value]>::to_vec).unwrap_or_default()
+    message
+        .get("attachments")
+        .and_then(Value::as_list)
+        .map(<[Value]>::to_vec)
+        .unwrap_or_default()
 }
 
 /// One attachment of a message.
@@ -757,18 +1118,35 @@ fn message_attachments(message: &Value) -> Vec<Value> {
 fn attachment_node(attachment: &Value, _position: usize) -> Node {
     let hash = text_at(attachment, "hash");
     let media = text_at(attachment, "media");
-    let len = attachment.get("len").and_then(Value::as_i64).unwrap_or(0).max(0) as u64;
+    let len = attachment
+        .get("len")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0) as u64;
     let name = text_at(attachment, "source");
-    let what = if media.is_empty() { "file".to_string() } else { media.to_string() };
+    let what = if media.is_empty() {
+        "file".to_string()
+    } else {
+        media.to_string()
+    };
     let alt = if name.is_empty() {
         format!("{what} ({len} bytes)")
     } else {
         format!("{name} — {what} ({len} bytes)")
     };
-    let blob = BlobRef { hash: hash.to_string(), len, media: (!media.is_empty()).then_some(media.to_string()) };
+    let blob = BlobRef {
+        hash: hash.to_string(),
+        len,
+        media: (!media.is_empty()).then_some(media.to_string()),
+    };
     let mut node = image_node(blob, &alt, 0, 0);
     node.id = format!("attachment.{hash}");
-    node.actions.push(Action { id: "attachment.save".into(), on: ActionOn::Click, label: Some("Save attachment".into()), args: Value::Null });
+    node.actions.push(Action {
+        id: "attachment.save".into(),
+        on: ActionOn::Click,
+        label: Some("Save attachment".into()),
+        args: Value::Null,
+    });
     node
 }
 
@@ -842,7 +1220,12 @@ mod tests {
     /// fenced code block, and one settled tool call.
     fn state() -> Value {
         let base = initial_state("demo", "scripted", "scripted-1", 0);
-        let mut session = base.get("session").expect("a session").as_map().expect("a map").clone();
+        let mut session = base
+            .get("session")
+            .expect("a session")
+            .as_map()
+            .expect("a map")
+            .clone();
         session.insert("turn".into(), Value::Int(2));
         Value::map([
             ("session", Value::Map(std::sync::Arc::new(session))),
@@ -862,6 +1245,7 @@ mod tests {
                         ("role", Value::str("assistant")),
                         ("text", Value::str("here:\n```rust\nlet x = 1;\n```\ndone")),
                         ("state", Value::str("done")),
+                        ("attempt", Value::map([("status", Value::str("done"))])),
                         (
                             "calls",
                             Value::list([Value::map([
@@ -891,16 +1275,63 @@ mod tests {
         let transcript = find(&node, "transcript").expect("a transcript");
         let group = &transcript.children[0];
         assert_eq!(group.role, "message.group");
-        assert_eq!(group.children.first().unwrap().role, "message.group.header");
         assert_eq!(group.children.last().unwrap().role, "message.group.footer");
-        let ids: Vec<Option<&str>> = group.children.iter().filter(|child| child.id.starts_with("msg.")).map(|child| Some(child.id.as_str())).collect();
+        let ids: Vec<Option<&str>> = group
+            .children
+            .iter()
+            .filter(|child| child.id.starts_with("msg."))
+            .map(|child| Some(child.id.as_str()))
+            .collect();
         assert_eq!(ids, vec![Some("msg.1"), Some("msg.2")]);
+    }
+
+    #[test]
+    fn a_provider_failure_is_an_error_block_in_the_same_transcript() {
+        let base = initial_state("demo", "openrouter", "stealth/union-alpha", 0);
+        let state = Value::map([
+            ("session", base.get("session").cloned().unwrap()),
+            ("attempts", Value::list([])),
+            ("notices", Value::list([])),
+            (
+                "messages",
+                Value::list([
+                    Value::map([
+                        ("seq", Value::Int(1)),
+                        ("role", Value::str("user")),
+                        ("text", Value::str("foo")),
+                        ("state", Value::str("done")),
+                    ]),
+                    Value::map([
+                        ("seq", Value::Int(2)),
+                        ("role", Value::str("assistant")),
+                        ("text", Value::str("")),
+                        ("error", Value::str("429 application/json: {\"error\":{\"message\":\"Provider returned error\",\"metadata\":{\"raw\":\"temporarily rate-limited\"}},\"user_id\":\"private\"}")),
+                        ("state", Value::str("failed")),
+                    ]),
+                ]),
+            ),
+        ]);
+        let node = document(&state, &[]);
+        let error = find(&node, "msg.2").expect("the failed response");
+        assert_eq!(error.role, "error");
+        assert_eq!(error.state, Some(State::Failed));
+        let text = find(&node, "msg.2.text").expect("the error text");
+        let rendered = match &text.kind {
+            Kind::Text { spans } => spans.iter().map(|span| span.text.as_str()).collect::<String>(),
+            other => panic!("expected error text, got {other:?}"),
+        };
+        assert!(rendered.contains("429 application/json: Provider returned error"));
+        assert!(rendered.contains("temporarily rate-limited"));
+        assert!(!rendered.contains("user_id"));
     }
 
     #[test]
     fn a_streamed_delta_has_a_node_to_append_to() {
         let node = document(&state(), &[]);
-        assert!(find(&node, "msg.2.text").is_some(), "the first text node must carry the delta id");
+        assert!(
+            find(&node, "msg.2.text").is_some(),
+            "the first text node must carry the delta id"
+        );
     }
 
     #[test]
@@ -927,14 +1358,21 @@ mod tests {
         let call = find(&node, "msg.2.call.call.1").expect("the tool call");
         assert_eq!(call.state, Some(State::Done));
         assert_eq!(call.label.as_deref(), Some("echo"));
-        assert!(call.children.iter().any(|child| child.role == "tool.result"));
+        assert!(
+            call.children
+                .iter()
+                .any(|child| child.role == "tool.result")
+        );
     }
 
     #[test]
     fn a_result_that_is_a_patch_is_laid_out_as_a_diff() {
         let base = initial_state("demo", "scripted", "scripted-1", 0);
         let state = Value::map([
-            ("session", base.get("session").cloned().unwrap_or(Value::Null)),
+            (
+                "session",
+                base.get("session").cloned().unwrap_or(Value::Null),
+            ),
             ("attempts", Value::list([])),
             ("notices", Value::list([])),
             (
@@ -951,7 +1389,10 @@ mod tests {
                             ("name", Value::str("write")),
                             ("args", Value::str("src/main.rs")),
                             ("status", Value::str("ok")),
-                            ("result", Value::str("--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old\n+new")),
+                            (
+                                "result",
+                                Value::str("--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old\n+new"),
+                            ),
                         ])]),
                     ),
                 ])]),
@@ -980,15 +1421,27 @@ mod tests {
     #[test]
     fn tool_details_are_semantic() {
         let tree = document(&state(), &[]);
-        assert!(matches!(&find(&tree, "msg.2.call.call.1").unwrap().kind, Kind::Collapsible { summary } if !summary.is_empty()));
+        assert!(
+            matches!(&find(&tree, "msg.2.call.call.1").unwrap().kind, Kind::Collapsible { summary } if !summary.is_empty())
+        );
     }
 
     #[test]
     fn reused_provider_call_ids_have_distinct_message_scopes() {
         let db = state();
         let message = db.get("messages").unwrap().as_list().unwrap()[1].clone();
-        let message = misa_value::apply_one(&message, &misa_value::Path::parse("seq").unwrap(), &misa_value::Op::Set(Value::Int(3))).unwrap();
-        let db = misa_value::apply_one(&db, &misa_value::Path::parse("messages").unwrap(), &misa_value::Op::Append(message)).unwrap();
+        let message = misa_value::apply_one(
+            &message,
+            &misa_value::Path::parse("seq").unwrap(),
+            &misa_value::Op::Set(Value::Int(3)),
+        )
+        .unwrap();
+        let db = misa_value::apply_one(
+            &db,
+            &misa_value::Path::parse("messages").unwrap(),
+            &misa_value::Op::Append(message),
+        )
+        .unwrap();
         let view = document(&db, &[]);
         misa_proto::view::validate(&view).unwrap();
         assert!(find(&view, "msg.2.call.call.1").is_some());
@@ -998,7 +1451,9 @@ mod tests {
     #[test]
     fn an_empty_transcript_says_so_instead_of_being_empty() {
         let node = document(&initial_state("demo", "p", "m", 0), &[]);
-        assert!(find(&node, "transcript").expect("a transcript").children[0].role == "transcript.empty");
+        assert!(
+            find(&node, "transcript").expect("a transcript").children[0].role == "transcript.empty"
+        );
         misa_proto::view::validate(&node).unwrap();
     }
 
@@ -1021,7 +1476,10 @@ mod tests {
     fn every_root_the_shipped_state_uses_is_declared() {
         let state = state();
         for root in state.as_map().expect("a map").keys() {
-            assert!(declared(root).is_some(), "the session writes an undeclared root `{root}`");
+            assert!(
+                declared(root).is_some(),
+                "the session writes an undeclared root `{root}`"
+            );
         }
     }
 
@@ -1040,9 +1498,15 @@ mod tests {
 
     #[test]
     fn an_image_always_carries_its_hash_and_alt() {
-        let blob = BlobRef { hash: "a".repeat(64), len: 4, media: Some("image/png".into()) };
+        let blob = BlobRef {
+            hash: "a".repeat(64),
+            len: 4,
+            media: Some("image/png".into()),
+        };
         let node = image_node(blob.clone(), "a chart", 10, 10);
-        assert!(matches!(node.kind, Kind::Image { blob: actual, alt, .. } if actual == blob && alt == "a chart"));
+        assert!(
+            matches!(node.kind, Kind::Image { blob: actual, alt, .. } if actual == blob && alt == "a chart")
+        );
     }
 
     /// Every node the session writes, by id.
@@ -1062,10 +1526,15 @@ mod tests {
         let node = document(&state(), &[]);
         let mut ids = Vec::new();
         ids_of(&node, &mut ids);
-        assert!(ids.contains(&"composer".to_string()), "the walk found the session's own nodes");
+        assert!(
+            ids.contains(&"composer".to_string()),
+            "the walk found the session's own nodes"
+        );
         for id in ids {
-            assert!(!id.starts_with("plugin."), "the session wrote `{id}`, which is a plugin's namespace");
+            assert!(
+                !id.starts_with("plugin."),
+                "the session wrote `{id}`, which is a plugin's namespace"
+            );
         }
     }
-
 }

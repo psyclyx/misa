@@ -7,6 +7,14 @@ pub fn patches(db: &Value, kind: &str, data: &Value, log_seq: i64) -> Vec<(Path,
     match kind {
         "reset" => {
             let replacement = data.get("message").cloned().into_iter().collect::<Vec<_>>();
+            // A reset replaces the transcript, and the attempt ledger is the transcript's
+            // ledger: the token and context indicators are read from it. A compaction
+            // replaces the transcript with a summary and the branch continues, so its
+            // accounting stays; a clear empties the transcript, and the accounting goes
+            // with it. Both fall out of the reset's own data rather than the command name.
+            if replacement.is_empty() {
+                put("attempts", Op::Set(Value::list([])));
+            }
             put("messages", Op::Set(Value::list(replacement)));
         }
         "message" => {
@@ -56,6 +64,13 @@ mod tests {
     fn entry(seq: i64, kind: &str, data: Value) -> Value {
         Value::map([("seq", Value::Int(seq)), ("kind", Value::str(kind)), ("data", data)])
     }
+    fn attempt(cost: i64) -> Value {
+        Value::map([("cost_micros", Value::Int(cost))])
+    }
+    fn assistant(attempt: Value) -> Value {
+        Value::map([("role", Value::str("assistant")), ("text", Value::str("")),
+            ("calls", Value::list([])), ("attempt", attempt)])
+    }
     #[test]
     fn live_acknowledgments_and_restart_fold_match_through_tools_and_compaction() {
         let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
@@ -78,6 +93,27 @@ mod tests {
             }
         }
         assert_eq!(live.get("messages").unwrap().as_list().unwrap().len(), 2);
+        // Compaction replaces the transcript with a summary and the branch's
+        // accounting survives, because the branch does.
         assert_eq!(live.get("attempts").unwrap().as_list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_clear_empties_the_ledger_its_transcript_was_measured_from() {
+        // A clear is a reset that installs nothing: the token and context indicators
+        // must show the conversation that is left, which is none of them.
+        let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
+        let entries = vec![
+            entry(1, "message", assistant(attempt(12))),
+            entry(2, "reset", Value::map([("reason", Value::str("cleared"))])),
+            entry(3, "message", assistant(attempt(3))),
+        ];
+        let folded = fold(base, &entries);
+        assert_eq!(folded.get("messages").unwrap().as_list().unwrap().len(), 1);
+        assert_eq!(
+            folded.get("attempts").unwrap().as_list().unwrap(),
+            &vec![attempt(3)],
+            "the cleared attempt is still counted"
+        );
     }
 }

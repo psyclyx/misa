@@ -260,7 +260,9 @@ mod tests {
                             id,
                             ok: true,
                             message: String::new(),
+                            slot: None,
                             slots: Value::list([]),
+                            model_providers: Value::list([]),
                         });
                     }
                     _ => {}

@@ -1,12 +1,12 @@
 //! Installed command contracts and owner-side handlers. Bindings carry no authority.
 use crate::Runtime;
-use misa_reframe::Event;
 use misa_proto::{
     Fault,
     invocation::{Command, Invocation, Outcome},
     schema::{Field, Literal, Schema},
 };
 use misa_protocol::invocation::{CallContext, CommandOwner, Execution};
+use misa_reframe::Event;
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -36,7 +36,8 @@ impl CommandRegistration {
         let event_name = event.clone();
         let mut registration = Self::new(
             Command {
-                preparation: Default::default(), id: id.into(),
+                preparation: Default::default(),
+                id: id.into(),
                 input,
                 result: admitted(),
             },
@@ -51,11 +52,26 @@ impl CommandRegistration {
         self.event.as_deref()
     }
     /// A declared non-secret form precedes the same durable event transaction.
-    pub fn input_event(id: impl Into<String>, input: Schema, event: impl Into<String>, form: misa_proto::input::Form) -> Result<Self, Fault> {
+    pub fn input_event(
+        id: impl Into<String>,
+        input: Schema,
+        event: impl Into<String>,
+        form: misa_proto::input::Form,
+    ) -> Result<Self, Fault> {
         form.validate()?;
         let event = event.into();
         let event_name = event.clone();
-        let mut registration = Self::new(Command { preparation: Default::default(), id: id.into(), input, result: admitted() }, move |runtime, context, invocation| runtime.request_transaction_input(context, invocation, form.clone(), &event));
+        let mut registration = Self::new(
+            Command {
+                preparation: Default::default(),
+                id: id.into(),
+                input,
+                result: admitted(),
+            },
+            move |runtime, context, invocation| {
+                runtime.request_transaction_input(context, invocation, form.clone(), &event)
+            },
+        );
         registration.event = Some(event_name);
         Ok(registration)
     }
@@ -64,7 +80,11 @@ pub fn install(
     contributed: &[CommandRegistration],
 ) -> Result<BTreeMap<String, CommandRegistration>, Fault> {
     let mut installed = BTreeMap::new();
-    for registration in builtins().into_iter().chain(crate::operations::commands()).chain(contributed.iter().cloned()) {
+    for registration in builtins()
+        .into_iter()
+        .chain(crate::operations::commands())
+        .chain(contributed.iter().cloned())
+    {
         registration.definition.validate()?;
         if installed
             .insert(registration.definition.id.clone(), registration)
@@ -101,20 +121,42 @@ pub fn catalogs(
         ("binding", Schema::Value, false),
     ]);
     let shortcuts = shortcuts(installed);
-    let candidates: Vec<misa_proto::view::Choice> = shortcuts.iter().map(|shortcut| {
-        let args = shortcut.args.iter().map(|arg| arg.label.as_str()).collect::<Vec<_>>().join(" ");
-        misa_proto::view::Choice {
-            value: format!("/{}", shortcut.id), label: format!("/{}", shortcut.id),
-            detail: Some(if args.is_empty() { shortcut.description.clone() } else { format!("{} — {args}", shortcut.description) }),
-        }
-    }).collect();
+    let candidates: Vec<misa_proto::view::Choice> = shortcuts
+        .iter()
+        .map(|shortcut| {
+            let args = shortcut
+                .args
+                .iter()
+                .map(|arg| arg.label.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            misa_proto::view::Choice {
+                value: format!("/{}", shortcut.id),
+                label: format!("/{}", shortcut.id),
+                detail: Some(if args.is_empty() {
+                    shortcut.description.clone()
+                } else {
+                    format!("{} — {args}", shortcut.description)
+                }),
+                metadata: None,
+            }
+        })
+        .collect();
     Ok(vec![
-        (crate::completions::command_definition(), crate::wire::render(&candidates)),
+        (
+            crate::completions::command_definition(),
+            crate::wire::render(&candidates),
+        ),
         (
             misa_proto::query::Definition {
-                id: misa_proto::preparation::SHORTCUTS.into(), arguments: vec![],
+                id: misa_proto::preparation::SHORTCUTS.into(),
+                arguments: vec![],
                 contract: "commands.shortcuts@1".into(),
-                result: misa_proto::query::ResultContract::Data { schema: Schema::List { items: Box::new(Schema::Value) } },
+                result: misa_proto::query::ResultContract::Data {
+                    schema: Schema::List {
+                        items: Box::new(Schema::Value),
+                    },
+                },
             },
             crate::wire::render(&shortcuts),
         ),
@@ -137,30 +179,62 @@ pub fn catalogs(
         ),
     ])
 }
-fn shortcuts(installed: &BTreeMap<String, CommandRegistration>) -> Vec<misa_proto::preparation::Shortcut> {
-    use misa_proto::{preparation::{Shortcut, Target}, observation::{Member, Encoding}, Query};
-    crate::catalog::commands().into_iter().filter_map(|mut entry| {
-        let target = match entry.id.as_str() {
-            "status" | "usage" => {
-                let (id, encoding) = if entry.id == "status" { ("session.status-report", Encoding::Value) } else { ("usage.presentation", Encoding::Document) };
-                Target::Read { member: Member { query: Query::new(id), contract: format!("{id}@1"), encoding, optional: false } }
-            }
-            other => {
-                let command = match other {
-                    "model" => "session.model.select", "effort" => "session.effort.select",
-                    "clear" => "session.clear", "compact" => "session.compact",
-                    "attach" | "image" => "session.attachment.add",
-                    "models" => "session.models.refresh",
-                    "login" => "credentials.authorize",
-                    _ => return None,
-                };
-                if !installed.contains_key(command) { return None; }
-                if other == "effort" { entry.args[0].name = "effort".into(); }
-                Target::Command { command: command.into() }
-            }
-        };
-        Some(Shortcut { id: entry.id, label: entry.label, description: entry.description, args: entry.args, target })
-    }).collect()
+fn shortcuts(
+    installed: &BTreeMap<String, CommandRegistration>,
+) -> Vec<misa_proto::preparation::Shortcut> {
+    use misa_proto::{
+        Query,
+        observation::{Encoding, Member},
+        preparation::{Shortcut, Target},
+    };
+    crate::catalog::commands()
+        .into_iter()
+        .filter_map(|mut entry| {
+            let target = match entry.id.as_str() {
+                "usage" => {
+                    let id = "usage.presentation";
+                    Target::Read {
+                        member: Member {
+                            query: Query::new(id),
+                            contract: format!("{id}@1"),
+                            encoding: Encoding::Document,
+                            optional: false,
+                        },
+                    }
+                }
+                other => {
+                    let command = match other {
+                        "model" => "session.model.select",
+                        "effort" => "session.effort.select",
+                        "clear" => "session.clear",
+                        "compact" => "session.compact",
+                        "attach" | "image" => "session.attachment.add",
+                        "login" => "credentials.authorize",
+                        "logout" => "credentials.logout",
+                        "status" => "credentials.status",
+                        "account" => "credentials.select",
+                        _ => return None,
+                    };
+                    if !installed.contains_key(command) {
+                        return None;
+                    }
+                    if other == "effort" {
+                        entry.args[0].name = "effort".into();
+                    }
+                    Target::Command {
+                        command: command.into(),
+                    }
+                }
+            };
+            Some(Shortcut {
+                id: entry.id,
+                label: entry.label,
+                description: entry.description,
+                args: entry.args,
+                target,
+            })
+        })
+        .collect()
 }
 fn admitted() -> Schema {
     Schema::Choice {
@@ -196,7 +270,8 @@ fn transition_registration(
 ) -> CommandRegistration {
     CommandRegistration::new(
         Command {
-            preparation: Default::default(), id: id.into(),
+            preparation: Default::default(),
+            id: id.into(),
             input,
             result: admitted(),
         },
@@ -227,25 +302,70 @@ pub fn builtins() -> Vec<CommandRegistration> {
         ])
     };
     let mut registrations = vec![
-        CommandRegistration::new(Command {
-            preparation: Default::default(), id: "session.attachment.resolve".into(),
-            input: record([("node", Schema::String, false)]),
-            result: record([("hash", Schema::String, false), ("len", Schema::Int, false), ("media", Schema::Nullable { inner: Box::new(Schema::String) }, true)]),
-        }, |runtime, _, invocation| {
-            let state = runtime.state.lock().expect("session state is never poisoned");
-            let node = text(&invocation.input, "node");
-            let Some(target) = state.view.tree.node(&node).filter(|node| node.actions.iter().any(|action| action.id == "attachment.save")) else {
-                return Outcome::Rejected { fault: Fault::unsupported("This node does not offer an attachment to save") };
-            };
-            let misa_proto::view::Kind::Image { blob, .. } = &target.kind else {
-                return Outcome::Rejected { fault: Fault::unsupported("This node is not an attachment") };
-            };
-            Outcome::Completed { value: crate::wire::render(blob) }
-        }),
-        CommandRegistration::new(Command { preparation: Default::default(), id: "session.prompt".into(), input: prompt(), result: admitted() },
-            |runtime, context, invocation| crate::operations::prompt(runtime, context, invocation, false)),
-        CommandRegistration::new(Command { preparation: Default::default(), id: "session.interrupt".into(), input: prompt(), result: admitted() },
-            |runtime, context, invocation| crate::operations::prompt(runtime, context, invocation, true)),
+        CommandRegistration::new(
+            Command {
+                preparation: Default::default(),
+                id: "session.attachment.resolve".into(),
+                input: record([("node", Schema::String, false)]),
+                result: record([
+                    ("hash", Schema::String, false),
+                    ("len", Schema::Int, false),
+                    (
+                        "media",
+                        Schema::Nullable {
+                            inner: Box::new(Schema::String),
+                        },
+                        true,
+                    ),
+                ]),
+            },
+            |runtime, _, invocation| {
+                let state = runtime
+                    .state
+                    .lock()
+                    .expect("session state is never poisoned");
+                let node = text(&invocation.input, "node");
+                let Some(target) = state.view.tree.node(&node).filter(|node| {
+                    node.actions
+                        .iter()
+                        .any(|action| action.id == "attachment.save")
+                }) else {
+                    return Outcome::Rejected {
+                        fault: Fault::unsupported("This node does not offer an attachment to save"),
+                    };
+                };
+                let misa_proto::view::Kind::Image { blob, .. } = &target.kind else {
+                    return Outcome::Rejected {
+                        fault: Fault::unsupported("This node is not an attachment"),
+                    };
+                };
+                Outcome::Completed {
+                    value: crate::wire::render(blob),
+                }
+            },
+        ),
+        CommandRegistration::new(
+            Command {
+                preparation: Default::default(),
+                id: "session.prompt".into(),
+                input: prompt(),
+                result: admitted(),
+            },
+            |runtime, context, invocation| {
+                crate::operations::prompt(runtime, context, invocation, false)
+            },
+        ),
+        CommandRegistration::new(
+            Command {
+                preparation: Default::default(),
+                id: "session.interrupt".into(),
+                input: prompt(),
+                result: admitted(),
+            },
+            |runtime, context, invocation| {
+                crate::operations::prompt(runtime, context, invocation, true)
+            },
+        ),
         transition_registration(
             "session.cancel",
             record([(
@@ -256,41 +376,99 @@ pub fn builtins() -> Vec<CommandRegistration> {
                 true,
             )]),
             |input| {
-                Event::new("intent/cancel").with("target", input.get("target").cloned().unwrap_or(Value::Null))
+                Event::new("intent/cancel").with(
+                    "target",
+                    input.get("target").cloned().unwrap_or(Value::Null),
+                )
             },
         ),
         transition_registration(
             "session.model.select",
             record([("model", Schema::String, false)]),
             |input| {
-                Event::new("intent/command").with("name", Value::str("model")).with("args", Value::str(text(input, "model")))
+                Event::new("intent/command")
+                    .with("name", Value::str("model"))
+                    .with("args", Value::str(text(input, "model")))
             },
         ),
         transition_registration(
             "session.effort.select",
             record([("effort", Schema::String, false)]),
             |input| {
-                Event::new("intent/command").with("name", Value::str("effort")).with("args", Value::str(text(input, "effort")))
+                Event::new("intent/command")
+                    .with("name", Value::str("effort"))
+                    .with("args", Value::str(text(input, "effort")))
             },
         ),
+        transition_registration("session.effort.cycle", record([]), |_| {
+            Event::new("intent/effort.cycle")
+        }),
     ];
     for (id, name, argument, required) in [
         ("session.clear", "clear", "reason", false),
         ("session.compact", "compact", "", false),
         ("session.attachment.add", "attach", "path", true),
     ] {
-        let input = if argument.is_empty() { record([]) } else { record([(argument, Schema::String, !required)]) };
-        registrations.push(transition_registration(id, input, move |input|
-            Event::new("intent/command").with("name", Value::str(name)).with("args", Value::str(text(input, argument)))
-        ));
+        let input = if argument.is_empty() {
+            record([])
+        } else {
+            record([(argument, Schema::String, !required)])
+        };
+        registrations.push(transition_registration(id, input, move |input| {
+            Event::new("intent/command")
+                .with("name", Value::str(name))
+                .with("args", Value::str(text(input, argument)))
+        }));
     }
     for (id, event) in [
-        ("session.models.refresh", "discovery/models.refresh"),
         ("session.usage.refresh", "discovery/usage.refresh"),
-        ("session.conversations.refresh", "discovery/conversations.refresh"),
+        (
+            "session.conversations.refresh",
+            "discovery/conversations.refresh",
+        ),
     ] {
-        registrations.push(CommandRegistration::new(Command { preparation: Default::default(), id: id.into(), input: record([]), result: admitted() },
-            move |runtime, _, _| outcome(runtime.dispatch(misa_reframe::Event::new(event)))));
+        registrations.push(CommandRegistration::new(
+            Command {
+                preparation: Default::default(),
+                id: id.into(),
+                input: record([]),
+                result: admitted(),
+            },
+            move |runtime, _, _| outcome(runtime.dispatch(misa_reframe::Event::new(event))),
+        ));
+    }
+    for (id, name, fields) in [
+        (
+            "credentials.status",
+            "status",
+            vec![("provider", Schema::String, false)],
+        ),
+        (
+            "credentials.logout",
+            "logout",
+            vec![
+                ("provider", Schema::String, false),
+                ("account", Schema::String, true),
+            ],
+        ),
+        (
+            "credentials.select",
+            "account",
+            vec![
+                ("provider", Schema::String, false),
+                ("account", Schema::String, false),
+            ],
+        ),
+    ] {
+        registrations.push(transition_registration(
+            id,
+            record(fields),
+            move |input| {
+                Event::new("intent/command")
+                    .with("name", Value::str(name))
+                    .with("args", input.clone())
+            },
+        ));
     }
     registrations
 }
@@ -309,47 +487,51 @@ impl CommandOwner for Runtime {
     }
 }
 impl Runtime {
-    pub(crate) fn execute_command(&self, context:&CallContext, invocation:Invocation)->Outcome {
-
-            if self.is_closed() { return Outcome::Rejected { fault: Fault::new("closed_scope", "Session owner is closed") }; }
-            if !self.is_started() {return Outcome::Rejected{fault:Fault::new("not_ready","Session owner has not been activated")};}
-            if invocation.scope != self.scope() {
-                return Outcome::Rejected {
-                    fault: Fault::new(
-                        "invalid_command",
-                        "Command targets an old owner incarnation",
-                    ),
-                };
-            }
-            let Some(registration) = self.command_registry.get(&invocation.command) else {
-                return Outcome::Rejected {
-                    fault: Fault::new("invalid_command", "Command is not exported"),
-                };
+    pub(crate) fn execute_command(&self, context: &CallContext, invocation: Invocation) -> Outcome {
+        if self.is_closed() {
+            return Outcome::Rejected {
+                fault: Fault::new("closed_scope", "Session owner is closed"),
             };
-            if let Err(fault) = invocation.validate(&registration.definition, Default::default()) {
-                return Outcome::Rejected { fault };
-            }
-            let result = (registration.handler)(self, context, &invocation);
-            let valid = match &result {
-                Outcome::Completed { value } => {
-                    registration.definition.result.validate(value).is_ok()
-                }
-                Outcome::Accepted { operation } => {
-                    !operation.id.is_empty() && operation.scope.validate().is_ok()
-                }
-                _ => true,
+        }
+        if !self.is_started() {
+            return Outcome::Rejected {
+                fault: Fault::new("not_ready", "Session owner has not been activated"),
             };
-            if valid {
-                result
-            } else {
-                Outcome::Indeterminate {
-                    fault: Fault::new(
-                        "invalid_result",
-                        "Command result is invalid; execution may have occurred",
-                    ),
-                }
+        }
+        if invocation.scope != self.scope() {
+            return Outcome::Rejected {
+                fault: Fault::new(
+                    "invalid_command",
+                    "Command targets an old owner incarnation",
+                ),
+            };
+        }
+        let Some(registration) = self.command_registry.get(&invocation.command) else {
+            return Outcome::Rejected {
+                fault: Fault::new("invalid_command", "Command is not exported"),
+            };
+        };
+        if let Err(fault) = invocation.validate(&registration.definition, Default::default()) {
+            return Outcome::Rejected { fault };
+        }
+        let result = (registration.handler)(self, context, &invocation);
+        let valid = match &result {
+            Outcome::Completed { value } => registration.definition.result.validate(value).is_ok(),
+            Outcome::Accepted { operation } => {
+                !operation.id.is_empty() && operation.scope.validate().is_ok()
             }
-
+            _ => true,
+        };
+        if valid {
+            result
+        } else {
+            Outcome::Indeterminate {
+                fault: Fault::new(
+                    "invalid_result",
+                    "Command result is invalid; execution may have occurred",
+                ),
+            }
+        }
     }
 }
 
@@ -361,14 +543,47 @@ mod tests {
 
     #[tokio::test]
     async fn conversation_resume_is_owned_only_by_daemon_lifecycle() {
-        let runtime = Runtime::start("resume-boundary", "Resume", None,
-            Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("unused"))),
-            "scripted", "test", Value::Null);
-        assert!(!runtime.command_registry.contains_key("session.conversation.resume"));
-        assert!(!shortcuts(&runtime.command_registry).iter().any(|shortcut| shortcut.id == "resume"));
-        let dispatcher = Dispatcher::new(CallContext { principal: "trusted".into(), connection: 1 }, 4, Default::default(), Default::default());
-        let result = dispatcher.dispatch(runtime.as_ref(), Invocation { id: 1, scope: runtime.scope(),
-            command: "session.conversation.resume".into(), input: Value::map([("conversation", Value::str("other"))]) }).await;
+        let runtime = Runtime::start(
+            "resume-boundary",
+            "Resume",
+            None,
+            Arc::new(misa_kernel::LocalKernel::new(
+                misa_kernel::ScriptedProvider::always("unused"),
+            )),
+            "scripted",
+            "test",
+            Value::Null,
+        );
+        assert!(
+            !runtime
+                .command_registry
+                .contains_key("session.conversation.resume")
+        );
+        assert!(
+            !shortcuts(&runtime.command_registry)
+                .iter()
+                .any(|shortcut| shortcut.id == "resume")
+        );
+        let dispatcher = Dispatcher::new(
+            CallContext {
+                principal: "trusted".into(),
+                connection: 1,
+            },
+            4,
+            Default::default(),
+            Default::default(),
+        );
+        let result = dispatcher
+            .dispatch(
+                runtime.as_ref(),
+                Invocation {
+                    id: 1,
+                    scope: runtime.scope(),
+                    command: "session.conversation.resume".into(),
+                    input: Value::map([("conversation", Value::str("other"))]),
+                },
+            )
+            .await;
         assert!(matches!(result.outcome, Outcome::Rejected { .. }));
         runtime.shutdown_complete().await;
     }
@@ -378,7 +593,8 @@ mod tests {
         let contribution = crate::Contribution::new()
             .with_command(CommandRegistration::new(
                 Command {
-                    preparation: Default::default(), id: "test.increment".into(),
+                    preparation: Default::default(),
+                    id: "test.increment".into(),
                     input: Schema::Int,
                     result: Schema::Int,
                 },
@@ -391,7 +607,8 @@ mod tests {
             ))
             .with_command(CommandRegistration::new(
                 Command {
-                    preparation: Default::default(), id: "test.invalid-result".into(),
+                    preparation: Default::default(),
+                    id: "test.invalid-result".into(),
                     input: Schema::Int,
                     result: Schema::Int,
                 },

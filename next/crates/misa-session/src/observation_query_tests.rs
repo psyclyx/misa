@@ -117,6 +117,45 @@ async fn model_discovery_ignores_superseded_reports_and_accepts_discovered_ids()
 }
 
 #[tokio::test]
+async fn stored_credentials_refresh_each_provider_without_a_single_pending_slot() {
+    let runtime = runtime();
+    runtime.dispatch(
+        Event::new("kernel/credential")
+            .with("id", Value::str("discovery.credentials"))
+            .with("ok", Value::Bool(true))
+            .with("message", Value::str(""))
+            .with("slot", Value::Null)
+            .with(
+                "slots",
+                Value::list([
+                    Value::map([("slot", Value::str("openai"))]),
+                    Value::map([("slot", Value::str("deepseek"))]),
+                ]),
+            ),
+    );
+    let requests = runtime
+        .state
+        .lock()
+        .unwrap()
+        .state
+        .db()
+        .get("session")
+        .unwrap()
+        .get("models_requests")
+        .and_then(Value::as_list)
+        .map(<[Value]>::to_vec)
+        .unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.get("provider").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec![Some("deepseek"), Some("openai")]
+    );
+}
+
+#[tokio::test]
 async fn presentation_catalog_is_an_ordinary_export_and_resolves_its_query_contracts() {
     let runtime = runtime();
     let definition = misa_proto::presentation::definition();

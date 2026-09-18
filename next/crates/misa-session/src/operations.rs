@@ -73,6 +73,7 @@ struct Record {
     id: String,
     principal: String,
     provider: String,
+    account: String,
     oauth: bool,
     generation: i64,
     phase: Phase,
@@ -512,8 +513,29 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
         forms::cancel_command(),
         CommandRegistration::new(
             Command {
-                preparation: Default::default(), id: "credentials.authorize".into(),
-                input: record([("provider", Schema::String)]),
+                preparation: Default::default(),
+                id: "credentials.authorize".into(),
+                input: Schema::Record {
+                    fields: [
+                        (
+                            "provider".into(),
+                            Field {
+                                schema: Schema::String,
+                                optional: false,
+                            },
+                        ),
+                        (
+                            "account".into(),
+                            Field {
+                                schema: Schema::String,
+                                optional: true,
+                            },
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    allow_unknown: false,
+                },
                 result: null(),
             },
             authorize,
@@ -554,7 +576,9 @@ fn rejected(fault: Fault) -> Outcome {
 }
 fn authorize(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> Outcome {
     let provider = text(&invocation.input, "provider").to_owned();
-    if context.principal.is_empty() || misa_kernel::presets::preset(&provider).is_none() {
+    if context.principal.is_empty()
+        || misa_kernel::presets::preset_for_slot(&provider).is_none()
+    {
         return rejected(Fault::new(
             "provider_unavailable",
             "Provider is unavailable",
@@ -587,6 +611,14 @@ fn authorize(runtime: &Runtime, context: &CallContext, invocation: &Invocation) 
                 id: id.clone(),
                 principal: context.principal.clone(),
                 provider: provider.clone(),
+                account: {
+                    let account = text(&invocation.input, "account").trim();
+                    if account.is_empty() {
+                        "default".into()
+                    } else {
+                        account.into()
+                    }
+                },
                 oauth,
                 generation: 1,
                 phase: if oauth {
@@ -598,9 +630,14 @@ fn authorize(runtime: &Runtime, context: &CallContext, invocation: &Invocation) 
                 challenge: None,
             },
         );
+        let account = text(&invocation.input, "account").trim().to_string();
         let request = oauth.then(|| Request::Credential {
             id: id.clone(),
-            action: CredentialAction::OAuth { provider },
+            action: if account.is_empty() {
+                CredentialAction::OAuth { provider }
+            } else {
+                CredentialAction::OAuthAccount { provider, account }
+            },
         });
         Ok((
             Outcome::Accepted {
@@ -641,7 +678,7 @@ fn resolve(runtime: &Runtime, context: &CallContext, invocation: &Invocation) ->
             id: record.id.clone(),
             action: CredentialAction::Set {
                 slot: record.provider.clone(),
-                account: "default".into(),
+                account: record.account.clone(),
                 value: value.into(),
             },
         };
