@@ -58,14 +58,31 @@ mod tests {
         for id in 0..CAPACITY {
             let (send, receive) = oneshot::channel();
             release.push(send);
-            drop(invocations.spawn(async move {
-                receive.await.unwrap();
-                Reply { id: id as u64, outcome: Outcome::Completed { value: Value::Null } }
-            }).unwrap());
+            drop(
+                invocations
+                    .spawn(async move {
+                        receive.await.unwrap();
+                        Reply {
+                            id: id as u64,
+                            outcome: Outcome::Completed { value: Value::Null },
+                        }
+                    })
+                    .unwrap(),
+            );
         }
-        assert!(invocations.spawn(async { unreachable!("capacity refusal cannot execute") }).is_err());
-        for send in release { send.send(()).unwrap(); }
+        assert!(
+            invocations
+                .spawn(async { unreachable!("capacity refusal cannot execute") })
+                .is_err()
+        );
+        for send in release {
+            send.send(()).unwrap();
+        }
         invocations.shutdown().await;
-        assert!(invocations.spawn(async { unreachable!("shutdown refuses new execution") }).is_err());
+        assert!(
+            invocations
+                .spawn(async { unreachable!("shutdown refuses new execution") })
+                .is_err()
+        );
     }
 }

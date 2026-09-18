@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use crate::admission::Admission;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
@@ -29,7 +30,6 @@ use misa_proto::ALPN_BLOB;
 use misa_proto::blob::{BlobMsg, BlobReply, MAX_BLOB_FRAME};
 use misa_proto::frame::{Decoder, decode, encode_within};
 use misa_proto::view::BlobRef;
-use crate::admission::Admission;
 use tracing::{debug, warn};
 
 /// How much is read at a time.
@@ -74,7 +74,13 @@ impl ProtocolHandler for Handler {
         let (send, recv) = connection.accept_bi().await?;
         let peer_id = peer.to_string();
         let mut changed = self.admission.watch();
-        let conversation = converse(self.blobs.clone(), self.admission.clone(), peer_id.clone(), send, recv);
+        let conversation = converse(
+            self.blobs.clone(),
+            self.admission.clone(),
+            peer_id.clone(),
+            send,
+            recv,
+        );
         tokio::pin!(conversation);
         loop {
             if !self.admission.admits(&peer_id) {
@@ -98,14 +104,22 @@ impl ProtocolHandler for Handler {
 }
 
 /// Answer requests until the client stops asking.
-async fn converse(blobs: Arc<dyn BlobStore>, admission: Arc<Admission>, peer: String, mut send: SendStream, mut recv: RecvStream) -> Result<(), String> {
+async fn converse(
+    blobs: Arc<dyn BlobStore>,
+    admission: Arc<Admission>,
+    peer: String,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) -> Result<(), String> {
     let mut decoder = Decoder::with_limit(MAX_BLOB_FRAME);
     let mut buffer = vec![0u8; READ_CHUNK];
     loop {
         let Some(payload) = read_frame(&mut recv, &mut decoder, &mut buffer).await? else {
             return Ok(());
         };
-        if !admission.admits(&peer) { return Err("admission revoked".into()); }
+        if !admission.admits(&peer) {
+            return Err("admission revoked".into());
+        }
         let reply = match decode::<BlobMsg>(&payload) {
             Ok(message) => match message.acceptable() {
                 Err(fault) => BlobReply::Refused { fault },
@@ -137,7 +151,11 @@ fn answer(blobs: &dyn BlobStore, message: BlobMsg) -> BlobReply {
             hashes: hashes.into_iter().filter(|hash| blobs.has(hash)).collect(),
         },
         BlobMsg::Put { bytes, media } => match blobs.store(bytes, media.as_deref()) {
-            Ok(blob) => BlobReply::Stored { hash: blob.hash, len: blob.len, media: blob.media },
+            Ok(blob) => BlobReply::Stored {
+                hash: blob.hash,
+                len: blob.len,
+                media: blob.media,
+            },
             Err(message) => BlobReply::refused(message),
         },
     }
@@ -154,7 +172,9 @@ async fn read_frame(
             Some(Err(error)) => return Err(error.to_string()),
             None => match recv.read(buffer).await {
                 Ok(None) => return Ok(None),
-                Ok(Some(bytes)) => decoder.push(&buffer[..bytes]).map_err(|err| err.to_string())?,
+                Ok(Some(bytes)) => decoder
+                    .push(&buffer[..bytes])
+                    .map_err(|err| err.to_string())?,
                 Err(err) => return Err(err.to_string()),
             },
         }
@@ -200,13 +220,22 @@ impl Client {
             .open_bi()
             .await
             .map_err(|err| format!("could not open a blob stream: {err}"))?;
-        Ok(Client { send, recv, decoder: Decoder::with_limit(MAX_BLOB_FRAME), buffer: vec![0u8; READ_CHUNK] })
+        Ok(Client {
+            send,
+            recv,
+            decoder: Decoder::with_limit(MAX_BLOB_FRAME),
+            buffer: vec![0u8; READ_CHUNK],
+        })
     }
 
     async fn ask(&mut self, message: &BlobMsg) -> Result<BlobReply, String> {
         let frame = encode_within(message, MAX_BLOB_FRAME).map_err(|err| err.to_string())?;
-        self.send.write_all(&frame).await.map_err(|err| err.to_string())?;
-        let Some(payload) = read_frame(&mut self.recv, &mut self.decoder, &mut self.buffer).await? else {
+        self.send
+            .write_all(&frame)
+            .await
+            .map_err(|err| err.to_string())?;
+        let Some(payload) = read_frame(&mut self.recv, &mut self.decoder, &mut self.buffer).await?
+        else {
             return Err("the blob store closed the connection".to_string());
         };
         match decode::<BlobReply>(&payload).map_err(|err| err.to_string())? {
@@ -221,13 +250,28 @@ impl Client {
     /// outlives the bytes it points at only if somebody deleted them, and a client that
     /// cannot show an image has to be able to say so rather than fail.
     pub async fn get(&mut self, hash: &str) -> Result<Option<Blob>, String> {
-        match self.ask(&BlobMsg::Get { hash: hash.to_string() }).await? {
-            BlobReply::Bytes { hash: received, media, bytes } => {
+        match self
+            .ask(&BlobMsg::Get {
+                hash: hash.to_string(),
+            })
+            .await?
+        {
+            BlobReply::Bytes {
+                hash: received,
+                media,
+                bytes,
+            } => {
                 if received != hash || blake3::hash(&bytes).to_hex().to_string() != hash {
-                    return Err("The blob response does not match the requested content hash".into());
+                    return Err(
+                        "The blob response does not match the requested content hash".into(),
+                    );
                 }
-                Ok(Some(Blob { hash: received, media, bytes }))
-            },
+                Ok(Some(Blob {
+                    hash: received,
+                    media,
+                    bytes,
+                }))
+            }
             BlobReply::Missing { .. } => Ok(None),
             other => Err(format!("expected bytes, got a `{}`", other.name())),
         }
@@ -237,9 +281,17 @@ impl Client {
     ///
     /// Asked before an upload: an attachment that has been sent before costs no bytes.
     pub async fn have(&mut self, hashes: &[String]) -> Result<Vec<String>, String> {
-        match self.ask(&BlobMsg::Have { hashes: hashes.to_vec() }).await? {
+        match self
+            .ask(&BlobMsg::Have {
+                hashes: hashes.to_vec(),
+            })
+            .await?
+        {
             BlobReply::Have { hashes } => Ok(hashes),
-            other => Err(format!("expected a list of hashes, got a `{}`", other.name())),
+            other => Err(format!(
+                "expected a list of hashes, got a `{}`",
+                other.name()
+            )),
         }
     }
 
@@ -249,7 +301,10 @@ impl Client {
     /// the content hash is computed on the other side, and the `BlobRef` that comes back is
     /// what an attachment names.
     pub async fn put(&mut self, bytes: Vec<u8>, media: Option<&str>) -> Result<BlobRef, String> {
-        let message = BlobMsg::Put { bytes, media: media.map(str::to_string) };
+        let message = BlobMsg::Put {
+            bytes,
+            media: media.map(str::to_string),
+        };
         match self.ask(&message).await? {
             BlobReply::Stored { hash, len, media } => Ok(BlobRef { hash, len, media }),
             other => Err(format!("expected a stored blob, got a `{}`", other.name())),
@@ -265,7 +320,11 @@ impl Client {
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let len = bytes.len() as u64;
         if !self.have(std::slice::from_ref(&hash)).await?.is_empty() {
-            return Ok(BlobRef { hash, len, media: media.map(str::to_string) });
+            return Ok(BlobRef {
+                hash,
+                len,
+                media: media.map(str::to_string),
+            });
         }
         self.put(bytes, media).await
     }
@@ -286,12 +345,18 @@ pub struct Store {
 
 impl Store {
     pub fn new(endpoint: Endpoint, address: EndpointAddr) -> Arc<Store> {
-        Arc::new(Store { endpoint, address: std::sync::Mutex::new(address), connection: tokio::sync::Mutex::new(None) })
+        Arc::new(Store {
+            endpoint,
+            address: std::sync::Mutex::new(address),
+            connection: tokio::sync::Mutex::new(None),
+        })
     }
 
     pub fn refresh_address(&self, address: EndpointAddr) -> Result<(), String> {
         let mut current = self.address.lock().expect("blob address poisoned");
-        if current.id != address.id { return Err("Routing hints name a different daemon".into()); }
+        if current.id != address.id {
+            return Err("Routing hints name a different daemon".into());
+        }
         *current = address;
         Ok(())
     }
@@ -311,7 +376,10 @@ impl Store {
         };
         let answer = connection.ask(&message).await;
         match answer {
-            Ok(reply) => { *guard = Some(connection); Ok(reply) },
+            Ok(reply) => {
+                *guard = Some(connection);
+                Ok(reply)
+            }
             Err(first) => {
                 // A connection that has gone is not a store that has no bytes, and reconnecting
                 // once is what tells the two apart.
@@ -320,7 +388,9 @@ impl Store {
                     .await
                     .map_err(|err| format!("{first}; reconnecting: {err}"))?;
                 let answer = fresh.ask(&message).await;
-                if answer.is_ok() { *guard = Some(fresh); }
+                if answer.is_ok() {
+                    *guard = Some(fresh);
+                }
                 answer
             }
         }
@@ -328,13 +398,28 @@ impl Store {
 
     /// The bytes a hash names, or `None` when the store does not have them.
     pub async fn get(&self, hash: &str) -> Result<Option<Blob>, String> {
-        match self.ask(BlobMsg::Get { hash: hash.to_string() }).await? {
-            BlobReply::Bytes { hash: received, media, bytes } => {
+        match self
+            .ask(BlobMsg::Get {
+                hash: hash.to_string(),
+            })
+            .await?
+        {
+            BlobReply::Bytes {
+                hash: received,
+                media,
+                bytes,
+            } => {
                 if received != hash || blake3::hash(&bytes).to_hex().to_string() != hash {
-                    return Err("The blob response does not match the requested content hash".into());
+                    return Err(
+                        "The blob response does not match the requested content hash".into(),
+                    );
                 }
-                Ok(Some(Blob { hash: received, media, bytes }))
-            },
+                Ok(Some(Blob {
+                    hash: received,
+                    media,
+                    bytes,
+                }))
+            }
             BlobReply::Missing { .. } => Ok(None),
             other => Err(format!("expected bytes, got a `{}`", other.name())),
         }
@@ -348,14 +433,34 @@ impl Store {
     pub async fn share(&self, bytes: Vec<u8>, media: Option<&str>) -> Result<BlobRef, String> {
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let len = bytes.len() as u64;
-        match self.ask(BlobMsg::Have { hashes: vec![hash.clone()] }).await? {
+        match self
+            .ask(BlobMsg::Have {
+                hashes: vec![hash.clone()],
+            })
+            .await?
+        {
             BlobReply::Have { hashes } if !hashes.is_empty() => {
-                return Ok(BlobRef { hash, len, media: media.map(str::to_string) });
+                return Ok(BlobRef {
+                    hash,
+                    len,
+                    media: media.map(str::to_string),
+                });
             }
             BlobReply::Have { .. } => {}
-            other => return Err(format!("expected a list of hashes, got a `{}`", other.name())),
+            other => {
+                return Err(format!(
+                    "expected a list of hashes, got a `{}`",
+                    other.name()
+                ));
+            }
         }
-        match self.ask(BlobMsg::Put { bytes, media: media.map(str::to_string) }).await? {
+        match self
+            .ask(BlobMsg::Put {
+                bytes,
+                media: media.map(str::to_string),
+            })
+            .await?
+        {
             BlobReply::Stored { hash, len, media } => Ok(BlobRef { hash, len, media }),
             other => Err(format!("expected a stored blob, got a `{}`", other.name())),
         }
@@ -381,10 +486,19 @@ mod tests {
             let (mut send, mut recv) = connection.accept_bi().await?;
             let mut decoder = Decoder::with_limit(MAX_BLOB_FRAME);
             let mut buffer = vec![0; 1024];
-            let payload = read_frame(&mut recv, &mut decoder, &mut buffer).await.unwrap().unwrap();
-            let BlobMsg::Get { hash } = decode(&payload).unwrap() else { panic!("expected fetch") };
+            let payload = read_frame(&mut recv, &mut decoder, &mut buffer)
+                .await
+                .unwrap()
+                .unwrap();
+            let BlobMsg::Get { hash } = decode(&payload).unwrap() else {
+                panic!("expected fetch")
+            };
             let reply = encode_within(&BlobReply::Missing { hash }, MAX_BLOB_FRAME).unwrap();
-            if self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            if self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
                 send.write_all(&reply[..reply.len() - 1]).await.unwrap();
                 self.partial.notify_one();
                 connection.closed().await;
@@ -402,14 +516,27 @@ mod tests {
         let client = crate::iroh::bind(None, false).await.unwrap();
         let partial = Arc::new(tokio::sync::Notify::new());
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let router = iroh::protocol::Router::builder(server.clone()).accept(ALPN_BLOB, PartialReply { attempts: attempts.clone(), partial: partial.clone() }).spawn();
+        let router = iroh::protocol::Router::builder(server.clone())
+            .accept(
+                ALPN_BLOB,
+                PartialReply {
+                    attempts: attempts.clone(),
+                    partial: partial.clone(),
+                },
+            )
+            .spawn();
         let store = Store::new(client.clone(), server.addr());
         let first_store = store.clone();
         let first = tokio::spawn(async move { first_store.get(&"0".repeat(64)).await });
         within("partial response", partial.notified()).await;
         first.abort();
         assert!(first.await.unwrap_err().is_cancelled());
-        assert!(within("fresh fetch", store.get(&"1".repeat(64))).await.unwrap().is_none());
+        assert!(
+            within("fresh fetch", store.get(&"1".repeat(64)))
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
         drop(store);
         client.close().await;
@@ -439,20 +566,37 @@ mod tests {
         let fixture = Fixture::start(Admission::open(), provider()).await;
         let store = Store::new(fixture.client.clone(), fixture.address.clone());
 
-        let stored = within("an upload", store.share(PNG.to_vec(), Some("image/png"))).await.expect("an upload");
-        assert!(fixture.blobs.has(&stored.hash), "the daemon does not have the bytes");
+        let stored = within("an upload", store.share(PNG.to_vec(), Some("image/png")))
+            .await
+            .expect("an upload");
+        assert!(
+            fixture.blobs.has(&stored.hash),
+            "the daemon does not have the bytes"
+        );
         assert_eq!(stored.len, PNG.len() as u64);
 
         // The same bytes again: the store asked first and the answer was yes, so nothing was
         // sent — and the name it comes back with is the same name, because it is a hash.
-        let again = within("a second upload", store.share(PNG.to_vec(), Some("image/png"))).await.expect("an upload");
+        let again = within(
+            "a second upload",
+            store.share(PNG.to_vec(), Some("image/png")),
+        )
+        .await
+        .expect("an upload");
         assert_eq!(again.hash, stored.hash);
 
-        let fetched = within("a fetch", store.get(&stored.hash)).await.expect("a fetch").expect("the blob");
+        let fetched = within("a fetch", store.get(&stored.hash))
+            .await
+            .expect("a fetch")
+            .expect("the blob");
         assert_eq!(fetched.bytes, PNG);
 
         // And bytes the daemon has never seen are named too, which is the whole of an upload.
-        let other = within("a different upload", store.share(b"not a picture".to_vec(), None)).await;
+        let other = within(
+            "a different upload",
+            store.share(b"not a picture".to_vec(), None),
+        )
+        .await;
         assert_ne!(other.expect("an upload").hash, stored.hash);
     }
 
@@ -464,54 +608,94 @@ mod tests {
         let stored = fixture.blobs.put(PNG, None).expect("a blob");
         let store = Store::new(fixture.client.clone(), fixture.address.clone());
 
-        let fetched = within("a fetch", store.get(&stored.hash)).await.expect("a fetch").expect("the blob");
+        let fetched = within("a fetch", store.get(&stored.hash))
+            .await
+            .expect("a fetch")
+            .expect("the blob");
         assert_eq!(fetched.bytes, PNG);
         assert_eq!(fetched.media.as_deref(), Some("image/png"));
 
         // The same connection, asked again.
-        let again = within("a second fetch", store.get(&stored.hash)).await.expect("a fetch").expect("the blob");
+        let again = within("a second fetch", store.get(&stored.hash))
+            .await
+            .expect("a fetch")
+            .expect("the blob");
         assert_eq!(again.bytes, PNG);
 
         // A blob nobody has is an answer, not a failure: a transcript outlives the bytes only
         // when somebody deleted them.
         let missing = "0".repeat(64);
-        assert!(within("a miss", store.get(&missing)).await.expect("an answer").is_none());
+        assert!(
+            within("a miss", store.get(&missing))
+                .await
+                .expect("an answer")
+                .is_none()
+        );
 
         // And a name that is not a hash never reaches the other end at all.
-        assert!(within("a refusal", store.get("../../etc/shadow")).await.is_err());
+        assert!(
+            within("a refusal", store.get("../../etc/shadow"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn bytes_make_the_round_trip_over_a_real_endpoint() {
         let fixture = Fixture::start(Admission::open(), provider()).await;
-        let mut client = within("connecting", Client::connect(&fixture.client, fixture.address.clone()))
-            .await
-            .expect("a client");
+        let mut client = within(
+            "connecting",
+            Client::connect(&fixture.client, fixture.address.clone()),
+        )
+        .await
+        .expect("a client");
 
         // Nothing is there yet, and that is an answer rather than a failure. The hash is
         // shaped like a hash — 64 lowercase hex characters — and names no blob.
         let missing = "0".repeat(64);
-        assert!(within("a fetch", client.get(&missing)).await.expect("an answer").is_none());
+        assert!(
+            within("a fetch", client.get(&missing))
+                .await
+                .expect("an answer")
+                .is_none()
+        );
 
-        let stored = within("an upload", client.put(PNG.to_vec(), None)).await.expect("an upload");
-        assert_eq!(stored.media.as_deref(), Some("image/png"), "the server sniffed the bytes");
+        let stored = within("an upload", client.put(PNG.to_vec(), None))
+            .await
+            .expect("an upload");
+        assert_eq!(
+            stored.media.as_deref(),
+            Some("image/png"),
+            "the server sniffed the bytes"
+        );
         assert_eq!(stored.len, PNG.len() as u64);
-        assert!(fixture.blobs.has(&stored.hash), "the bytes are in the daemon's store");
+        assert!(
+            fixture.blobs.has(&stored.hash),
+            "the bytes are in the daemon's store"
+        );
 
-        let fetched = within("a fetch", client.get(&stored.hash)).await.expect("a fetch").expect("the blob");
+        let fetched = within("a fetch", client.get(&stored.hash))
+            .await
+            .expect("a fetch")
+            .expect("the blob");
         assert_eq!(fetched.bytes, PNG);
         assert_eq!(fetched.media.as_deref(), Some("image/png"));
         assert_eq!(fetched.hash, stored.hash);
 
         // A hash the store holds and a hash it has never seen, in one question.
-        let asked = within("a have", client.have(&[stored.hash.clone(), missing.clone()]))
-            .await
-            .expect("a have");
+        let asked = within(
+            "a have",
+            client.have(&[stored.hash.clone(), missing.clone()]),
+        )
+        .await
+        .expect("a have");
         assert_eq!(asked, vec![stored.hash.clone()]);
 
         // And the same bytes again cost nothing, which is what content addressing buys: the
         // client asks first and sends nothing.
-        let again = within("a share", client.share(PNG.to_vec(), None)).await.expect("a share");
+        let again = within("a share", client.share(PNG.to_vec(), None))
+            .await
+            .expect("a share");
         assert_eq!(again.hash, stored.hash);
         fixture.stop().await;
     }
@@ -519,14 +703,26 @@ mod tests {
     #[tokio::test]
     async fn a_request_that_names_something_that_is_not_a_hash_is_refused_without_being_served() {
         let fixture = Fixture::start(Admission::open(), provider()).await;
-        let mut client = within("connecting", Client::connect(&fixture.client, fixture.address.clone()))
+        let mut client = within(
+            "connecting",
+            Client::connect(&fixture.client, fixture.address.clone()),
+        )
+        .await
+        .expect("a client");
+        let error = within("a fetch", client.get("../../etc/shadow"))
             .await
-            .expect("a client");
-        let error = within("a fetch", client.get("../../etc/shadow")).await.expect_err("a refusal");
+            .expect_err("a refusal");
         assert!(error.contains("blob.hash"), "{error}");
         // The connection survives a refused request, so a client can correct itself.
-        let stored = within("an upload", client.put(b"fine".to_vec(), None)).await.expect("an upload");
-        assert!(within("a fetch", client.get(&stored.hash)).await.expect("a fetch").is_some());
+        let stored = within("an upload", client.put(b"fine".to_vec(), None))
+            .await
+            .expect("an upload");
+        assert!(
+            within("a fetch", client.get(&stored.hash))
+                .await
+                .expect("a fetch")
+                .is_some()
+        );
         fixture.stop().await;
     }
 
@@ -536,13 +732,20 @@ mod tests {
         // The store holds something, so a peer that could reach it would learn that a hash
         // exists. It cannot: the connection is closed at accept, before a byte is read.
         fixture.blobs.put(PNG, None).unwrap();
-        let client = within("connecting", Client::connect(&fixture.client, fixture.address.clone())).await;
+        let client = within(
+            "connecting",
+            Client::connect(&fixture.client, fixture.address.clone()),
+        )
+        .await;
         match client {
             // Refused at the stream, which is where iroh reports a server that hung up.
             Err(_) => {}
             Ok(mut client) => {
                 let asked = within("a fetch", client.get(&"0".repeat(64))).await;
-                assert!(asked.is_err(), "a peer that was refused got an answer: {asked:?}");
+                assert!(
+                    asked.is_err(),
+                    "a peer that was refused got an answer: {asked:?}"
+                );
             }
         }
         fixture.stop().await;
@@ -556,18 +759,18 @@ mod tests {
         let fixture = Fixture::start(Admission::open(), provider()).await;
         let first = fixture.blobs.put(b"one", None).unwrap();
         let second = fixture.blobs.put(b"two", None).unwrap();
-        let mut client = within("connecting", Client::connect(&fixture.client, fixture.address.clone()))
-            .await
-            .expect("a client");
+        let mut client = within(
+            "connecting",
+            Client::connect(&fixture.client, fixture.address.clone()),
+        )
+        .await
+        .expect("a client");
         for _ in 0..4 {
-            let asked = within(
-                "a pair of fetches",
-                async {
-                    let a = client.get(&first.hash).await?;
-                    let b = client.get(&second.hash).await?;
-                    Ok::<_, String>((a, b))
-                },
-            )
+            let asked = within("a pair of fetches", async {
+                let a = client.get(&first.hash).await?;
+                let b = client.get(&second.hash).await?;
+                Ok::<_, String>((a, b))
+            })
             .await
             .expect("two answers");
             assert_eq!(asked.0.expect("the first blob").bytes, b"one");

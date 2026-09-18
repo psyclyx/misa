@@ -1,15 +1,15 @@
 //! Scoped daemon connections, admission, local discovery, and blob transport.
 pub mod admission;
-pub mod pairing;
 pub mod blob;
-pub mod iroh;
-pub mod server;
-pub mod scoped_server;
-mod scoped_invocations;
 pub mod identity;
+pub mod iroh;
 #[cfg(unix)]
 pub mod local;
-pub mod scoped_io;
+pub mod pairing;
 pub mod scoped_client;
+mod scoped_invocations;
+pub mod scoped_io;
 #[cfg(test)]
 mod scoped_network_tests;
+pub mod scoped_server;
+pub mod server;

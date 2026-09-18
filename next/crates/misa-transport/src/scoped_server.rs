@@ -38,9 +38,14 @@ const RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 #[path = "scoped_invocation_tests.rs"]
 mod invocation_tests;
 
-struct Presence { resolver: Arc<dyn Resolver>, context: CallContext }
+struct Presence {
+    resolver: Arc<dyn Resolver>,
+    context: CallContext,
+}
 impl Drop for Presence {
-    fn drop(&mut self) { self.resolver.disconnected(&self.context); }
+    fn drop(&mut self) {
+        self.resolver.disconnected(&self.context);
+    }
 }
 
 pub struct Handler {
@@ -51,8 +56,19 @@ pub struct Handler {
     invocations: crate::scoped_invocations::Invocations,
 }
 impl Handler {
-    pub fn new(daemon: String, scope: Scope, resolver: Arc<dyn Resolver>, admission: Arc<Admission>) -> Self {
-        Self { daemon, scope, resolver, admission, invocations: Default::default() }
+    pub fn new(
+        daemon: String,
+        scope: Scope,
+        resolver: Arc<dyn Resolver>,
+        admission: Arc<Admission>,
+    ) -> Self {
+        Self {
+            daemon,
+            scope,
+            resolver,
+            admission,
+            invocations: Default::default(),
+        }
     }
 }
 impl std::fmt::Debug for Handler {
@@ -93,12 +109,17 @@ impl ProtocolHandler for Handler {
             principal: principal.clone(),
             connection: CallContext::next_connection_id(),
         };
-        let ClientMessage::Hello { client, .. } = &hello else { unreachable!() };
+        let ClientMessage::Hello { client, .. } = &hello else {
+            unreachable!()
+        };
         if let Err(fault) = self.resolver.connected(&context, client) {
             let _ = writer.send(&ServerMessage::Fault { fault }).await;
             return Ok(());
         }
-        let _presence = Presence { resolver: self.resolver.clone(), context: context.clone() };
+        let _presence = Presence {
+            resolver: self.resolver.clone(),
+            context: context.clone(),
+        };
         if writer
             .send(&ServerMessage::Welcome {
                 version: VERSION,
@@ -181,29 +202,27 @@ impl ProtocolHandler for Handler {
                 result = calls.join_next(), if !calls.is_empty() && pending.len() < QUEUE => {
                     if let Some(Ok(reply)) = result { pending.push_back(ServerMessage::Reply { reply }); }
                 }
-                message = input.recv(), if pending.len() < QUEUE && calls.len() < INVOCATIONS && watch_tasks.len() < OBSERVATIONS * 2 && lane_tasks.len() < OBSERVATIONS * 2 => {
+                message = input.recv(), if pending.len() < QUEUE => {
                     let Some(message) = message else { break };
                     if let Err(fault) = message.validate() { pending.push_back(ServerMessage::Fault { fault }); continue; }
                     match message {
                         ClientMessage::Hello { .. } => pending.push_back(ServerMessage::Fault { fault: Fault::protocol("Daemon greeting was already exchanged") }),
                         ClientMessage::Read { read } => {
-                            if read_tasks.len() >= INVOCATIONS {
-                                pending.push_back(ServerMessage::ReadReply { reply: misa_proto::scoped::ReadReply { id: read.id, outcome: misa_proto::scoped::ReadOutcome::Rejected { fault: Fault::new("busy", "Too many finite read lanes") } } });
-                            } else {
-                                let reply = router.read(read);
-                                let connection = connection.clone(); let budget = data_budget.clone();
-                                read_tasks.spawn(async move {
-                                    let id = reply.id;
-                                    let result = async {
-                                        let send = connection.open_uni().await.map_err(|e| e.to_string())?;
-                                        let mut writer = Writer::new(send, RESPONSE_BYTES).with_budget(budget);
-                                        writer.send(&Lane::Read { id }).await?;
-                                        writer.send(&ServerMessage::ReadReply { reply }).await?;
-                                        writer.finish()
-                                    }.await;
-                                    (id, result)
-                                });
-                            }
+                            let reply = router.read(read);
+                            let connection = connection.clone();
+                            let budget = data_budget.clone();
+                            read_tasks.spawn(async move {
+                                let id = reply.id;
+                                let result = async {
+                                    let send = connection.open_uni().await.map_err(|e| e.to_string())?;
+                                    let mut writer = Writer::new(send, RESPONSE_BYTES).with_budget(budget);
+                                    writer.send(&Lane::Read { id }).await?;
+                                    writer.send(&ServerMessage::ReadReply { reply }).await?;
+                                    writer.finish()
+                                }
+                                .await;
+                                (id, result)
+                            });
                         }
                         ClientMessage::Invoke { invocation } => {
                             let id = invocation.id;

@@ -57,7 +57,10 @@ pub enum Mode {
 impl Roster {
     /// Admit anybody.
     pub fn open() -> Roster {
-        Roster { mode: Mode::Open, peers: BTreeSet::new() }
+        Roster {
+            mode: Mode::Open,
+            peers: BTreeSet::new(),
+        }
     }
 
     /// Admit only the peers named.
@@ -67,7 +70,14 @@ impl Roster {
     /// yet, and quietly falling back to open would be the one mistake this type exists
     /// to prevent.
     pub fn listed(peers: impl IntoIterator<Item = String>) -> Roster {
-        Roster { mode: Mode::Listed, peers: peers.into_iter().map(|peer| peer.trim().to_string()).filter(|peer| !peer.is_empty()).collect() }
+        Roster {
+            mode: Mode::Listed,
+            peers: peers
+                .into_iter()
+                .map(|peer| peer.trim().to_string())
+                .filter(|peer| !peer.is_empty())
+                .collect(),
+        }
     }
 
     /// Admit this peer too.
@@ -85,7 +95,10 @@ impl Roster {
 
     /// The same roster, listed rather than open.
     pub fn restricted(self) -> Roster {
-        Roster { mode: Mode::Listed, peers: self.peers }
+        Roster {
+            mode: Mode::Listed,
+            peers: self.peers,
+        }
     }
 
     /// The decision, and the only one this type makes.
@@ -118,7 +131,10 @@ impl Roster {
     /// terms of the flag that changes it.
     pub fn describe(&self) -> String {
         match self.mode {
-            Mode::Open => "open (any peer with this ticket can attach; --allow <endpoint id> restricts it)".to_string(),
+            Mode::Open => {
+                "open (any peer with this ticket can attach; --allow <endpoint id> restricts it)"
+                    .to_string()
+            }
             Mode::Listed => format!("{} listed peer(s)", self.peers.len()),
         }
     }
@@ -162,12 +178,18 @@ impl Paired {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(err) => return Err(format!("could not read {}: {err}", path.display())),
         };
-        Ok(Paired { path: Some(path), peers: std::sync::Mutex::new(peers) })
+        Ok(Paired {
+            path: Some(path),
+            peers: std::sync::Mutex::new(peers),
+        })
     }
 
     /// A store that forgets when the process ends: a daemon with no data directory.
     pub fn in_memory() -> Paired {
-        Paired { path: None, peers: std::sync::Mutex::new(Vec::new()) }
+        Paired {
+            path: None,
+            peers: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
     pub fn admits(&self, id: &str) -> bool {
@@ -191,7 +213,11 @@ impl Paired {
         }
         let mut peers = self.lock()?;
         peers.retain(|peer| peer.id != id);
-        peers.push(Peer { id: id.to_string(), label: label.trim().to_string(), added_ms: now });
+        peers.push(Peer {
+            id: id.to_string(),
+            label: label.trim().to_string(),
+            added_ms: now,
+        });
         peers.sort_by(|left, right| left.id.cmp(&right.id));
         self.save(&peers)
     }
@@ -209,11 +235,16 @@ impl Paired {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Vec<Peer>>, String> {
-        self.peers.lock().map_err(|_| "the paired store is poisoned".to_string())
+        self.peers
+            .lock()
+            .map_err(|_| "the paired store is poisoned".to_string())
     }
 
     fn peek(&self) -> Vec<Peer> {
-        self.peers.lock().map(|peers| peers.clone()).unwrap_or_default()
+        self.peers
+            .lock()
+            .map(|peers| peers.clone())
+            .unwrap_or_default()
     }
 
     fn save(&self, peers: &[Peer]) -> Result<(), String> {
@@ -275,7 +306,8 @@ fn parse(text: &str) -> Result<Vec<Peer>, String> {
 #[cfg(unix)]
 fn set_private(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| err.to_string())
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(not(unix))]
@@ -308,10 +340,18 @@ impl Invitation {
             .map(|(index, byte)| {
                 let character = ALPHABET[*byte as usize % ALPHABET.len()] as char;
                 // Two groups of six, because a person reading one out loud reads groups.
-                if index == 6 { format!("-{character}") } else { character.to_string() }
+                if index == 6 {
+                    format!("-{character}")
+                } else {
+                    character.to_string()
+                }
             })
             .collect();
-        Invitation { code, minted_ms: now, ttl_ms }
+        Invitation {
+            code,
+            minted_ms: now,
+            ttl_ms,
+        }
     }
 
     pub fn code(&self) -> &str {
@@ -338,7 +378,9 @@ impl Invitation {
                 .code
                 .bytes()
                 .zip(given.bytes())
-                .fold(0u8, |difference, (ours, theirs)| difference | (ours ^ theirs))
+                .fold(0u8, |difference, (ours, theirs)| {
+                    difference | (ours ^ theirs)
+                })
                 == 0
     }
 }
@@ -373,17 +415,32 @@ pub struct Admission {
 impl Admission {
     /// Admit anybody: what a test wants, and what `--open` means.
     pub fn open() -> Admission {
-        Admission { roster: Roster::open(), paired: Paired::in_memory(), invitation: std::sync::Mutex::new(None), changed: tokio::sync::watch::channel(0).0 }
+        Admission {
+            roster: Roster::open(),
+            paired: Paired::in_memory(),
+            invitation: std::sync::Mutex::new(None),
+            changed: tokio::sync::watch::channel(0).0,
+        }
     }
 
     /// Admit the peers named, and anybody who pairs.
     pub fn listed(peers: impl IntoIterator<Item = String>) -> Admission {
-        Admission { roster: Roster::listed(peers), paired: Paired::in_memory(), invitation: std::sync::Mutex::new(None), changed: tokio::sync::watch::channel(0).0 }
+        Admission {
+            roster: Roster::listed(peers),
+            paired: Paired::in_memory(),
+            invitation: std::sync::Mutex::new(None),
+            changed: tokio::sync::watch::channel(0).0,
+        }
     }
 
     /// Admit anybody whose key has been approved, and the names a composition added.
     pub fn paired(paired: Paired) -> Admission {
-        Admission { roster: Roster::listed(std::iter::empty::<String>()), paired, invitation: std::sync::Mutex::new(None), changed: tokio::sync::watch::channel(0).0 }
+        Admission {
+            roster: Roster::listed(std::iter::empty::<String>()),
+            paired,
+            invitation: std::sync::Mutex::new(None),
+            changed: tokio::sync::watch::channel(0).0,
+        }
     }
 
     /// Admit this peer as well, whether or not it ever pairs.
@@ -400,7 +457,8 @@ impl Admission {
     /// Only the private same-user socket may call this path.
     pub(crate) fn admit_local(&self, peer: &str, now: i64) -> Result<(), String> {
         self.paired.add(peer, "local client", now)?;
-        self.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+        self.changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
         Ok(())
     }
 
@@ -444,7 +502,8 @@ impl Admission {
             return Err("that code is not the one this daemon is showing".to_string());
         }
         self.paired.add(peer, label, now)?;
-        self.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+        self.changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
         // Spent, whether or not it is used again: one code is one client.
         if let Ok(mut open) = self.invitation.lock() {
             *open = None;
@@ -455,12 +514,17 @@ impl Admission {
     /// Forget a key, so that it has to pair again.
     pub fn revoke(&self, peer: &str) -> Result<bool, String> {
         let removed = self.paired.revoke(peer)?;
-        if removed { self.changed.send_modify(|revision| *revision = revision.wrapping_add(1)); }
+        if removed {
+            self.changed
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
         Ok(removed)
     }
 
     /// Wake active connections to recheck admission after pairing or revocation.
-    pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> { self.changed.subscribe() }
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
 
     /// Every key that may attach without a code, in order.
     pub fn peers(&self) -> Vec<Peer> {
@@ -537,18 +601,25 @@ mod tests {
     #[test]
     fn a_code_pairs_one_key_once_and_then_that_key_is_a_client() {
         let admission = Admission::paired(Paired::in_memory());
-        assert!(!admission.admits(PEER), "a stranger was admitted before pairing");
+        assert!(
+            !admission.admits(PEER),
+            "a stranger was admitted before pairing"
+        );
         let invitation = admission.invite(INVITATION_TTL_MS, 1_000);
         let code = invitation.code().to_string();
         assert_eq!(code.len(), 13, "a code is two groups of six: {code}");
         assert!(invitation.seconds_left(1_000) > 0);
 
         // The wrong code is refused, and says nothing about how wrong it was.
-        let error = admission.accept(PEER, "WRONGCODE-2", "the phone", 2_000).unwrap_err();
+        let error = admission
+            .accept(PEER, "WRONGCODE-2", "the phone", 2_000)
+            .unwrap_err();
         assert!(error.contains("not the one"), "{error}");
         assert!(!admission.admits(PEER));
 
-        admission.accept(PEER, &code, "the phone", 2_000).expect("pairing");
+        admission
+            .accept(PEER, &code, "the phone", 2_000)
+            .expect("pairing");
         assert!(admission.admits(PEER));
         assert!(!admission.admits("someone else"));
         let peers = admission.peers();
@@ -557,7 +628,9 @@ mod tests {
         assert_eq!(peers[0].label, "the phone");
 
         // One code is one client: the same code does not pair a second key.
-        let error = admission.accept("someone else", &code, "another", 3_000).unwrap_err();
+        let error = admission
+            .accept("someone else", &code, "another", 3_000)
+            .unwrap_err();
         assert!(error.contains("no code outstanding"), "{error}");
     }
 
@@ -566,7 +639,10 @@ mod tests {
         let admission = Admission::paired(Paired::in_memory());
         let invitation = admission.invite(1_000, 1_000);
         let code = invitation.code().to_string();
-        assert!(invitation.expired(2_001), "a one-second code outlived its second");
+        assert!(
+            invitation.expired(2_001),
+            "a one-second code outlived its second"
+        );
         let error = admission.accept(PEER, &code, "late", 5_000).unwrap_err();
         assert!(error.contains("expired"), "{error}");
         assert!(!admission.admits(PEER));
@@ -581,7 +657,9 @@ mod tests {
         let admission = Admission::paired(Paired::at(&path).expect("a store"));
         admission.invite(INVITATION_TTL_MS, 0);
         let code = admission.invite(INVITATION_TTL_MS, 0).code().to_string();
-        admission.accept(PEER, &code, "the laptop", 10).expect("pairing");
+        admission
+            .accept(PEER, &code, "the laptop", 10)
+            .expect("pairing");
         assert!(admission.admits(PEER));
 
         // A new process reading the same file admits the same key, which is the whole point.
@@ -598,7 +676,11 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&path).expect("the file").permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&path)
+                .expect("the file")
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600, "an approved key was written world-readable");
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -607,8 +689,16 @@ mod tests {
     #[test]
     fn a_daemon_that_is_listing_says_how_to_connect_and_one_that_is_open_says_so() {
         let closed = Admission::paired(Paired::in_memory());
-        assert!(closed.describe().contains("paired keys only"), "{}", closed.describe());
-        assert!(closed.describe().contains("`pair`"), "{}", closed.describe());
+        assert!(
+            closed.describe().contains("paired keys only"),
+            "{}",
+            closed.describe()
+        );
+        assert!(
+            closed.describe().contains("`pair`"),
+            "{}",
+            closed.describe()
+        );
         // Nothing is invited until somebody asks, so a stranger is told nothing at all.
         assert!(!closed.is_inviting(0));
         assert!(Admission::open().describe().contains("open"));
