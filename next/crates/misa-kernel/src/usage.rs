@@ -12,17 +12,26 @@ pub fn request(provider: &dyn Provider) -> Result<Request, String> {
         "openai-codex" => Request::get("https://chatgpt.com/backend-api/wham/usage"),
         "kimi" | "kimi-coding" => Request::get(format!(
             "{}/usages",
-            provider.api_base().ok_or("provider has no API base")?.trim_end_matches('/')
+            provider
+                .api_base()
+                .ok_or("provider has no API base")?
+                .trim_end_matches('/')
         )),
         _ => return Err("Provider quota is unavailable".into()),
     };
     request.credential = Some(match provider.id() {
         "claude" => Credential::bearer("claude"),
-        "openai-codex" => Credential::bearer("openai-codex").with_account_header("chatgpt-account-id"),
-        _ => provider.credential().ok_or("provider has no credential slot")?,
+        "openai-codex" => {
+            Credential::bearer("openai-codex").with_account_header("chatgpt-account-id")
+        }
+        _ => provider
+            .credential()
+            .ok_or("provider has no credential slot")?,
     });
     if provider.id() == "claude" {
-        request.headers.push(("anthropic-beta".into(), "oauth-2025-04-20".into()));
+        request
+            .headers
+            .push(("anthropic-beta".into(), "oauth-2025-04-20".into()));
     }
     Ok(request)
 }
@@ -37,7 +46,8 @@ pub async fn fetch(provider: &dyn Provider, http: &crate::Http) -> Result<Value,
     if provider.id() == "openai-codex"
         && number(&data["rate_limit_reset_credits"]["available_count"]).is_some_and(|n| n > 0.0)
     {
-        let mut details = Request::get("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits");
+        let mut details =
+            Request::get("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits");
         details.credential = request.credential;
         if let Ok(response) = http.send(&details).await {
             if response.ok() {
@@ -51,14 +61,23 @@ pub async fn fetch(provider: &dyn Provider, http: &crate::Http) -> Result<Value,
 }
 
 fn number(value: &Json) -> Option<f64> {
-    value.as_f64().or_else(|| value.as_str()?.parse().ok()).filter(|n: &f64| n.is_finite() && *n >= 0.0)
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|n: &f64| n.is_finite() && *n >= 0.0)
 }
 fn window(id: &str, label: &str, data: &Json, percent: Option<&str>) -> Option<Json> {
     if !data.is_object() {
         return None;
     }
-    let used = percent.and_then(|key| number(&data[key])).or_else(|| number(&data["used"]));
-    let limit = if percent.is_some() { used.map(|_| 100.0) } else { number(&data["limit"]) };
+    let used = percent
+        .and_then(|key| number(&data[key]))
+        .or_else(|| number(&data["used"]));
+    let limit = if percent.is_some() {
+        used.map(|_| 100.0)
+    } else {
+        number(&data["limit"])
+    };
     let remaining = number(&data["remaining"]).or_else(|| Some((limit? - used?).max(0.0)));
     let used = used.or_else(|| Some((limit? - remaining?).max(0.0)));
     if percent == Some("utilization") && used.is_some_and(|n| n > 100.0) {
@@ -89,7 +108,10 @@ pub fn parse(provider: &str, data: &Json) -> Value {
             if let Some(object) = limits.as_object() {
                 for (id, entry) in object {
                     if id == "extra_usage" {
-                        let decimals = entry["decimal_places"].as_u64().filter(|n| *n <= 9).unwrap_or(2) as i32;
+                        let decimals = entry["decimal_places"]
+                            .as_u64()
+                            .filter(|n| *n <= 9)
+                            .unwrap_or(2) as i32;
                         credits = json!({"enabled":entry["is_enabled"].as_bool(),"currency":entry["currency"].as_str().unwrap_or("USD"),"limit":number(&entry["monthly_limit"]).map(|n| n / 10f64.powi(decimals)),"used":number(&entry["used_credits"]).map(|n| n / 10f64.powi(decimals))});
                     } else if id == "model_scoped" {
                         for (i, model) in entry.as_array().into_iter().flatten().enumerate() {
@@ -111,9 +133,17 @@ pub fn parse(provider: &str, data: &Json) -> Value {
         "openai-codex" => {
             let mut groups = vec![("Codex".to_string(), &data["rate_limit"])];
             groups.push(("Code review".into(), &data["code_review_rate_limit"]));
-            for (i, extra) in data["additional_rate_limits"].as_array().into_iter().flatten().enumerate() {
+            for (i, extra) in data["additional_rate_limits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
                 groups.push((
-                    extra["limit_name"].as_str().map(str::to_string).unwrap_or(format!("Additional quota {}", i + 1)),
+                    extra["limit_name"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or(format!("Additional quota {}", i + 1)),
                     &extra["rate_limit"],
                 ));
             }
@@ -143,9 +173,12 @@ pub fn parse(provider: &str, data: &Json) -> Value {
                 windows.push(w);
             }
             for (i, item) in data["limits"].as_array().into_iter().flatten().enumerate() {
-                if let Some(w) =
-                    window(&format!("limit.{i}"), item["name"].as_str().unwrap_or("Quota"), &item["detail"], None)
-                {
+                if let Some(w) = window(
+                    &format!("limit.{i}"),
+                    item["name"].as_str().unwrap_or("Quota"),
+                    &item["detail"],
+                    None,
+                ) {
                     windows.push(w);
                 }
             }
@@ -180,7 +213,10 @@ mod tests {
         assert_eq!(facts["credits"]["limit"], 123.45);
         assert_eq!(facts["credits"]["enabled"], false);
         for invalid in [json!(null), json!(-1), json!(101), json!("garbage")] {
-            assert_eq!(parsed("claude", json!({"five_hour":{"utilization":invalid}}))["unavailable"], true);
+            assert_eq!(
+                parsed("claude", json!({"five_hour":{"utilization":invalid}}))["unavailable"],
+                true
+            );
         }
     }
     #[test]
@@ -217,26 +253,36 @@ mod tests {
         assert_eq!(facts["windows"].as_array().unwrap().len(), 2);
         assert_eq!(facts["windows"][0]["used"], 25.0);
         assert_eq!(facts["windows"][1]["remaining"], 20.0);
-        assert_eq!(parsed("kimi", json!({"limits":[{"detail":{"remaining":0}}]}))["windows"][0]["remaining"], 0.0);
+        assert_eq!(
+            parsed("kimi", json!({"limits":[{"detail":{"remaining":0}}]}))["windows"][0]["remaining"],
+            0.0
+        );
         for provider in ["claude", "openai-codex", "kimi"] {
             assert_eq!(parsed(provider, Json::Null)["unavailable"], true);
         }
     }
     #[test]
     fn requests_keep_slots_and_kimi_composed_base_in_kernel() {
-        let http = std::sync::Arc::new(crate::Http::new(std::sync::Arc::new(crate::Credentials::in_memory())).unwrap());
+        let http = std::sync::Arc::new(
+            crate::Http::new(std::sync::Arc::new(crate::Credentials::in_memory())).unwrap(),
+        );
         let kimi = crate::provider::AnthropicMessages::from_preset(
-            crate::presets::preset("kimi-coding").unwrap(),
+            crate::presets::preset("kimi").unwrap(),
             http.clone(),
         )
         .with_base_url("https://api.kimi.com/coding/v1");
         let req = request(&kimi).unwrap();
         assert_eq!(req.url, "https://api.kimi.com/coding/v1/usages");
         assert_eq!(req.credential.unwrap().slot, "kimi-coding");
-        let codex =
-            crate::provider::OpenAiResponses::from_preset(crate::presets::preset("openai-codex").unwrap(), http);
+        let codex = crate::provider::OpenAiResponses::from_preset(
+            crate::presets::preset("openai-codex").unwrap(),
+            http,
+        );
         let req = request(&codex).unwrap();
         assert_eq!(req.url, "https://chatgpt.com/backend-api/wham/usage");
-        assert_eq!(req.credential.unwrap().account_header.as_deref(), Some("chatgpt-account-id"));
+        assert_eq!(
+            req.credential.unwrap().account_header.as_deref(),
+            Some("chatgpt-account-id")
+        );
     }
 }

@@ -40,6 +40,7 @@ use tokio::sync::mpsc;
 pub mod blobs;
 pub mod credentials;
 pub mod http;
+pub mod mcp;
 pub mod oauth;
 /// The services a daemon can talk to, and what each one needs.
 pub mod presets;
@@ -50,14 +51,15 @@ pub mod usage;
 
 pub use blobs::Blobs;
 pub use credentials::{Credentials, OAuth, Secret};
-pub use presets::{Auth, Effort, Preset};
 pub use http::{Credential, Http, Request as HttpRequest, Response as HttpResponse};
+pub use presets::{Auth, Effort, Preset};
 pub use provider::{
-    AnthropicMessages, BrokenProvider, OpenAiChat, OpenAiResponses, Provider, ScriptedProvider, Turn,
+    AnthropicMessages, BrokenProvider, ClaudeCli, OpenAiChat, OpenAiResponses, Provider,
+    ScriptedProvider, Turn,
 };
-pub use store::{Attempt, Conversation, Entry, MemoryStore, SqliteStore, Store};
 /// A durable fact, in the order it was recorded.
 pub use store::Entry as LogEntry;
+pub use store::{Attempt, Conversation, Entry, MemoryStore, SqliteStore, Store};
 
 /// One map with one key replaced, as a new value.
 ///
@@ -82,10 +84,7 @@ fn base64(bytes: &[u8]) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     /// Confirm an existing blob and offer it as a file, without a daemon filesystem path.
-    Usage {
-        id: String,
-        provider: String,
-    },
+    Usage { id: String, provider: String },
     /// Ask a provider for a completion, streaming as it arrives.
     ProviderCall {
         id: String,
@@ -117,9 +116,7 @@ pub enum Request {
         limit: usize,
     },
     /// List the conversations this daemon knows about.
-    Conversations {
-        id: String,
-    },
+    Conversations { id: String },
     /// Start an attempt. A provider call does this implicitly; a policy may also record
     /// one for work it is about to do itself.
     AttemptStarted {
@@ -139,10 +136,7 @@ pub enum Request {
         cost_micros: i64,
     },
     /// An HTTP request. `credential` names a slot; the bytes never reach policy.
-    Http {
-        id: String,
-        request: http::Request,
-    },
+    Http { id: String, request: http::Request },
     /// Set, delete, or list credentials.
     Credential {
         id: String,
@@ -155,29 +149,36 @@ pub enum Request {
         media: Option<String>,
     },
     /// Read a file into the blob store, so a session can attach or display it.
-    BlobFile {
-        id: String,
-        path: String,
-    },
+    BlobFile { id: String, path: String },
     /// Read a blob back.
-    BlobLoad {
-        id: String,
-        hash: String,
-    },
+    BlobLoad { id: String, hash: String },
     /// Ask a provider which models it has.
     ///
     /// The one request that is not a completion, and the one that lets a picker offer what a
     /// service actually serves instead of what a release happened to name.
-    DiscoverModels {
-        id: String,
-        provider: String,
-    },
+    DiscoverModels { id: String, provider: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CredentialAction {
-    Set { slot: String, account: String, value: String },
-    Delete { slot: String },
+    Set {
+        slot: String,
+        account: String,
+        value: String,
+    },
+    Delete {
+        slot: String,
+    },
+    /// Remove one named account, leaving the provider's other accounts intact.
+    DeleteAccount {
+        slot: String,
+        account: String,
+    },
+    /// Make one stored account the provider's active request credential.
+    Select {
+        slot: String,
+        account: String,
+    },
     List,
     /// Authorize a service by device code, and store what it hands back.
     ///
@@ -185,9 +186,18 @@ pub enum CredentialAction {
     /// answers this by starting it and reporting twice: once with the code to show, and once
     /// with how it ended. A session that waited would stop answering clients until somebody
     /// typed a code into a website.
-    OAuth { provider: String },
+    OAuth {
+        provider: String,
+    },
+    /// Start a device flow and store its result under this user-facing account name.
+    OAuthAccount {
+        provider: String,
+        account: String,
+    },
     /// Stop the named device authorization owned by this reporting session.
-    CancelOAuth { request: String },
+    CancelOAuth {
+        request: String,
+    },
 }
 
 /// What the kernel reports back. Each one becomes an event in the session's loop.
@@ -202,14 +212,20 @@ pub enum KernelEvent {
         facts: Value,
     },
     /// One chunk of a streamed completion.
-    ProviderDelta { id: String, text: String },
+    ProviderDelta {
+        id: String,
+        text: String,
+    },
     /// One chunk of a service's own reasoning, which is not the answer.
     ///
     /// It travels on its own event rather than as part of [`KernelEvent::ProviderDelta`]
     /// because a client has to be able to draw thinking differently from text — collapsed,
     /// dimmed, or not at all — and a session that merged them would have decided that for
     /// every client at once.
-    ProviderThinking { id: String, text: String },
+    ProviderThinking {
+        id: String,
+        text: String,
+    },
     ProviderFinished {
         id: String,
         ok: bool,
@@ -219,6 +235,10 @@ pub enum KernelEvent {
         thinking: String,
         /// Tool calls the model asked for, as `[{id, name, args}]`.
         tool_calls: Value,
+        /// Opaque provider-owned response items needed to continue a dialect-specific
+        /// conversation. Clients carry this with the assistant message; they do not
+        /// inspect or reinterpret it.
+        provider_state: Value,
         input_tokens: i64,
         output_tokens: i64,
         error: String,
@@ -237,11 +257,30 @@ pub enum KernelEvent {
         ok: bool,
         text: String,
     },
-    Appended { conversation: String, seq: i64, kind: String, data: Value },
-    AppendFailed { conversation: String, kind: String, data: Value, message: String },
-    Loaded { conversation: String, entries: Vec<Entry> },
-    Conversations { id: String, headers: Value },
-    AttemptRecorded { id: String, name: String },
+    Appended {
+        conversation: String,
+        seq: i64,
+        kind: String,
+        data: Value,
+    },
+    AppendFailed {
+        conversation: String,
+        kind: String,
+        data: Value,
+        message: String,
+    },
+    Loaded {
+        conversation: String,
+        entries: Vec<Entry>,
+    },
+    Conversations {
+        id: String,
+        headers: Value,
+    },
+    AttemptRecorded {
+        id: String,
+        name: String,
+    },
     HttpFinished {
         id: String,
         ok: bool,
@@ -252,8 +291,13 @@ pub enum KernelEvent {
         id: String,
         ok: bool,
         message: String,
+        /// The credential slot changed, when this is a set/delete/oauth result.
+        slot: Option<String>,
         /// Slot and account pairs. Never a value.
         slots: Value,
+        /// Providers whose model catalogues are public and therefore can be refreshed
+        /// without a credential. This is composition data, not a provider special case.
+        model_providers: Value,
     },
     /// Somebody has to finish an authorization somewhere else: this is what to show them.
     ///
@@ -300,7 +344,10 @@ pub enum KernelEvent {
         log: String,
     },
     /// The kernel could not do what was asked. Never fatal to the session.
-    Failed { id: String, message: String },
+    Failed {
+        id: String,
+        message: String,
+    },
 }
 
 impl KernelEvent {
@@ -363,7 +410,7 @@ pub struct ProviderRequest {
     pub settings: Value,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Answer {
     pub text: String,
     /// What a service reasoned before it answered, when it streams one. Empty when it does
@@ -371,8 +418,23 @@ pub struct Answer {
     pub thinking: String,
     /// `[{id, name, args}]`
     pub tool_calls: Value,
+    /// Opaque continuation state for providers such as Codex Responses.
+    pub provider_state: Value,
     pub input_tokens: i64,
     pub output_tokens: i64,
+}
+
+impl Default for Answer {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            thinking: String::new(),
+            tool_calls: Value::list([]),
+            provider_state: Value::list([]),
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
 }
 
 /// A tool, as the kernel runs it.
@@ -387,7 +449,9 @@ pub trait Tool: Send + Sync {
     /// model is told what happened and decides what to do, exactly as the previous system
     /// decided when it settled on one close-out sentence.
     async fn run(&self, args: &Value) -> Result<String, String>;
-    async fn run_in(&self,args:&Value,_context:ToolContext)->Result<String,String> {self.run(args).await}
+    async fn run_in(&self, args: &Value, _context: ToolContext) -> Result<String, String> {
+        self.run(args).await
+    }
 }
 
 /// How a daemon is composed.
@@ -459,7 +523,7 @@ struct ActiveAuthorization {
     id: String,
     owner: mpsc::UnboundedSender<KernelEvent>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
-    done:tokio::sync::oneshot::Receiver<()>,
+    done: tokio::sync::oneshot::Receiver<()>,
     token: Arc<()>,
 }
 
@@ -479,7 +543,12 @@ pub struct Daemon {
     /// a service on the internet testable at all.
     flows: Vec<(String, oauth::Flow)>,
     authorizations: Arc<std::sync::Mutex<Vec<ActiveAuthorization>>>,
-    tool_owners: std::sync::Mutex<Vec<(mpsc::UnboundedSender<KernelEvent>,tokio::sync::watch::Sender<bool>)>>,
+    tool_owners: std::sync::Mutex<
+        Vec<(
+            mpsc::UnboundedSender<KernelEvent>,
+            tokio::sync::watch::Sender<bool>,
+        )>,
+    >,
     /// Where a tool that keeps running after it answers reports what happened.
     events: mpsc::UnboundedSender<KernelEvent>,
     /// The other end of `events`, handed to the session exactly once.
@@ -495,15 +564,20 @@ impl Daemon {
     /// open, nothing to clean up, and the same rules as the durable one.
     pub fn new(provider: Arc<dyn Provider>) -> Daemon {
         let (events, listener) = mpsc::unbounded_channel();
+        let default_provider = provider.id().to_string();
+        let http = provider.http();
         let shell = tools::default_shell_dir();
         Daemon {
             store: Arc::new(MemoryStore::new()),
             credentials: Arc::new(Credentials::in_memory()),
             blobs: Arc::new(Blobs::in_memory()),
-            http: None,
+            http,
             providers: vec![provider],
-            default_provider: "scripted".into(),
-            flows: presets::flows().into_iter().map(|(id, flow)| (id.to_string(), flow)).collect(),
+            default_provider,
+            flows: presets::flows()
+                .into_iter()
+                .map(|(id, flow)| (id.to_string(), flow))
+                .collect(),
             tools: tools::shipped(&shell, &events),
             events,
             listener: std::sync::Mutex::new(Some(listener)),
@@ -516,7 +590,7 @@ impl Daemon {
     /// A daemon that keeps what it learns.
     ///
     /// `root` holds the log, the ledger, and the blobs. Credentials default to the state
-    /// directory and can be pointed elsewhere with `MISA_CREDENTIALS`.
+    /// directory and can be pointed elsewhere with `MISA_AUTH_FILE`.
     pub fn open(root: &Path) -> Result<Daemon, String> {
         let credentials = Arc::new(Credentials::at(&Credentials::default_path())?);
         let http = Arc::new(Http::new(credentials.clone())?);
@@ -526,12 +600,13 @@ impl Daemon {
             store: Arc::new(SqliteStore::open(&root.join("conversations.sqlite3"))?),
             blobs: Arc::new(Blobs::at(&root.join("blobs"))?),
             credentials,
-            http: Some(http),
-            providers: vec![ScriptedProvider::new([
-                Turn::say("this daemon has no provider of its own configured"),
-            ])],
-            default_provider: "scripted".into(),
-            flows: presets::flows().into_iter().map(|(id, flow)| (id.to_string(), flow)).collect(),
+            http: Some(http.clone()),
+            providers: crate::provider::shipped(http.clone()),
+            default_provider: "claude".into(),
+            flows: presets::flows()
+                .into_iter()
+                .map(|(id, flow)| (id.to_string(), flow))
+                .collect(),
             tools: tools::shipped(&shell, &events),
             events,
             listener: std::sync::Mutex::new(Some(listener)),
@@ -544,17 +619,26 @@ impl Daemon {
     /// Compose from parts.
     pub fn compose(composition: Composition) -> Daemon {
         let (events, listener) = mpsc::unbounded_channel();
+        let http = composition.http.or_else(|| {
+            composition
+                .providers
+                .iter()
+                .find_map(|provider| provider.http())
+        });
         let mut tools = tools::shipped(&composition.shell, &events);
         // The search tool exists when a backend is configured, and not before: a tool a
         // model can call but that always fails is worse than one that is absent.
-        if let (Some(backend), Some(http)) = (&composition.search, &composition.http) {
-            tools.push(Arc::new(search::WebSearch::new(http.clone(), backend.clone())));
+        if let (Some(backend), Some(http)) = (&composition.search, &http) {
+            tools.push(Arc::new(search::WebSearch::new(
+                http.clone(),
+                backend.clone(),
+            )));
         }
         Daemon {
             store: composition.store,
             credentials: composition.credentials,
             blobs: composition.blobs,
-            http: composition.http,
+            http,
             default_provider: composition.default_provider,
             providers: composition.providers,
             flows: composition.flows,
@@ -574,7 +658,8 @@ impl Daemon {
     pub fn with_shell(mut self, dir: impl Into<PathBuf>) -> Daemon {
         let dir = dir.into();
         self.tools.retain(|tool| tool.name() != "shell");
-        self.tools.push(Arc::new(tools::Shell::at(&dir, self.events.clone())));
+        self.tools
+            .push(Arc::new(tools::Shell::at(&dir, self.events.clone())));
         self.shell = dir;
         self
     }
@@ -601,6 +686,9 @@ impl Daemon {
 
     pub fn with_provider(mut self, provider: Arc<dyn Provider>) -> Daemon {
         self.default_provider = provider.id().to_string();
+        if self.http.is_none() {
+            self.http = provider.http();
+        }
         self.providers.push(provider);
         self
     }
@@ -629,7 +717,8 @@ impl Daemon {
 
     pub fn with_search(mut self, backend: SearchBackend) -> Daemon {
         if let Some(http) = &self.http {
-            self.tools.push(Arc::new(search::WebSearch::new(http.clone(), backend)));
+            self.tools
+                .push(Arc::new(search::WebSearch::new(http.clone(), backend)));
         }
         self
     }
@@ -657,26 +746,42 @@ impl Daemon {
 
     /// The provider ids this daemon can reach.
     pub fn provider_ids(&self) -> Vec<String> {
-        self.providers.iter().map(|provider| provider.id().to_string()).collect()
+        self.providers
+            .iter()
+            .map(|provider| provider.id().to_string())
+            .collect()
     }
 
     /// The providers this daemon can authorize by device code.
     pub fn flow_ids(&self) -> Vec<String> {
-        self.flows.iter().map(|(provider, _)| provider.clone()).collect()
+        self.flows
+            .iter()
+            .map(|(provider, _)| provider.clone())
+            .collect()
     }
 
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.iter().map(|tool| tool.name().to_string()).collect()
+        self.tools
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect()
     }
 
     /// Every entry this daemon holds. For a test or a diagnostic.
     pub fn entries(&self) -> Vec<Entry> {
-        self.store.conversations().map(|conversations| {
-            conversations
-                .into_iter()
-                .flat_map(|conversation| self.store.load(&conversation.id, 0, 100_000).unwrap_or_default())
-                .collect()
-        }).unwrap_or_default()
+        self.store
+            .conversations()
+            .map(|conversations| {
+                conversations
+                    .into_iter()
+                    .flat_map(|conversation| {
+                        self.store
+                            .load(&conversation.id, 0, 100_000)
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn attempts(&self) -> Vec<Value> {
@@ -696,7 +801,12 @@ impl Daemon {
                 // default rather than failing: a session with one provider should not have
                 // to know its name.
                 (id.is_empty() || id == self.default_provider)
-                    .then(|| self.providers.iter().find(|provider| provider.id() == self.default_provider).cloned())
+                    .then(|| {
+                        self.providers
+                            .iter()
+                            .find(|provider| provider.id() == self.default_provider)
+                            .cloned()
+                    })
                     .flatten()
             })
     }
@@ -710,16 +820,24 @@ impl Daemon {
     /// Returns immediately. What it starts holds the credential store and the report channel,
     /// and it gives up when nobody is listening any more: a client that went away should not
     /// leave a daemon polling a service for a quarter of an hour.
-    fn authorize(&self, provider: &str, id: String, out: &mpsc::UnboundedSender<KernelEvent>) {
+    fn authorize(
+        &self,
+        provider: &str,
+        account: Option<String>,
+        id: String,
+        out: &mpsc::UnboundedSender<KernelEvent>,
+    ) {
         let Some((_, flow)) = self.flows.iter().find(|(name, _)| name == provider) else {
             report_credential(
                 &self.credentials,
+                &model_providers(&self.providers),
                 id,
                 false,
                 format!(
                     "`{provider}` has no device flow, so there is no token to fetch from it — a key \
                      for it is stored from a client's login panel"
                 ),
+                Some(provider.to_string()),
                 out,
             );
             return;
@@ -728,18 +846,24 @@ impl Daemon {
         // outlives this call.
         let flow = *flow;
         let provider = provider.to_string();
+        let requested_account = account;
         let credentials = self.credentials.clone();
+        let public_model_providers = model_providers(&self.providers);
         let out = out.clone();
         let reports = out.clone();
         let asked = id.clone();
         let named = provider.clone();
         let waiting = provider.clone();
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
-        let (finished,done)=tokio::sync::oneshot::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
         let token = Arc::new(());
         let authorizations = self.authorizations.clone();
         authorizations.lock().unwrap().push(ActiveAuthorization {
-            id: id.clone(), owner: out.clone(), cancel:Some(cancel),done, token: token.clone(),
+            id: id.clone(),
+            owner: out.clone(),
+            cancel: Some(cancel),
+            done,
+            token: token.clone(),
         });
         tokio::spawn(async move {
             let login = oauth::login(
@@ -761,11 +885,27 @@ impl Daemon {
             };
             match result {
                 Ok(token) => {
-                    let account = token.account.clone();
-                    let stored = credentials.set_oauth(
+                    let service_account = token.account.clone();
+                    // The old, unqualified OAuth command keeps the provider's account id as
+                    // its account key. An explicitly named login is the new multi-account
+                    // composition and keeps the name the caller chose; this preserves the
+                    // reference wire/storage contract while allowing `/login provider name`.
+                    let account_name = requested_account
+                        .as_deref()
+                        .filter(|account| !account.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            if service_account.is_empty() {
+                                "default".into()
+                            } else {
+                                service_account.clone()
+                            }
+                        });
+                    let stored = credentials.set_oauth_for(
                         &waiting,
+                        &account_name,
                         OAuth {
-                            account: token.account,
+                            account: service_account.clone(),
                             access: token.access,
                             refresh: token.refresh,
                             expires_ms: token.expires_ms,
@@ -776,17 +916,40 @@ impl Daemon {
                     let ok = stored.is_ok();
                     let message = match stored {
                         Ok(()) => format!(
-                            "stored a token for `{waiting}` (account `{}`); it renews itself from here",
-                            if account.is_empty() { "unknown" } else { &account }
+                            "stored a token for `{waiting}` (account `{account_name}`{}); it renews itself from here",
+                            if service_account.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", provider account `{service_account}`")
+                            },
                         ),
                         Err(message) => message,
                     };
-                    report_credential(&credentials, id, ok, message, &out);
+                    report_credential(
+                        &credentials,
+                        &public_model_providers,
+                        id,
+                        ok,
+                        message,
+                        Some(waiting.clone()),
+                        &out,
+                    );
                 }
-                Err(message) => report_credential(&credentials, id, false, message, &out),
+                Err(message) => report_credential(
+                    &credentials,
+                    &public_model_providers,
+                    id,
+                    false,
+                    message,
+                    Some(waiting.clone()),
+                    &out,
+                ),
             }
-            authorizations.lock().unwrap().retain(|active| !Arc::ptr_eq(&active.token, &token));
-            let _=finished.send(());
+            authorizations
+                .lock()
+                .unwrap()
+                .retain(|active| !Arc::ptr_eq(&active.token, &token));
+            let _ = finished.send(());
         });
     }
 
@@ -817,7 +980,10 @@ impl Daemon {
                 return message.clone();
             }
             let resolved = Value::list(attachments.iter().map(|attachment| {
-                let hash = attachment.get("hash").and_then(Value::as_str).unwrap_or_default();
+                let hash = attachment
+                    .get("hash")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 match self.blobs.get(hash) {
                     Some(bytes) => {
                         // The media type comes from the store when the message did not carry
@@ -857,9 +1023,11 @@ impl Daemon {
 /// it, and it may not hold the daemon.
 fn report_credential(
     credentials: &Credentials,
+    public_model_providers: &Value,
     id: String,
     ok: bool,
     message: String,
+    slot: Option<String>,
     out: &mpsc::UnboundedSender<KernelEvent>,
 ) {
     let slots = Value::list(
@@ -867,35 +1035,100 @@ fn report_credential(
             .slots()
             .into_iter()
             .map(|(slot, account)| {
-                Value::map([("slot", Value::str(slot)), ("account", Value::str(account))])
+                Value::map([
+                    ("slot", Value::str(&slot)),
+                    ("account", Value::str(&account)),
+                    (
+                        "active",
+                        Value::Bool(credentials.account(&slot).as_deref() == Some(&account)),
+                    ),
+                ])
             })
             .collect::<Vec<_>>(),
     );
-    let _ = out.send(KernelEvent::Credential { id, ok, message, slots });
+    let _ = out.send(KernelEvent::Credential {
+        id,
+        ok,
+        message,
+        slot,
+        slots,
+        model_providers: public_model_providers.clone(),
+    });
+}
+
+fn model_providers(providers: &[Arc<dyn Provider>]) -> Value {
+    Value::list(
+        providers
+            .iter()
+            .filter(|provider| !provider.models_credential())
+            .map(|provider| Value::str(provider.id()))
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[async_trait]
 impl Kernel for Daemon {
     async fn close(&self, out: &mpsc::UnboundedSender<KernelEvent>) {
-        let tools={let mut owners=self.tool_owners.lock().expect("tool owners poisoned");
-            let mut closed=Vec::new();let mut index=0;
-            while index<owners.len() {if owners[index].0.same_channel(out) {let (_,cancel)=owners.remove(index);cancel.send_replace(true);closed.push(cancel);} else {index+=1;}} closed
+        let tools = {
+            let mut owners = self.tool_owners.lock().expect("tool owners poisoned");
+            let mut closed = Vec::new();
+            let mut index = 0;
+            while index < owners.len() {
+                if owners[index].0.same_channel(out) {
+                    let (_, cancel) = owners.remove(index);
+                    cancel.send_replace(true);
+                    closed.push(cancel);
+                } else {
+                    index += 1;
+                }
+            }
+            closed
         };
-        let flows={let mut active=self.authorizations.lock().expect("authorization state is never poisoned");
-            let mut closed=Vec::new();let mut index=0;
-            while index<active.len() {if active[index].owner.same_channel(out) {let mut flow=active.remove(index);if let Some(cancel)=flow.cancel.take() {let _=cancel.send(());}closed.push(flow.done);} else {index+=1;}}closed
+        let flows = {
+            let mut active = self
+                .authorizations
+                .lock()
+                .expect("authorization state is never poisoned");
+            let mut closed = Vec::new();
+            let mut index = 0;
+            while index < active.len() {
+                if active[index].owner.same_channel(out) {
+                    let mut flow = active.remove(index);
+                    if let Some(cancel) = flow.cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                    closed.push(flow.done);
+                } else {
+                    index += 1;
+                }
+            }
+            closed
         };
-        for tool in tools {tool.closed().await;}
-        for flow in flows {let _=flow.await;}
+        for tool in tools {
+            tool.closed().await;
+        }
+        for flow in flows {
+            let _ = flow.await;
+        }
     }
 
     fn events(&self) -> Option<mpsc::UnboundedReceiver<KernelEvent>> {
-        self.listener.lock().expect("the listener is taken once").take()
+        self.listener
+            .lock()
+            .expect("the listener is taken once")
+            .take()
     }
 
     async fn execute(&self, request: Request, out: &mpsc::UnboundedSender<KernelEvent>) {
         match request {
-            Request::ProviderCall { id, provider, model, messages, tools, settings } => {
+            Request::ProviderCall {
+                id,
+                provider,
+                model,
+                messages,
+                tools,
+                settings,
+            } => {
                 let Some(adapter) = self.provider(&provider) else {
                     let _ = out.send(KernelEvent::ProviderFinished {
                         id,
@@ -903,6 +1136,7 @@ impl Kernel for Daemon {
                         text: String::new(),
                         thinking: String::new(),
                         tool_calls: Value::list([]),
+                        provider_state: Value::list([]),
                         input_tokens: 0,
                         output_tokens: 0,
                         error: format!("this daemon has no provider `{provider}`"),
@@ -910,7 +1144,12 @@ impl Kernel for Daemon {
                     return;
                 };
                 let messages = self.with_attachments(messages);
-                let request = ProviderRequest { model, messages, tools, settings };
+                let request = ProviderRequest {
+                    model,
+                    messages,
+                    tools,
+                    settings,
+                };
                 match adapter.stream(&request, &id, out).await {
                     Ok(answer) => {
                         let _ = out.send(KernelEvent::ProviderFinished {
@@ -919,6 +1158,7 @@ impl Kernel for Daemon {
                             text: answer.text,
                             thinking: answer.thinking,
                             tool_calls: answer.tool_calls,
+                            provider_state: answer.provider_state,
                             input_tokens: answer.input_tokens,
                             output_tokens: answer.output_tokens,
                             error: String::new(),
@@ -931,6 +1171,7 @@ impl Kernel for Daemon {
                             text: String::new(),
                             thinking: String::new(),
                             tool_calls: Value::list([]),
+                            provider_state: Value::list([]),
                             input_tokens: 0,
                             output_tokens: 0,
                             error,
@@ -938,14 +1179,35 @@ impl Kernel for Daemon {
                     }
                 }
             }
-            Request::ToolRun { id, call_id, name, args } => {
-                let cancelled={
-                    let mut owners=self.tool_owners.lock().expect("tool owners poisoned");
-                    if let Some((_,cancel))=owners.iter().find(|(owner,_)|owner.same_channel(out)) {cancel.subscribe()}
-                    else {let(cancel,receiver)=tokio::sync::watch::channel(false);owners.push((out.clone(),cancel));receiver}
+            Request::ToolRun {
+                id,
+                call_id,
+                name,
+                args,
+            } => {
+                let cancelled = {
+                    let mut owners = self.tool_owners.lock().expect("tool owners poisoned");
+                    if let Some((_, cancel)) =
+                        owners.iter().find(|(owner, _)| owner.same_channel(out))
+                    {
+                        cancel.subscribe()
+                    } else {
+                        let (cancel, receiver) = tokio::sync::watch::channel(false);
+                        owners.push((out.clone(), cancel));
+                        receiver
+                    }
                 };
                 let result = match self.tool(&name) {
-                    Some(tool) => tool.run_in(&args,ToolContext{reports:out.clone(),cancelled:Some(cancelled)}).await,
+                    Some(tool) => {
+                        tool.run_in(
+                            &args,
+                            ToolContext {
+                                reports: out.clone(),
+                                cancelled: Some(cancelled),
+                            },
+                        )
+                        .await
+                    }
                     // An unknown tool is a result the model can act on, not a fault that
                     // stops the turn.
                     None => Err(format!("no tool named `{name}`")),
@@ -954,17 +1216,29 @@ impl Kernel for Daemon {
                     Ok(text) => (true, text),
                     Err(text) => (false, text),
                 };
-                let _ = out.send(KernelEvent::ToolFinished { id, call_id, ok, text });
+                let _ = out.send(KernelEvent::ToolFinished {
+                    id,
+                    call_id,
+                    ok,
+                    text,
+                });
             }
             Request::Usage { id, provider } => {
                 let result = async {
                     let adapter = self.provider(&provider).ok_or("unknown provider")?;
-                    let http = self.http.as_ref().ok_or("http unavailable")?;
-                    usage::fetch(adapter.as_ref(), http).await
+                    let http = adapter
+                        .http()
+                        .ok_or("provider does not expose a usage transport")?;
+                    usage::fetch(adapter.as_ref(), &http).await
                 }
                 .await;
-                let facts = result.unwrap_or_else(|_: String| usage::parse(&provider, &serde_json::Value::Null));
-                let _ = out.send(KernelEvent::Usage { id, provider, facts });
+                let facts = result
+                    .unwrap_or_else(|_: String| usage::parse(&provider, &serde_json::Value::Null));
+                let _ = out.send(KernelEvent::Usage {
+                    id,
+                    provider,
+                    facts,
+                });
             }
             Request::DiscoverModels { id, provider } => {
                 let message = |message: String| KernelEvent::Models {
@@ -977,17 +1251,77 @@ impl Kernel for Daemon {
                     let _ = out.send(message(format!("this daemon has no provider `{provider}`")));
                     return;
                 };
-                let Some(http) = &self.http else {
-                    let _ = out.send(message("this daemon was composed without http".into()));
+                let Some(http) = self.http.clone().or_else(|| adapter.http()) else {
+                    let _ = out.send(message(
+                        format!("`{provider}` does not expose model discovery in this composition"),
+                    ));
                     return;
                 };
                 // The adapter is asked rather than a table, because where a service lists its
                 // models is a property of the address it was composed against: a proxy lists
                 // its own.
-                match provider::discover(adapter.as_ref(), http).await {
+                match provider::discover(adapter.as_ref(), &http).await {
                     Ok(models) => {
                         let listed = Value::list(models.iter().map(|model| {
-                            Value::map([("id", Value::str(&model.id)), ("label", Value::str(&model.label))])
+                            let mut row = vec![
+                                ("id", Value::str(&model.id)),
+                                ("label", Value::str(&model.label)),
+                            ];
+                            if let Some(context_window) = model.context_window {
+                                row.push(("context_window", Value::Int(context_window)));
+                            }
+                            if !model.efforts.is_empty() {
+                                row.push((
+                                    "efforts",
+                                    Value::list(
+                                        model.efforts.iter().map(|effort| Value::str(effort)),
+                                    ),
+                                ));
+                            }
+                            if let Some(input_micros) = model.input_micros {
+                                row.push(("input_micros", Value::Int(input_micros)));
+                            }
+                            if let Some(output_micros) = model.output_micros {
+                                row.push(("output_micros", Value::Int(output_micros)));
+                            }
+                            if let Some(default_effort) = &model.default_effort {
+                                row.push(("default_effort", Value::str(default_effort)));
+                            }
+                            if let Some(cache_read_micros) = model.cache_read_micros {
+                                row.push(("cache_read_micros", Value::Int(cache_read_micros)));
+                            }
+                            if let Some(cache_write_micros) = model.cache_write_micros {
+                                row.push(("cache_write_micros", Value::Int(cache_write_micros)));
+                            }
+                            if let Some(request_micros) = model.request_micros {
+                                row.push(("request_micros", Value::Int(request_micros)));
+                            }
+                            if let Some(peak) = &model.peak {
+                                row.push((
+                                    "peak",
+                                    Value::map([
+                                        ("multiplier_ppm", Value::Int(peak.multiplier_ppm)),
+                                        (
+                                            "weekdays",
+                                            Value::list(
+                                                peak.weekdays
+                                                    .iter()
+                                                    .map(|day| Value::Int(i64::from(*day))),
+                                            ),
+                                        ),
+                                        (
+                                            "windows",
+                                            Value::list(peak.windows.iter().map(|(start, end)| {
+                                                Value::map([
+                                                    ("start_hour", Value::Int(i64::from(*start))),
+                                                    ("end_hour", Value::Int(i64::from(*end))),
+                                                ])
+                                            })),
+                                        ),
+                                    ]),
+                                ));
+                            }
+                            Value::map(row)
                         }));
                         let _ = out.send(KernelEvent::Models {
                             id,
@@ -1001,7 +1335,11 @@ impl Kernel for Daemon {
                     }
                 }
             }
-            Request::Append { conversation, kind, data } => {
+            Request::Append {
+                conversation,
+                kind,
+                data,
+            } => {
                 let store = self.store.clone();
                 let at = self.now();
                 // The branch is needed for the event afterwards and the closure owns what
@@ -1009,30 +1347,62 @@ impl Kernel for Daemon {
                 let branch = conversation.clone();
                 let stored_kind = kind.clone();
                 let stored_data = data.clone();
-                match tokio::task::spawn_blocking(move || store.append(&branch, &stored_kind, &stored_data, at)).await {
+                match tokio::task::spawn_blocking(move || {
+                    store.append(&branch, &stored_kind, &stored_data, at)
+                })
+                .await
+                {
                     Ok(Ok(seq)) => {
-                        let _ = out.send(KernelEvent::Appended { conversation, seq, kind, data });
+                        let _ = out.send(KernelEvent::Appended {
+                            conversation,
+                            seq,
+                            kind,
+                            data,
+                        });
                     }
                     Ok(Err(message)) => {
-                        let _ = out.send(KernelEvent::AppendFailed { conversation, kind, data, message });
+                        let _ = out.send(KernelEvent::AppendFailed {
+                            conversation,
+                            kind,
+                            data,
+                            message,
+                        });
                     }
                     Err(err) => {
-                        let _ = out.send(KernelEvent::AppendFailed { conversation, kind, data, message: err.to_string() });
+                        let _ = out.send(KernelEvent::AppendFailed {
+                            conversation,
+                            kind,
+                            data,
+                            message: err.to_string(),
+                        });
                     }
                 }
             }
-            Request::Load { conversation, after, limit } => {
+            Request::Load {
+                conversation,
+                after,
+                limit,
+            } => {
                 let store = self.store.clone();
                 let branch = conversation.clone();
                 match tokio::task::spawn_blocking(move || store.load(&branch, after, limit)).await {
                     Ok(Ok(entries)) => {
-                        let _ = out.send(KernelEvent::Loaded { conversation, entries });
+                        let _ = out.send(KernelEvent::Loaded {
+                            conversation,
+                            entries,
+                        });
                     }
                     Ok(Err(message)) => {
-                        let _ = out.send(KernelEvent::Failed { id: conversation, message });
+                        let _ = out.send(KernelEvent::Failed {
+                            id: conversation,
+                            message,
+                        });
                     }
                     Err(err) => {
-                        let _ = out.send(KernelEvent::Failed { id: conversation, message: err.to_string() });
+                        let _ = out.send(KernelEvent::Failed {
+                            id: conversation,
+                            message: err.to_string(),
+                        });
                     }
                 }
             }
@@ -1042,18 +1412,33 @@ impl Kernel for Daemon {
                     Ok(Ok(headers)) => {
                         let _ = out.send(KernelEvent::Conversations {
                             id,
-                            headers: Value::list(headers.iter().map(Conversation::to_value).collect::<Vec<_>>()),
+                            headers: Value::list(
+                                headers
+                                    .iter()
+                                    .map(Conversation::to_value)
+                                    .collect::<Vec<_>>(),
+                            ),
                         });
                     }
                     Ok(Err(message)) => {
                         let _ = out.send(KernelEvent::Failed { id, message });
                     }
                     Err(err) => {
-                        let _ = out.send(KernelEvent::Failed { id, message: err.to_string() });
+                        let _ = out.send(KernelEvent::Failed {
+                            id,
+                            message: err.to_string(),
+                        });
                     }
                 }
             }
-            Request::AttemptStarted { id, conversation, parent, provider, model, kind } => {
+            Request::AttemptStarted {
+                id,
+                conversation,
+                parent,
+                provider,
+                model,
+                kind,
+            } => {
                 let store = self.store.clone();
                 let started = self.now();
                 let attempt = Attempt {
@@ -1075,11 +1460,20 @@ impl Kernel for Daemon {
                         let _ = out.send(KernelEvent::Failed { id, message });
                     }
                     Err(err) => {
-                        let _ = out.send(KernelEvent::Failed { id, message: err.to_string() });
+                        let _ = out.send(KernelEvent::Failed {
+                            id,
+                            message: err.to_string(),
+                        });
                     }
                 }
             }
-            Request::AttemptSettled { id, status, input_tokens, output_tokens, cost_micros } => {
+            Request::AttemptSettled {
+                id,
+                status,
+                input_tokens,
+                output_tokens,
+                cost_micros,
+            } => {
                 let store = self.store.clone();
                 let at = self.now();
                 // A settle that fails is not reported: the attempt row is already the
@@ -1109,7 +1503,12 @@ impl Kernel for Daemon {
                         });
                     }
                     Err(message) => {
-                        let _ = out.send(KernelEvent::HttpFinished { id, ok: false, status: 0, body: message });
+                        let _ = out.send(KernelEvent::HttpFinished {
+                            id,
+                            ok: false,
+                            status: 0,
+                            body: message,
+                        });
                     }
                 }
             }
@@ -1121,20 +1520,40 @@ impl Kernel for Daemon {
                 // terminal of its own.
                 CredentialAction::CancelOAuth { request } => {
                     let mut active = self.authorizations.lock().unwrap();
-                    if let Some(index) = active.iter().position(|flow| flow.id == request && flow.owner.same_channel(out)) {
-                        if let Some(cancel)=active[index].cancel.take() {let _=cancel.send(());}
+                    if let Some(index) = active
+                        .iter()
+                        .position(|flow| flow.id == request && flow.owner.same_channel(out))
+                    {
+                        if let Some(cancel) = active[index].cancel.take() {
+                            let _ = cancel.send(());
+                        }
                     } else {
                         // A cancellation receipt is not the original flow outcome.
-                        report_credential(&self.credentials, id, false, "Authorization already finished".into(), out);
+                        report_credential(
+                            &self.credentials,
+                            &model_providers(&self.providers),
+                            id,
+                            false,
+                            "Authorization already finished".into(),
+                            None,
+                            out,
+                        );
                     }
                 }
-                CredentialAction::OAuth { provider } => self.authorize(&provider, id, out),
-                CredentialAction::Set { slot, account, value } => {
+                CredentialAction::OAuth { provider } => self.authorize(&provider, None, id, out),
+                CredentialAction::OAuthAccount { provider, account } => {
+                    self.authorize(&provider, Some(account), id, out)
+                }
+                CredentialAction::Set {
+                    slot,
+                    account,
+                    value,
+                } => {
                     let (ok, message) = match self.credentials.set(&slot, &account, &value) {
                         Ok(()) => (true, format!("stored a credential for `{slot}`")),
                         Err(message) => (false, message),
                     };
-                    report_credential(&self.credentials, id, ok, message, out);
+                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
                 }
                 CredentialAction::Delete { slot } => {
                     let (ok, message) = match self.credentials.delete(&slot) {
@@ -1142,11 +1561,36 @@ impl Kernel for Daemon {
                         Ok(false) => (true, format!("there was no credential for `{slot}`")),
                         Err(message) => (false, message),
                     };
-                    report_credential(&self.credentials, id, ok, message, out);
+                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
                 }
-                CredentialAction::List => report_credential(&self.credentials, id, true, String::new(), out),
+                CredentialAction::DeleteAccount { slot, account } => {
+                    let (ok, message) = match self.credentials.delete_account(&slot, &account) {
+                        Ok(true) => (true, format!("removed account `{account}` for `{slot}`")),
+                        Ok(false) => (
+                            true,
+                            format!("there was no account `{account}` for `{slot}`"),
+                        ),
+                        Err(message) => (false, message),
+                    };
+                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
+                }
+                CredentialAction::Select { slot, account } => {
+                    let (ok, message) = match self.credentials.select(&slot, &account) {
+                        Ok(true) => (true, format!("using account `{account}` for `{slot}`")),
+                        Ok(false) => (
+                            false,
+                            format!("there is no account `{account}` for `{slot}`"),
+                        ),
+                        Err(message) => (false, message),
+                    };
+                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
+                }
+                CredentialAction::List => {
+                    report_credential(&self.credentials, &model_providers(&self.providers), id, true, String::new(), None, out)
+                }
             },
-            Request::BlobPut { id, bytes, media } => match self.blobs.put(&bytes, media.as_deref()) {
+            Request::BlobPut { id, bytes, media } => match self.blobs.put(&bytes, media.as_deref())
+            {
                 Ok(reference) => {
                     let _ = out.send(KernelEvent::Blob {
                         id,
@@ -1248,30 +1692,101 @@ mod tests {
         Daemon::new(ScriptedProvider::always("hi"))
     }
 
+    #[test]
+    fn a_network_provider_composes_its_capability_into_a_new_daemon() {
+        let credentials = Arc::new(Credentials::in_memory());
+        let http = Arc::new(Http::new(credentials).unwrap());
+        let provider = Arc::new(OpenAiChat::new(
+            "deepseek",
+            "https://api.deepseek.com",
+            http.clone(),
+        ));
+        let daemon = Daemon::new(provider);
+        assert!(daemon.http().is_some());
+    }
+
+    #[test]
+    fn a_composition_infers_http_from_its_network_provider() {
+        let credentials = Arc::new(Credentials::in_memory());
+        let http = Arc::new(Http::new(credentials.clone()).unwrap());
+        let provider = Arc::new(OpenAiChat::new(
+            "deepseek",
+            "https://api.deepseek.com",
+            http,
+        ));
+        let daemon = Daemon::compose(Composition {
+            store: Arc::new(MemoryStore::new()),
+            credentials,
+            blobs: Arc::new(Blobs::in_memory()),
+            http: None,
+            providers: vec![provider],
+            default_provider: "deepseek".into(),
+            search: None,
+            flows: vec![],
+            shell: tools::default_shell_dir(),
+        });
+        assert!(daemon.http().is_some());
+    }
+
     struct RejectAppend;
     impl Store for RejectAppend {
-        fn append(&self, _: &str, _: &str, _: &Value, _: i64) -> Result<i64, String> { Err("disk unavailable".into()) }
-        fn load(&self, _: &str, _: i64, _: usize) -> Result<Vec<Entry>, String> { Ok(vec![]) }
-        fn conversations(&self) -> Result<Vec<Conversation>, String> { Ok(vec![]) }
-        fn attempt_start(&self, _: &Attempt) -> Result<String, String> { Err("unused".into()) }
-        fn attempt_settle(&self, _: &str, _: &str, _: i64, _: i64, _: i64, _: i64) -> Result<(), String> { Err("unused".into()) }
-        fn attempts(&self, _: Option<&str>) -> Result<Vec<Attempt>, String> { Ok(vec![]) }
-        fn attempt_live(&self, _: &str) -> Result<bool, String> { Ok(false) }
+        fn append(&self, _: &str, _: &str, _: &Value, _: i64) -> Result<i64, String> {
+            Err("disk unavailable".into())
+        }
+        fn load(&self, _: &str, _: i64, _: usize) -> Result<Vec<Entry>, String> {
+            Ok(vec![])
+        }
+        fn conversations(&self) -> Result<Vec<Conversation>, String> {
+            Ok(vec![])
+        }
+        fn attempt_start(&self, _: &Attempt) -> Result<String, String> {
+            Err("unused".into())
+        }
+        fn attempt_settle(
+            &self,
+            _: &str,
+            _: &str,
+            _: i64,
+            _: i64,
+            _: i64,
+            _: i64,
+        ) -> Result<(), String> {
+            Err("unused".into())
+        }
+        fn attempts(&self, _: Option<&str>) -> Result<Vec<Attempt>, String> {
+            Ok(vec![])
+        }
+        fn attempt_live(&self, _: &str) -> Result<bool, String> {
+            Ok(false)
+        }
     }
     #[tokio::test]
     async fn failed_append_preserves_checkpoint_correlation() {
         let kernel = kernel().with_store(Arc::new(RejectAppend));
         let (tx, mut rx) = mpsc::unbounded_channel();
         let data = Value::map([("checkpoint", Value::str("owner:17"))]);
-        kernel.execute(Request::Append { conversation: "conversation".into(), kind: "operations.checkpoint".into(), data: data.clone() }, &tx).await;
-        assert!(matches!(rx.recv().await, Some(KernelEvent::AppendFailed { conversation, kind, data: actual, .. })
-            if conversation == "conversation" && kind == "operations.checkpoint" && actual == data));
+        kernel
+            .execute(
+                Request::Append {
+                    conversation: "conversation".into(),
+                    kind: "operations.checkpoint".into(),
+                    data: data.clone(),
+                },
+                &tx,
+            )
+            .await;
+        assert!(
+            matches!(rx.recv().await, Some(KernelEvent::AppendFailed { conversation, kind, data: actual, .. })
+            if conversation == "conversation" && kind == "operations.checkpoint" && actual == data)
+        );
     }
 
     #[tokio::test]
     async fn a_background_command_answers_at_once_and_reports_to_its_owner() {
         let kernel = kernel();
-        let mut reports = kernel.events().expect("a kernel reports on its own schedule");
+        let mut reports = kernel
+            .events()
+            .expect("a kernel reports on its own schedule");
         let (tx, mut rx) = mpsc::unbounded_channel();
         kernel
             .execute(
@@ -1301,7 +1816,9 @@ mod tests {
             .expect("a report")
             .expect("the channel is open");
         match report {
-            KernelEvent::ProcessFinished { exit, command, log, .. } => {
+            KernelEvent::ProcessFinished {
+                exit, command, log, ..
+            } => {
                 assert_eq!(exit, Some(0));
                 assert!(command.contains("sleep 0.3"), "{command}");
                 let text = std::fs::read_to_string(&log).expect("the log");
@@ -1309,7 +1826,10 @@ mod tests {
             }
             other => panic!("reported `{}`", other.kind()),
         }
-        assert!(reports.try_recv().is_err(),"Private process completion must not enter the shared legacy channel");
+        assert!(
+            reports.try_recv().is_err(),
+            "Private process completion must not enter the shared legacy channel"
+        );
     }
 
     #[tokio::test]
@@ -1319,7 +1839,11 @@ mod tests {
         for text in ["one", "two", "three"] {
             kernel
                 .execute(
-                    Request::Append { conversation: "c1".into(), kind: "message".into(), data: Value::str(text) },
+                    Request::Append {
+                        conversation: "c1".into(),
+                        kind: "message".into(),
+                        data: Value::str(text),
+                    },
                     &tx,
                 )
                 .await;
@@ -1337,12 +1861,25 @@ mod tests {
         for text in ["one", "two", "three"] {
             kernel
                 .execute(
-                    Request::Append { conversation: "c1".into(), kind: "message".into(), data: Value::str(text) },
+                    Request::Append {
+                        conversation: "c1".into(),
+                        kind: "message".into(),
+                        data: Value::str(text),
+                    },
                     &tx,
                 )
                 .await;
         }
-        kernel.execute(Request::Load { conversation: "c1".into(), after: 1, limit: 10 }, &tx).await;
+        kernel
+            .execute(
+                Request::Load {
+                    conversation: "c1".into(),
+                    after: 1,
+                    limit: 10,
+                },
+                &tx,
+            )
+            .await;
         let events = drain(&mut rx).await;
         match events.last().expect("a load event") {
             KernelEvent::Loaded { entries, .. } => {
@@ -1362,18 +1899,26 @@ mod tests {
                 Request::Append {
                     conversation: "c1".into(),
                     kind: "message".into(),
-                    data: Value::map([("role", Value::str("user")), ("text", Value::str("a haiku please"))]),
+                    data: Value::map([
+                        ("role", Value::str("user")),
+                        ("text", Value::str("a haiku please")),
+                    ]),
                 },
                 &tx,
             )
             .await;
-        kernel.execute(Request::Conversations { id: "list".into() }, &tx).await;
+        kernel
+            .execute(Request::Conversations { id: "list".into() }, &tx)
+            .await;
         let events = drain(&mut rx).await;
         match events.last().expect("a listing") {
             KernelEvent::Conversations { headers, .. } => {
                 let first = &headers.as_list().expect("a list")[0];
                 assert_eq!(first.get("id").and_then(Value::as_str), Some("c1"));
-                assert_eq!(first.get("title").and_then(Value::as_str), Some("a haiku please"));
+                assert_eq!(
+                    first.get("title").and_then(Value::as_str),
+                    Some("a haiku please")
+                );
             }
             other => panic!("expected a listing, got {other:?}"),
         }
@@ -1397,8 +1942,14 @@ mod tests {
             )
             .await;
         let events = drain(&mut rx).await;
-        assert!(matches!(events.last(), Some(KernelEvent::AttemptRecorded { .. })));
-        assert_eq!(kernel.attempts()[0].get("status").and_then(Value::as_str), Some("started"));
+        assert!(matches!(
+            events.last(),
+            Some(KernelEvent::AttemptRecorded { .. })
+        ));
+        assert_eq!(
+            kernel.attempts()[0].get("status").and_then(Value::as_str),
+            Some("started")
+        );
 
         kernel
             .execute(
@@ -1500,23 +2051,53 @@ mod tests {
 
     #[tokio::test]
     async fn background_processes_report_and_cancel_only_with_their_owner() {
-        let kernel=kernel();
-        let (first,mut first_events)=mpsc::unbounded_channel();
-        let (second,mut second_events)=mpsc::unbounded_channel();
-        for owner in [&first,&second] {
-            kernel.execute(Request::ToolRun{id:"shell".into(),call_id:"shell".into(),name:"shell".into(),args:Value::map([
-                ("command",Value::str("sleep 30")),("background",Value::Bool(true)),
-            ])},owner).await;
+        let kernel = kernel();
+        let (first, mut first_events) = mpsc::unbounded_channel();
+        let (second, mut second_events) = mpsc::unbounded_channel();
+        for owner in [&first, &second] {
+            kernel
+                .execute(
+                    Request::ToolRun {
+                        id: "shell".into(),
+                        call_id: "shell".into(),
+                        name: "shell".into(),
+                        args: Value::map([
+                            ("command", Value::str("sleep 30")),
+                            ("background", Value::Bool(true)),
+                        ]),
+                    },
+                    owner,
+                )
+                .await;
         }
-        assert!(matches!(first_events.recv().await,Some(KernelEvent::ToolFinished{ok:true,..})));
-        assert!(matches!(second_events.recv().await,Some(KernelEvent::ToolFinished{ok:true,..})));
+        assert!(matches!(
+            first_events.recv().await,
+            Some(KernelEvent::ToolFinished { ok: true, .. })
+        ));
+        assert!(matches!(
+            second_events.recv().await,
+            Some(KernelEvent::ToolFinished { ok: true, .. })
+        ));
         kernel.close(&first).await;
-        let first=tokio::time::timeout(std::time::Duration::from_secs(3),first_events.recv()).await.unwrap();
-        assert!(matches!(first,Some(KernelEvent::ProcessFinished{killed:true,..})));
-        assert!(second_events.try_recv().is_err(),"Closing one owner must not stop or report to another");
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), first_events.recv())
+            .await
+            .unwrap();
+        assert!(matches!(
+            first,
+            Some(KernelEvent::ProcessFinished { killed: true, .. })
+        ));
+        assert!(
+            second_events.try_recv().is_err(),
+            "Closing one owner must not stop or report to another"
+        );
         kernel.close(&second).await;
-        let second=tokio::time::timeout(std::time::Duration::from_secs(3),second_events.recv()).await.unwrap();
-        assert!(matches!(second,Some(KernelEvent::ProcessFinished{killed:true,..})));
+        let second = tokio::time::timeout(std::time::Duration::from_secs(3), second_events.recv())
+            .await
+            .unwrap();
+        assert!(matches!(
+            second,
+            Some(KernelEvent::ProcessFinished { killed: true, .. })
+        ));
     }
 
     #[tokio::test]
@@ -1535,17 +2116,29 @@ mod tests {
             .await;
         let events = drain(&mut rx).await;
         let hash = match &events[0] {
-            KernelEvent::Blob { ok, hash, media, .. } => {
+            KernelEvent::Blob {
+                ok, hash, media, ..
+            } => {
                 assert!(ok);
                 assert_eq!(media, "image/png");
                 hash.clone()
             }
             other => panic!("expected a blob, got {other:?}"),
         };
-        kernel.execute(Request::BlobLoad { id: "b2".into(), hash: hash.clone() }, &tx).await;
+        kernel
+            .execute(
+                Request::BlobLoad {
+                    id: "b2".into(),
+                    hash: hash.clone(),
+                },
+                &tx,
+            )
+            .await;
         let events = drain(&mut rx).await;
         match &events[0] {
-            KernelEvent::BlobBytes { ok, bytes, media, .. } => {
+            KernelEvent::BlobBytes {
+                ok, bytes, media, ..
+            } => {
                 assert!(ok);
                 assert_eq!(bytes, &vec![0x89, b'P', b'N', b'G', 1, 2]);
                 assert_eq!(media, "image/png");
@@ -1554,10 +2147,19 @@ mod tests {
         }
         // A name that is not a hash is refused.
         kernel
-            .execute(Request::BlobLoad { id: "b3".into(), hash: "../../etc/passwd".into() }, &tx)
+            .execute(
+                Request::BlobLoad {
+                    id: "b3".into(),
+                    hash: "../../etc/passwd".into(),
+                },
+                &tx,
+            )
             .await;
         let events = drain(&mut rx).await;
-        assert!(matches!(&events[0], KernelEvent::BlobBytes { ok: false, .. }));
+        assert!(matches!(
+            &events[0],
+            KernelEvent::BlobBytes { ok: false, .. }
+        ));
     }
 
     /// A flow pointed at a server this machine runs.
@@ -1581,15 +2183,63 @@ mod tests {
             r#"{"device_code":"dev","user_code":"AAAA-BBBB","verification_uri":"https://example.invalid/device","interval":30,"expires_in":300}"#.into())]).await;
         let kernel = kernel().with_flow("kimi-coding", local_flow(&base));
         let (owner, mut reports) = mpsc::unbounded_channel();
-        kernel.execute(Request::Credential { id: "flow".into(), action: CredentialAction::OAuth { provider: "kimi-coding".into() } }, &owner).await;
-        assert!(matches!(tokio::time::timeout(std::time::Duration::from_secs(2), reports.recv()).await.unwrap(), Some(KernelEvent::CredentialPrompt { .. })));
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "flow".into(),
+                    action: CredentialAction::OAuth {
+                        provider: "kimi-coding".into(),
+                    },
+                },
+                &owner,
+            )
+            .await;
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), reports.recv())
+                .await
+                .unwrap(),
+            Some(KernelEvent::CredentialPrompt { .. })
+        ));
         let (other, mut refused) = mpsc::unbounded_channel();
-        kernel.execute(Request::Credential { id: "cancel".into(), action: CredentialAction::CancelOAuth { request: "flow".into() } }, &other).await;
-        assert!(matches!(refused.recv().await, Some(KernelEvent::Credential { ok: false, .. })));
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "cancel".into(),
+                    action: CredentialAction::CancelOAuth {
+                        request: "flow".into(),
+                    },
+                },
+                &other,
+            )
+            .await;
+        assert!(matches!(
+            refused.recv().await,
+            Some(KernelEvent::Credential { ok: false, .. })
+        ));
         assert_eq!(kernel.authorizations.lock().unwrap().len(), 1);
-        kernel.execute(Request::Credential { id: "cancel".into(), action: CredentialAction::CancelOAuth { request: "flow".into() } }, &owner).await;
-        match tokio::time::timeout(std::time::Duration::from_millis(200), reports.recv()).await.unwrap().unwrap() {
-            KernelEvent::Credential { id, ok, message, .. } => { assert_eq!(id, "flow"); assert!(!ok); assert_eq!(message, "Authorization cancelled"); }
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "cancel".into(),
+                    action: CredentialAction::CancelOAuth {
+                        request: "flow".into(),
+                    },
+                },
+                &owner,
+            )
+            .await;
+        match tokio::time::timeout(std::time::Duration::from_millis(200), reports.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            KernelEvent::Credential {
+                id, ok, message, ..
+            } => {
+                assert_eq!(id, "flow");
+                assert!(!ok);
+                assert_eq!(message, "Authorization cancelled");
+            }
             other => panic!("unexpected report: {other:?}"),
         }
         assert!(kernel.credentials().slots().is_empty());
@@ -1622,12 +2272,17 @@ mod tests {
             .execute(
                 Request::Credential {
                     id: "login".into(),
-                    action: CredentialAction::OAuth { provider: "kimi-coding".into() },
+                    action: CredentialAction::OAuth {
+                        provider: "kimi-coding".into(),
+                    },
                 },
                 &tx,
             )
             .await;
-        assert!(drain(&mut rx).await.is_empty(), "an authorization is not answered on the spot");
+        assert!(
+            drain(&mut rx).await.is_empty(),
+            "an authorization is not answered on the spot"
+        );
 
         let mut prompted = false;
         loop {
@@ -1636,18 +2291,28 @@ mod tests {
                 .expect("a report within the code's lifetime")
                 .expect("the channel is open");
             match event {
-                KernelEvent::CredentialPrompt { provider, url, code, .. } => {
+                KernelEvent::CredentialPrompt {
+                    provider,
+                    url,
+                    code,
+                    ..
+                } => {
                     assert_eq!(provider, "kimi-coding");
                     assert_eq!(code, "AAAA-BBBB");
                     assert_eq!(url, "https://example.invalid/device");
                     prompted = true;
                 }
-                KernelEvent::Credential { ok, message, slots, .. } => {
+                KernelEvent::Credential {
+                    ok, message, slots, ..
+                } => {
                     assert!(ok, "{message}");
                     assert!(message.contains("kimi-coding"), "{message}");
                     // The listing says which slot now holds something, and never what.
                     let slot = &slots.as_list().expect("a list")[0];
-                    assert_eq!(slot.get("slot").and_then(Value::as_str), Some("kimi-coding"));
+                    assert_eq!(
+                        slot.get("slot").and_then(Value::as_str),
+                        Some("kimi-coding")
+                    );
                     assert_eq!(slot.get("account").and_then(Value::as_str), Some("acct-9"));
                     assert!(slot.get("value").is_none());
                     break;
@@ -1658,7 +2323,10 @@ mod tests {
         assert!(prompted, "nobody was told where to type the code");
         // The account the service named travels with the token, because one backend wants it
         // back in a header on every request.
-        assert_eq!(kernel.credentials().slots(), vec![("kimi-coding".to_string(), "acct-9".to_string())]);
+        assert_eq!(
+            kernel.credentials().slots(),
+            vec![("kimi-coding".to_string(), "acct-9".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -1671,13 +2339,19 @@ mod tests {
             .execute(
                 Request::Credential {
                     id: "login".into(),
-                    action: CredentialAction::OAuth { provider: "anthropic".into() },
+                    action: CredentialAction::OAuth {
+                        provider: "anthropic".into(),
+                    },
                 },
                 &tx,
             )
             .await;
         match &drain(&mut rx).await[..] {
-            [KernelEvent::Credential { ok, message, slots, .. }] => {
+            [
+                KernelEvent::Credential {
+                    ok, message, slots, ..
+                },
+            ] => {
                 assert!(!ok);
                 assert!(message.contains("anthropic"), "{message}");
                 assert!(slots.as_list().expect("a list").is_empty());
@@ -1696,11 +2370,47 @@ mod tests {
         assert!(flows.contains(&"kimi-coding".to_string()), "{flows:?}");
         for provider in flows {
             assert!(
-                presets::preset(&provider).is_some(),
+                presets::preset_for_slot(&provider).is_some(),
                 "`{provider}` can be authorized but is not a service this daemon knows"
             );
-            assert!(presets::oauth(&provider).is_some(), "`{provider}` is not in the flow list");
+            assert!(
+                presets::oauth(&provider).is_some(),
+                "`{provider}` is not in the flow list"
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn credential_listing_exposes_public_model_catalogues_without_fake_credentials() {
+        let credentials = Arc::new(Credentials::in_memory());
+        let http = Arc::new(Http::new(credentials).unwrap());
+        let openrouter = Arc::new(OpenAiChat::new(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            http,
+        ));
+        let kernel = kernel().with_provider(openrouter);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "catalogue".into(),
+                    action: CredentialAction::List,
+                },
+                &tx,
+            )
+            .await;
+        let event = drain(&mut rx).await.pop().expect("credential listing");
+        let KernelEvent::Credential {
+            model_providers, ..
+        } = event
+        else {
+            panic!("expected credential listing");
+        };
+        assert_eq!(
+            model_providers.as_list().expect("provider list")[0].as_str(),
+            Some("openrouter")
+        );
     }
 
     #[tokio::test]
@@ -1720,7 +2430,15 @@ mod tests {
                 &tx,
             )
             .await;
-        kernel.execute(Request::Credential { id: "b".into(), action: CredentialAction::List }, &tx).await;
+        kernel
+            .execute(
+                Request::Credential {
+                    id: "b".into(),
+                    action: CredentialAction::List,
+                },
+                &tx,
+            )
+            .await;
         let events = drain(&mut rx).await;
         match events.last() {
             Some(KernelEvent::Credential { slots, .. }) => {
@@ -1740,7 +2458,10 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         kernel
             .execute(
-                Request::Http { id: "h1".into(), request: http::Request::get("http://example.invalid") },
+                Request::Http {
+                    id: "h1".into(),
+                    request: http::Request::get("http://example.invalid"),
+                },
                 &tx,
             )
             .await;
@@ -1760,8 +2481,15 @@ mod tests {
         // policy declares and the kernel does not have is a model being lied to. This
         // checks the intersection the session composes from.
         let names = kernel().tool_names();
-        for tool in crate::tools::shipped(&crate::tools::default_shell_dir(), &mpsc::unbounded_channel().0) {
-            assert!(names.contains(&tool.name().to_string()), "`{}` is missing", tool.name());
+        for tool in crate::tools::shipped(
+            &crate::tools::default_shell_dir(),
+            &mpsc::unbounded_channel().0,
+        ) {
+            assert!(
+                names.contains(&tool.name().to_string()),
+                "`{}` is missing",
+                tool.name()
+            );
         }
     }
 }

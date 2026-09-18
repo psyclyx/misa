@@ -25,10 +25,12 @@
 //! showing any of it is worse than one that shows it as it comes, and a non-streaming
 //! path would be a second implementation of every parser here.
 
+use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use misa_value::Value;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use crate::credentials::{Credentials, looks_like_a_secret};
@@ -58,7 +60,11 @@ impl Default for Dialect {
     /// What a service nobody described here gets: the oldest and most widely accepted
     /// spelling of everything.
     fn default() -> Dialect {
-        Dialect { max_tokens_field: "max_tokens", effort: Effort::Reasoning, reasoning_field: None }
+        Dialect {
+            max_tokens_field: "max_tokens",
+            effort: Effort::Reasoning,
+            reasoning_field: None,
+        }
     }
 }
 
@@ -95,6 +101,16 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// The network capability owned by this adapter, when it has one.
+    ///
+    /// A daemon may be assembled with [`Daemon::new`] for an in-memory or test
+    /// composition. Discovery and quota reads must follow the provider's own
+    /// capability instead of assuming the outer daemon happened to carry a
+    /// second copy of HTTP.
+    fn http(&self) -> Option<Arc<Http>> {
+        None
+    }
+
     /// Where this service lists its models, when it has such a thing.
     ///
     /// On the trait rather than in a table beside it, because the address is the adapter's own
@@ -105,10 +121,28 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Whether the model endpoint uses the provider credential. Some public
+    /// catalogues, notably OpenRouter, intentionally do not.
+    fn models_credential(&self) -> bool {
+        true
+    }
+
+    /// Headers required by the model catalogue endpoint, independent of auth.
+    fn models_headers(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// The credential this provider sends, by slot. Never a value, and never formatted.
     fn credential(&self) -> Option<Credential> {
         None
     }
+
+    /// Enrich the service's live model list with facts this adapter owns.
+    ///
+    /// The service remains authoritative for which ids exist. This hook only adds
+    /// provider-specific capabilities to rows that the service actually returned,
+    /// keeping service policy out of the session and out of the terminal client.
+    fn enrich_models(&self, _models: &mut Vec<Listed>) {}
 
     /// Stream a completion. Deltas are pushed as they arrive; the returned value is the
     /// whole answer, including any tool calls and usage the provider reported.
@@ -214,6 +248,7 @@ pub struct OpenAiChat {
     options: Value,
     /// What this service's dialect changes.
     dialect: Dialect,
+    headers: Vec<(String, String)>,
 }
 
 impl OpenAiChat {
@@ -226,6 +261,7 @@ impl OpenAiChat {
             http,
             options: Value::Null,
             dialect: Dialect::default(),
+            headers: Vec::new(),
         }
     }
 
@@ -234,9 +270,15 @@ impl OpenAiChat {
     /// The address, the header, and the dialect all come from the preset, which is the whole
     /// reason a preset exists: adding a service is a row in one table and not an adapter.
     pub fn from_preset(preset: &Preset, http: Arc<Http>) -> OpenAiChat {
-        let chat = OpenAiChat::new(preset.id, preset.base_url, http)
+        let mut chat = OpenAiChat::new(preset.id, preset.base_url, http)
             .with_dialect(preset.into())
             .with_models_path(preset.models_path);
+        if preset.id == "openrouter" {
+            chat = chat.with_headers([
+                ("http-referer", "https://github.com/psyclyx/misa"),
+                ("x-title", "misa"),
+            ]);
+        }
         match preset.credential() {
             Some(credential) => chat.with_credential(credential),
             None => chat,
@@ -279,14 +321,34 @@ impl OpenAiChat {
         self
     }
 
+    pub fn with_headers(
+        mut self,
+        headers: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> OpenAiChat {
+        self.headers = headers
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
     fn request(&self, request: &ProviderRequest) -> Request {
         let mut body = serde_json::Map::new();
-        body.insert("model".into(), serde_json::Value::String(request.model.clone()));
+        body.insert(
+            "model".into(),
+            serde_json::Value::String(request.model.clone()),
+        );
         body.insert("stream".into(), serde_json::Value::Bool(true));
         // Most services report usage only when asked. A spend report that is silently zero
         // because nobody asked is worse than one that arrives in the last chunk.
-        body.insert("stream_options".into(), serde_json::json!({"include_usage": true}));
-        body.insert("messages".into(), openai_messages_with(&request.messages, self.dialect));
+        body.insert(
+            "stream_options".into(),
+            serde_json::json!({"include_usage": true}),
+        );
+        body.insert(
+            "messages".into(),
+            openai_messages_with(&request.messages, self.dialect),
+        );
         if let Some(tools) = tools_json(&request.tools) {
             body.insert("tools".into(), tools);
         }
@@ -321,8 +383,15 @@ impl OpenAiChat {
             }
         }
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let mut request = Request::post(url, serde_json::Value::Object(body).to_string().into_bytes())
-            .header("accept", "text/event-stream");
+        let mut request = Request::post(
+            url,
+            serde_json::Value::Object(body).to_string().into_bytes(),
+        )
+        .header("accept", "text/event-stream")
+        .header("content-type", "application/json");
+        for (name, value) in &self.headers {
+            request = request.header(name, value);
+        }
         if let Some(credential) = &self.credential {
             request = request.with_credential(credential.clone());
         }
@@ -340,6 +409,10 @@ impl Provider for OpenAiChat {
         Some(&self.base_url)
     }
 
+    fn http(&self) -> Option<Arc<Http>> {
+        Some(self.http.clone())
+    }
+
     fn models_url(&self) -> Option<String> {
         Some(format!(
             "{}/{}",
@@ -348,8 +421,56 @@ impl Provider for OpenAiChat {
         ))
     }
 
+    fn models_credential(&self) -> bool {
+        self.id != "openrouter"
+    }
+
+    fn models_headers(&self) -> Vec<(String, String)> {
+        self.headers.clone()
+    }
+
     fn credential(&self) -> Option<Credential> {
         self.credential.clone()
+    }
+
+    fn enrich_models(&self, models: &mut Vec<Listed>) {
+        if self.id != "deepseek" {
+            return;
+        }
+        for model in models {
+            let (context_window, efforts, input_micros, output_micros, cache_read_micros) =
+                match model.id.as_str() {
+                // These are the published names from the reference DeepSeek
+                // catalogue. Do not invent aliases here: the service's list is
+                // authoritative and only these rows receive provider-owned facts.
+                "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" => (
+                    Some(1_000_000),
+                    vec!["none", "low", "high", "max"],
+                    150,
+                    600,
+                    3,
+                ),
+                "deepseek-v4-pro" => (
+                    Some(1_000_000),
+                    vec!["none", "low", "high", "max"],
+                    660,
+                    1_980,
+                    22,
+                ),
+                _ => continue,
+            };
+            model.context_window = context_window;
+            model.efforts = efforts.into_iter().map(str::to_string).collect();
+            model.input_micros = Some(input_micros);
+            model.output_micros = Some(output_micros);
+            model.cache_read_micros = Some(cache_read_micros);
+            model.default_effort = Some("high".into());
+            model.peak = Some(PeakPricing {
+                multiplier_ppm: 2_000_000,
+                weekdays: vec![2, 3, 4, 5, 6],
+                windows: vec![(1, 4), (6, 10)],
+            });
+        }
     }
 
     async fn stream(
@@ -376,8 +497,14 @@ impl Provider for OpenAiChat {
                     return;
                 }
                 if let Some(usage) = chunk.get("usage") {
-                    answer.input_tokens = usage.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                    answer.output_tokens = usage.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                    answer.input_tokens = usage
+                        .get("prompt_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    answer.output_tokens = usage
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                 }
                 let Some(choice) = chunk.get("choices").and_then(|choices| choices.get(0)) else {
                     return;
@@ -388,7 +515,10 @@ impl Provider for OpenAiChat {
                 };
                 if let Some(text) = delta.get("content").and_then(|text| text.as_str()) {
                     answer.text.push_str(text);
-                    let _ = out.send(KernelEvent::ProviderDelta { id: id.to_string(), text: text.to_string() });
+                    let _ = out.send(KernelEvent::ProviderDelta {
+                        id: id.to_string(),
+                        text: text.to_string(),
+                    });
                 }
                 // Some services stream their reasoning beside the answer rather than in it:
                 // DeepSeek in `reasoning_content`, OpenRouter in `reasoning`. It is not the
@@ -399,16 +529,24 @@ impl Provider for OpenAiChat {
                     .and_then(|text| text.as_str())
                 {
                     answer.thinking.push_str(text);
-                    let _ = out.send(KernelEvent::ProviderThinking { id: id.to_string(), text: text.to_string() });
+                    let _ = out.send(KernelEvent::ProviderThinking {
+                        id: id.to_string(),
+                        text: text.to_string(),
+                    });
                 }
                 if let Some(list) = delta.get("tool_calls").and_then(|calls| calls.as_array()) {
                     for call in list {
-                        let index = call.get("index").and_then(|index| index.as_u64()).unwrap_or(0) as usize;
+                        let index = call
+                            .get("index")
+                            .and_then(|index| index.as_u64())
+                            .unwrap_or(0) as usize;
                         let function = call.get("function");
                         calls.start(
                             index,
                             call.get("id").and_then(|id| id.as_str()),
-                            function.and_then(|function| function.get("name")).and_then(|name| name.as_str()),
+                            function
+                                .and_then(|function| function.get("name"))
+                                .and_then(|name| name.as_str()),
                         );
                         if let Some(fragment) = function
                             .and_then(|function| function.get("arguments"))
@@ -444,7 +582,11 @@ pub struct AnthropicMessages {
 }
 
 impl AnthropicMessages {
-    pub fn new(id: impl Into<String>, base_url: impl Into<String>, http: Arc<Http>) -> AnthropicMessages {
+    pub fn new(
+        id: impl Into<String>,
+        base_url: impl Into<String>,
+        http: Arc<Http>,
+    ) -> AnthropicMessages {
         AnthropicMessages {
             id: id.into(),
             base_url: base_url.into(),
@@ -507,7 +649,10 @@ impl AnthropicMessages {
 
     fn request(&self, request: &ProviderRequest) -> Request {
         let mut body = serde_json::Map::new();
-        body.insert("model".into(), serde_json::Value::String(request.model.clone()));
+        body.insert(
+            "model".into(),
+            serde_json::Value::String(request.model.clone()),
+        );
         body.insert("stream".into(), serde_json::Value::Bool(true));
         // Anthropic wants a token budget on every request, and a thinking budget has to fit
         // *inside* it: an effort here is a budget, and the answer needs room after the
@@ -525,7 +670,10 @@ impl AnthropicMessages {
             .get("max_tokens")
             .and_then(Value::as_i64)
             .unwrap_or_else(|| thinking.map_or(8_192, |budget| budget + 8_192));
-        body.insert("max_tokens".into(), serde_json::Value::Number(max_tokens.into()));
+        body.insert(
+            "max_tokens".into(),
+            serde_json::Value::Number(max_tokens.into()),
+        );
         if let Some(budget) = thinking {
             body.insert(
                 "thinking".into(),
@@ -576,9 +724,13 @@ impl AnthropicMessages {
             }
         }
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let mut request = Request::post(url, serde_json::Value::Object(body).to_string().into_bytes())
-            .header("accept", "text/event-stream")
-            .header("anthropic-version", "2023-06-01");
+        let mut request = Request::post(
+            url,
+            serde_json::Value::Object(body).to_string().into_bytes(),
+        )
+        .header("accept", "text/event-stream")
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01");
         if let Some(credential) = &self.credential {
             request = request.with_credential(credential.clone());
         }
@@ -593,6 +745,10 @@ impl Provider for AnthropicMessages {
 
     fn api_base(&self) -> Option<&str> {
         Some(&self.base_url)
+    }
+
+    fn http(&self) -> Option<Arc<Http>> {
+        Some(self.http.clone())
     }
 
     fn models_url(&self) -> Option<String> {
@@ -625,18 +781,28 @@ impl Provider for AnthropicMessages {
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
                     return;
                 };
-                match event.get("type").and_then(|kind| kind.as_str()).unwrap_or("") {
+                match event
+                    .get("type")
+                    .and_then(|kind| kind.as_str())
+                    .unwrap_or("")
+                {
                     "error" => failure = Some(event.to_string()),
                     "message_start" => {
                         if let Some(usage) = event.pointer("/message/usage") {
-                            answer.input_tokens = usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                            answer.input_tokens = usage
+                                .get("input_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
                         }
                     }
                     "content_block_start" => {
                         if let Some(block) = event.get("content_block")
                             && block.get("type").and_then(|kind| kind.as_str()) == Some("tool_use")
                         {
-                            position = event.get("index").and_then(|index| index.as_u64()).unwrap_or(0) as usize;
+                            position = event
+                                .get("index")
+                                .and_then(|index| index.as_u64())
+                                .unwrap_or(0) as usize;
                             calls.start(
                                 position,
                                 block.get("id").and_then(|id| id.as_str()),
@@ -648,12 +814,19 @@ impl Provider for AnthropicMessages {
                         let Some(delta) = event.get("delta") else {
                             return;
                         };
-                        match delta.get("type").and_then(|kind| kind.as_str()).unwrap_or("") {
+                        match delta
+                            .get("type")
+                            .and_then(|kind| kind.as_str())
+                            .unwrap_or("")
+                        {
                             "text_delta" => {
-                                if let Some(text) = delta.get("text").and_then(|text| text.as_str()) {
+                                if let Some(text) = delta.get("text").and_then(|text| text.as_str())
+                                {
                                     answer.text.push_str(text);
-                                    let _ =
-                                        out.send(KernelEvent::ProviderDelta { id: id.to_string(), text: text.to_string() });
+                                    let _ = out.send(KernelEvent::ProviderDelta {
+                                        id: id.to_string(),
+                                        text: text.to_string(),
+                                    });
                                 }
                             }
                             // Anthropic's thinking arrives as a block of its own, with the
@@ -661,7 +834,9 @@ impl Provider for AnthropicMessages {
                             // signed, and the signature is what lets it be replayed; this
                             // adapter does not replay it, so it does not keep it either.
                             "thinking_delta" => {
-                                if let Some(text) = delta.get("thinking").and_then(|text| text.as_str()) {
+                                if let Some(text) =
+                                    delta.get("thinking").and_then(|text| text.as_str())
+                                {
                                     answer.thinking.push_str(text);
                                     let _ = out.send(KernelEvent::ProviderThinking {
                                         id: id.to_string(),
@@ -672,7 +847,9 @@ impl Provider for AnthropicMessages {
                             // Arguments arrive as a partial JSON string, one fragment at a
                             // time, which is why they are accumulated rather than parsed.
                             "input_json_delta" => {
-                                if let Some(fragment) = delta.get("partial_json").and_then(|json| json.as_str()) {
+                                if let Some(fragment) =
+                                    delta.get("partial_json").and_then(|json| json.as_str())
+                                {
                                     calls.args(position, fragment);
                                 }
                             }
@@ -681,7 +858,10 @@ impl Provider for AnthropicMessages {
                     }
                     "message_delta" => {
                         if let Some(usage) = event.get("usage") {
-                            answer.output_tokens = usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                            answer.output_tokens = usage
+                                .get("output_tokens")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
                         }
                     }
                     _ => {}
@@ -729,8 +909,31 @@ fn json_of(value: &Value) -> serde_json::Value {
         Value::Bytes(bytes) => serde_json::Value::String(base64(bytes)),
         Value::List(items) => serde_json::Value::Array(items.iter().map(json_of).collect()),
         Value::Map(entries) => serde_json::Value::Object(
-            entries.iter().map(|(key, value)| (key.clone(), json_of(value))).collect(),
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), json_of(value)))
+                .collect(),
         ),
+    }
+}
+
+fn value_of_json(value: &serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(flag) => Value::Bool(*flag),
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .map(Value::Int)
+            .or_else(|| number.as_f64().map(Value::Float))
+            .unwrap_or(Value::Null),
+        serde_json::Value::String(text) => Value::str(text),
+        serde_json::Value::Array(items) => Value::list(items.iter().map(value_of_json)),
+        serde_json::Value::Object(entries) => Value::Map(Arc::new(
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), value_of_json(value)))
+                .collect(),
+        )),
     }
 }
 
@@ -747,7 +950,10 @@ fn tools_json(tools: &Value) -> Option<serde_json::Value> {
         .iter()
         .filter_map(|tool| {
             let name = tool.get("name")?.as_str()?;
-            let description = tool.get("description").and_then(Value::as_str).unwrap_or_default();
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let schema = tool
                 .get("input_schema")
                 .and_then(Value::as_str)
@@ -784,10 +990,21 @@ fn attachment_parts(message: &Value) -> Vec<(String, String, bool)> {
             attachments
                 .iter()
                 .map(|attachment| {
-                    let missing = attachment.get("missing").and_then(Value::as_bool).unwrap_or(false);
+                    let missing = attachment
+                        .get("missing")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     (
-                        attachment.get("media").and_then(Value::as_str).unwrap_or_default().to_string(),
-                        attachment.get("data").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        attachment
+                            .get("media")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        attachment
+                            .get("data")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
                         missing,
                     )
                 })
@@ -807,7 +1024,11 @@ fn message_calls(message: &Value) -> Vec<(String, String, Value)> {
                 .iter()
                 .filter_map(|call| {
                     let name = call.get("name").and_then(Value::as_str)?.to_string();
-                    let id = call.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let id = call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
                     Some((id, name, call.get("args").cloned().unwrap_or(Value::Null)))
                 })
                 .collect()
@@ -846,6 +1067,28 @@ fn message_thinking(message: &Value) -> String {
 pub struct Listed {
     pub id: String,
     pub label: String,
+    pub context_window: Option<i64>,
+    pub efforts: Vec<String>,
+    pub input_micros: Option<i64>,
+    pub output_micros: Option<i64>,
+    /// A provider-owned starting effort, when the service's model policy has one.
+    pub default_effort: Option<String>,
+    /// Prices in micro-USD per thousand tokens, matching the session cost unit.
+    pub cache_read_micros: Option<i64>,
+    pub cache_write_micros: Option<i64>,
+    pub request_micros: Option<i64>,
+    pub peak: Option<PeakPricing>,
+}
+
+/// A time window that multiplies a model's base prices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PeakPricing {
+    /// One million means 1×, two million means 2×.
+    pub multiplier_ppm: i64,
+    /// ISO-like weekday numbering used by the reference: Sunday is 1.
+    pub weekdays: Vec<u8>,
+    /// Half-open UTC hour ranges.
+    pub windows: Vec<(u8, u8)>,
 }
 
 /// Ask a service which models it has.
@@ -860,7 +1103,12 @@ pub async fn discover(provider: &dyn Provider, http: &Http) -> Result<Vec<Listed
         return Err(format!("`{}` does not list models", provider.id()));
     };
     let mut request = Request::get(url).header("accept", "application/json");
-    if let Some(credential) = provider.credential() {
+    for (name, value) in provider.models_headers() {
+        request = request.header(name, value);
+    }
+    if provider.models_credential()
+        && let Some(credential) = provider.credential()
+    {
         request = request.with_credential(credential);
     }
     let response = http.send(&request).await?;
@@ -875,7 +1123,9 @@ pub async fn discover(provider: &dyn Provider, http: &Http) -> Result<Vec<Listed
     let body = response
         .json()
         .ok_or_else(|| format!("{id} answered with something that is not json"))?;
-    Ok(parse_models(&body))
+    let mut models = parse_models(&body, provider.id());
+    provider.enrich_models(&mut models);
+    Ok(models)
 }
 
 /// The models in a list response, however that service shaped it.
@@ -883,7 +1133,7 @@ pub async fn discover(provider: &dyn Provider, http: &Http) -> Result<Vec<Listed
 /// Three shapes are real: OpenAI's `{"data":[{"id":…}]}`, Anthropic's `{"data":[{"id":…,
 /// "display_name":…}]}`, and the `{"models":[{"name":…}]}` a local server sometimes answers
 /// with. Anything else has no models in it, which is a fact rather than a failure.
-fn parse_models(body: &serde_json::Value) -> Vec<Listed> {
+fn parse_models(body: &serde_json::Value, provider: &str) -> Vec<Listed> {
     let rows = body
         .get("data")
         .and_then(|rows| rows.as_array())
@@ -894,15 +1144,72 @@ fn parse_models(body: &serde_json::Value) -> Vec<Listed> {
     let mut models: Vec<Listed> = rows
         .iter()
         .filter_map(|row| {
+            // The subscription catalogue includes hidden/preview entries alongside
+            // selectable models. This is a dialect fact of that provider, not a
+            // generic OpenAI-compatible discovery rule: other providers are allowed
+            // to use `visibility` for their own public-state vocabulary.
+            if provider == "openai-codex"
+                && row
+                    .get("visibility")
+                    .and_then(|visibility| visibility.as_str())
+                    .is_some_and(|visibility| visibility != "list")
+            {
+                return None;
+            }
             let id = row
                 .get("id")
                 .and_then(|id| id.as_str())
+                .or_else(|| row.get("slug").and_then(|slug| slug.as_str()))
                 .or_else(|| row.get("name").and_then(|name| name.as_str()))?;
             let label = row
                 .get("display_name")
                 .and_then(|label| label.as_str())
+                .or_else(|| row.get("name").and_then(|label| label.as_str()))
                 .unwrap_or(id);
-            Some(Listed { id: id.to_string(), label: label.to_string() })
+            let pricing = row.get("pricing");
+            Some(Listed {
+                id: id.to_string(),
+                label: label.to_string(),
+                context_window: row
+                    .get("context_window")
+                    .or_else(|| row.get("context_length"))
+                    .and_then(|window| window.as_i64()),
+                efforts: row
+                    .get("supported_reasoning_levels")
+                    .and_then(|levels| levels.as_array())
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(|level| {
+                                level.get("effort").and_then(|effort| effort.as_str())
+                            })
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                default_effort: row
+                    .get("default_effort")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                cache_read_micros: pricing.and_then(|pricing| {
+                    pricing_rate(pricing, "input_cache_read")
+                }),
+                cache_write_micros: pricing.and_then(|pricing| {
+                    pricing_rate(pricing, "input_cache_write")
+                }),
+                input_micros: pricing
+                    .and_then(|pricing| pricing_rate(pricing, "prompt"))
+                    .or_else(|| {
+                        pricing.and_then(|pricing| pricing_rate(pricing, "input"))
+                    }),
+                output_micros: pricing
+                    .and_then(|pricing| pricing_rate(pricing, "completion"))
+                    .or_else(|| {
+                        pricing.and_then(|pricing| pricing_rate(pricing, "output"))
+                    }),
+                request_micros: pricing.and_then(|pricing| pricing_request(pricing, "request")),
+                peak: None,
+            })
         })
         .collect();
     // Sorted and deduplicated, because a picker wants a list and two spellings of one model is
@@ -912,10 +1219,34 @@ fn parse_models(body: &serde_json::Value) -> Vec<Listed> {
     models
 }
 
+/// OpenRouter's pricing fields are dollars per token. Keep the conversion at the
+/// provider boundary so the rest of the system only handles integer micro-USD.
+fn pricing_value(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .filter(|value: &f64| value.is_finite() && *value >= 0.0)
+}
+
+fn pricing_rate(pricing: &serde_json::Value, name: &str) -> Option<i64> {
+    let value = pricing_value(pricing.get(name)?)?;
+    let scaled = value * 1_000_000_000.0;
+    (scaled <= i64::MAX as f64).then_some(scaled.round() as i64)
+}
+
+fn pricing_request(pricing: &serde_json::Value, name: &str) -> Option<i64> {
+    let value = pricing_value(pricing.get(name)?)?;
+    let scaled = value * 1_000_000.0;
+    (scaled <= i64::MAX as f64).then_some(scaled.round() as i64)
+}
+
 fn openai_messages_with(messages: &Value, dialect: Dialect) -> serde_json::Value {
     let mut out: Vec<serde_json::Value> = Vec::new();
     for message in messages.as_list().unwrap_or(&[]) {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
         let text = message_text(message);
         match role {
             "assistant" => {
@@ -1003,7 +1334,10 @@ fn openai_messages_with(messages: &Value, dialect: Dialect) -> serde_json::Value
 fn anthropic_messages(messages: &Value) -> serde_json::Value {
     let mut out: Vec<serde_json::Value> = Vec::new();
     for message in messages.as_list().unwrap_or(&[]) {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
         if role == "system" {
             // Lifted into the request's own field, which is where Anthropic reads it.
             continue;
@@ -1083,10 +1417,15 @@ pub struct OpenAiResponses {
     http: Arc<Http>,
     options: Value,
     effort: Effort,
+    headers: Vec<(String, String)>,
 }
 
 impl OpenAiResponses {
-    pub fn new(id: impl Into<String>, base_url: impl Into<String>, http: Arc<Http>) -> OpenAiResponses {
+    pub fn new(
+        id: impl Into<String>,
+        base_url: impl Into<String>,
+        http: Arc<Http>,
+    ) -> OpenAiResponses {
         OpenAiResponses {
             id: id.into(),
             base_url: base_url.into(),
@@ -1095,14 +1434,36 @@ impl OpenAiResponses {
             http,
             options: Value::Null,
             effort: Effort::Reasoning,
+            headers: Vec::new(),
         }
     }
 
     /// An adapter for one of the services this daemon knows by name.
     pub fn from_preset(preset: &Preset, http: Arc<Http>) -> OpenAiResponses {
-        let responses = OpenAiResponses::new(preset.id, preset.base_url, http)
+        let mut responses = OpenAiResponses::new(preset.id, preset.base_url, http)
             .with_models_path(preset.models_path)
             .with_effort(preset.effort);
+        // Codex is Responses-shaped, but its subscription backend adds a small
+        // dialect of its own. Keep those facts in the adapter rather than making
+        // the session know which headers or body defaults a subscription needs.
+        if preset.id == "openai-codex" {
+            responses = responses
+                .with_options(Value::map([
+                    (
+                        "include",
+                        Value::list([Value::str("reasoning.encrypted_content")]),
+                    ),
+                    ("parallel_tool_calls", Value::Bool(true)),
+                    ("reasoning", Value::map([("summary", Value::str("auto"))])),
+                    ("text", Value::map([("verbosity", Value::str("low"))])),
+                    ("tool_choice", Value::str("auto")),
+                ]))
+                .with_headers([
+                    ("openai-beta", "responses=experimental"),
+                    ("originator", "misa"),
+                    ("user-agent", "misa/0.1"),
+                ]);
+        }
         match preset.credential() {
             Some(credential) => responses.with_credential(credential),
             None => responses,
@@ -1139,16 +1500,33 @@ impl OpenAiResponses {
         self
     }
 
+    pub fn with_headers(
+        mut self,
+        headers: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> OpenAiResponses {
+        self.headers = headers
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
     fn request(&self, request: &ProviderRequest) -> Request {
         let mut body = serde_json::Map::new();
-        body.insert("model".into(), serde_json::Value::String(request.model.clone()));
+        body.insert(
+            "model".into(),
+            serde_json::Value::String(request.model.clone()),
+        );
         body.insert("stream".into(), serde_json::Value::Bool(true));
         // The backend is told not to keep the conversation: this daemon's log is
         // the truth, and a service that stored a second copy could not be asked to
         // forget a branch.
         body.insert("store".into(), serde_json::Value::Bool(false));
         if let Some(instructions) = system_prompt(&request.messages) {
-            body.insert("instructions".into(), serde_json::Value::String(instructions));
+            body.insert(
+                "instructions".into(),
+                serde_json::Value::String(instructions),
+            );
         }
         body.insert("input".into(), responses_input(&request.messages));
         if let Some(tools) = responses_tools(&request.tools) {
@@ -1173,12 +1551,28 @@ impl OpenAiResponses {
         }
         if let Value::Map(options) = &self.options {
             for (key, value) in options.iter() {
-                body.insert(key.clone(), json_of(value));
+                if key == "reasoning"
+                    && let Some(serde_json::Value::Object(current)) = body.get_mut(key)
+                    && let Value::Map(extra) = value
+                {
+                    for (name, value) in extra.iter() {
+                        current.insert(name.clone(), json_of(value));
+                    }
+                } else {
+                    body.insert(key.clone(), json_of(value));
+                }
             }
         }
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
-        let mut request = Request::post(url, serde_json::Value::Object(body).to_string().into_bytes())
-            .header("accept", "text/event-stream");
+        let mut request = Request::post(
+            url,
+            serde_json::Value::Object(body).to_string().into_bytes(),
+        )
+        .header("accept", "text/event-stream")
+        .header("content-type", "application/json");
+        for (name, value) in &self.headers {
+            request = request.header(name, value);
+        }
         if let Some(credential) = &self.credential {
             request = request.with_credential(credential.clone());
         }
@@ -1200,6 +1594,10 @@ impl Provider for OpenAiResponses {
         ))
     }
 
+    fn http(&self) -> Option<Arc<Http>> {
+        Some(self.http.clone())
+    }
+
     fn credential(&self) -> Option<Credential> {
         self.credential.clone()
     }
@@ -1216,7 +1614,8 @@ impl Provider for OpenAiResponses {
         // stream's own events name. A call assembled from a delta and then
         // completed in full is *replaced*, not appended to, or its arguments would
         // be the fragment twice.
-        let mut calls: std::collections::BTreeMap<usize, PartialCall> = std::collections::BTreeMap::new();
+        let mut calls: std::collections::BTreeMap<usize, PartialCall> =
+            std::collections::BTreeMap::new();
 
         let result = self
             .http
@@ -1224,13 +1623,18 @@ impl Provider for OpenAiResponses {
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
                     return;
                 };
-                let kind = event.get("type").and_then(|kind| kind.as_str()).unwrap_or_default();
+                let kind = event
+                    .get("type")
+                    .and_then(|kind| kind.as_str())
+                    .unwrap_or_default();
                 match kind {
                     "response.output_text.delta" => {
                         if let Some(text) = event.get("delta").and_then(|delta| delta.as_str()) {
                             answer.text.push_str(text);
-                            let _ =
-                                out.send(KernelEvent::ProviderDelta { id: id.to_string(), text: text.to_string() });
+                            let _ = out.send(KernelEvent::ProviderDelta {
+                                id: id.to_string(),
+                                text: text.to_string(),
+                            });
                         }
                     }
                     // Reasoning arrives under two names: OpenAI streams a summary,
@@ -1238,18 +1642,31 @@ impl Provider for OpenAiResponses {
                     "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                         if let Some(text) = event.get("delta").and_then(|delta| delta.as_str()) {
                             answer.thinking.push_str(text);
-                            let _ =
-                                out.send(KernelEvent::ProviderThinking { id: id.to_string(), text: text.to_string() });
+                            let _ = out.send(KernelEvent::ProviderThinking {
+                                id: id.to_string(),
+                                text: text.to_string(),
+                            });
                         }
                     }
                     "response.output_item.added" | "response.output_item.done" => {
                         let Some(item) = event.get("item") else {
                             return;
                         };
-                        if item.get("type").and_then(|item| item.as_str()) != Some("function_call") {
+                        if item.get("type").and_then(|item| item.as_str()) == Some("reasoning") {
+                            answer.provider_state = Value::list([Value::map([
+                                ("provider", Value::str("openai-codex")),
+                                ("value", value_of_json(item)),
+                            ])]);
                             return;
                         }
-                        let index = event.get("output_index").and_then(|index| index.as_u64()).unwrap_or(0) as usize;
+                        if item.get("type").and_then(|item| item.as_str()) != Some("function_call")
+                        {
+                            return;
+                        }
+                        let index = event
+                            .get("output_index")
+                            .and_then(|index| index.as_u64())
+                            .unwrap_or(0) as usize;
                         let call = calls.entry(index).or_default();
                         if let Some(call_id) = item.get("call_id").and_then(|call| call.as_str()) {
                             call.id = call_id.to_string();
@@ -1260,13 +1677,17 @@ impl Provider for OpenAiResponses {
                         // A finished item carries the whole argument string, which is
                         // the truth and replaces whatever fragments arrived.
                         if kind == "response.output_item.done"
-                            && let Some(arguments) = item.get("arguments").and_then(|args| args.as_str())
+                            && let Some(arguments) =
+                                item.get("arguments").and_then(|args| args.as_str())
                         {
                             call.args = arguments.to_string();
                         }
                     }
                     "response.function_call_arguments.delta" => {
-                        let index = event.get("output_index").and_then(|index| index.as_u64()).unwrap_or(0) as usize;
+                        let index = event
+                            .get("output_index")
+                            .and_then(|index| index.as_u64())
+                            .unwrap_or(0) as usize;
                         if let Some(delta) = event.get("delta").and_then(|delta| delta.as_str()) {
                             calls.entry(index).or_default().args.push_str(delta);
                         }
@@ -1274,21 +1695,38 @@ impl Provider for OpenAiResponses {
                     "response.completed" => {
                         if let Some(response) = event.get("response") {
                             if let Some(usage) = response.get("usage") {
-                                answer.input_tokens =
-                                    usage.get("input_tokens").and_then(|value| value.as_i64()).unwrap_or(0);
-                                answer.output_tokens =
-                                    usage.get("output_tokens").and_then(|value| value.as_i64()).unwrap_or(0);
+                                answer.input_tokens = usage
+                                    .get("input_tokens")
+                                    .and_then(|value| value.as_i64())
+                                    .unwrap_or(0);
+                                answer.output_tokens = usage
+                                    .get("output_tokens")
+                                    .and_then(|value| value.as_i64())
+                                    .unwrap_or(0);
                             }
                             // The completed response is the authoritative list: it
                             // carries every call in full, so whatever streamed before
                             // it is superseded. Replacing rather than merging is what
                             // keeps one call from arriving twice, once as fragments
                             // and once whole.
-                            if let Some(output) = response.get("output").and_then(|output| output.as_array()) {
+                            if let Some(output) =
+                                response.get("output").and_then(|output| output.as_array())
+                            {
+                                if let Some(item) = output.iter().find(|item| {
+                                    item.get("type").and_then(|kind| kind.as_str())
+                                        == Some("reasoning")
+                                }) {
+                                    answer.provider_state = Value::list([Value::map([
+                                        ("provider", Value::str("openai-codex")),
+                                        ("value", value_of_json(item)),
+                                    ])]);
+                                }
                                 let mut complete: std::collections::BTreeMap<usize, PartialCall> =
                                     std::collections::BTreeMap::new();
                                 for (position, item) in output.iter().enumerate() {
-                                    if item.get("type").and_then(|item| item.as_str()) != Some("function_call") {
+                                    if item.get("type").and_then(|item| item.as_str())
+                                        != Some("function_call")
+                                    {
                                         continue;
                                     }
                                     let index = item
@@ -1297,13 +1735,19 @@ impl Provider for OpenAiResponses {
                                         .map(|index| index as usize)
                                         .unwrap_or(position);
                                     let call = complete.entry(index).or_default();
-                                    if let Some(name) = item.get("name").and_then(|name| name.as_str()) {
+                                    if let Some(name) =
+                                        item.get("name").and_then(|name| name.as_str())
+                                    {
                                         call.name = name.to_string();
                                     }
-                                    if let Some(call_id) = item.get("call_id").and_then(|call| call.as_str()) {
+                                    if let Some(call_id) =
+                                        item.get("call_id").and_then(|call| call.as_str())
+                                    {
                                         call.id = call_id.to_string();
                                     }
-                                    if let Some(arguments) = item.get("arguments").and_then(|args| args.as_str()) {
+                                    if let Some(arguments) =
+                                        item.get("arguments").and_then(|args| args.as_str())
+                                    {
                                         call.args = arguments.to_string();
                                     }
                                 }
@@ -1359,7 +1803,10 @@ impl Provider for OpenAiResponses {
 fn responses_input(messages: &Value) -> serde_json::Value {
     let mut out: Vec<serde_json::Value> = Vec::new();
     for message in messages.as_list().unwrap_or(&[]) {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
         match role {
             // The system prompt is `instructions`, which the request builder lifts
             // out; a system message left here would be an item this api rejects.
@@ -1376,6 +1823,23 @@ fn responses_input(messages: &Value) -> serde_json::Value {
                 }));
             }
             "assistant" => {
+                // Codex's reasoning item carries encrypted continuation data. It is
+                // opaque to the session, but must precede the human-readable output
+                // when the next Responses request is assembled.
+                for state in message
+                    .get("provider_state")
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[])
+                {
+                    if state.get("provider").and_then(Value::as_str) == Some("openai-codex")
+                        && let Some(value) = state.get("value")
+                    {
+                        let item = json_of(value);
+                        if item.is_object() {
+                            out.push(item);
+                        }
+                    }
+                }
                 let text = message_text(message);
                 if !text.is_empty() {
                     out.push(serde_json::json!({
@@ -1393,7 +1857,8 @@ fn responses_input(messages: &Value) -> serde_json::Value {
                 }
             }
             _ => {
-                let mut content = vec![serde_json::json!({"type": "input_text", "text": message_text(message)})];
+                let mut content =
+                    vec![serde_json::json!({"type": "input_text", "text": message_text(message)})];
                 for (media, data, missing) in attachment_parts(message) {
                     // An attachment nobody can read is said to be there, because a
                     // model told nothing answers as if nothing was attached.
@@ -1427,7 +1892,10 @@ fn responses_tools(tools: &Value) -> Option<serde_json::Value> {
         .iter()
         .filter_map(|tool| {
             let name = tool.get("name")?.as_str()?;
-            let description = tool.get("description").and_then(Value::as_str).unwrap_or_default();
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let parameters = tool
                 .get("input_schema")
                 .and_then(Value::as_str)
@@ -1456,6 +1924,480 @@ pub struct ScriptedProvider {
     fallback: String,
 }
 
+/// The Claude provider used by the reference: Claude Code owns authentication and
+/// the model process, while misa owns the conversation and presents its answer.
+/// Keeping this as a provider adapter preserves that boundary; it is not an API
+/// preset with a fake Anthropic credential.
+pub struct ClaudeCli {
+    executable: String,
+    /// The command that hosts Misa's MCP server. Kept as composition data so a
+    /// library caller can choose its own installed daemon binary.
+    mcp_command: Option<(String, Vec<String>)>,
+}
+
+impl ClaudeCli {
+    pub fn new(executable: impl Into<String>) -> Arc<ClaudeCli> {
+        Arc::new(ClaudeCli {
+            executable: executable.into(),
+            mcp_command: None,
+        })
+    }
+
+    /// Attach the provider's tool transport. Claude's process owns the model loop,
+    /// while this command exposes the daemon-composed tools over MCP.
+    pub fn with_mcp_command(
+        mut self: Arc<ClaudeCli>,
+        command: impl Into<String>,
+        args: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Arc<ClaudeCli> {
+        Arc::get_mut(&mut self)
+            .expect("a Claude provider must be configured before it is shared")
+            .mcp_command = Some((command.into(), args.into_iter().map(Into::into).collect()));
+        self
+    }
+
+    fn prompt(messages: &Value) -> serde_json::Value {
+        let mut prompt = String::from(
+            "Continue this conversation. Preserve the roles and treat tool results as authoritative.\n",
+        );
+        messages
+            .as_list()
+            .unwrap_or(&[])
+            .iter()
+            .for_each(|message| {
+                let role = message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("user");
+                let text = message_text(message);
+                let heading = match role {
+                    "user" => "User:",
+                    "assistant" => "Assistant:",
+                    "tool" => "Tool result for:",
+                    other => other,
+                };
+                prompt.push_str(heading);
+                if role == "tool" {
+                    prompt.push(' ');
+                    prompt.push_str(
+                        message
+                            .get("call")
+                            .or_else(|| message.get("tool_call_id"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown"),
+                    );
+                }
+                prompt.push('\n');
+                prompt.push_str(&text);
+                prompt.push_str("\n\n");
+            });
+        prompt.push_str("Assistant:\n");
+        let attachments = messages
+            .as_list()
+            .unwrap_or(&[])
+            .iter()
+            .flat_map(attachment_parts)
+            .collect::<Vec<_>>();
+        if attachments.is_empty() {
+            serde_json::Value::String(prompt)
+        } else {
+            let mut blocks = vec![serde_json::json!({"type": "text", "text": prompt})];
+            for (media, data, missing) in attachments {
+                if missing {
+                    blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": "[an attachment was here and could not be read]",
+                    }));
+                } else if media.starts_with("image/") {
+                    blocks.push(serde_json::json!({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media, "data": data},
+                    }));
+                } else {
+                    blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": format!("[attachment: {media}]"),
+                    }));
+                }
+            }
+            serde_json::Value::Array(blocks)
+        }
+    }
+
+    fn arguments(request: &ProviderRequest) -> Vec<String> {
+        vec![
+            "--print".into(),
+            "--input-format".into(),
+            "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--include-partial-messages".into(),
+            "--model".into(),
+            request.model.clone(),
+            // Misa tools are kernel capabilities, not Claude's local tool set. The
+            // next process bridge does not expose MCP yet, so disabling Claude's
+            // built-ins is the honest capability boundary.
+            "--tools".into(),
+            String::new(),
+            "--strict-mcp-config".into(),
+            "--permission-mode".into(),
+            "dontAsk".into(),
+            "--no-session-persistence".into(),
+        ]
+        .into_iter()
+        .chain(
+            request
+                .settings
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .map(|effort| vec!["--effort".into(), effort.into()])
+                .unwrap_or_default(),
+        )
+        .collect()
+    }
+
+    fn command_arguments(&self, request: &ProviderRequest) -> Result<Vec<String>, String> {
+        let mut args = Self::arguments(request);
+        let tools = request.tools.as_list().unwrap_or(&[]);
+        if tools.is_empty() {
+            return Ok(args);
+        }
+        let Some((command, command_args)) = &self.mcp_command else {
+            return Err("Claude provider has tools but no Misa MCP bridge is configured".into());
+        };
+        let names = tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .map(|name| format!("mcp__misa__{name}"))
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            return Ok(args);
+        }
+        args.extend([
+            "--mcp-config".into(),
+            serde_json::json!({
+                "mcpServers": {"misa": {"type": "stdio", "command": command, "args": command_args}},
+            })
+            .to_string(),
+            "--allowedTools".into(),
+            names.join(","),
+        ]);
+        Ok(args)
+    }
+
+    fn tool_name(name: &str) -> String {
+        name.strip_prefix("mcp__misa__").unwrap_or(name).to_string()
+    }
+
+    fn process_record(
+        record: &serde_json::Value,
+        answer: &mut Answer,
+        calls: &mut Vec<PartialCall>,
+        out: &mpsc::UnboundedSender<KernelEvent>,
+        id: &str,
+    ) -> Result<bool, String> {
+        let kind = record
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let event = if kind == "stream_event" {
+            record.get("event").unwrap_or(record)
+        } else {
+            record
+        };
+        let event_kind = event
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(kind);
+        match event_kind {
+            "error" => {
+                let message = event
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| event.get("message").and_then(serde_json::Value::as_str))
+                    .unwrap_or("Claude returned an error");
+                Err(message.to_string())
+            }
+            "message_start" => {
+                answer.input_tokens = event
+                    .pointer("/message/usage/input_tokens")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
+                Ok(false)
+            }
+            "message_delta" => {
+                answer.output_tokens = event
+                    .pointer("/usage/output_tokens")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(answer.output_tokens);
+                Ok(false)
+            }
+            "content_block_start" => {
+                let index = event
+                    .get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(block) = event.get("content_block")
+                    && block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
+                {
+                    while calls.len() <= index {
+                        calls.push(PartialCall::default());
+                    }
+                    calls[index].id = block
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .into();
+                    calls[index].name = Self::tool_name(
+                        block
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default(),
+                    );
+                }
+                Ok(false)
+            }
+            "content_block_delta" => {
+                let delta = event.get("delta").unwrap_or(&serde_json::Value::Null);
+                match delta
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                {
+                    "text_delta" => {
+                        if let Some(text) = delta.get("text").and_then(serde_json::Value::as_str) {
+                            answer.text.push_str(text);
+                            let _ = out.send(KernelEvent::ProviderDelta {
+                                id: id.into(),
+                                text: text.into(),
+                            });
+                        }
+                    }
+                    "thinking_delta" => {
+                        if let Some(text) =
+                            delta.get("thinking").and_then(serde_json::Value::as_str)
+                        {
+                            answer.thinking.push_str(text);
+                            let _ = out.send(KernelEvent::ProviderThinking {
+                                id: id.into(),
+                                text: text.into(),
+                            });
+                        }
+                    }
+                    "input_json_delta" => {
+                        let index = event
+                            .get("index")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0) as usize;
+                        if let Some(fragment) = delta
+                            .get("partial_json")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            while calls.len() <= index {
+                                calls.push(PartialCall::default());
+                            }
+                            calls[index].args.push_str(fragment);
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(false)
+            }
+            // With partial messages enabled Claude emits both stream events and
+            // complete assistant records. Stream events are the low-latency path;
+            // the complete record is still authoritative for a tool block, and is
+            // the only path when a CLI version omits partial events.
+            "assistant" => {
+                if let Some(blocks) = event
+                    .pointer("/message/content")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for (index, block) in blocks.iter().enumerate() {
+                        match block.get("type").and_then(serde_json::Value::as_str) {
+                            Some("text") if answer.text.is_empty() => {
+                                if let Some(text) =
+                                    block.get("text").and_then(serde_json::Value::as_str)
+                                {
+                                    answer.text.push_str(text);
+                                    let _ = out.send(KernelEvent::ProviderDelta {
+                                        id: id.into(),
+                                        text: text.into(),
+                                    });
+                                }
+                            }
+                            Some("thinking") if answer.thinking.is_empty() => {
+                                if let Some(text) =
+                                    block.get("thinking").and_then(serde_json::Value::as_str)
+                                {
+                                    answer.thinking.push_str(text);
+                                    let _ = out.send(KernelEvent::ProviderThinking {
+                                        id: id.into(),
+                                        text: text.into(),
+                                    });
+                                }
+                            }
+                            Some("tool_use") => {
+                                while calls.len() <= index {
+                                    calls.push(PartialCall::default());
+                                }
+                                if let Some(call) = calls.get_mut(index) {
+                                    call.id = block
+                                        .get("id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .into();
+                                    call.name = Self::tool_name(
+                                        block
+                                            .get("name")
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or_default(),
+                                    );
+                                    call.args = block
+                                        .get("input")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null)
+                                        .to_string();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            "result" => {
+                if record.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+                    return Err(record
+                        .get("result")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Claude returned an error")
+                        .into());
+                }
+                if answer.text.is_empty() {
+                    if let Some(text) = record.get("result").and_then(serde_json::Value::as_str) {
+                        answer.text = text.into();
+                        let _ = out.send(KernelEvent::ProviderDelta {
+                            id: id.into(),
+                            text: text.into(),
+                        });
+                    }
+                }
+                answer.input_tokens = record
+                    .pointer("/usage/input_tokens")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(answer.input_tokens);
+                answer.output_tokens = record
+                    .pointer("/usage/output_tokens")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(answer.output_tokens);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for ClaudeCli {
+    fn id(&self) -> &str {
+        "claude"
+    }
+
+    async fn stream(
+        &self,
+        request: &ProviderRequest,
+        id: &str,
+        out: &mpsc::UnboundedSender<KernelEvent>,
+    ) -> Result<Answer, String> {
+        let mut child = tokio::process::Command::new(&self.executable)
+            .args(self.command_arguments(request)?)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("could not run {}: {error}", self.executable))?;
+        let input = serde_json::json!({
+            "message": { "content": Self::prompt(&request.messages), "role": "user" },
+            "parent_tool_use_id": null,
+            "type": "user",
+        });
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input.to_string().as_bytes())
+                .await
+                .map_err(|error| {
+                    format!("could not send a prompt to {}: {error}", self.executable)
+                })?;
+            stdin.write_all(b"\n").await.map_err(|error| {
+                format!(
+                    "could not finish the prompt for {}: {error}",
+                    self.executable
+                )
+            })?;
+        }
+        let stderr = child.stderr.take().map(|mut stderr| {
+            tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                let _ = stderr.read_to_end(&mut bytes).await;
+                bytes
+            })
+        });
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| format!("{} did not provide stdout", self.executable))?;
+        let mut lines = BufReader::new(stdout).lines();
+        let mut answer = Answer::default();
+        let mut calls = Vec::new();
+        let mut result = false;
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|error| format!("could not read {} output: {error}", self.executable))?
+        {
+            let record = serde_json::from_str::<serde_json::Value>(&line)
+                .map_err(|error| format!("{} returned invalid json: {error}", self.executable))?;
+            result |= Self::process_record(&record, &mut answer, &mut calls, out, id)?;
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| format!("could not wait for {}: {error}", self.executable))?;
+        let stderr = match stderr {
+            Some(stderr) => String::from_utf8_lossy(&stderr.await.unwrap_or_default())
+                .trim()
+                .to_string(),
+            None => String::new(),
+        };
+        if !status.success() {
+            return Err(if stderr.is_empty() {
+                format!("{} exited with {status}", self.executable)
+            } else {
+                stderr
+            });
+        }
+        if !result && answer.text.is_empty() {
+            return Err(if stderr.is_empty() {
+                format!("{} returned no result", self.executable)
+            } else {
+                stderr
+            });
+        }
+        answer.tool_calls =
+            Value::list(calls.into_iter().filter(PartialCall::usable).map(|call| {
+                let args = call.to_value().get("args").cloned().unwrap_or(Value::Null);
+                Value::map([
+                    ("id", Value::str(&call.id)),
+                    ("name", Value::str(&Self::tool_name(&call.name))),
+                    ("args", args),
+                ])
+            }));
+        Ok(answer)
+    }
+}
+
 impl ScriptedProvider {
     pub fn new(turns: impl IntoIterator<Item = Turn>) -> Arc<ScriptedProvider> {
         Arc::new(ScriptedProvider {
@@ -1470,9 +2412,12 @@ impl ScriptedProvider {
         ScriptedProvider::new([Turn::say(text)])
     }
 
-    pub fn named(mut self, id: impl Into<String>) -> ScriptedProvider {
-        self.id = id.into();
-        self
+    pub fn named(self: Arc<Self>, id: impl Into<String>) -> Arc<ScriptedProvider> {
+        let mut provider = self;
+        Arc::get_mut(&mut provider)
+            .expect("a newly-created scripted provider is uniquely owned")
+            .id = id.into();
+        provider
     }
 
     pub fn remaining(&self) -> usize {
@@ -1480,24 +2425,41 @@ impl ScriptedProvider {
     }
 
     fn next_turn(&self) -> Option<Turn> {
-        self.turns.lock().expect("script is never poisoned").pop_front()
+        self.turns
+            .lock()
+            .expect("script is never poisoned")
+            .pop_front()
     }
 }
 
 /// One scripted thing a provider does when asked.
 #[derive(Clone, Debug)]
 pub enum Turn {
-    Say { text: String, chunk: usize },
-    Call { name: String, args: Value, then: Box<Turn> },
+    Say {
+        text: String,
+        chunk: usize,
+    },
+    Call {
+        name: String,
+        args: Value,
+        then: Box<Turn>,
+    },
 }
 
 impl Turn {
     pub fn say(text: impl Into<String>) -> Turn {
-        Turn::Say { text: text.into(), chunk: 24 }
+        Turn::Say {
+            text: text.into(),
+            chunk: 24,
+        }
     }
 
     pub fn call(name: impl Into<String>, args: Value, then: Turn) -> Turn {
-        Turn::Call { name: name.into(), args, then: Box::new(then) }
+        Turn::Call {
+            name: name.into(),
+            args,
+            then: Box::new(then),
+        }
     }
 }
 
@@ -1514,7 +2476,9 @@ impl Provider for ScriptedProvider {
         out: &mpsc::UnboundedSender<KernelEvent>,
     ) -> Result<Answer, String> {
         let mut answer = Answer::default();
-        let turn = self.next_turn().unwrap_or_else(|| Turn::say(self.fallback.clone()));
+        let turn = self
+            .next_turn()
+            .unwrap_or_else(|| Turn::say(self.fallback.clone()));
         let (text, tool_calls) = match turn {
             Turn::Say { text, chunk } => {
                 let chunk = chunk.max(1);
@@ -1523,7 +2487,10 @@ impl Provider for ScriptedProvider {
                 while emitted < characters.len() {
                     let end = (emitted + chunk).min(characters.len());
                     let piece: String = characters[emitted..end].iter().collect();
-                    let _ = out.send(KernelEvent::ProviderDelta { id: id.to_string(), text: piece });
+                    let _ = out.send(KernelEvent::ProviderDelta {
+                        id: id.to_string(),
+                        text: piece,
+                    });
                     tokio::task::yield_now().await;
                     emitted = end;
                 }
@@ -1536,7 +2503,10 @@ impl Provider for ScriptedProvider {
                 let implicit = match *then {
                     Turn::Say { text, .. } => text,
                     other => {
-                        self.turns.lock().expect("script is never poisoned").push_front(other);
+                        self.turns
+                            .lock()
+                            .expect("script is never poisoned")
+                            .push_front(other);
                         String::new()
                     }
                 };
@@ -1565,7 +2535,10 @@ pub struct BrokenProvider {
 
 impl BrokenProvider {
     pub fn new(id: impl Into<String>, message: impl Into<String>) -> Arc<BrokenProvider> {
-        Arc::new(BrokenProvider { id: id.into(), message: message.into() })
+        Arc::new(BrokenProvider {
+            id: id.into(),
+            message: message.into(),
+        })
     }
 }
 
@@ -1585,15 +2558,59 @@ impl Provider for BrokenProvider {
     }
 }
 
+/// The standard network composition used by the durable daemon path.
+///
+/// Keeping this beside the provider constructors means the library entry point and
+/// the binary entry point cannot silently disagree about which shipped providers
+/// exist. Tests and custom compositions can still provide a smaller explicit list.
+pub fn shipped(http: Arc<Http>) -> Vec<Arc<dyn Provider>> {
+    let claude = || {
+        let provider = ClaudeCli::new("claude");
+        std::env::current_exe()
+            .ok()
+            .map(|path| {
+                provider
+                    .clone()
+                    .with_mcp_command(path.to_string_lossy(), ["mcp"])
+            })
+            .unwrap_or(provider)
+    };
+    crate::presets::ids()
+        .into_iter()
+        .filter_map(|id| {
+            let preset = crate::presets::preset(id)?;
+            Some(match preset.api {
+                "claude.cli" => claude() as Arc<dyn Provider>,
+                "anthropic.messages" => {
+                    Arc::new(AnthropicMessages::from_preset(preset, http.clone()))
+                        as Arc<dyn Provider>
+                }
+                "openai.responses" => Arc::new(OpenAiResponses::from_preset(preset, http.clone()))
+                    as Arc<dyn Provider>,
+                "openai.chat" => {
+                    Arc::new(OpenAiChat::from_preset(preset, http.clone())) as Arc<dyn Provider>
+                }
+                _ => return None,
+            })
+        })
+        .collect()
+}
+
 /// Whether a base url and a credential look usable, for a diagnostic before a call.
-pub fn check_ready(base_url: &str, credential: Option<&str>, credentials: &Credentials) -> Result<(), String> {
+pub fn check_ready(
+    base_url: &str,
+    credential: Option<&str>,
+    credentials: &Credentials,
+) -> Result<(), String> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
         return Err(format!("`{base_url}` is not an http url"));
     }
     if let Some(slot) = credential
         && !credentials.has(slot)
     {
-        return Err(format!("there is no credential for `{slot}`; add one with the login command"));
+        return Err(format!(
+            "there is no credential for `{slot}`; add one with the login command"
+        ));
     }
     Ok(())
 }
@@ -1618,6 +2635,249 @@ mod tests {
         Arc::new(Http::new(Arc::new(Credentials::in_memory())).unwrap())
     }
 
+    #[test]
+    fn claude_cli_uses_the_reference_stream_protocol_and_keeps_thinking_separate() {
+        let request = ProviderRequest {
+            model: "claude-sonnet-5".into(),
+            messages: Value::list([Value::map([
+                ("role", Value::str("user")),
+                ("text", Value::str("hello")),
+            ])]),
+            tools: Value::list([]),
+            settings: Value::map([("reasoning_effort", Value::str("high"))]),
+        };
+        let args = ClaudeCli::arguments(&request);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--input-format", "stream-json"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--output-format", "stream-json"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--effort", "high"]));
+        assert!(!args.iter().any(|arg| arg == "-p"));
+
+        let (out, mut events) = mpsc::unbounded_channel();
+        let mut answer = Answer::default();
+        let mut calls = Vec::new();
+        for record in [
+            serde_json::json!({"type":"message_start","message":{"usage":{"input_tokens":4}}}),
+            serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"think"}}}),
+            serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"answer"}}}),
+            serde_json::json!({"type":"result","is_error":false,"usage":{"output_tokens":2}}),
+        ] {
+            assert_eq!(
+                ClaudeCli::process_record(&record, &mut answer, &mut calls, &out, "r1").unwrap(),
+                record["type"] == "result"
+            );
+        }
+        assert_eq!(answer.text, "answer");
+        assert_eq!(answer.thinking, "think");
+        assert_eq!(answer.input_tokens, 4);
+        assert_eq!(answer.output_tokens, 2);
+        assert!(
+            matches!(events.try_recv(), Ok(KernelEvent::ProviderThinking { text, .. }) if text == "think")
+        );
+        assert!(
+            matches!(events.try_recv(), Ok(KernelEvent::ProviderDelta { text, .. }) if text == "answer")
+        );
+    }
+
+    #[test]
+    fn claude_prompt_preserves_tool_ids_and_image_parts() {
+        let messages = Value::list([
+            Value::map([
+                ("role", Value::str("user")),
+                ("text", Value::str("look")),
+                (
+                    "attachments",
+                    Value::list([Value::map([
+                        ("media", Value::str("image/png")),
+                        ("data", Value::str("aGVsbG8=")),
+                    ])]),
+                ),
+            ]),
+            Value::map([
+                ("role", Value::str("tool")),
+                ("call", Value::str("call-7")),
+                ("text", Value::str("done")),
+            ]),
+        ]);
+        let prompt = ClaudeCli::prompt(&messages);
+        let blocks = prompt.as_array().expect("attachments use content blocks");
+        assert!(
+            blocks[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Tool result for: call-7")
+        );
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    }
+
+    #[test]
+    fn claude_tools_use_the_composed_mcp_command_and_return_kernel_names() {
+        let request = ProviderRequest {
+            model: "claude-sonnet-5".into(),
+            messages: Value::list([]),
+            tools: Value::list([Value::map([
+                ("name", Value::str("echo")),
+                ("description", Value::str("echo")),
+                ("input_schema", Value::str(r#"{"type":"object"}"#)),
+            ])]),
+            settings: Value::map([]),
+        };
+        let provider = ClaudeCli::new("claude").with_mcp_command("misa-daemon", ["mcp"]);
+        let args = provider
+            .command_arguments(&request)
+            .expect("MCP is configured");
+        let config = args
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .map(|pair| serde_json::from_str::<serde_json::Value>(&pair[1]).unwrap())
+            .unwrap();
+        assert_eq!(config["mcpServers"]["misa"]["command"], "misa-daemon");
+        assert_eq!(config["mcpServers"]["misa"]["args"][0], "mcp");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--allowedTools", "mcp__misa__echo"])
+        );
+
+        let (out, mut events) = mpsc::unbounded_channel();
+        let mut answer = Answer::default();
+        let mut calls = Vec::new();
+        ClaudeCli::process_record(&serde_json::json!({
+            "type":"assistant", "message":{"content":[{"type":"tool_use","id":"call-1","name":"mcp__misa__echo","input":{"x":1}}]}
+        }), &mut answer, &mut calls, &out, "turn").unwrap();
+        assert_eq!(calls[0].name, "echo");
+        let call = calls[0].to_value();
+        let args = call.get("args").expect("tool arguments");
+        assert_eq!(args.get("x").and_then(Value::as_i64), Some(1));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn deepseek_enrichment_adds_only_provider_owned_facts_to_live_ids() {
+        let provider = OpenAiChat::new("deepseek", "https://api.deepseek.com", http());
+        let mut models = vec![
+            Listed {
+                id: "deepseek-v4-pro".into(),
+                label: "V4 Pro".into(),
+                context_window: None,
+                efforts: vec![],
+                input_micros: None,
+                output_micros: None,
+                default_effort: None,
+                cache_read_micros: None,
+                cache_write_micros: None,
+                request_micros: None,
+                peak: None,
+            },
+            Listed {
+                id: "vendor-new-model".into(),
+                label: "new".into(),
+                context_window: None,
+                efforts: vec![],
+                input_micros: None,
+                output_micros: None,
+                default_effort: None,
+                cache_read_micros: None,
+                cache_write_micros: None,
+                request_micros: None,
+                peak: None,
+            },
+        ];
+        provider.enrich_models(&mut models);
+        assert_eq!(models[0].context_window, Some(1_000_000));
+        assert_eq!(models[0].efforts, ["none", "low", "high", "max"]);
+        assert_eq!(models[0].default_effort.as_deref(), Some("high"));
+        assert_eq!(models[0].cache_read_micros, Some(22));
+        assert!(models[1].efforts.is_empty());
+        assert_eq!(models[1].context_window, None);
+    }
+
+    #[tokio::test]
+    async fn deepseek_preset_reaches_chat_completions_with_its_auth_and_reasoning_dialect() {
+        let server = SseServer::start(
+            vec![
+                event(r#"{"choices":[{"delta":{"reasoning_content":"thinking"}}]}"#),
+                event(r#"{"choices":[{"delta":{"content":"answer"}}]}"#),
+                event(r#"{"usage":{"prompt_tokens":3,"completion_tokens":2}}"#),
+                "data: [DONE]\n\n".to_string(),
+            ],
+            "200 OK",
+        )
+        .await;
+        let credentials = Arc::new(Credentials::in_memory());
+        credentials
+            .set("deepseek", "", "deepseek-test-token")
+            .unwrap();
+        let http = Arc::new(Http::new(credentials).unwrap());
+        let provider = OpenAiChat::from_preset(crate::presets::preset("deepseek").unwrap(), http)
+            .with_base_url(format!("http://{}", server.address));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let answer = provider
+            .stream(
+                &ProviderRequest {
+                    model: "deepseek-v4-pro".into(),
+                    messages: Value::list([]),
+                    tools: Value::list([]),
+                    settings: Value::map([("reasoning_effort", Value::str("high"))]),
+                },
+                "deepseek-turn",
+                &tx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer.text, "answer");
+        assert_eq!(answer.thinking, "thinking");
+        assert_eq!((answer.input_tokens, answer.output_tokens), (3, 2));
+        let request = server.requests().await.remove(0).to_ascii_lowercase();
+        assert!(request.contains("post /chat/completions"), "{request}");
+        assert!(request.contains("content-type: application/json"), "{request}");
+        assert!(
+            request.contains("authorization: bearer deepseek-test-token"),
+            "{request}"
+        );
+        assert!(
+            request.contains(r#""reasoning_effort":"high""#),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deepseek_preset_discovers_models_from_the_provider_catalogue() {
+        let server = SseServer::json(
+            r#"{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}"#,
+            "200 OK",
+        )
+        .await;
+        let credentials = Arc::new(Credentials::in_memory());
+        credentials
+            .set("deepseek", "", "deepseek-test-token")
+            .unwrap();
+        let http = Arc::new(Http::new(credentials).unwrap());
+        let provider =
+            OpenAiChat::from_preset(crate::presets::preset("deepseek").unwrap(), http.clone())
+                .with_base_url(format!("http://{}", server.address));
+        let models = discover(&provider, &http).await.unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["deepseek-flash", "deepseek-v4-pro"]
+        );
+        assert_eq!(models[1].context_window, Some(1_000_000));
+        let request = server.requests().await.remove(0).to_ascii_lowercase();
+        assert!(request.contains("get /models"), "{request}");
+        assert!(
+            request.contains("authorization: bearer deepseek-test-token"),
+            "{request}"
+        );
+    }
+
     /// A server that answers one request with a canned server-sent event stream.
     ///
     /// Hand-written rather than a framework: what is being tested is what the *wire*
@@ -1634,7 +2894,11 @@ mod tests {
 
         /// The same server, answering with whatever a test is about: a model list is json, and
         /// a refusal is json too.
-        async fn start_with(frames: Vec<String>, status: &'static str, content_type: &'static str) -> SseServer {
+        async fn start_with(
+            frames: Vec<String>,
+            status: &'static str,
+            content_type: &'static str,
+        ) -> SseServer {
             let content_type = content_type.to_string();
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap().to_string();
@@ -1709,7 +2973,10 @@ mod tests {
             .stream(
                 &ProviderRequest {
                     model: "gpt".into(),
-                    messages: Value::list([Value::map([("role", Value::str("user")), ("text", Value::str("hi"))])]),
+                    messages: Value::list([Value::map([
+                        ("role", Value::str("user")),
+                        ("text", Value::str("hi")),
+                    ])]),
                     tools: Value::list([]),
                     settings: Value::map([]),
                 },
@@ -1729,7 +2996,11 @@ mod tests {
         }
         assert_eq!(deltas, vec!["Hello".to_string(), ", world".to_string()]);
         let requests = server.requests().await;
-        assert!(requests[0].contains("POST /chat/completions"), "{}", requests[0]);
+        assert!(
+            requests[0].contains("POST /chat/completions"),
+            "{}",
+            requests[0]
+        );
         assert!(requests[0].contains("text/event-stream"), "{}", requests[0]);
         assert!(requests[0].contains("\"stream\":true"), "{}", requests[0]);
     }
@@ -1750,7 +3021,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let answer = provider
             .stream(
-                &ProviderRequest { model: "gpt".into(), messages: Value::list([]), tools: Value::list([]), settings: Value::map([]) },
+                &ProviderRequest {
+                    model: "gpt".into(),
+                    messages: Value::list([]),
+                    tools: Value::list([]),
+                    settings: Value::map([]),
+                },
                 "r1",
                 &tx,
             )
@@ -1758,11 +3034,17 @@ mod tests {
             .unwrap();
         let calls = answer.tool_calls.as_list().expect("calls");
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].get("name").and_then(Value::as_str), Some("read_file"));
+        assert_eq!(
+            calls[0].get("name").and_then(Value::as_str),
+            Some("read_file")
+        );
         assert_eq!(calls[0].get("id").and_then(Value::as_str), Some("call_1"));
         // The arguments were a JSON string in three fragments and are an object now.
         assert_eq!(
-            calls[0].get("args").and_then(|args| args.get("path")).and_then(Value::as_str),
+            calls[0]
+                .get("args")
+                .and_then(|args| args.get("path"))
+                .and_then(Value::as_str),
             Some("src/main.rs")
         );
     }
@@ -1781,14 +3063,18 @@ mod tests {
             "200 OK",
         )
         .await;
-        let provider = AnthropicMessages::new("anthropic", format!("http://{}", server.address), http());
+        let provider =
+            AnthropicMessages::new("anthropic", format!("http://{}", server.address), http());
         let (tx, _rx) = mpsc::unbounded_channel();
         let answer = provider
             .stream(
                 &ProviderRequest {
                     model: "claude".into(),
                     messages: Value::list([
-                        Value::map([("role", Value::str("system")), ("text", Value::str("be brief"))]),
+                        Value::map([
+                            ("role", Value::str("system")),
+                            ("text", Value::str("be brief")),
+                        ]),
                         Value::map([("role", Value::str("user")), ("text", Value::str("hi"))]),
                     ]),
                     tools: Value::list([]),
@@ -1805,12 +3091,19 @@ mod tests {
         let calls = answer.tool_calls.as_list().expect("calls");
         assert_eq!(calls[0].get("name").and_then(Value::as_str), Some("shell"));
         assert_eq!(
-            calls[0].get("args").and_then(|args| args.get("command")).and_then(Value::as_str),
+            calls[0]
+                .get("args")
+                .and_then(|args| args.get("command"))
+                .and_then(Value::as_str),
             Some("echo hi")
         );
         let requests = server.requests().await;
         // The system prompt is a field, not a message, and the version header is there.
-        assert!(requests[0].contains("\"system\":\"be brief\""), "{}", requests[0]);
+        assert!(
+            requests[0].contains("\"system\":\"be brief\""),
+            "{}",
+            requests[0]
+        );
         assert!(requests[0].contains("anthropic-version"), "{}", requests[0]);
     }
 
@@ -1836,7 +3129,11 @@ mod tests {
             )
             .await;
         let requests = server.requests().await;
-        assert!(requests[0].contains(r#""max_completion_tokens":1000"#), "{}", requests[0]);
+        assert!(
+            requests[0].contains(r#""max_completion_tokens":1000"#),
+            "{}",
+            requests[0]
+        );
         assert!(!requests[0].contains(r#""max_tokens"#), "{}", requests[0]);
 
         // And the same adapter for a service that wants the older name.
@@ -1846,7 +3143,7 @@ mod tests {
         let _ = chat
             .stream(
                 &ProviderRequest {
-                    model: "deepseek-chat".into(),
+                    model: "deepseek-flash".into(),
                     messages: Value::list([]),
                     tools: Value::list([]),
                     settings: Value::map([("max_tokens", Value::Int(1_000))]),
@@ -1856,7 +3153,11 @@ mod tests {
             )
             .await;
         let requests = server.requests().await;
-        assert!(requests[0].contains(r#""max_tokens":1000"#), "{}", requests[0]);
+        assert!(
+            requests[0].contains(r#""max_tokens":1000"#),
+            "{}",
+            requests[0]
+        );
     }
 
     #[tokio::test]
@@ -1885,7 +3186,10 @@ mod tests {
         assert!(openai.contains(r#""reasoning_effort":"high""#), "{openai}");
         // OpenRouter, which proxies many services and spells it its own way.
         let openrouter = attempt("openrouter").await;
-        assert!(openrouter.contains(r#""reasoning":{"effort":"high"}"#), "{openrouter}");
+        assert!(
+            openrouter.contains(r#""reasoning":{"effort":"high"}"#),
+            "{openrouter}"
+        );
         assert!(!openrouter.contains("reasoning_effort"), "{openrouter}");
         // A service with no such setting is not sent one: an unknown field is a 400.
         let cerebras = attempt("cerebras").await;
@@ -1911,7 +3215,7 @@ mod tests {
         let answer = provider
             .stream(
                 &ProviderRequest {
-                    model: "deepseek-reasoner".into(),
+                    model: "deepseek-v4-pro".into(),
                     messages: Value::list([]),
                     tools: Value::list([]),
                     settings: Value::map([]),
@@ -1932,7 +3236,10 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(thinking, vec!["let me see".to_string(), " — no, this".to_string()]);
+        assert_eq!(
+            thinking,
+            vec!["let me see".to_string(), " — no, this".to_string()]
+        );
         assert_eq!(text, vec!["the answer".to_string()]);
     }
 
@@ -1956,11 +3263,18 @@ mod tests {
         ])]);
         let deepseek = openai_messages_with(
             &messages,
-            Dialect { reasoning_field: Some("reasoning_content"), ..Dialect::default() },
+            Dialect {
+                reasoning_field: Some("reasoning_content"),
+                ..Dialect::default()
+            },
         );
         assert_eq!(deepseek[0]["reasoning_content"], "I should call echo");
         let openai = openai_messages(&messages);
-        assert!(openai[0].get("reasoning_content").is_none(), "{}", openai[0]);
+        assert!(
+            openai[0].get("reasoning_content").is_none(),
+            "{}",
+            openai[0]
+        );
     }
 
     #[tokio::test]
@@ -1973,7 +3287,8 @@ mod tests {
             "200 OK",
         )
         .await;
-        let provider = AnthropicMessages::new("anthropic", format!("http://{}", server.address), http());
+        let provider =
+            AnthropicMessages::new("anthropic", format!("http://{}", server.address), http());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let answer = provider
             .stream(
@@ -2002,7 +3317,10 @@ mod tests {
         let body = &requests[0];
         // A budget to think with, and room for the answer after it: a thinking budget that
         // filled the whole allowance would be a request that always ends in the middle.
-        assert!(body.contains(r#""thinking":{"budget_tokens":32768,"type":"enabled"}"#), "{body}");
+        assert!(
+            body.contains(r#""thinking":{"budget_tokens":32768,"type":"enabled"}"#),
+            "{body}"
+        );
         assert!(body.contains(r#""max_tokens":40960"#), "{body}");
         // And an effort is not sent as a word to a service that has no such word.
         assert!(!body.contains("reasoning_effort"), "{body}");
@@ -2012,21 +3330,53 @@ mod tests {
     async fn a_model_list_is_read_out_of_whatever_shape_it_arrived_in() {
         // OpenAI's shape.
         let server = SseServer::json(
-            r#"{"object":"list","data":[{"id":"m-2","created":1},{"id":"m-1"}]}"#,
+            r#"{"object":"list","data":[{"id":"m-2","created":1,"pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"0.0000001","input_cache_write":"0.0000003","request":"0.01"}},{"id":"m-1"}]}"#,
             "200 OK",
         )
         .await;
         let provider = OpenAiChat::new("openai", format!("http://{}", server.address), http());
         let models = discover(&provider, &http()).await.expect("a list");
-        assert_eq!(models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), vec!["m-1", "m-2"]);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m-1", "m-2"]
+        );
         assert_eq!(models[1].label, "m-2");
+        assert_eq!(models[1].input_micros, Some(1_000));
+        assert_eq!(models[1].output_micros, Some(2_000));
+        assert_eq!(models[1].cache_read_micros, Some(100));
+        assert_eq!(models[1].cache_write_micros, Some(300));
+        assert_eq!(models[1].request_micros, Some(10_000));
         let requests = server.requests().await;
         assert!(requests[0].contains("GET /models"), "{}", requests[0]);
 
+        // OpenRouter's catalogue is public. It still receives the attribution
+        // headers required by the service, but model discovery must not depend
+        // on an OpenRouter token being present.
+        let server = SseServer::json(r#"{"data":[{"id":"open-model"}]}"#, "200 OK").await;
+        let provider = OpenAiChat::from_preset(
+            crate::presets::preset("openrouter").unwrap(),
+            http(),
+        )
+        .with_base_url(format!("http://{}", server.address));
+        let models = discover(&provider, &http()).await.expect("a public list");
+        assert_eq!(models[0].id, "open-model");
+        let request = server.requests().await.remove(0).to_ascii_lowercase();
+        assert!(!request.contains("authorization:"), "{request}");
+        assert!(request.contains("http-referer: https://github.com/psyclyx/misa"), "{request}");
+        assert!(request.contains("x-title: misa"), "{request}");
+
         // Anthropic's, which names a display label as well as an id, and lives at
         // `/v1/models` rather than `/models`.
-        let server = SseServer::json(r#"{"data":[{"id":"claude-x","display_name":"Claude X"}]}"#, "200 OK").await;
-        let provider = AnthropicMessages::new("anthropic", format!("http://{}", server.address), http());
+        let server = SseServer::json(
+            r#"{"data":[{"id":"claude-x","display_name":"Claude X"}]}"#,
+            "200 OK",
+        )
+        .await;
+        let provider =
+            AnthropicMessages::new("anthropic", format!("http://{}", server.address), http());
         let models = discover(&provider, &http()).await.expect("a list");
         assert_eq!(models[0].label, "Claude X");
         let requests = server.requests().await;
@@ -2038,14 +3388,47 @@ mod tests {
         let models = discover(&provider, &http()).await.expect("a list");
         assert_eq!(models[0].id, "llama-3");
 
+        // Codex calls the model identity a slug and advertises effort facts on each
+        // row. Those are provider facts, not a second hard-coded catalog.
+        let server = SseServer::json(
+            r#"{"models":[{"slug":"gpt-5.4","display_name":"GPT-5.4 (ChatGPT)","context_window":1000000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"xhigh"}],"visibility":"list"},{"slug":"gpt-preview","visibility":"preview"}]}"#,
+            "200 OK",
+        )
+        .await;
+        let provider =
+            OpenAiResponses::new("openai-codex", format!("http://{}", server.address), http());
+        let models = discover(&provider, &http()).await.expect("a list");
+        assert_eq!(models[0].id, "gpt-5.4");
+        assert_eq!(models[0].context_window, Some(1_000_000));
+        assert_eq!(models[0].efforts, vec!["low", "xhigh"]);
+
+        // A generic OpenAI-compatible service may expose a different visibility
+        // vocabulary; it must not be silently filtered by the Codex rule.
+        let server = SseServer::json(
+            r#"{"data":[{"id":"provider-model","visibility":"public"}]}"#,
+            "200 OK",
+        )
+        .await;
+        let provider = OpenAiChat::new("provider", format!("http://{}", server.address), http());
+        assert_eq!(
+            discover(&provider, &http()).await.unwrap()[0].id,
+            "provider-model"
+        );
+
         // A script has no models to list, and says so rather than answering with nothing.
-        let error = discover(&*ScriptedProvider::always("hi"), &http()).await.unwrap_err();
+        let error = discover(&*ScriptedProvider::always("hi"), &http())
+            .await
+            .unwrap_err();
         assert!(error.contains("does not list models"), "{error}");
     }
 
     #[tokio::test]
     async fn a_model_list_that_is_really_a_refusal_is_reported_as_one() {
-        let server = SseServer::json(r#"{"error":{"message":"invalid api key"}}"#, "401 Unauthorized").await;
+        let server = SseServer::json(
+            r#"{"error":{"message":"invalid api key"}}"#,
+            "401 Unauthorized",
+        )
+        .await;
         let provider = OpenAiChat::new("openai", format!("http://{}", server.address), http());
         let error = discover(&provider, &http()).await.unwrap_err();
         assert!(error.contains("401"), "{error}");
@@ -2061,7 +3444,10 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_is_an_error_with_the_body_in_it() {
         let server = SseServer::start(
-            vec![r#"{"error":{"type":"invalid_request_error","message":"no such model"}}"#.to_string()],
+            vec![
+                r#"{"error":{"type":"invalid_request_error","message":"no such model"}}"#
+                    .to_string(),
+            ],
             "400 Bad Request",
         )
         .await;
@@ -2069,7 +3455,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let error = provider
             .stream(
-                &ProviderRequest { model: "nope".into(), messages: Value::list([]), tools: Value::list([]), settings: Value::map([]) },
+                &ProviderRequest {
+                    model: "nope".into(),
+                    messages: Value::list([]),
+                    tools: Value::list([]),
+                    settings: Value::map([]),
+                },
                 "r1",
                 &tx,
             )
@@ -2082,11 +3473,17 @@ mod tests {
     async fn a_missing_credential_is_refused_before_the_request_goes_out() {
         // Nothing listens on this port; if the credential check did not happen first,
         // this would be a connection error instead.
-        let provider = OpenAiChat::new("openai", "http://127.0.0.1:1", http()).credentialed("nobody");
+        let provider =
+            OpenAiChat::new("openai", "http://127.0.0.1:1", http()).credentialed("nobody");
         let (tx, _rx) = mpsc::unbounded_channel();
         let error = provider
             .stream(
-                &ProviderRequest { model: "m".into(), messages: Value::list([]), tools: Value::list([]), settings: Value::map([]) },
+                &ProviderRequest {
+                    model: "m".into(),
+                    messages: Value::list([]),
+                    tools: Value::list([]),
+                    settings: Value::map([]),
+                },
                 "r1",
                 &tx,
             )
@@ -2100,12 +3497,18 @@ mod tests {
         let tools = Value::list([Value::map([
             ("name", Value::str("read_file")),
             ("description", Value::str("read it")),
-            ("input_schema", Value::str(r#"{"type":"object","required":["path"]}"#)),
+            (
+                "input_schema",
+                Value::str(r#"{"type":"object","required":["path"]}"#),
+            ),
         ])]);
         let translated = tools_json(&tools).expect("tools");
         assert_eq!(translated[0]["function"]["name"], "read_file");
         // A schema arrives as a string and reaches a provider as an object.
-        assert_eq!(translated[0]["function"]["parameters"]["required"][0], "path");
+        assert_eq!(
+            translated[0]["function"]["parameters"]["required"][0],
+            "path"
+        );
         assert!(tools_json(&Value::list([])).is_none());
     }
 
@@ -2145,11 +3548,17 @@ mod tests {
         // The session's own shape has `text`; OpenAI reads `content`. Sending the first is
         // a request that answers as if the message were empty, which is the kind of bug a
         // test with a template provider would never see.
-        let messages = Value::list([Value::map([("role", Value::str("user")), ("text", Value::str("hi"))])]);
+        let messages = Value::list([Value::map([
+            ("role", Value::str("user")),
+            ("text", Value::str("hi")),
+        ])]);
         let shaped = openai_messages(&messages);
         assert_eq!(shaped[0]["role"], "user");
         assert_eq!(shaped[0]["content"], "hi");
-        assert!(shaped[0].get("text").is_none(), "the session's own key leaked through");
+        assert!(
+            shaped[0].get("text").is_none(),
+            "the session's own key leaked through"
+        );
     }
 
     #[test]
@@ -2168,7 +3577,10 @@ mod tests {
         let anthropic = anthropic_messages(&messages);
         assert_eq!(anthropic[0]["content"][1]["type"], "image");
         assert_eq!(anthropic[0]["content"][1]["source"]["type"], "base64");
-        assert_eq!(anthropic[0]["content"][1]["source"]["media_type"], "image/png");
+        assert_eq!(
+            anthropic[0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
         assert_eq!(anthropic[0]["content"][1]["source"]["data"], "iVBORw0KGgo=");
     }
 
@@ -2189,7 +3601,11 @@ mod tests {
         ]);
         let openai = openai_messages(&Value::list([message.clone()]));
         assert_eq!(openai[0]["content"][0]["type"], "image_url");
-        assert_eq!(openai[0]["content"].as_array().map(Vec::len), Some(1), "an empty text part was sent");
+        assert_eq!(
+            openai[0]["content"].as_array().map(Vec::len),
+            Some(1),
+            "an empty text part was sent"
+        );
         let anthropic = anthropic_messages(&Value::list([message]));
         assert_eq!(anthropic[0]["content"].as_array().map(Vec::len), Some(1));
     }
@@ -2210,9 +3626,19 @@ mod tests {
             ),
         ]);
         let openai = openai_messages(&Value::list([message.clone()]));
-        assert!(openai[0]["content"][1]["text"].as_str().unwrap().contains("unavailable"));
+        assert!(
+            openai[0]["content"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("unavailable")
+        );
         let anthropic = anthropic_messages(&Value::list([message]));
-        assert!(anthropic[0]["content"][1]["text"].as_str().unwrap().contains("unavailable"));
+        assert!(
+            anthropic[0]["content"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("unavailable")
+        );
     }
 
     #[test]
@@ -2245,7 +3671,10 @@ mod tests {
         assert_eq!(openai[0]["tool_calls"][0]["type"], "function");
         assert_eq!(openai[0]["tool_calls"][0]["function"]["name"], "echo");
         // Arguments are a JSON *string* on this wire, not an object.
-        assert_eq!(openai[0]["tool_calls"][0]["function"]["arguments"], r#"{"text":"hi"}"#);
+        assert_eq!(
+            openai[0]["tool_calls"][0]["function"]["arguments"],
+            r#"{"text":"hi"}"#
+        );
         assert_eq!(openai[1]["role"], "tool");
         assert_eq!(openai[1]["tool_call_id"], "c1");
         assert_eq!(openai[1]["content"], "hi");
@@ -2262,14 +3691,20 @@ mod tests {
     #[test]
     fn a_system_prompt_is_a_message_to_one_provider_and_a_field_to_the_other() {
         let messages = Value::list([
-            Value::map([("role", Value::str("system")), ("text", Value::str("be brief"))]),
+            Value::map([
+                ("role", Value::str("system")),
+                ("text", Value::str("be brief")),
+            ]),
             Value::map([("role", Value::str("user")), ("text", Value::str("hi"))]),
         ]);
         assert_eq!(openai_messages(&messages)[0]["role"], "system");
         assert_eq!(openai_messages(&messages)[0]["content"], "be brief");
         assert_eq!(system_prompt(&messages).as_deref(), Some("be brief"));
         // And Anthropic's list has no system message in it at all.
-        assert_eq!(anthropic_messages(&messages).as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            anthropic_messages(&messages).as_array().map(Vec::len),
+            Some(1)
+        );
         assert_eq!(system_prompt(&Value::list([])), None);
     }
 
@@ -2279,7 +3714,9 @@ mod tests {
         // becomes a message saying so. `provider` and `kernel` are tested apart because
         // they are apart: this is the seam between them.
         let blobs = Arc::new(crate::Blobs::in_memory());
-        let stored = blobs.put(&[0x89, b'P', b'N', b'G', 1, 2], None).expect("a blob");
+        let stored = blobs
+            .put(&[0x89, b'P', b'N', b'G', 1, 2], None)
+            .expect("a blob");
         let kernel = crate::Daemon::new(ScriptedProvider::always("hi")).with_blobs(blobs);
         let messages = Value::list([Value::map([
             ("role", Value::str("user")),
@@ -2299,10 +3736,22 @@ mod tests {
             .and_then(|message| message.get("attachments"))
             .and_then(Value::as_list)
             .expect("attachments");
-        assert_eq!(attachments[0].get("media").and_then(Value::as_str), Some("image/png"));
-        assert_eq!(attachments[0].get("data").and_then(Value::as_str), Some("iVBORwEC"));
-        assert!(attachments[0].get("missing").is_none(), "a stored blob was marked missing");
-        assert_eq!(attachments[1].get("missing").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            attachments[0].get("media").and_then(Value::as_str),
+            Some("image/png")
+        );
+        assert_eq!(
+            attachments[0].get("data").and_then(Value::as_str),
+            Some("iVBORwEC")
+        );
+        assert!(
+            attachments[0].get("missing").is_none(),
+            "a stored blob was marked missing"
+        );
+        assert_eq!(
+            attachments[1].get("missing").and_then(Value::as_bool),
+            Some(true)
+        );
         assert!(attachments[1].get("data").is_none());
     }
     #[tokio::test]
@@ -2315,6 +3764,7 @@ mod tests {
                 event(r#"{"type":"response.output_text.delta","delta":"Hel"}"#),
                 event(r#"{"type":"response.output_text.delta","delta":"lo"}"#),
                 event(r#"{"type":"response.reasoning_summary_text.delta","delta":"thinking"}"#),
+                event(r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}}"#),
                 event(r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"fc_1","name":"read_file"}}"#),
                 event(r#"{"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":"}"#),
                 event(r#"{"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"a.rs\"}"}"#),
@@ -2324,14 +3774,18 @@ mod tests {
             "200 OK",
         )
         .await;
-        let provider = OpenAiResponses::new("openai-codex", format!("http://{}", server.address), http());
+        let provider =
+            OpenAiResponses::new("openai-codex", format!("http://{}", server.address), http());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let answer = provider
             .stream(
                 &ProviderRequest {
                     model: "gpt".into(),
                     messages: Value::list([
-                        Value::map([("role", Value::str("system")), ("text", Value::str("be brief"))]),
+                        Value::map([
+                            ("role", Value::str("system")),
+                            ("text", Value::str("be brief")),
+                        ]),
                         Value::map([("role", Value::str("user")), ("text", Value::str("hi"))]),
                     ]),
                     tools: Value::list([]),
@@ -2346,12 +3800,35 @@ mod tests {
         assert_eq!(answer.thinking, "thinking");
         assert_eq!(answer.input_tokens, 9);
         assert_eq!(answer.output_tokens, 4);
+        assert_eq!(
+            answer
+                .provider_state
+                .as_list()
+                .and_then(|states| states[0].get("provider"))
+                .and_then(Value::as_str),
+            Some("openai-codex")
+        );
+        assert_eq!(
+            answer
+                .provider_state
+                .as_list()
+                .and_then(|states| states[0].get("value"))
+                .and_then(|value| value.get("encrypted_content"))
+                .and_then(Value::as_str),
+            Some("opaque")
+        );
         let calls = answer.tool_calls.as_list().expect("calls");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].get("id").and_then(Value::as_str), Some("fc_1"));
-        assert_eq!(calls[0].get("name").and_then(Value::as_str), Some("read_file"));
         assert_eq!(
-            calls[0].get("args").and_then(|args| args.get("path")).and_then(Value::as_str),
+            calls[0].get("name").and_then(Value::as_str),
+            Some("read_file")
+        );
+        assert_eq!(
+            calls[0]
+                .get("args")
+                .and_then(|args| args.get("path"))
+                .and_then(Value::as_str),
             Some("a.rs"),
             "a finished call's arguments replace the fragments: {calls:?}"
         );
@@ -2379,17 +3856,73 @@ mod tests {
         assert!(!body.contains(r#""messages""#), "{body}");
         assert!(body.contains(r#""max_output_tokens":512"#), "{body}");
         assert!(!body.contains(r#""max_tokens""#), "{body}");
-        assert!(body.contains(r#""text":"hi","type":"input_text""#), "{body}");
+        assert!(
+            body.contains(r#""text":"hi","type":"input_text""#),
+            "{body}"
+        );
         // The one credential slot, sent as a bearer token like the chat api.
         assert!(body.contains(r#""store":false"#), "{body}");
     }
 
     #[test]
+    fn codex_preset_keeps_its_responses_dialect_and_reasoning_effort() {
+        let provider =
+            OpenAiResponses::from_preset(crate::presets::preset("openai-codex").unwrap(), http());
+        let request = provider.request(&ProviderRequest {
+            model: "gpt-5.4".into(),
+            messages: Value::list([]),
+            tools: Value::list([]),
+            settings: Value::map([("reasoning_effort", Value::str("xhigh"))]),
+        });
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body.as_deref().expect("request body")).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["include"][0], "reasoning.encrypted_content");
+        assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(body["text"]["verbosity"], "low");
+        assert_eq!(body["tool_choice"], "auto");
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "openai-beta" && value == "responses=experimental")
+        );
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "originator" && value == "misa")
+        );
+        assert_eq!(
+            request
+                .credential
+                .as_ref()
+                .map(|credential| credential.slot.as_str()),
+            Some("openai-codex")
+        );
+        assert_eq!(
+            request
+                .credential
+                .as_ref()
+                .and_then(|credential| credential.account_header.as_deref()),
+            Some("chatgpt-account-id")
+        );
+    }
+
+    #[test]
     fn a_finished_responses_call_is_usable_and_an_unfinished_one_is_not() {
         // A call with no name is one no tool can run and no result can answer.
-        let finished = PartialCall { id: "fc_1".into(), name: "echo".into(), args: "{}".into() };
+        let finished = PartialCall {
+            id: "fc_1".into(),
+            name: "echo".into(),
+            args: "{}".into(),
+        };
         assert!(finished.usable());
-        assert_eq!(finished.to_value().get("name").and_then(Value::as_str), Some("echo"));
+        assert_eq!(
+            finished.to_value().get("name").and_then(Value::as_str),
+            Some("echo")
+        );
         assert!(!PartialCall::default().usable());
     }
 }
