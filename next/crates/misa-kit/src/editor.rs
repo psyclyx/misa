@@ -23,6 +23,9 @@ pub enum Mode {
     Insert,
     /// Keys are motions and edits.
     Normal,
+    /// Keys move the cursor while retaining the text range selected from the
+    /// visual anchor.
+    Visual,
 }
 
 /// A movement within the line.
@@ -32,6 +35,7 @@ pub enum Motion {
     Right,
     WordNext,
     WordPrevious,
+    WordEnd,
     LineStart,
     LineEnd,
     First,
@@ -63,12 +67,18 @@ pub struct Editor {
     /// A byte offset into `text`, always on a character boundary.
     cursor: usize,
     mode: Mode,
+    visual_anchor: Option<usize>,
     history: Vec<String>,
     /// Where a person is browsing, and what they were typing before they started.
     history_at: Option<usize>,
     draft: String,
     /// Removed text, for an undo that is worth having.
     undone: Vec<(String, usize, String)>,
+    /// States moved out of the undo history by `U`, invalidated by a new edit.
+    redone: Vec<(String, usize)>,
+    /// The register used by normal-mode yank and paste. It belongs to the editor,
+    /// alongside the text it edits, so every client gets the same semantics.
+    register: String,
 }
 
 impl Default for Editor {
@@ -83,10 +93,13 @@ impl Editor {
             text: String::new(),
             cursor: 0,
             mode: Mode::Insert,
+            visual_anchor: None,
             history: Vec::new(),
             history_at: None,
             draft: String::new(),
             undone: Vec::new(),
+            redone: Vec::new(),
+            register: String::new(),
         }
     }
 
@@ -125,6 +138,7 @@ impl Editor {
         self.text = text.into();
         self.cursor = self.text.len();
         self.history_at = None;
+        self.visual_anchor = None;
     }
 
     /// Append text at the cursor.
@@ -147,8 +161,13 @@ impl Editor {
             return Effect::Ignored;
         }
         self.remember_for_undo();
-        let previous = self.text[..self.cursor].chars().next_back().map(char::len_utf8).unwrap_or(1);
-        self.text.replace_range(self.cursor - previous..self.cursor, "");
+        let previous = self.text[..self.cursor]
+            .chars()
+            .next_back()
+            .map(char::len_utf8)
+            .unwrap_or(1);
+        self.text
+            .replace_range(self.cursor - previous..self.cursor, "");
         self.cursor -= previous;
         Effect::Changed
     }
@@ -158,14 +177,21 @@ impl Editor {
             return Effect::Ignored;
         }
         self.remember_for_undo();
-        let next = self.text[self.cursor..].chars().next().map(char::len_utf8).unwrap_or(1);
+        let next = self.text[self.cursor..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(1);
         self.text.replace_range(self.cursor..self.cursor + next, "");
         Effect::Changed
     }
 
     pub fn move_cursor(&mut self, motion: Motion) -> Effect {
         let target = match motion {
-            Motion::Left => self.text[..self.cursor].chars().next_back().map(|c| self.cursor - c.len_utf8()),
+            Motion::Left => self.text[..self.cursor]
+                .chars()
+                .next_back()
+                .map(|c| self.cursor - c.len_utf8()),
             Motion::Right => self.text[self.cursor..]
                 .chars()
                 .next()
@@ -173,27 +199,44 @@ impl Editor {
             // On a single line, the start and the end of the line are the ends of the
             // text: a motion that did nothing because there was no newline would be a
             // key that silently depends on something unrelated.
-            Motion::LineStart => self.text[..self.cursor].rfind('\n').map(|at| at + 1).or(Some(0)),
-            Motion::LineEnd => self.text[self.cursor..].find('\n').map(|at| self.cursor + at).or(Some(self.text.len())),
+            Motion::LineStart => self.text[..self.cursor]
+                .rfind('\n')
+                .map(|at| at + 1)
+                .or(Some(0)),
+            Motion::LineEnd => self.text[self.cursor..]
+                .find('\n')
+                .map(|at| self.cursor + at)
+                .or(Some(self.text.len())),
             Motion::First => Some(0),
             Motion::Last => Some(self.text.len()),
             // The start of the next word, not the end of this one: a frontend that
             // wants the other convention adds a motion rather than changing this.
             Motion::WordNext => Some(word_next(&self.text, self.cursor)),
             Motion::WordPrevious => Some(word_previous(&self.text, self.cursor)),
+            Motion::WordEnd => Some(word_end(&self.text, self.cursor)),
             Motion::Up | Motion::Down => {
                 let start = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
                 let column = self.text[start..self.cursor].chars().count();
                 let next_start = if motion == Motion::Up {
-                    start.checked_sub(1).map(|end| self.text[..end].rfind('\n').map_or(0, |at| at + 1))
+                    start
+                        .checked_sub(1)
+                        .map(|end| self.text[..end].rfind('\n').map_or(0, |at| at + 1))
                 } else {
-                    self.text[self.cursor..].find('\n').map(|at| self.cursor + at + 1)
+                    self.text[self.cursor..]
+                        .find('\n')
+                        .map(|at| self.cursor + at + 1)
                 };
                 next_start.map(|start| {
-                    let end = self.text[start..].find('\n').map_or(self.text.len(), |at| start + at);
-                    start + self.text[start..end].char_indices().nth(column).map_or(end - start, |(at, _)| at)
+                    let end = self.text[start..]
+                        .find('\n')
+                        .map_or(self.text.len(), |at| start + at);
+                    start
+                        + self.text[start..end]
+                            .char_indices()
+                            .nth(column)
+                            .map_or(end - start, |(at, _)| at)
                 })
-            },
+            }
         };
         match target {
             Some(target) if target != self.cursor => {
@@ -210,7 +253,72 @@ impl Editor {
             return Effect::Ignored;
         }
         self.mode = mode;
+        self.visual_anchor = (mode == Mode::Visual).then_some(self.cursor);
         Effect::ModeChanged(mode)
+    }
+
+    /// Enter visual mode selecting the current line, the `V` binding in the
+    /// reference editor. The range remains ordinary editor state, so rendering
+    /// and operations do not need a second selection implementation.
+    pub fn visual_line(&mut self) -> Effect {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
+        let end = self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |at| self.cursor + at);
+        self.mode = Mode::Visual;
+        self.visual_anchor = Some(start);
+        self.cursor = end;
+        Effect::ModeChanged(Mode::Visual)
+    }
+
+    pub fn visual_range(&self) -> Option<(usize, usize)> {
+        (self.mode == Mode::Visual).then(|| {
+            let anchor = self.visual_anchor.unwrap_or(self.cursor);
+            (anchor.min(self.cursor), anchor.max(self.cursor))
+        })
+    }
+
+    /// Apply a visual operation and leave visual mode, as Vim does. The caller
+    /// decides whether the returned text is sent to a clipboard.
+    pub fn visual_operation(&mut self, operator: char) -> String {
+        let Some((start, end)) = self.visual_range() else {
+            return String::new();
+        };
+        let selected = self.text[start..end].to_string();
+        if operator == 'y' {
+            self.register = selected.clone();
+        }
+        if operator != 'y' {
+            self.remember_for_undo();
+            self.text.replace_range(start..end, "");
+            self.cursor = start;
+        }
+        self.mode = if operator == 'c' {
+            Mode::Insert
+        } else {
+            Mode::Normal
+        };
+        self.visual_anchor = None;
+        selected
+    }
+
+    /// Paste the most recently yanked text after the cursor, the normal-mode `p`
+    /// operation. Empty registers are a no-op, just like an empty clipboard.
+    pub fn paste(&mut self) -> Effect {
+        if self.register.is_empty() {
+            return Effect::Ignored;
+        }
+        let at = self.text[self.cursor..]
+            .chars()
+            .next()
+            .map_or(self.text.len(), |character| {
+                self.cursor + character.len_utf8()
+            });
+        let value = self.register.clone();
+        self.remember_for_undo();
+        self.text.insert_str(at, &value);
+        self.cursor = at + value.len();
+        Effect::Changed
     }
 
     /// Submit, if there is anything to submit.
@@ -223,13 +331,18 @@ impl Editor {
         self.cursor = 0;
         self.history_at = None;
         self.draft.clear();
+        self.visual_anchor = None;
+        self.mode = Mode::Insert;
         if text.trim().is_empty() {
             return Effect::Ignored;
         }
         if self.history.last().map(String::as_str) != Some(text.as_str()) {
             self.history.push(text.clone());
         }
-        Effect::Submit(Intent::Prompt { text, attachments: Vec::new() })
+        Effect::Submit(Intent::Prompt {
+            text,
+            attachments: Vec::new(),
+        })
     }
 
     /// Interrupt, keeping what was typed.
@@ -283,38 +396,73 @@ impl Editor {
             (original.min(target), original.max(target))
         } else {
             let start = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
-            let end = self.text[self.cursor..].find('\n').map_or(self.text.len(), |at| self.cursor + at + 1);
+            let end = self.text[self.cursor..]
+                .find('\n')
+                .map_or(self.text.len(), |at| self.cursor + at + 1);
             (start, end)
         };
         if linewise {
             start = self.text[..start].rfind('\n').map_or(0, |at| at + 1);
             if motion.is_some() {
-                end = self.text[end..].find('\n').map_or(self.text.len(), |at| end + at + 1);
+                end = self.text[end..]
+                    .find('\n')
+                    .map_or(self.text.len(), |at| end + at + 1);
             }
-            if operator == 'c' && end > start && self.text[..end].ends_with('\n') { end -= 1; }
+            if operator == 'c' && end > start && self.text[..end].ends_with('\n') {
+                end -= 1;
+            }
         }
         let copied = self.text[start..end].to_string();
+        if operator == 'y' {
+            self.register = copied.clone();
+        }
         if operator != 'y' {
             self.remember_for_undo();
             // Deleting the last line also removes its preceding separator.
-            if linewise && end == self.text.len() && start > 0 && operator == 'd' { start -= 1; }
+            if linewise && end == self.text.len() && start > 0 && operator == 'd' {
+                start -= 1;
+            }
             self.text.replace_range(start..end, "");
             self.cursor = start;
-            if operator == 'c' { self.mode = Mode::Insert; }
+            if operator == 'c' {
+                self.mode = Mode::Insert;
+            }
         }
         copied
     }
 
     pub fn open_line(&mut self, above: bool) {
-        self.move_cursor(if above { Motion::LineStart } else { Motion::LineEnd });
+        self.move_cursor(if above {
+            Motion::LineStart
+        } else {
+            Motion::LineEnd
+        });
         self.insert("\n");
-        if above { self.cursor -= 1; }
+        if above {
+            self.cursor -= 1;
+        }
         self.mode = Mode::Insert;
     }
 
     pub fn undo(&mut self) -> Effect {
         match self.undone.pop() {
             Some((text, cursor, _)) => {
+                self.redone.push((self.text.clone(), self.cursor));
+                self.text = text;
+                self.cursor = cursor.min(self.text.len());
+                Effect::Changed
+            }
+            None => Effect::Ignored,
+        }
+    }
+
+    /// Move forward through the editor's undo history, the normal-mode `U`
+    /// binding in the reference editor.
+    pub fn redo(&mut self) -> Effect {
+        match self.redone.pop() {
+            Some((text, cursor)) => {
+                self.undone
+                    .push((self.text.clone(), self.cursor, String::new()));
                 self.text = text;
                 self.cursor = cursor.min(self.text.len());
                 Effect::Changed
@@ -329,7 +477,9 @@ impl Editor {
         if self.undone.len() > 64 {
             self.undone.remove(0);
         }
-        self.undone.push((self.text.clone(), self.cursor, String::new()));
+        self.undone
+            .push((self.text.clone(), self.cursor, String::new()));
+        self.redone.clear();
     }
 
     /// The text around the cursor, for a frontend that draws it.
@@ -374,6 +524,24 @@ fn word_previous(text: &str, cursor: usize) -> usize {
             break;
         }
         at -= character.len_utf8();
+    }
+    at
+}
+
+/// The end boundary of the word at or after the cursor.
+fn word_end(text: &str, cursor: usize) -> usize {
+    let mut at = cursor;
+    while let Some(character) = text[at..].chars().next() {
+        if !character.is_whitespace() {
+            break;
+        }
+        at += character.len_utf8();
+    }
+    while let Some(character) = text[at..].chars().next() {
+        if character.is_whitespace() {
+            break;
+        }
+        at += character.len_utf8();
     }
     at
 }
@@ -489,7 +657,11 @@ mod tests {
         assert_eq!(editor.text(), "second");
         assert_eq!(editor.history_step(true), Effect::Changed);
         assert_eq!(editor.text(), "first");
-        assert_eq!(editor.history_step(true), Effect::Ignored, "history walked past its start");
+        assert_eq!(
+            editor.history_step(true),
+            Effect::Ignored,
+            "history walked past its start"
+        );
         assert_eq!(editor.history_step(false), Effect::Changed);
         assert_eq!(editor.text(), "second");
         // Past the newest entry is the draft that was being typed.
@@ -515,9 +687,15 @@ mod tests {
     fn a_mode_change_is_visible_to_a_frontend_and_insertion_is_the_default() {
         let mut editor = Editor::new();
         assert_eq!(editor.mode(), Mode::Insert);
-        assert_eq!(editor.set_mode(Mode::Normal), Effect::ModeChanged(Mode::Normal));
+        assert_eq!(
+            editor.set_mode(Mode::Normal),
+            Effect::ModeChanged(Mode::Normal)
+        );
         assert_eq!(editor.set_mode(Mode::Normal), Effect::Ignored);
-        assert_eq!(editor.set_mode(Mode::Insert), Effect::ModeChanged(Mode::Insert));
+        assert_eq!(
+            editor.set_mode(Mode::Insert),
+            Effect::ModeChanged(Mode::Insert)
+        );
     }
 
     #[test]
@@ -529,6 +707,20 @@ mod tests {
         editor.undo();
         assert_eq!(editor.text(), "one ");
         assert_eq!(editor.undo(), Effect::Changed);
+    }
+
+    #[test]
+    fn redo_restores_an_undo_and_a_new_edit_invalidates_that_branch() {
+        let mut editor = typed("one");
+        editor.type_char('!');
+        editor.undo();
+        assert_eq!(editor.text(), "one");
+        assert_eq!(editor.redo(), Effect::Changed);
+        assert_eq!(editor.text(), "one!");
+        editor.undo();
+        editor.type_char('?');
+        assert_eq!(editor.redo(), Effect::Ignored);
+        assert_eq!(editor.text(), "one?");
     }
 
     #[test]
@@ -544,7 +736,11 @@ mod tests {
     fn an_interrupt_keeps_the_draft() {
         let mut editor = typed("important");
         assert_eq!(editor.interrupt(), Effect::Interrupted);
-        assert_eq!(editor.text(), "important", "an interrupt threw away the draft");
+        assert_eq!(
+            editor.text(),
+            "important",
+            "an interrupt threw away the draft"
+        );
     }
     #[test]
     fn vertical_motions_keep_character_columns_and_clip_short_lines() {
@@ -571,4 +767,16 @@ mod tests {
         assert_eq!(editor.text(), "one\ntwo\nthree");
     }
 
+    #[test]
+    fn normal_register_yanks_and_pastes_and_word_end_is_a_motion() {
+        let mut editor = typed("one two");
+        editor.move_cursor(Motion::LineStart);
+        assert_eq!(editor.move_cursor(Motion::WordEnd), Effect::Changed);
+        assert_eq!(editor.cursor(), 3);
+        editor.move_cursor(Motion::LineStart);
+        editor.operate('y', Some(Motion::WordNext));
+        editor.move_cursor(Motion::Last);
+        assert_eq!(editor.paste(), Effect::Changed);
+        assert_eq!(editor.text(), "one twoone ");
+    }
 }

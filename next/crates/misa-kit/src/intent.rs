@@ -3,9 +3,8 @@
 //! Shortcut metadata names arguments and completion sources. Parsing only prepares
 //! local input; the installed command catalog and owner validate invocations.
 
-
 pub use misa_proto::preparation::Arg;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// A local slash-command declaration; invocation authority stays in installed catalogs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -20,8 +19,17 @@ pub struct Command {
 }
 
 impl Command {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, description: impl Into<String>) -> Command {
-        Command { id: id.into(), label: label.into(), description: description.into(), args: Vec::new() }
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Command {
+        Command {
+            id: id.into(),
+            label: label.into(),
+            description: description.into(),
+            args: Vec::new(),
+        }
     }
 
     pub fn arg(mut self, arg: Arg) -> Command {
@@ -34,7 +42,6 @@ impl Command {
         self.args.iter().find(|arg| arg.required)
     }
 }
-
 
 use misa_value::Value;
 
@@ -84,12 +91,19 @@ pub fn words(input: &str) -> Words {
             escape = true;
             started = true;
         } else if let Some(delimiter) = quote {
-            if ch == delimiter { quote = None; } else { value.push(ch); }
+            if ch == delimiter {
+                quote = None;
+            } else {
+                value.push(ch);
+            }
         } else if ch == '\'' || ch == '"' {
             quote = Some(ch);
             started = true;
         } else if ch.is_whitespace() {
-            if started { values.push(std::mem::take(&mut value)); started = false; }
+            if started {
+                values.push(std::mem::take(&mut value));
+                started = false;
+            }
             trailing_space = true;
             continue;
         } else {
@@ -98,17 +112,29 @@ pub fn words(input: &str) -> Words {
         }
         trailing_space = false;
     }
-    if started { values.push(value); }
+    if started {
+        values.push(value);
+    }
     Words {
         values,
-        error: if escape { Some("Finish the escaped character") } else if quote.is_some() { Some("Close the quoted argument") } else { None },
+        error: if escape {
+            Some("Finish the escaped character")
+        } else if quote.is_some() {
+            Some("Close the quoted argument")
+        } else {
+            None
+        },
         trailing_space,
     }
 }
 
 /// Emit one literal argument that the local parser can read without expansion.
 pub fn quote(value: &str) -> String {
-    if !value.is_empty() && value.chars().all(|ch| !ch.is_whitespace() && !matches!(ch,'\''|'"'|'\\')) {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| !ch.is_whitespace() && !matches!(ch, '\'' | '"' | '\\'))
+    {
         value.to_string()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
@@ -132,14 +158,20 @@ pub fn parse(line: &str, commands: &[Command]) -> Parsed {
         return Parsed::Prompt(line.to_string());
     }
     let words = words(rest);
-    if let Some(message) = words.error { return Parsed::Invalid { message: message.into() }; }
+    if let Some(message) = words.error {
+        return Parsed::Invalid {
+            message: message.into(),
+        };
+    }
     let name = words.values.first().cloned().unwrap_or_default();
     let values = &words.values[words.values.len().min(1)..];
     let Some(declared) = commands.iter().find(|command| command.id == name) else {
         return Parsed::Unknown { name };
     };
     if values.len() > declared.args.len() {
-        return Parsed::Invalid { message: format!("/{name} has too many arguments; quote a value containing spaces") };
+        return Parsed::Invalid {
+            message: format!("/{name} has too many arguments; quote a value containing spaces"),
+        };
     }
 
     // Positional arguments in the order they are declared, which is the order a
@@ -155,9 +187,11 @@ pub fn parse(line: &str, commands: &[Command]) -> Parsed {
         args.insert(name.clone(), Value::str(value));
     }
 
-    if let Some(missing) = declared.args.iter().find(|arg| {
-        arg.required && !given.iter().any(|(name, _)| name == &arg.name)
-    }) {
+    if let Some(missing) = declared
+        .args
+        .iter()
+        .find(|arg| arg.required && !given.iter().any(|(name, _)| name == &arg.name))
+    {
         return Parsed::Needs {
             command: name,
             argument: missing.name.clone(),
@@ -165,20 +199,28 @@ pub fn parse(line: &str, commands: &[Command]) -> Parsed {
             given,
         };
     }
-    Parsed::Command { name, args: Value::Map(std::sync::Arc::new(args)) }
+    Parsed::Command {
+        name,
+        args: Value::Map(std::sync::Arc::new(args)),
+    }
 }
 
 /// The intent a parsed line becomes, when it is ready.
 pub fn intent(parsed: &Parsed) -> Option<Intent> {
     match parsed {
-        Parsed::Prompt(text) => Some(Intent::Prompt { text: text.clone(), attachments: Vec::new() }),
+        Parsed::Prompt(text) => Some(Intent::Prompt {
+            text: text.clone(),
+            attachments: Vec::new(),
+        }),
         Parsed::Command { name, args } => Some(Intent::Command {
             name: name.clone(),
             args: args.clone(),
         }),
         // A line that is not ready is not sent: the client opens the picker its
         // declaration pointed at, which is the whole reason this returns nothing.
-        Parsed::Needs { .. } | Parsed::Unknown { .. } | Parsed::Empty | Parsed::Invalid { .. } => None,
+        Parsed::Needs { .. } | Parsed::Unknown { .. } | Parsed::Empty | Parsed::Invalid { .. } => {
+            None
+        }
     }
 }
 
@@ -199,22 +241,38 @@ mod tests {
 
     #[test]
     fn literal_arguments_round_trip_without_expansion() {
-        for value in ["two words", "quote' and \"double\"", "", "back\\slash", "雪 路", "$HOME;`command`", "tabs\there"] {
+        for value in [
+            "two words",
+            "quote' and \"double\"",
+            "",
+            "back\\slash",
+            "雪 路",
+            "$HOME;`command`",
+            "tabs\there",
+        ] {
             let parsed = parse(&format!("/model {}", quote(value)), &commands());
-            let Parsed::Command { args, .. } = parsed else { panic!("{parsed:?}"); };
+            let Parsed::Command { args, .. } = parsed else {
+                panic!("{parsed:?}");
+            };
             assert_eq!(args.get("model").and_then(Value::as_str), Some(value));
         }
-        for line in ["/model two\\ words", "/model 'two 'words", "/model \"two words\""] {
-            let Parsed::Command { args,.. } = parse(line,&commands()) else { panic!("{line}"); };
-            assert_eq!(args.get("model").and_then(Value::as_str),Some("two words"));
+        for line in [
+            "/model two\\ words",
+            "/model 'two 'words",
+            "/model \"two words\"",
+        ] {
+            let Parsed::Command { args, .. } = parse(line, &commands()) else {
+                panic!("{line}");
+            };
+            assert_eq!(args.get("model").and_then(Value::as_str), Some("two words"));
         }
     }
 
     #[test]
     fn malformed_or_surplus_arguments_never_submit_but_partial_prefix_survives() {
         for line in ["/model 'two words", "/model two\\", "/model two words"] {
-            let parsed = parse(line,&commands());
-            assert!(matches!(parsed,Parsed::Invalid { .. }));
+            let parsed = parse(line, &commands());
+            assert!(matches!(parsed, Parsed::Invalid { .. }));
             assert!(intent(&parsed).is_none());
         }
         let partial = words("model 'two words");
@@ -226,7 +284,10 @@ mod tests {
 
     #[test]
     fn ordinary_text_is_a_prompt() {
-        assert_eq!(parse("hello there", &commands()), Parsed::Prompt("hello there".into()));
+        assert_eq!(
+            parse("hello there", &commands()),
+            Parsed::Prompt("hello there".into())
+        );
     }
 
     #[test]
@@ -248,7 +309,12 @@ mod tests {
     #[test]
     fn a_command_that_needs_an_argument_says_so_and_where_to_find_it() {
         match parse("/model", &commands()) {
-            Parsed::Needs { command, argument, source, given } => {
+            Parsed::Needs {
+                command,
+                argument,
+                source,
+                given,
+            } => {
                 assert_eq!(command, "model");
                 assert_eq!(argument, "model");
                 assert_eq!(source.as_deref(), Some("models"));
@@ -256,7 +322,10 @@ mod tests {
             }
             other => panic!("expected a required argument, got {other:?}"),
         }
-        assert!(intent(&parse("/model", &commands())).is_none(), "an unready line was sent");
+        assert!(
+            intent(&parse("/model", &commands())).is_none(),
+            "an unready line was sent"
+        );
     }
 
     #[test]
@@ -264,7 +333,10 @@ mod tests {
         match parse("/model scripted-1", &commands()) {
             Parsed::Command { name, args } => {
                 assert_eq!(name, "model");
-                assert_eq!(args.get("model").and_then(Value::as_str), Some("scripted-1"));
+                assert_eq!(
+                    args.get("model").and_then(Value::as_str),
+                    Some("scripted-1")
+                );
             }
             other => panic!("expected a command, got {other:?}"),
         }
@@ -322,10 +394,19 @@ pub struct Source {
 
 impl Source {
     pub fn resident(id: impl Into<String>, label: impl Into<String>) -> Source {
-        Source { id: id.into(), label: label.into(), kind: SourceKind::Resident, description: None }
+        Source {
+            id: id.into(),
+            label: label.into(),
+            kind: SourceKind::Resident,
+            description: None,
+        }
     }
 
-    pub fn on_demand(id: impl Into<String>, label: impl Into<String>, description: impl Into<String>) -> Source {
+    pub fn on_demand(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Source {
         Source {
             id: id.into(),
             label: label.into(),
@@ -333,7 +414,6 @@ impl Source {
             description: Some(description.into()),
         }
     }
-
 }
 
 /// A local editor action. This is never a wire request or owner command.
