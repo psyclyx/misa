@@ -432,6 +432,7 @@ mod tests {
         let line = |text: &str, node: &str| Line {
             indent: 0,
             spans: vec![(Style::PLAIN, text.to_string())],
+            surface: None,
             node: Some(node.to_string()),
         };
         Body::of(&[
@@ -458,6 +459,7 @@ mod tests {
         let body = Body::of(&[Line {
             indent: 2,
             spans: vec![(Style::PLAIN, "railed".to_string())],
+            surface: None,
             node: None,
         }]);
         assert_eq!(body.row(0), "  railed");
@@ -469,6 +471,7 @@ mod tests {
         let body = Body::of(&[Line {
             indent: 0,
             spans: vec![(Style::PLAIN, "héllo".to_string())],
+            surface: None,
             node: None,
         }]);
         // `é` is two bytes; offset 2 is inside it.
@@ -620,7 +623,7 @@ mod tests {
     fn a_selection_over_a_row_with_no_node_names_none() {
         // A notice or the composer is drawn without a node; a selection may cover it,
         // and then there is nothing to attribute the bytes to.
-        let body = Body::of(&[Line { indent: 0, spans: vec![(Style::PLAIN, "the composer".into())], node: None }]);
+        let body = Body::of(&[Line { indent: 0, spans: vec![(Style::PLAIN, "the composer".into())], surface: None, node: None }]);
         let mut selection = Selection::caret(Spot::new(0, 0));
         selection.head = Spot::new(0, 4);
         assert_eq!(selection.nodes(&body), Vec::<String>::new());

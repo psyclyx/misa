@@ -23,7 +23,7 @@ pub mod text;
 pub mod theme;
 
 pub use lines::{Line, render, to_plain};
-pub use text::{clip, pad, width, wrap_spans};
+pub use text::{clip, pad, width, wrap_spans, wrap_styled};
 pub use theme::{Color, Style, Theme};
 
 pub mod select;

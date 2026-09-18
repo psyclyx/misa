@@ -137,94 +137,132 @@ impl Theme {
             roles.insert(role.to_string(), style);
         };
         set("", Style::PLAIN);
-        set("session.header", Style::fg(hex(0x8a8f98)));
-        set("session.title", Style::fg(hex(0xe6e8ea)).bold());
-        set("message.user", Style::fg(hex(0xd7dbe0)));
-        set("message.user.rail", Style::fg(hex(0x6f7bd6)));
-        set("message.assistant", Style::fg(hex(0xe9ebee)));
-        set("message.assistant.rail", Style::fg(hex(0x64b5a0)));
-        set("message.thinking", Style::fg(hex(0x9aa2ad)).italic());
-        set("message.thinking.rail", Style::fg(hex(0x5b6270)));
+        set("header.title", Style::fg(hex(0x81bdb5)).bold());
+        set("header.detail", Style::fg(hex(0x84919c)).dim());
+        set("session.header", Style::fg(hex(0x84919c)));
+        set("session.title", Style::fg(hex(0x81bdb5)).bold());
+        // Message bodies use the text surface; only their rails carry the role
+        // colour. This is the reference's distinction between readable prose
+        // and the small marker that identifies its speaker.
+        set("message.user", Style::PLAIN);
+        set("surface.user", Style::PLAIN.on(hex(0x1d2824)));
+        set("message.user.rail", Style::fg(hex(0x93b99a)));
+        set("message.assistant", Style::PLAIN);
+        set("surface.assistant", Style::PLAIN.on(hex(0x1e252f)));
+        set("message.assistant.rail", Style::fg(hex(0x8dafd2)));
+        set("message.thinking", Style::PLAIN.dim());
+        set("surface.thinking", Style::PLAIN.on(hex(0x282330)));
+        set("message.thinking.rail", Style::fg(hex(0xb8a1c9)));
         // A model reasoning aloud: present, readable, and clearly not the answer.
         set(
             "message.assistant.thinking",
-            Style::fg(hex(0x8a919c)).italic(),
+            Style::PLAIN.dim(),
         );
-        set("message.assistant.thinking.rail", Style::fg(hex(0x4d5462)));
+        set("message.assistant.thinking.rail", Style::fg(hex(0xb8a1c9)));
         // What the session told the model on its own: a background command finishing is the
         // only thing that speaks this way, and it should read as a footnote rather than prose.
-        set("message.system", Style::fg(hex(0x8a8f98)).dim());
-        set("tool.call", Style::fg(hex(0xd3d7dc)));
-        set("tool.call.rail", Style::fg(hex(0xc9a227)));
-        set("tool.result", Style::fg(hex(0xb9bec6)));
-        set("tool.result.rail", Style::fg(hex(0x8a8f98)));
-        set("notice", Style::fg(hex(0x8a8f98)));
-        set("error", Style::fg(hex(0xe06c75)));
-        set("error.rail", Style::fg(hex(0xe06c75)));
-        set("status", Style::fg(hex(0x7f8690)).dim());
-        set("composer", Style::fg(hex(0xe6e8ea)));
-        set("mode.insert", Style::fg(hex(0x64b5a0)).bold());
-        set("mode.normal", Style::fg(hex(0xc9a227)).bold());
-        set("palette.title", Style::fg(hex(0x64b5a0)).bold());
+        set("message.system", Style::fg(hex(0x84919c)).dim());
+        set("user", Style::PLAIN);
+        set("text", Style::PLAIN);
+        set("dim", Style::PLAIN.dim());
+        set("tool.call", Style::PLAIN);
+        set("surface.tool", Style::PLAIN.on(hex(0x2b2820)));
+        set("tool.call.rail", Style::fg(hex(0xc9b07f)));
+        set("tool.result", Style::PLAIN);
+        set("tool.result.rail", Style::fg(hex(0xc9b07f)));
+        set("notice", Style::fg(hex(0x84919c)));
+        set("error", Style::fg(hex(0xde9397)));
+        set("surface.error", Style::PLAIN.on(hex(0x322329)));
+        set("error.rail", Style::fg(hex(0xde9397)));
+        set("status", Style::fg(hex(0x84919c)).dim());
+        set("composer", Style::PLAIN);
+        set("mode.insert", Style::fg(hex(0x81bdb5)).bold());
+        set("mode.normal", Style::fg(hex(0x81bdb5)).bold());
+        set("mode.visual", Style::fg(hex(0x81bdb5)).bold());
+        set("palette.title", Style::fg(hex(0x81bdb5)).bold());
         set(
             "palette.item.selected",
-            Style::fg(hex(0xe6e8ea)).on(hex(0x39415a)).bold(),
+            Style::PLAIN.on(hex(0x3b5260)).bold(),
         );
-        set("palette.item", Style::fg(hex(0xb9bec6)));
-        set("palette.hint", Style::fg(hex(0x8a8f98)));
-        set("value.context", Style::fg(hex(0x64b5a0)));
-        set("value.spend", Style::fg(hex(0xc9a227)));
-        set("turn", Style::fg(hex(0x64b5a0)));
+        set("palette.item", Style::PLAIN);
+        set("palette.hint", Style::PLAIN.dim());
+        // Names used by the old component vocabulary. Keeping these as theme
+        // roles lets the terminal renderer use the same semantic styles as a
+        // windowed client without copying a second palette into the picker.
+        set("choice.prompt", Style::fg(hex(0x81bdb5)));
+        set("choice.query", Style::PLAIN);
+        set("choice.row", Style::PLAIN);
+        set("choice.row.active", Style::fg(hex(0x81bdb5)));
+        set("choice.row.selected", Style::PLAIN.on(hex(0x3b5260)).bold());
+        set("choice.hint", Style::PLAIN.dim());
+        set("choice.view", Style::PLAIN.bold());
+        set("choice.view.active", Style::fg(hex(0x81bdb5)).bold());
+        set("choice.empty", Style::PLAIN.dim());
+        set("label", Style::PLAIN.dim());
+        set("value", Style::PLAIN);
+        set("keybinding", Style::fg(hex(0x81bdb5)).dim());
+        set("pending", Style::fg(hex(0x81bdb5)).dim());
+        set("plain", Style::PLAIN);
+        set("value.context", Style::fg(hex(0x9dbfb5)));
+        set("value.money", Style::fg(hex(0xd0bb86)));
+        set("turn", Style::fg(hex(0x81bdb5)));
         set("indicator", Style::fg(hex(0x84919c)));
         set("indicator.activity", Style::fg(hex(0x81bdb5)));
         set("indicator.model", Style::fg(hex(0x8dafd2)));
-        set("indicator.context", Style::fg(hex(0x93b99a)));
+        set("indicator.context", Style::fg(hex(0x9dbfb5)));
         set("status.separator", Style::fg(hex(0x84919c)));
-        set("dialog", Style::fg(hex(0xe6e8ea)));
-        set("dialog.title", Style::fg(hex(0xe6e8ea)).bold());
+        set("message.group.footer", Style::PLAIN.dim());
+        set("dialog", Style::fg(hex(0x84919c)));
+        set("dialog.label", Style::fg(hex(0x84919c)).dim());
+        set("dialog.message", Style::PLAIN);
+        set("dialog.hint", Style::PLAIN.dim());
+        set("dialog.value", Style::PLAIN);
+        set("dialog.title", Style::fg(hex(0x81bdb5)).bold());
+        set("surface.dialog", Style::PLAIN.on(hex(0x242b33)));
+        set("surface.code", Style::PLAIN.on(hex(0x151b23)));
         // A reader's selection. A background rather than a foreground, because it has
         // to sit over whatever the role underneath already decided.
-        set("selection", Style::PLAIN.on(hex(0x39415a)));
+        set("selection", Style::PLAIN.on(hex(0x3b5260)));
         // A diff. Named per line rather than once, because what changed is the whole point
         // of looking at one: an added line, a removed one, the hunk header, and the file
         // headers that say what the hunks are hunks of. A body is a diff because the
         // session said so — a role that ends in `.diff`, or a fence that said `diff` — so
         // nothing here has to guess.
-        set("diff", Style::fg(hex(0xb9bec6)));
-        set("diff.add", Style::fg(hex(0x98c379)));
-        set("diff.remove", Style::fg(hex(0xe06c75)));
-        set("diff.hunk", Style::fg(hex(0x56b6c2)).dim());
-        set("diff.header", Style::fg(hex(0x8a8f98)).bold());
-        set("diff.meta", Style::fg(hex(0x6a7178)));
-        set("value.money", Style::fg(hex(0xc9a227)));
-        set("value.count", Style::fg(hex(0x8a8f98)));
+        set("diff", Style::fg(hex(0x84919c)));
+        set("diff.add", Style::fg(hex(0x97c49e)));
+        set("diff.remove", Style::fg(hex(0xde9397)));
+        set("diff.hunk", Style::fg(hex(0x86bfc4)).dim());
+        set("diff.header", Style::fg(hex(0x84919c)).bold());
+        set("diff.meta", Style::fg(hex(0x84919c)).dim());
+        set("value.money", Style::fg(hex(0xd0bb86)));
+        set("value.count", Style::fg(hex(0x84919c)));
 
         let mut tokens = BTreeMap::new();
         let mut token = |name: &str, style: Style| {
             tokens.insert(name.to_string(), style);
         };
-        token("comment", Style::fg(hex(0x6a7178)).italic());
-        token("string", Style::fg(hex(0x98c379)));
-        token("number", Style::fg(hex(0xd19a66)));
-        token("keyword", Style::fg(hex(0xc678dd)));
-        token("type", Style::fg(hex(0xe5c07b)));
-        token("function", Style::fg(hex(0x61afef)));
-        token("constant", Style::fg(hex(0xd19a66)));
-        token("variable", Style::fg(hex(0xe9ebee)));
-        token("property", Style::fg(hex(0x9ecbff)));
-        token("tag", Style::fg(hex(0xe06c75)));
-        token("attribute", Style::fg(hex(0xd19a66)));
-        token("operator", Style::fg(hex(0x56b6c2)));
-        token("punctuation", Style::fg(hex(0x8a8f98)));
-        token("escape", Style::fg(hex(0x56b6c2)));
-        token("embedded", Style::fg(hex(0xe9ebee)));
+        token("comment", Style::fg(hex(0x84919c)).italic());
+        token("string", Style::fg(hex(0xa7c799)));
+        token("number", Style::fg(hex(0xc2a2c9)));
+        token("keyword", Style::fg(hex(0x86bfc4)));
+        token("type", Style::fg(hex(0xd0bb86)));
+        token("function", Style::fg(hex(0x96b5da)));
+        token("constant", Style::fg(hex(0xb4a4da)));
+        token("variable", Style::fg(hex(0x84919c)));
+        token("property", Style::fg(hex(0x9dbfb5)));
+        token("tag", Style::fg(hex(0xde9397)));
+        token("attribute", Style::fg(hex(0xd0bb86)));
+        token("operator", Style::fg(hex(0x86bfc4)));
+        token("punctuation", Style::fg(hex(0x84919c)));
+        token("escape", Style::fg(hex(0xd5b783)));
+        token("embedded", Style::fg(hex(0x84919c)));
 
         let mut states = BTreeMap::new();
-        states.insert(State::Pending, Style::fg(hex(0x8a8f98)).dim());
-        states.insert(State::Streaming, Style::fg(hex(0x64b5a0)));
-        states.insert(State::Done, Style::fg(hex(0x5b6270)));
-        states.insert(State::Failed, Style::fg(hex(0xe06c75)));
-        states.insert(State::Cancelled, Style::fg(hex(0x8a8f98)).dim());
+        states.insert(State::Pending, Style::fg(hex(0x81bdb5)).dim());
+        states.insert(State::Streaming, Style::fg(hex(0x97c49e)));
+        states.insert(State::Done, Style::fg(hex(0x84919c)));
+        states.insert(State::Failed, Style::fg(hex(0xde9397)));
+        states.insert(State::Cancelled, Style::fg(hex(0x84919c)).dim());
 
         Theme {
             name: "dark".into(),
@@ -263,6 +301,22 @@ impl Theme {
                 Color::Rgb(r, g, b) => Color::Rgb(r / 2, g / 2, b / 2),
                 value => value,
             };
+        }
+        // The light reference is not merely dark colours with their foregrounds
+        // dimmed: its message/dialog/code surfaces are deliberately paper-like.
+        for (role, color) in [
+            ("surface.user", (238, 245, 240)),
+            ("surface.assistant", (238, 242, 248)),
+            ("surface.thinking", (244, 239, 247)),
+            ("surface.tool", (247, 243, 233)),
+            ("surface.error", (250, 238, 240)),
+            ("surface.dialog", (238, 242, 244)),
+            ("surface.code", (226, 232, 239)),
+            ("selection", (205, 223, 227)),
+        ] {
+            if let Some(style) = theme.roles.get_mut(role) {
+                style.bg = Color::Rgb(color.0, color.1, color.2);
+            }
         }
         theme
     }
@@ -338,6 +392,35 @@ impl Theme {
         Some(("┃ ".to_string(), style))
     }
 
+    /// Resolve the named full-row surface for a semantic role.
+    ///
+    /// Surfaces are deliberately resolved independently from foreground roles:
+    /// markdown/code spans and rails may vary without changing the continuous
+    /// background of the message that owns them.
+    pub fn surface(&self, role: &str) -> Option<Style> {
+        let name = if role == "code" || role.ends_with(".code") {
+            "surface.code"
+        } else if role.starts_with("message.user") {
+            "surface.user"
+        } else if role.starts_with("message.assistant.thinking")
+            || role.starts_with("message.thinking")
+        {
+            "surface.thinking"
+        } else if role.starts_with("message.assistant") {
+            "surface.assistant"
+        } else if role.starts_with("tool.") {
+            "surface.tool"
+        } else if role.starts_with("error") {
+            "surface.error"
+        } else if role.starts_with("dialog") {
+            "surface.dialog"
+        } else {
+            return None;
+        };
+        let style = self.role(name);
+        (style.bg != Color::Default).then_some(Style::PLAIN.on(style.bg))
+    }
+
     /// Every role this theme names, for a diagnostics view.
     pub fn roles(&self) -> impl Iterator<Item = &str> {
         self.roles.keys().map(String::as_str)
@@ -357,7 +440,8 @@ mod tests {
     #[test]
     fn a_role_resolves_to_its_nearest_named_ancestor() {
         let theme = Theme::dark();
-        assert_ne!(theme.role("message.user"), Style::PLAIN);
+        assert_eq!(theme.role("message.user"), Style::PLAIN);
+        assert_ne!(theme.surface("message.user"), None);
         // A role nobody named, under one somebody did.
         let resolved = theme.role("message.assistant.handoff");
         assert_eq!(resolved, theme.role("message.assistant"));

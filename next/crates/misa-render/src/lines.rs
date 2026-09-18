@@ -27,6 +27,10 @@ pub struct Line {
     /// Spaces of indentation, before the first span.
     pub indent: u8,
     pub spans: Vec<(Style, String)>,
+    /// The surface behind this physical row.  It is separate from span colour:
+    /// a message surface continues through its rail and to the terminal edge,
+    /// while foreground styling still belongs to each run.
+    pub surface: Option<Style>,
     /// The node this line belongs to, so a client can map a click or a scroll
     /// anchor back to the tree without re-deriving it.
     pub node: Option<String>,
@@ -50,6 +54,7 @@ impl Line {
         Line {
             indent,
             spans: vec![(style, text.into())],
+            surface: None,
             node: node.map(str::to_string),
         }
     }
@@ -91,6 +96,30 @@ struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
+    fn spaces_between_children(role: &str) -> bool {
+        matches!(
+            role,
+            "message.group" | "message.user" | "message.assistant" | "error"
+        )
+    }
+
+    fn children(&self, node: &Node, depth: usize) -> Vec<Line> {
+        let spaced = Self::spaces_between_children(&node.role);
+        let mut out = Vec::new();
+        for child in &node.children {
+            let mut lines = Vec::new();
+            self.node(child, depth, &mut lines);
+            if lines.is_empty() {
+                continue;
+            }
+            if spaced && !out.is_empty() {
+                out.push(Line::default());
+            }
+            out.extend(lines);
+        }
+        out
+    }
+
     fn node(&self, node: &Node, depth: usize, out: &mut Vec<Line>) {
         if let Some(lines) = crate::components::render_default(node, self.theme, self.columns) {
             out.extend(lines);
@@ -100,26 +129,64 @@ impl<'a> Renderer<'a> {
         let style = self.theme.role(&node.role);
         match &node.kind {
             Kind::Section => {
-                let mut rail = false;
                 // A node whose role names a rail is drawn with one, and its
                 // children are indented behind it. That is how a message's extent
                 // becomes visible in a terminal without any colour at all.
                 if let Some((glyph, rail_style)) = self.theme.rail(&node.role) {
-                    rail = true;
                     if let Some(label) = &node.label {
-                        out.push(Line::simple(indent, style, label.clone(), Some(&node.id)));
+                        let label = if node.role == "tool.call" {
+                            self.tool_title(node)
+                        } else {
+                            label.clone()
+                        };
+                        out.push(Line::simple(indent, style, label, Some(&node.id)));
                     }
-                    let _ = rail_style;
-                    let _ = glyph;
+                    let children = self.children(node, depth + 1);
+                    for mut line in children {
+                        if line.is_blank() {
+                            out.push(line);
+                            continue;
+                        }
+                        // The child was measured with the rail's two-cell inset. Put
+                        // the rail back at the owner's column and preserve any deeper
+                        // indentation below it.
+                        line.indent = line.indent.saturating_sub(2);
+                        line.spans.insert(0, (rail_style, glyph.clone()));
+                        line.surface = line.surface.or_else(|| self.theme.surface(&node.role));
+                        out.push(line);
+                    }
+                } else if node.role == "session" {
+                    // The root is a document boundary. The terminal supplies the
+                    // application header; rendering the session id here duplicates
+                    // that chrome as transcript content.
+                    for child in &node.children {
+                        self.node(child, depth, out);
+                    }
                 } else if let Some(label) = &node.label {
-                    out.push(Line::simple(indent, style.bold(), label.clone(), Some(&node.id)));
+                    out.push(Line::simple(
+                        indent,
+                        style.bold(),
+                        label.clone(),
+                        Some(&node.id),
+                    ));
+                    for child in &node.children {
+                        self.node(child, depth, out);
+                    }
+                } else {
+                    out.extend(self.children(node, depth));
                 }
                 self.state_mark(node, indent, out);
-                for child in &node.children {
-                    self.node(child, if rail { depth + 1 } else { depth }, out);
-                }
             }
             Kind::Text { spans } => {
+                if node.role == "tool.call" {
+                    out.push(Line::simple(
+                        indent,
+                        style,
+                        self.tool_title(node),
+                        Some(&node.id),
+                    ));
+                    return;
+                }
                 let budget = self.budget(indent);
                 for line in wrap_spans(spans, budget) {
                     out.push(Line {
@@ -128,6 +195,7 @@ impl<'a> Renderer<'a> {
                             .iter()
                             .map(|span| (self.span_style(span, style), span.text.clone()))
                             .collect(),
+                        surface: self.theme.surface(&node.role),
                         node: Some(node.id.clone()),
                     });
                 }
@@ -137,12 +205,20 @@ impl<'a> Renderer<'a> {
                 // A heading is structure, so the linear medium makes it visible without a
                 // theme's help: the first level is underlined as well as bold, the rest are
                 // bold. A theme that wants to say more names the role.
-                let base = if *level <= 1 { style.bold().underline() } else { style.bold() };
+                let base = if *level <= 1 {
+                    style.bold().underline()
+                } else {
+                    style.bold()
+                };
                 let budget = self.budget(indent);
                 for line in wrap_spans(spans, budget) {
                     out.push(Line {
                         indent,
-                        spans: line.iter().map(|span| (self.span_style(span, base), span.text.clone())).collect(),
+                        spans: line
+                            .iter()
+                            .map(|span| (self.span_style(span, base), span.text.clone()))
+                            .collect(),
+                        surface: self.theme.surface(&node.role),
                         node: Some(node.id.clone()),
                     });
                 }
@@ -163,9 +239,18 @@ impl<'a> Renderer<'a> {
             }
             Kind::Rule => {
                 let width = self.budget(indent).min(60).max(1);
-                out.push(Line::simple(indent, style.dim(), "─".repeat(width), Some(&node.id)));
+                out.push(Line::simple(
+                    indent,
+                    style.dim(),
+                    "─".repeat(width),
+                    Some(&node.id),
+                ));
             }
-            Kind::Code { lang, text, captures } => {
+            Kind::Code {
+                lang,
+                text,
+                captures,
+            } => {
                 // A diff is code whose meaning is *per line*, and the session says so —
                 // by naming a role that ends in `.diff`, or, for a body a model fenced,
                 // by the language it was fenced with. Nothing here guesses from the
@@ -184,10 +269,15 @@ impl<'a> Renderer<'a> {
                 let budget = self.budget(indent);
                 for (index, raw) in text.split('\n').enumerate() {
                     let value = clip(raw, budget);
-                    let line_style = if diff { self.diff_style(style, &node.role, raw) } else { style };
+                    let line_style = if diff {
+                        self.diff_style(style, &node.role, raw)
+                    } else {
+                        style
+                    };
                     out.push(Line {
                         indent,
                         spans: self.code_spans(text, index, raw, &value, captures, line_style),
+                        surface: self.theme.surface(&node.role),
                         node: Some(node.id.clone()),
                     });
                 }
@@ -239,11 +329,16 @@ impl<'a> Renderer<'a> {
                         Some(&node.id),
                     ));
                     let budget = self.budget(indent + 2);
-                    let value = if field.secret { "••••" } else { &field.value };
+                    let value = if field.secret {
+                        "••••"
+                    } else {
+                        &field.value
+                    };
                     for line in wrap_spans(&[Span::plain(value)], budget) {
                         out.push(Line {
                             indent: indent + 2,
                             spans: line.iter().map(|span| (style, span.text.clone())).collect(),
+                            surface: None,
                             node: Some(node.id.clone()),
                         });
                     }
@@ -251,6 +346,19 @@ impl<'a> Renderer<'a> {
                 self.state_mark(node, indent, out);
             }
             Kind::Collapsible { summary } => {
+                if node.role == "tool.call" {
+                    out.push(Line::simple(
+                        indent,
+                        style,
+                        self.tool_title(node),
+                        Some(&node.id),
+                    ));
+                    for child in &node.children {
+                        self.node(child, depth + 1, out);
+                    }
+                    self.state_mark(node, indent, out);
+                    return;
+                }
                 let budget = self.budget(indent);
                 for line in wrap_spans(summary, budget) {
                     out.push(Line {
@@ -259,6 +367,7 @@ impl<'a> Renderer<'a> {
                             .iter()
                             .map(|span| (self.span_style(span, style), span.text.clone()))
                             .collect(),
+                        surface: self.theme.surface(&node.role),
                         node: Some(node.id.clone()),
                     });
                 }
@@ -268,7 +377,12 @@ impl<'a> Renderer<'a> {
                 }
                 self.state_mark(node, indent, out);
             }
-            Kind::Image { alt, width, height, blob } => {
+            Kind::Image {
+                alt,
+                width,
+                height,
+                blob,
+            } => {
                 let label = if alt.is_empty() {
                     format!("[{width}×{height} image {}]", clip(&blob.hash, 8))
                 } else {
@@ -292,7 +406,11 @@ impl<'a> Renderer<'a> {
             Kind::Meter { label, value, max } => {
                 let budget = self.budget(indent);
                 let bar_width = 10usize.min(budget.saturating_sub(width(label) + 4).max(1));
-                let ratio = if *max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
+                let ratio = if *max > 0.0 {
+                    (value / max).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 let filled = (ratio * bar_width as f64).round() as usize;
                 let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(bar_width - filled));
                 out.push(Line::simple(
@@ -324,13 +442,32 @@ impl<'a> Renderer<'a> {
         out.push(Line::simple(indent, style, label, Some(&node.id)));
     }
 
+    fn tool_title(&self, node: &Node) -> String {
+        let mut title = format!("◇ {}", node.label.as_deref().unwrap_or("Tool result"));
+        let suffix = match node.state {
+            Some(State::Pending) => Some("… pending"),
+            Some(State::Streaming) => Some("… running"),
+            Some(State::Failed) => Some("⊘ failed"),
+            Some(State::Cancelled) => Some("⊘ cancelled"),
+            _ => None,
+        };
+        if let Some(suffix) = suffix {
+            title.push_str("  ");
+            title.push_str(suffix);
+        }
+        title
+    }
+
     fn span_style(&self, span: &Span, base: Style) -> Style {
         use misa_proto::view::SpanKind;
         match &span.kind {
             SpanKind::Plain => base,
             SpanKind::Strong => base.bold(),
             SpanKind::Emphasis => base.italic(),
-            SpanKind::Strikethrough => Style { strikethrough: true, ..base },
+            SpanKind::Strikethrough => Style {
+                strikethrough: true,
+                ..base
+            },
             SpanKind::Code => base,
             SpanKind::Link { .. } => base.underline(),
             SpanKind::Token { name } => base.over(self.theme.token(name)),
@@ -362,9 +499,9 @@ impl<'a> Renderer<'a> {
         let mut cursor = 0usize;
         while cursor < clipped.len() {
             let absolute = offset + cursor;
-            let capture = captures
-                .iter()
-                .find(|capture| capture.start as usize <= absolute && absolute < capture.end as usize);
+            let capture = captures.iter().find(|capture| {
+                capture.start as usize <= absolute && absolute < capture.end as usize
+            });
             let mut end = clipped.len();
             if let Some(capture) = capture {
                 end = ((capture.end as usize).saturating_sub(offset)).min(clipped.len());
@@ -377,7 +514,9 @@ impl<'a> Renderer<'a> {
             }
             let end = end.max(cursor + 1).min(clipped.len());
             let end = floor_char_boundary(clipped, end);
-            let style = capture.map(|capture| self.theme.token(&capture.token)).unwrap_or(base);
+            let style = capture
+                .map(|capture| self.theme.token(&capture.token))
+                .unwrap_or(base);
             spans.push((style, clipped[cursor..end].to_string()));
             cursor = end;
         }
@@ -402,7 +541,12 @@ impl<'a> Renderer<'a> {
         if columns == 0 {
             return;
         }
-        let text_of = |cells: &[Span]| cells.iter().map(|span| span.text.as_str()).collect::<String>();
+        let text_of = |cells: &[Span]| {
+            cells
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+        };
         let mut widths = vec![1usize; columns];
         for row in std::iter::once(head).chain(rows.iter().map(Vec::as_slice)) {
             for (index, cell) in row.iter().enumerate() {
@@ -411,9 +555,12 @@ impl<'a> Renderer<'a> {
         }
         // Shrink the widest column until the table fits, so a wide table degrades
         // into a narrower one instead of overflowing the viewport.
-        let budget = self.budget(indent).saturating_sub(columns.saturating_sub(1) * 2);
+        let budget = self
+            .budget(indent)
+            .saturating_sub(columns.saturating_sub(1) * 2);
         while widths.iter().sum::<usize>() > budget {
-            let Some((index, _)) = widths.iter().enumerate().max_by_key(|(_, width)| **width) else {
+            let Some((index, _)) = widths.iter().enumerate().max_by_key(|(_, width)| **width)
+            else {
                 break;
             };
             if widths[index] <= 3 {
@@ -421,7 +568,10 @@ impl<'a> Renderer<'a> {
             }
             widths[index] -= 1;
         }
-        for (row_index, row) in std::iter::once(head).chain(rows.iter().map(Vec::as_slice)).enumerate() {
+        for (row_index, row) in std::iter::once(head)
+            .chain(rows.iter().map(Vec::as_slice))
+            .enumerate()
+        {
             let mut spans = Vec::new();
             for index in 0..columns {
                 if index > 0 {
@@ -432,7 +582,12 @@ impl<'a> Renderer<'a> {
                 let cell_style = if row_index == 0 { style.bold() } else { style };
                 spans.push((cell_style, text));
             }
-            out.push(Line { indent, spans, node: Some(node.to_string()) });
+            out.push(Line {
+                indent,
+                spans,
+                surface: None,
+                node: Some(node.to_string()),
+            });
         }
     }
 
@@ -548,8 +703,15 @@ mod tests {
             .id("m1")
             .child(Node::text("message.user", [Span::plain("hello")]));
         let lines = render(&node, &Theme::dark(), 80);
-        let body = lines.iter().find(|line| line.text().contains("hello")).expect("body line");
-        assert!(body.indent > 0, "a railed message did not indent its body");
+        let body = lines
+            .iter()
+            .find(|line| line.text().contains("hello"))
+            .expect("body line");
+        assert!(
+            body.text().starts_with("┃ "),
+            "a railed message did not draw its rail: {:?}",
+            body.text()
+        );
     }
 
     #[test]
@@ -570,7 +732,11 @@ mod tests {
             Kind::Code {
                 lang: Some("rust".into()),
                 text: text.into(),
-                captures: vec![Capture { start: 0, end: 3, token: "keyword".into() }],
+                captures: vec![Capture {
+                    start: 0,
+                    end: 3,
+                    token: "keyword".into(),
+                }],
             },
         );
         let lines = render(&node, &Theme::dark(), 6);
@@ -583,7 +749,10 @@ mod tests {
 
     #[test]
     fn a_narrow_table_shrinks_instead_of_overflowing() {
-        let head = vec![vec![Span::plain("first column")], vec![Span::plain("second column")]];
+        let head = vec![
+            vec![Span::plain("first column")],
+            vec![Span::plain("second column")],
+        ];
         let rows = vec![vec![vec![Span::plain("one")], vec![Span::plain("two")]]];
         let node = Node::new("table", Kind::Table { head, rows }).id("t");
         let lines = render(&node, &theme(), 16);
@@ -596,8 +765,17 @@ mod tests {
 
     #[test]
     fn a_list_gets_markers_and_indents_its_children() {
-        let item = vec![Node::text("message.assistant", [Span::plain("first item that wraps")])];
-        let node = Node::new("list", Kind::List { ordered: true, items: vec![item, vec![Node::text("x", [Span::plain("second")])]] });
+        let item = vec![Node::text(
+            "message.assistant",
+            [Span::plain("first item that wraps")],
+        )];
+        let node = Node::new(
+            "list",
+            Kind::List {
+                ordered: true,
+                items: vec![item, vec![Node::text("x", [Span::plain("second")])]],
+            },
+        );
         let lines = render(&node, &theme(), 10);
         assert!(lines[0].text().starts_with("1. "));
         assert!(lines.iter().any(|line| line.text().contains("2. second")));
@@ -609,8 +787,27 @@ mod tests {
             "dialog",
             Kind::Fields {
                 fields: vec![
-                    Field { id: "a".into(), label: "Model".into(), value: "claude".into(), hint: None, read_only: false, secret: false, kind: FieldKind::Inline },
-                    Field { id: "b".into(), label: "Reasoning effort".into(), value: "high".into(), hint: None, read_only: false, secret: false, kind: FieldKind::Choice { options: vec![], selected: None } },
+                    Field {
+                        id: "a".into(),
+                        label: "Model".into(),
+                        value: "claude".into(),
+                        hint: None,
+                        read_only: false,
+                        secret: false,
+                        kind: FieldKind::Inline,
+                    },
+                    Field {
+                        id: "b".into(),
+                        label: "Reasoning effort".into(),
+                        value: "high".into(),
+                        hint: None,
+                        read_only: false,
+                        secret: false,
+                        kind: FieldKind::Choice {
+                            options: vec![],
+                            selected: None,
+                        },
+                    },
                 ],
             },
         );
@@ -622,12 +819,36 @@ mod tests {
 
     #[test]
     fn a_read_only_block_preserves_lines_and_secret_policy_masks_any_shape() {
-        let mut field = Field { id: "body".into(), label: "Report".into(), value: "one\ntwo".into(),
-            hint: None, kind: FieldKind::Block, read_only: true, secret: false };
-        let draw = |field: Field| render(&Node::new("report", Kind::Fields { fields: vec![field] }), &theme(), 80)
-            .iter().map(Line::text).collect::<Vec<_>>().join("\n");
+        let mut field = Field {
+            id: "body".into(),
+            label: "Report".into(),
+            value: "one\ntwo".into(),
+            hint: None,
+            kind: FieldKind::Block,
+            read_only: true,
+            secret: false,
+        };
+        let draw = |field: Field| {
+            render(
+                &Node::new(
+                    "report",
+                    Kind::Fields {
+                        fields: vec![field],
+                    },
+                ),
+                &theme(),
+                80,
+            )
+            .iter()
+            .map(Line::text)
+            .collect::<Vec<_>>()
+            .join("\n")
+        };
         let text = draw(field.clone());
-        assert_eq!(text.lines().skip(1).map(str::trim).collect::<Vec<_>>(), vec!["one", "two"]);
+        assert_eq!(
+            text.lines().skip(1).map(str::trim).collect::<Vec<_>>(),
+            vec!["one", "two"]
+        );
         field.secret = true;
         let text = draw(field);
         assert!(!text.contains("one"), "{text}");
@@ -638,7 +859,11 @@ mod tests {
     fn a_meter_shows_a_bounded_bar() {
         let node = Node::new(
             "value.meter",
-            Kind::Meter { label: "budget".into(), value: 2.0, max: 4.0 },
+            Kind::Meter {
+                label: "budget".into(),
+                value: 2.0,
+                max: 4.0,
+            },
         );
         let line = &render(&node, &theme(), 80)[0];
         assert!(line.text().contains("[#####-----]"), "{}", line.text());
@@ -650,7 +875,11 @@ mod tests {
         let node = Node::new(
             "screenshot",
             Kind::Image {
-                blob: misa_proto::view::BlobRef { hash: "a".repeat(64), len: 9, media: None },
+                blob: misa_proto::view::BlobRef {
+                    hash: "a".repeat(64),
+                    len: 9,
+                    media: None,
+                },
                 alt: "a chart".into(),
                 width: 800,
                 height: 600,
@@ -663,7 +892,9 @@ mod tests {
     fn a_collapsible_renders_its_summary_and_its_children() {
         let node = Node::new(
             "message.assistant",
-            Kind::Collapsible { summary: vec![Span::plain("thinking…")] },
+            Kind::Collapsible {
+                summary: vec![Span::plain("thinking…")],
+            },
         )
         .id("m1")
         .child(Node::text("message.thinking", [Span::plain("because")]));
@@ -675,7 +906,12 @@ mod tests {
 
     #[test]
     fn to_plain_drops_trailing_whitespace_and_ends_with_one_newline() {
-        let node = Node::new("status", Kind::Status { text: "ready".into() });
+        let node = Node::new(
+            "status",
+            Kind::Status {
+                text: "ready".into(),
+            },
+        );
         let text = to_plain(&render(&node, &theme(), 40));
         assert_eq!(text, "ready\n");
     }
@@ -686,7 +922,11 @@ mod tests {
             .id("m1")
             .child(Node::text("message.user", [Span::plain("hello")]).id("m1.text"));
         let lines = render(&node, &theme(), 40);
-        assert!(lines.iter().all(|line| line.node.as_deref() == Some("m1.text")));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.node.as_deref() == Some("m1.text"))
+        );
     }
 
     #[test]
@@ -729,15 +969,25 @@ mod tests {
         assert_eq!(lines[1].spans[0].0, theme.role("diff.remove"));
         assert_eq!(lines[2].spans[0].0, theme.role("diff.add"));
         // Context keeps the node's own style, so a diff still reads like a tool result.
-        assert_eq!(lines[3].spans[0].0, theme.role("message.assistant.markdown.diff"));
-        assert_eq!(to_plain(&lines), "@@ -1 +1 @@\n-old line\n+new line\n context\n");
+        assert_eq!(
+            lines[3].spans[0].0,
+            theme.role("message.assistant.markdown.diff")
+        );
+        assert_eq!(
+            to_plain(&lines),
+            "@@ -1 +1 @@\n-old line\n+new line\n context\n"
+        );
     }
 
     #[test]
     fn a_theme_may_name_a_diff_line_under_the_node_it_belongs_to() {
         let node = Node::new(
             "tool.result.diff",
-            Kind::Code { lang: None, text: "+added".into(), captures: Vec::new() },
+            Kind::Code {
+                lang: None,
+                text: "+added".into(),
+                captures: Vec::new(),
+            },
         );
         // A theme that says something narrower wins over the generic role.
         let theme = Theme::dark().with_role("tool.result.diff.add", Style::rgb(1, 2, 3).bold());
@@ -753,29 +1003,52 @@ mod tests {
     fn code_that_merely_looks_like_a_diff_is_still_code() {
         let node = Node::new(
             "message.assistant.markdown.code",
-            Kind::Code { lang: Some("rust".into()), text: "+ 1".into(), captures: Vec::new() },
+            Kind::Code {
+                lang: Some("rust".into()),
+                text: "+ 1".into(),
+                captures: Vec::new(),
+            },
         );
         let theme = Theme::dark();
         let lines = render(&node, &theme, 40);
-        assert_eq!(lines[0].text(), "rust", "the language banner is gone from a code block");
-        assert_eq!(lines[1].spans[0].0, theme.role("message.assistant.markdown.code"));
+        assert_eq!(
+            lines[0].text(),
+            "rust",
+            "the language banner is gone from a code block"
+        );
+        assert_eq!(
+            lines[1].spans[0].0,
+            theme.role("message.assistant.markdown.code")
+        );
     }
 
     #[test]
     fn a_heading_is_bold_and_a_quote_carries_a_marker() {
         let heading = Node::new(
             "message.assistant.markdown.heading",
-            Kind::Heading { level: 2, spans: vec![Span::plain("Title")] },
+            Kind::Heading {
+                level: 2,
+                spans: vec![Span::plain("Title")],
+            },
         );
         let lines = render(&heading, &Theme::dark(), 40);
         assert_eq!(lines[0].text(), "Title");
-        assert!(lines[0].spans[0].0.bold, "a heading is not set apart at all");
+        assert!(
+            lines[0].spans[0].0.bold,
+            "a heading is not set apart at all"
+        );
 
-        let quote = Node::new("message.assistant.markdown.quote", Kind::Quote)
-            .child(Node::text("message.assistant.markdown.paragraph", [Span::plain("quoted")]));
+        let quote = Node::new("message.assistant.markdown.quote", Kind::Quote).child(Node::text(
+            "message.assistant.markdown.paragraph",
+            [Span::plain("quoted")],
+        ));
         let lines = render(&quote, &Theme::dark(), 40);
         assert!(lines[0].text().contains("quoted"));
-        assert!(lines[0].text().ends_with("▏ quoted"), "a quote has no marker: {:?}", lines[0].text());
+        assert!(
+            lines[0].text().ends_with("▏ quoted"),
+            "a quote has no marker: {:?}",
+            lines[0].text()
+        );
     }
 
     #[test]
@@ -783,6 +1056,10 @@ mod tests {
         let node = Node::new("message.assistant.markdown.rule", Kind::Rule);
         let lines = render(&node, &theme(), 40);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].text().chars().all(|ch| ch == '─'), "{:?}", lines[0].text());
+        assert!(
+            lines[0].text().chars().all(|ch| ch == '─'),
+            "{:?}",
+            lines[0].text()
+        );
     }
 }

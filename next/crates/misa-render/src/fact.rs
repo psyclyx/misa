@@ -19,14 +19,22 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub type Formatter = Arc<dyn Fn(&Value) -> String + Send + Sync>;
 #[derive(Clone, Default)]
-pub struct Registry { formats: BTreeMap<String, Formatter> }
+pub struct Registry {
+    formats: BTreeMap<String, Formatter>,
+}
 impl Registry {
     pub fn register(&mut self, role: &str, formatter: Formatter) -> Result<(), String> {
-        if role.is_empty() || self.formats.contains_key(role) { return Err(format!("Duplicate or empty value renderer `{role}`")); }
-        self.formats.insert(role.into(), formatter); Ok(())
+        if role.is_empty() || self.formats.contains_key(role) {
+            return Err(format!("Duplicate or empty value renderer `{role}`"));
+        }
+        self.formats.insert(role.into(), formatter);
+        Ok(())
     }
     pub fn format(&self, role: &str, value: &Value) -> String {
-        self.formats.get(role).map(|format| format(value)).unwrap_or_else(|| format(role, value))
+        self.formats
+            .get(role)
+            .map(|format| format(value))
+            .unwrap_or_else(|| format(role, value))
     }
 }
 
@@ -35,11 +43,17 @@ pub fn format(role: &str, value: &Value) -> String {
     match role {
         // Money is carried in micros, because a float of dollars loses cents.
         "value.money" => money(value),
-        "value.tokens" => count(value.as_i64(), "tok"),
+        // The reference keeps the unit in the surrounding label/icon ("tokens"
+        // in reports, "tok" in the status bar). Appending it here would turn
+        // the shipped status indicator into `tok 12 tok`.
+        "value.tokens" => count(value.as_i64(), ""),
         "value.count" => count(value.as_i64(), ""),
         "value.percent" => percent(value),
+        "value.percent.remaining" => percent_remaining(value),
         "value.ratio" => ratio(value),
         "value.duration" => duration(value),
+        "value.timestamp" => timestamp(value),
+        "value.rate" => rate(value),
         "value.bytes" => bytes(value.as_i64()),
         _ => plain(value),
     }
@@ -58,19 +72,27 @@ fn plain(value: &Value) -> String {
     }
 }
 
-/// Micros of a currency unit, as `$1.24`. Negative values are debts, which a
-/// session may legitimately report for a credit-balance provider.
+/// Micros of a currency unit, in the reference's money vocabulary.
+///
+/// The wire keeps integer micros so arithmetic cannot lose cents. The display still
+/// follows the old money renderer: zero is `$0`, sub-dollar values keep four places,
+/// and a value smaller than a ten-thousandth is explicitly marked as such.
 pub fn money(value: &Value) -> String {
     let micros = value.as_i64().unwrap_or(0);
     let sign = if micros < 0 { "-" } else { "" };
     let micros = micros.abs();
-    let whole = micros / 1_000_000;
-    let cents = (micros % 1_000_000) / 10_000;
-    if whole == 0 && cents == 0 && micros > 0 {
-        // A fraction of a cent is not zero, and "0.00" would say it was.
-        return format!("{sign}<$0.01");
+    if micros == 0 {
+        return format!("{sign}$0");
     }
-    format!("{sign}${whole}.{cents:02}")
+    if micros < 100 {
+        return format!("{sign}<$0.0001");
+    }
+    let dollars = micros as f64 / 1_000_000.0;
+    if dollars < 1.0 {
+        format!("{sign}${dollars:.4}")
+    } else {
+        format!("{sign}${dollars:.2}")
+    }
 }
 
 /// A count with a suffix once it stops being readable: `12.4k`, `1.2M`.
@@ -81,10 +103,10 @@ pub fn count(value: Option<i64>, unit: &str) -> String {
     let negative = number < 0;
     let magnitude = number.unsigned_abs();
     let written = match magnitude {
-        0..=9_999 => magnitude.to_string(),
-        10_000..=999_999 => format!("{:.1}k", magnitude as f64 / 1_000.0),
-        1_000_000..=999_999_999 => format!("{:.1}M", magnitude as f64 / 1_000_000.0),
-        _ => format!("{:.1}B", magnitude as f64 / 1_000_000_000.0),
+        0..=999 => magnitude.to_string(),
+        1_000..=999_999 => compact_scaled(magnitude as f64 / 1_000.0, "k"),
+        1_000_000..=999_999_999 => compact_scaled(magnitude as f64 / 1_000_000.0, "M"),
+        _ => compact_scaled(magnitude as f64 / 1_000_000_000.0, "G"),
     };
     let sign = if negative { "-" } else { "" };
     if unit.is_empty() {
@@ -94,17 +116,53 @@ pub fn count(value: Option<i64>, unit: &str) -> String {
     }
 }
 
+fn compact_scaled(value: f64, suffix: &str) -> String {
+    if value.abs() >= 10.0 {
+        format!("{value:.0}{suffix}")
+    } else {
+        format!(
+            "{}{suffix}",
+            format!("{value:.1}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+        )
+    }
+}
+
 pub fn percent(value: &Value) -> String {
     match value.as_f64() {
-        Some(number) if number == number.trunc() => format!("{number:.0}%"),
-        Some(number) => format!("{number:.1}%"),
+        Some(number) if number.is_finite() && (0.0..=100.0).contains(&number) => format!(
+            "{}%",
+            number.floor() as i64 + i64::from(number.fract() >= 0.5)
+        ),
         None => plain(value),
+        Some(number) => format!("{number}%"),
+    }
+}
+
+fn percent_remaining(value: &Value) -> String {
+    match value.as_f64() {
+        Some(number) if number.is_finite() && (0.0..=100.0).contains(&number) => format!(
+            "{}% left",
+            number.floor() as i64 + i64::from(number.fract() >= 0.5)
+        ),
+        None => plain(value),
+        Some(number) => format!("{number}% left"),
     }
 }
 
 /// A fraction of a whole, as a percentage. `max` is not known here, so the fact
 /// carries the fraction itself.
 pub fn ratio(value: &Value) -> String {
+    if let Some(map) = value.as_map() {
+        let used = map
+            .get("used")
+            .map_or_else(|| "?".into(), |value| count(value.as_i64(), ""));
+        let limit = map
+            .get("limit")
+            .map_or_else(|| "?".into(), |value| count(value.as_i64(), ""));
+        return format!("{used}/{limit}");
+    }
     match value.as_f64() {
         Some(fraction) => percent(&Value::Float(fraction * 100.0)),
         None => plain(value),
@@ -124,11 +182,34 @@ pub fn duration(value: &Value) -> String {
     } else if millis < 3_600_000 {
         let minutes = millis / 60_000;
         let seconds = (millis % 60_000) / 1_000;
-        format!("{minutes}m{seconds:02}s")
+        format!("{minutes}m {seconds}s")
     } else {
-        let hours = millis / 3_600_000;
-        let minutes = (millis % 3_600_000) / 60_000;
-        format!("{hours}h{minutes:02}m")
+        let minutes = millis / 60_000;
+        let seconds = (millis % 60_000) / 1_000;
+        format!("{minutes}m {seconds}s")
+    }
+}
+
+/// Unix milliseconds as the compact wall-clock fact used by transcript boundaries.
+/// The reference intentionally displays the instant's compact UTC clock portion.
+pub fn timestamp(value: &Value) -> String {
+    let Some(millis) = value.as_i64() else {
+        return plain(value);
+    };
+    let seconds = millis.div_euclid(1_000);
+    let within = seconds.rem_euclid(86_400);
+    format!(
+        "{:02}:{:02}:{:02}",
+        within / 3_600,
+        within / 60 % 60,
+        within % 60
+    )
+}
+
+pub fn rate(value: &Value) -> String {
+    match value.as_f64() {
+        Some(rate) => format!("{rate:.1} tok/s"),
+        None => plain(value),
     }
 }
 
@@ -160,8 +241,11 @@ pub fn is_typed(role: &str) -> bool {
             | "value.tokens"
             | "value.count"
             | "value.percent"
+            | "value.percent.remaining"
             | "value.ratio"
             | "value.duration"
+            | "value.timestamp"
+            | "value.rate"
             | "value.bytes"
     )
 }
@@ -173,8 +257,8 @@ mod tests {
     #[test]
     fn money_writes_cents_and_does_not_call_a_fraction_zero() {
         assert_eq!(money(&Value::Int(1_240_000)), "$1.24");
-        assert_eq!(money(&Value::Int(0)), "$0.00");
-        assert_eq!(money(&Value::Int(5_000)), "<$0.01");
+        assert_eq!(money(&Value::Int(0)), "$0");
+        assert_eq!(money(&Value::Int(5_000)), "$0.0050");
         assert_eq!(money(&Value::Int(-2_500_000)), "-$2.50");
         assert_eq!(money(&Value::Int(1_000_000_000)), "$1000.00");
     }
@@ -182,25 +266,38 @@ mod tests {
     #[test]
     fn a_count_gets_a_suffix_once_it_stops_being_readable() {
         assert_eq!(count(Some(42), ""), "42");
-        assert_eq!(count(Some(9_999), "tok"), "9999 tok");
-        assert_eq!(count(Some(12_400), "tok"), "12.4k tok");
+        assert_eq!(count(Some(999), "tok"), "999 tok");
+        assert_eq!(count(Some(9_999), "tok"), "10k tok");
+        assert_eq!(count(Some(12_400), "tok"), "12k tok");
+        assert_eq!(count(Some(10_000), "tok"), "10k tok");
+        assert_eq!(count(Some(1_000_000), ""), "1M");
         assert_eq!(count(Some(1_200_000), ""), "1.2M");
         assert_eq!(count(None, "tok"), "");
     }
 
     #[test]
-    fn a_percentage_and_a_ratio_both_end_up_as_percentages() {
+    fn percentages_ratios_and_remaining_quota_use_reference_spelling() {
         assert_eq!(percent(&Value::Int(40)), "40%");
-        assert_eq!(percent(&Value::Float(40.5)), "40.5%");
-        assert_eq!(ratio(&Value::Float(0.25)), "25%");
+        assert_eq!(percent(&Value::Float(40.5)), "41%");
+        assert_eq!(
+            format("value.percent.remaining", &Value::Int(40)),
+            "40% left"
+        );
+        assert_eq!(
+            ratio(&Value::map([
+                ("used", Value::Int(12_400)),
+                ("limit", Value::Int(1_000_000))
+            ])),
+            "12k/1M"
+        );
     }
 
     #[test]
     fn a_duration_is_written_the_way_a_person_says_it() {
         assert_eq!(duration(&Value::Int(240)), "240ms");
         assert_eq!(duration(&Value::Int(2_400)), "2.4s");
-        assert_eq!(duration(&Value::Int(65_000)), "1m05s");
-        assert_eq!(duration(&Value::Int(3_600_000)), "1h00m");
+        assert_eq!(duration(&Value::Int(65_000)), "1m 5s");
+        assert_eq!(duration(&Value::Int(3_600_000)), "60m 0s");
     }
 
     #[test]
@@ -208,6 +305,12 @@ mod tests {
         assert_eq!(bytes(Some(512)), "512 B");
         assert_eq!(bytes(Some(2_048)), "2.0 kB");
         assert_eq!(bytes(Some(5_000_000)), "5.0 MB");
+    }
+
+    #[test]
+    fn timestamp_is_only_the_compact_clock() {
+        assert_eq!(timestamp(&Value::Int(1_758_067_200_000)), "00:00:00");
+        assert_eq!(timestamp(&Value::Int(-1)), "23:59:59");
     }
 
     #[test]

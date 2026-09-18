@@ -7,6 +7,8 @@
 use misa_proto::view::{Span, SpanKind};
 use unicode_width::UnicodeWidthStr;
 
+use crate::Style;
+
 /// The display width of text, in columns.
 ///
 /// Wide characters are two columns, combining marks are none. This is the number
@@ -57,6 +59,71 @@ pub fn wrap_spans(spans: &[Span], columns: usize) -> Vec<Vec<Span>> {
         }
     }
     out.finish()
+}
+
+/// Wrap already-styled terminal text without throwing its styles away.
+///
+/// Pickers and chrome have presentation spans rather than protocol spans, so
+/// routing them through [`wrap_spans`] would either leak a fake semantic kind or
+/// clip an entire row. This is the same word/wide-token policy, with styles
+/// carried through the break.
+pub fn wrap_styled(spans: &[(Style, String)], columns: usize) -> Vec<Vec<(Style, String)>> {
+    if columns == 0 {
+        return vec![spans.to_vec()];
+    }
+    let mut lines = Vec::new();
+    let mut current: Vec<(Style, String)> = Vec::new();
+    let mut used = 0;
+    for (style, text) in spans {
+        for character in text.chars() {
+            if character == '\n' {
+                lines.push(std::mem::take(&mut current));
+                used = 0;
+                continue;
+            }
+            let value = character.to_string();
+            let cells = width(&value).max(1);
+            if used > 0 && used + cells > columns {
+                lines.push(std::mem::take(&mut current));
+                used = 0;
+            }
+            // Whitespace at a physical line boundary is layout noise; whitespace inside a
+            // row is data and must survive. In particular, picker marker/key/label spans
+            // are separately styled and cannot be reconstructed from word boundaries.
+            if used == 0 && character.is_whitespace() {
+                continue;
+            }
+            if let Some((last_style, last)) = current.last_mut()
+                && *last_style == *style
+            {
+                last.push(character);
+            } else {
+                current.push((*style, value));
+            }
+            used += cells;
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod styled_tests {
+    use super::*;
+
+    #[test]
+    fn styled_layout_preserves_separately_styled_spaces() {
+        let rows = wrap_styled(
+            &[(Style::PLAIN.bold(), "a".into()), (Style::PLAIN, " ".into()), (Style::PLAIN.dim(), "b".into())],
+            8,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].1, "a");
+        assert_eq!(rows[0][1], (Style::PLAIN, " ".into()));
+        assert_eq!(rows[0][2].1, "b");
+    }
 }
 
 enum Piece {
