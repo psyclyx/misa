@@ -18,18 +18,35 @@ pub struct Detail {
     pub terminal: bool,
     pub value: Value,
 }
-pub async fn detail(client: &Client, interface: &Interface, id: &str) -> Result<Option<Detail>, Fault> {
+pub async fn detail(
+    client: &Client,
+    interface: &Interface,
+    id: &str,
+) -> Result<Option<Detail>, Fault> {
     let member = interface.query("operation.result", vec![Value::str(id)])?;
-    let result = client.read(Selection {
-        scope: interface.scope.clone(),
-        members: BTreeMap::from([("result".into(), member)]),
-    }, std::time::Duration::from_secs(20)).await?;
+    let result = client
+        .read(
+            Selection {
+                scope: interface.scope.clone(),
+                members: BTreeMap::from([("result".into(), member)]),
+            },
+            std::time::Duration::from_secs(20),
+        )
+        .await?;
     let value = crate::interface::data(&result, "result")?;
-    if value == &Value::Null { return Ok(None); }
+    if value == &Value::Null {
+        return Ok(None);
+    }
     let (generation, state, terminal, _) = decode_result(value, id, None)?;
     Ok(Some(Detail {
-        operation: OperationRef { scope: interface.scope.clone(), id: id.into() },
-        generation, state, terminal, value: value.clone(),
+        operation: OperationRef {
+            scope: interface.scope.clone(),
+            id: id.into(),
+        },
+        generation,
+        state,
+        terminal,
+        value: value.clone(),
     }))
 }
 
@@ -175,11 +192,14 @@ impl Watch {
                 let document = if self.document {
                     match members.get("document") {
                         Some(MemberState::Document(document)) => Some(document.snapshot().tree),
-                        _ => {
-                            return Some(Terminal::Fault(Fault::query(
-                                "Completed operation lacks coherent output",
-                            )));
+                        // Result and presentation are separate members. The owner may
+                        // publish the terminal result first, so a coherent output is
+                        // not a fault until the document member has had a chance to
+                        // converge on that same operation generation.
+                        Some(MemberState::Unavailable(fault)) => {
+                            return Some(Terminal::Fault(fault.clone()));
                         }
+                        _ => return None,
                     }
                 } else {
                     None
@@ -282,19 +302,19 @@ fn decode_result(
         .collect::<Result<Vec<_>, _>>()?;
     Ok((generation, state.into(), terminal, outputs))
 }
-/// Bounded live interests. Draining transfers terminal results to the caller;
-/// this container never retains an unbounded terminal history.
+/// Live interests. Draining transfers terminal results to the caller; this
+/// container never retains a terminal history. Operation ownership already has
+/// a lifetime and a deadline, so a second arbitrary client-side count would
+/// turn unrelated work into a visible busy error.
 pub struct Tracker {
-    limit: usize,
     active: Vec<(Watch, tokio::task::JoinHandle<()>)>,
     signal: tokio::sync::watch::Sender<u64>,
     changes: tokio::sync::watch::Receiver<u64>,
 }
 impl Tracker {
-    pub fn new(limit: usize) -> Self {
+    pub fn new() -> Self {
         let (signal, changes) = tokio::sync::watch::channel(0);
         Self {
-            limit,
             active: vec![],
             signal,
             changes,
@@ -312,16 +332,13 @@ impl Tracker {
     pub fn is_empty(&self) -> bool {
         self.active.is_empty()
     }
-    pub fn insert(&mut self, watch: Watch) -> Result<(), Fault> {
-        if self.active.len() >= self.limit {
-            return Err(Fault::new("busy", "Too many tracked operations"));
-        }
+    pub fn insert(&mut self, watch: Watch) {
         if self
             .active
             .iter()
             .any(|(old, _)| old.reference() == watch.reference())
         {
-            return Ok(());
+            return;
         }
         let mut changes = watch.changes();
         let signal = self.signal.clone();
@@ -332,7 +349,6 @@ impl Tracker {
             signal.send_modify(|value| *value = value.wrapping_add(1));
         });
         self.active.push((watch, task));
-        Ok(())
     }
     pub async fn changed(&mut self) -> Result<(), Fault> {
         self.changes
@@ -382,18 +398,36 @@ mod tests {
         assert!(decode_result(&value("a", 2, "interrupted", true), "a", None).is_ok());
     }
 }
-#[cfg(test)] mod tracker_tests {
- use super::*;
- use misa_proto::observation::{Scope,ScopeId};
- fn reference(id:&str)->OperationRef{OperationRef{scope:Scope{id:ScopeId::Session{id:"owner".into()},incarnation:"run".into()},id:id.into()}}
- #[tokio::test] async fn directed_failures_are_bounded_drained_once_and_keep_exact_owner(){
-  let mut tracker=Tracker::new(1);
-  tracker.insert(Watch::failed(reference("a"),Fault::new("lost","Accepted work could not be observed"))).unwrap();
-  assert!(tracker.insert(Watch::failed(reference("b"),Fault::query("other"))).is_err());
-  let done=tracker.drain();assert_eq!(done.len(),1);assert_eq!(done[0].operation,reference("a"));assert!(matches!(done[0].outcome,Terminal::Fault(_)));
-  assert!(tracker.drain().is_empty());assert!(tracker.is_empty());
- }
+#[cfg(test)]
+mod tracker_tests {
+    use super::*;
+    use misa_proto::observation::{Scope, ScopeId};
+    fn reference(id: &str) -> OperationRef {
+        OperationRef {
+            scope: Scope {
+                id: ScopeId::Session { id: "owner".into() },
+                incarnation: "run".into(),
+            },
+            id: id.into(),
+        }
+    }
+    #[tokio::test]
+    async fn directed_failures_are_bounded_drained_once_and_keep_exact_owner() {
+        let mut tracker = Tracker::new();
+        tracker.insert(Watch::failed(
+            reference("a"),
+            Fault::new("lost", "Accepted work could not be observed"),
+        ));
+        tracker.insert(Watch::failed(reference("b"), Fault::query("other")));
+        let done = tracker.drain();
+        assert_eq!(done.len(), 2);
+        assert!(done.iter().any(|item| item.operation == reference("a")));
+        assert!(done.iter().any(|item| item.operation == reference("b")));
+        assert!(done.iter().all(|item| matches!(item.outcome, Terminal::Fault(_))));
+        assert!(tracker.drain().is_empty());
+        assert!(tracker.is_empty());
+    }
 }
 #[cfg(test)]
-#[path="operation_transport_tests.rs"]
+#[path = "operation_transport_tests.rs"]
 mod transport_tests;

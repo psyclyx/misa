@@ -33,15 +33,12 @@ pub struct ObservationId(u64);
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub observations: usize,
-    /// Shared limit across invocations and finite reads.
-    pub pending_calls: usize,
     pub values: ValueLimits,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
             observations: misa_proto::scoped::DEFAULT_OBSERVATION_LIMIT,
-            pending_calls: 32,
             values: ValueLimits::default(),
         }
     }
@@ -394,9 +391,6 @@ impl Connection {
         deadline: Instant,
     ) -> Result<Outgoing, Fault> {
         self.require_online()?;
-        if self.pending_count() >= self.limits.pending_calls {
-            return Err(Fault::new("busy", "Too many pending invocations"));
-        }
         let id = self.allocate()?;
         let invocation = Invocation {
             id,
@@ -525,9 +519,6 @@ impl Connection {
     /// successful replies use the same coherent typed replica validation as observe.
     pub fn read(&mut self, selection: Selection, deadline: Instant) -> Result<Outgoing, Fault> {
         self.require_online()?;
-        if self.pending_count() >= self.limits.pending_calls {
-            return Err(Fault::new("busy", "Too many pending requests"));
-        }
         selection.validate()?;
         let id = self.allocate()?;
         self.reads.insert(
@@ -673,30 +664,23 @@ mod tests {
         assert_eq!(connection.observation_count(), 0);
     }
     #[test]
-    fn finite_reads_share_pending_budget_and_release_on_expiry_or_abandonment() {
-        let mut connection = Connection::new(Limits {
-            pending_calls: 1,
-            ..Limits::default()
-        });
+    fn finite_reads_and_invocations_are_correlated_and_release_on_expiry_or_abandonment() {
+        let mut connection = Connection::new(Limits::default());
         let now = Instant::now();
         let id = read_id(connection.read(selection("one"), now).unwrap());
-        assert!(
-            connection
-                .invoke(selection("one").scope, &command(), Value::Int(1), now)
-                .is_err()
-        );
+        let first = call(&mut connection, now);
+        let second = read_id(connection.read(selection("two"), now).unwrap());
+        assert_eq!(connection.pending_count(), 3);
         let expired = connection.expire(now);
-        assert!(expired.invocations.is_empty());
-        assert_eq!(expired.reads.len(), 1);
-        assert_eq!(expired.reads[0].id, id);
-        assert!(expired.reads[0].result.is_err());
-        let call = call(&mut connection, now);
-        assert!(connection.read(selection("two"), now).is_err());
-        connection.abandon(call);
-        let another = read_id(connection.read(selection("two"), now).unwrap());
+        assert_eq!(expired.invocations.len(), 1);
+        assert_eq!(expired.invocations[0].id, first);
+        assert_eq!(expired.reads.len(), 2);
+        assert!(expired.reads.iter().all(|reply| reply.result.is_err()));
+        let another = read_id(connection.read(selection("three"), now).unwrap());
         connection.abandon(another);
         assert!(connection.read_reply(1, read_result(another, 7)).is_none());
         assert_eq!(connection.pending_count(), 0);
+        assert_ne!(id, second);
     }
     #[test]
     fn lost_reads_are_not_reissued_and_old_callbacks_cannot_complete_new_requests() {
@@ -893,22 +877,14 @@ mod tests {
     }
     #[test]
     fn deadlines_abandonment_and_invalid_results_are_directed_and_bounded() {
-        let mut connection = Connection::new(Limits {
-            pending_calls: 1,
-            ..Limits::default()
-        });
+        let mut connection = Connection::new(Limits::default());
         let now = Instant::now();
         let first = call(&mut connection, now);
-        assert!(
-            connection
-                .invoke(selection("one").scope, &command(), Value::Int(1), now)
-                .is_err()
-        );
         assert_eq!(connection.deadline(), Some(now));
         assert!(
             matches!(&connection.expire(now).invocations[..], [Reply { id, outcome: Outcome::Indeterminate { .. } }] if *id == first)
         );
-        let second = call(&mut connection, now);
+        let second = call(&mut connection, now + std::time::Duration::from_secs(1));
         assert_ne!(first, second);
         assert!(
             connection

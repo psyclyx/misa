@@ -31,7 +31,7 @@ pub(crate) async fn start(client: &Client, interface: &Interface, region: Region
     let (accepted, mut incoming) = mpsc::channel::<Accepted>(MAX_ACTIVE);
     let capacity = Arc::new(Semaphore::new(MAX_ACTIVE));
     let task = tokio::spawn(async move {
-        let mut tracker = Tracker::new(MAX_ACTIVE);
+        let mut tracker = Tracker::new();
         let mut permits: Vec<(OperationRef, OwnedSemaphorePermit)> = vec![];
         let mut finished = VecDeque::new();
         loop {
@@ -68,13 +68,8 @@ pub(crate) async fn start(client: &Client, interface: &Interface, region: Region
                     let reference = accepted.watch.reference().clone();
                     // Every insertion owns a permit reserved before sending the
                     // invocation, so an accepted call cannot exceed the tracker.
-                    match tracker.insert(accepted.watch) {
-                        Ok(()) => permits.push((reference, accepted.permit)),
-                        Err(fault) => {
-                            if finished.len() == MAX_FINISHED { finished.pop_front(); }
-                            finished.push_back(format!("<p role=\"alert\">Accepted operation {} could not be monitored: {}</p>", escape(&reference.id), escape(&fault.message)));
-                        }
-                    }
+                    tracker.insert(accepted.watch);
+                    permits.push((reference, accepted.permit));
                 }
             }
         }

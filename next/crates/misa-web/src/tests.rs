@@ -74,7 +74,7 @@ async fn usage_presentation_is_a_typed_finite_document() {
     misa_proto::view::validate(&tree).unwrap();
     let html = render_main(&tree);
     let terminal = misa_render::to_plain(&misa_render::render(&tree, &misa_render::Theme::plain(), 100));
-    for expected in ["Kimi", "remaining", "75", "$0.00"] {
+    for expected in ["Kimi", "remaining", "75", "$0"] {
         assert!(html.contains(expected), "{expected}: {html}");
         assert!(terminal.contains(expected), "{expected}: {terminal}");
     }

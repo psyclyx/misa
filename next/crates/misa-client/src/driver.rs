@@ -36,7 +36,7 @@ struct State {
 struct Inner {
     status: watch::Receiver<Status>,
     state: Arc<Mutex<State>>,
-    commands: mpsc::Sender<Request>,
+    commands: mpsc::UnboundedSender<Request>,
     cancellations: mpsc::Sender<ObservationId>,
     sweep: Arc<Notify>,
     stop: Arc<AtomicBool>,
@@ -151,7 +151,10 @@ impl Client {
         if address.id.to_string() != self.welcome().daemon {
             return Err(Fault::new("identity", "Routing hints name a different daemon"));
         }
-        self.inner.commands.send(Request::RefreshAddress(address)).await.map_err(|_| stopped())
+        self.inner
+            .commands
+            .send(Request::RefreshAddress(address))
+            .map_err(|_| stopped())
     }
 
     pub async fn connect(
@@ -174,7 +177,12 @@ impl Client {
             core: Connection::new(limits),
             notices: BTreeMap::new(),
         }));
-        let (commands, receiver) = mpsc::channel(32);
+        // Requests are already bounded by their own deadlines and by the daemon's
+        // validated protocol/resource budgets. A second fixed queue here turns an
+        // ordinary burst of independent reads into a user-visible "queue full"
+        // failure, even though the driver could simply retain the request until it
+        // reaches the wire.
+        let (commands, receiver) = mpsc::unbounded_channel();
         let (cancellations, cancelled) = mpsc::channel(capacity);
         let sweep = Arc::new(Notify::new());
         let stop = Arc::new(AtomicBool::new(false));
@@ -286,8 +294,8 @@ impl Client {
     async fn submit(&self, request: Request) -> Result<(), Fault> {
         self.inner
             .commands
-            .try_send(request)
-            .map_err(|_| Fault::new("busy", "Client command queue is full or closed"))
+            .send(request)
+            .map_err(|_| stopped())
     }
 }
 fn stopped() -> Fault {
@@ -347,7 +355,7 @@ fn disconnect(
 async fn run(
     wire: Wire,
     state: Arc<Mutex<State>>,
-    mut commands: mpsc::Receiver<Request>,
+    mut commands: mpsc::UnboundedReceiver<Request>,
     mut cancelled: mpsc::Receiver<ObservationId>,
     sweep: Arc<Notify>,
     mut dial: Dial,
