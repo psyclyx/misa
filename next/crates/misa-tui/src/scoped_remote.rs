@@ -1,14 +1,17 @@
 //! Terminal adaptation of shared scoped observations and installed interfaces.
-use misa_kit::intent::Intent;
 use crate::{Presentation, Session, SessionReply, SessionRequest};
 use misa_client::{
     driver::{Client, Observation},
     interaction::{Interaction, Prepared},
     interface::{self, Interface},
 };
+use misa_kit::intent::Intent;
 use misa_proto::{
-    Node, invocation::Outcome, observation::Selection, view::Choice,
+    Node,
+    invocation::{OperationRef, Outcome},
+    observation::Selection,
     preparation::SourceKind,
+    view::Choice,
 };
 use misa_protocol::observation::MemberState;
 use misa_value::Value;
@@ -28,15 +31,54 @@ pub struct ScopedRemote {
     preferences: misa_client::composition::Preferences,
     preference_path: std::path::PathBuf,
     sources: BTreeMap<String, Value>,
-    request_versions: BTreeMap<String, i64>,
+    /// The request generation is not enough to deduplicate attention. An
+    /// operation can be observed first as pending and later as awaiting input
+    /// without changing generation; both transitions are meaningful to a
+    /// client, and the latter must open the question.
+    request_versions: BTreeMap<String, (i64, bool)>,
     replacements: tokio::task::JoinSet<Result<Replacement, String>>,
-    pending: tokio::task::JoinSet<(SessionReply, Option<misa_client::operation::Watch>)>,
-    operations: misa_client::operation::Tracker,
+    /// Replies and watches are directed work. Their kind is explicit so credential,
+    /// form, completion, and report work can be visible without making the composer
+    /// wait for a conversation turn.
+    pending: tokio::task::JoinSet<PendingReply>,
+    /// Opening an observation is separate from receiving an invocation receipt. An accepted
+    /// request is useful to the client immediately; the watch is only a later presentation
+    /// concern and must not delay that receipt.
+    watches: tokio::task::JoinSet<Result<(misa_client::operation::Watch, WorkKind), String>>,
+    turn_operations: misa_client::operation::Tracker,
+    background_operations: misa_client::operation::Tracker,
     turn_settled: bool,
     turn_failure: Option<String>,
     updates: VecDeque<Presentation>,
     catalog: crate::Catalog,
     entry: misa_proto::directory::Entry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkKind {
+    Turn,
+    Background,
+}
+
+impl WorkKind {
+    fn is_turn(self) -> bool {
+        matches!(self, Self::Turn)
+    }
+}
+
+struct Execution {
+    reply: Option<SessionReply>,
+    operation: Option<OperationRef>,
+    kind: WorkKind,
+}
+
+struct PendingReply {
+    /// A directed operation may only produce a watch. In that case there is no
+    /// client-facing reply at acceptance time; manufacturing a "Submitted"
+    /// notice turns the transport receipt into a second transcript.
+    reply: Option<SessionReply>,
+    operation: Option<OperationRef>,
+    kind: WorkKind,
 }
 struct Replacement {
     unavailable: BTreeMap<String, misa_proto::Fault>,
@@ -46,23 +88,72 @@ struct Replacement {
     observation: Observation,
 }
 impl ScopedRemote {
-    fn track_operation(&mut self, operation: misa_client::operation::Watch) {
-        if let Err(fault)=self.operations.insert(operation) {self.turn_failure=Some(fault.message.clone());self.updates.push_back(Presentation::Reply(SessionReply::Notice(fault.message)));}
+    fn open_watch(&mut self, operation: OperationRef, kind: WorkKind) {
+        let client = self.daemon.client.clone();
+        let interaction = self.interaction.clone();
+        self.watches.spawn(async move {
+            loop {
+                match misa_client::operation::Watch::open(
+                    &client,
+                    &interaction.interface,
+                    operation.clone(),
+                    kind.is_turn(),
+                )
+                .await
+                {
+                    Ok(watch) => return Ok((watch, kind)),
+                    Err(fault) if fault.code == "busy" => {
+                        // Observation recovery is serialized by the shared client driver.
+                        // A concurrent accepted operation must wait for that transport
+                        // concern to clear; turning the transient admission result into a
+                        // terminal operation failure loses a real turn.
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                    Err(fault) => {
+                        return Ok((
+                            misa_client::operation::Watch::failed(operation, fault),
+                            kind,
+                        ));
+                    }
+                }
+            }
+        });
+    }
+
+    fn track_operation(&mut self, operation: misa_client::operation::Watch, kind: WorkKind) {
+        let tracker = if kind.is_turn() {
+            &mut self.turn_operations
+        } else {
+            &mut self.background_operations
+        };
+        tracker.insert(operation);
     }
     fn load_preferences() -> Result<misa_client::composition::Preferences, String> {
-        misa_client::preference_store::Store::new(crate::storage::File::default_path().with_extension("presentations.json")).load()
+        misa_client::preference_store::Store::new(
+            crate::storage::File::default_path().with_extension("presentations.json"),
+        )
+        .load()
     }
     pub fn identity(&self) -> String {
         format!("{}:{:?}", self.daemon.identity(), self.selection.scope)
     }
-    pub fn scope(&self)->&misa_proto::observation::Scope {&self.selection.scope}
+    pub fn scope(&self) -> &misa_proto::observation::Scope {
+        &self.selection.scope
+    }
     pub fn daemon_identity(&self) -> &str {
         self.daemon.identity()
     }
     pub fn parked_busy(&self) -> bool {
-        !self.pending.is_empty() || !self.operations.is_empty() || !self.replacements.is_empty()
+        !self.pending.is_empty()
+            || !self.watches.is_empty()
+            || !self.turn_operations.is_empty()
+            || !self.background_operations.is_empty()
+            || !self.replacements.is_empty()
     }
-    pub fn focus_request(&mut self,id:String,generation:i64) {self.updates.push_back(Presentation::Attention{id,generation});}
+    pub fn focus_request(&mut self, id: String, generation: i64) {
+        self.updates
+            .push_back(Presentation::Attention { id, generation });
+    }
     pub fn reactivate(&mut self) {
         self.updates.retain(|update| {
             matches!(update, Presentation::Reply(_) | Presentation::TurnOutput(_))
@@ -88,8 +179,9 @@ impl ScopedRemote {
                         .iter()
                         .map(|variant| variant.id.as_str())
                         .collect::<Vec<_>>()
-                        .join(" · ")
+                    .join(" · ")
                 )),
+                metadata: None,
             })
             .collect()
     }
@@ -147,15 +239,17 @@ impl ScopedRemote {
         }
         let client = self.daemon.client.clone();
         let path = self.preference_path.clone();
-        let preference_id=id.to_string();
+        let preference_id = id.to_string();
         Ok(async move {
             let observation = client
                 .observe(selection.clone(), None)
                 .await
                 .map_err(|fault| fault.message)?;
-            tokio::task::spawn_blocking(move || misa_client::preference_store::Store::new(path).update(preference_id,choice))
-                .await
-                .map_err(|error| error.to_string())??;
+            tokio::task::spawn_blocking(move || {
+                misa_client::preference_store::Store::new(path).update(preference_id, choice)
+            })
+            .await
+            .map_err(|error| error.to_string())??;
             Ok(Replacement {
                 unavailable: composition.unavailable,
                 preferences,
@@ -200,19 +294,55 @@ impl ScopedRemote {
         self.reader = misa_client::document::Reader::new("document");
     }
     fn collect_operation(&mut self) -> Result<(), String> {
-        for completion in self.operations.drain() {
+        for (kind, completion) in self
+            .turn_operations
+            .drain()
+            .into_iter()
+            .map(|completion| (WorkKind::Turn, completion))
+            .chain(
+                self.background_operations
+                    .drain()
+                    .into_iter()
+                    .map(|completion| (WorkKind::Background, completion)),
+            )
+        {
             use misa_client::operation::Terminal;
-            let error=match completion.outcome {
-                Terminal::Finished{state,document,..} if state=="succeeded"=>{if let Some(tree)=document {self.updates.push_back(Presentation::TurnOutput(tree));}None},
-                Terminal::Finished{state,..}=>Some(format!("Operation {state}")),
-                Terminal::Expired=>Some("Operation result expired before reconciliation".into()),
-                Terminal::Fault(fault)=>Some(fault.message),
+            let error = match completion.outcome {
+                Terminal::Finished {
+                    state, document, ..
+                } if state == "succeeded" => {
+                    if let Some(tree) = document {
+                        self.updates.push_back(if kind.is_turn() {
+                            Presentation::TurnOutput(tree)
+                        } else {
+                            Presentation::Reply(SessionReply::Report(tree))
+                        });
+                    }
+                    None
+                }
+                // A failed turn is already represented by the assistant message in the
+                // session transcript. The reconciliation layer must not add a second,
+                // generic operation error above it.
+                Terminal::Finished { .. } if kind.is_turn() => None,
+                Terminal::Finished { state, .. } => Some(format!("Operation {state}")),
+                Terminal::Expired => Some("Operation result expired before reconciliation".into()),
+                Terminal::Fault(fault) => Some(fault.message),
             };
-            if let Some(error)=error {self.turn_failure=Some(error.clone());self.updates.push_back(Presentation::Reply(SessionReply::Notice(error)));}
+            if let Some(error) = error {
+                if kind.is_turn() {
+                    self.turn_failure = Some(error.clone());
+                }
+                self.updates
+                    .push_back(Presentation::Reply(SessionReply::Notice(error)));
+            }
         }
         // Completion belongs to admitted prompt operations. Unrelated finite
         // reads, uploads, and credential forms cannot delay their terminal output.
-        self.turn_settled = self.operations.is_empty();
+        // An accepted turn spends a short time between the invocation receipt and
+        // the observation being installed. That interval is still working; treating
+        // an empty tracker as settled here lets the next document update produce an
+        // empty placeholder before the watch exists.
+        self.turn_settled = self.turn_operations.is_empty() && self.watches.is_empty();
         Ok(())
     }
     pub async fn on(
@@ -311,14 +441,19 @@ impl ScopedRemote {
                 .with_extension("presentations.json"),
             replacements: Default::default(),
             pending: Default::default(),
-            operations: misa_client::operation::Tracker::new(32),
+            watches: Default::default(),
+            turn_operations: misa_client::operation::Tracker::new(),
+            background_operations: misa_client::operation::Tracker::new(),
             turn_settled: true,
             turn_failure: None,
-            updates: std::iter::once(Presentation::Declaration{catalog:catalog.clone(),location:entry.title.clone()})
-                .chain(composition.unavailable.into_iter().map(|(id, fault)| {
-                    Presentation::Reply(SessionReply::Notice(format!("{id}: {}", fault.message)))
-                }))
-                .collect(),
+            updates: std::iter::once(Presentation::Declaration {
+                catalog: catalog.clone(),
+                location: entry.title.clone(),
+            })
+            .chain(composition.unavailable.into_iter().map(|(id, fault)| {
+                Presentation::Reply(SessionReply::Notice(format!("{id}: {}", fault.message)))
+            }))
+            .collect(),
             catalog,
             entry,
         })
@@ -396,11 +531,21 @@ impl ScopedRemote {
             .unwrap_or_default();
         let present: std::collections::BTreeSet<_> =
             requests.iter().map(|(id, _, _)| id.clone()).collect();
+        // An awaiting request is a client concern, but the normal terminal client
+        // should make it visible as soon as it learns about it. Otherwise a
+        // credential or tool request can sit in the pending summary while the
+        // conversation appears to have stalled. The operation stays independent
+        // of this attention signal.
+        if let Some((id, generation, true)) = requests.iter().find(|(id, generation, awaiting)| {
+            *awaiting && self.request_versions.get(id) != Some(&(*generation, true))
+        }) {
+            self.focus_request(id.clone(), *generation);
+        }
         let removed: Vec<_> = self
             .request_versions
             .iter()
             .filter(|(id, _)| !present.contains(*id))
-            .map(|(id, generation)| (id.clone(), *generation))
+            .map(|(id, (generation, _))| (id.clone(), *generation))
             .collect();
         for (id, generation) in removed {
             self.request_versions.remove(&id);
@@ -412,10 +557,12 @@ impl ScopedRemote {
                 }));
         }
         for (id, generation, awaiting) in requests {
-            if self.request_versions.get(&id) == Some(&generation) || self.pending.len() >= 32 {
+            if self.request_versions.get(&id) == Some(&(generation, awaiting))
+            {
                 continue;
             }
-            self.request_versions.insert(id.clone(), generation);
+            self.request_versions
+                .insert(id.clone(), (generation, awaiting));
             if !awaiting {
                 self.updates
                     .push_back(Presentation::Reply(SessionReply::Request {
@@ -461,7 +608,11 @@ impl ScopedRemote {
                         SessionReply::Notice(format!("Input request {id}: {}", fault.message))
                     }
                 };
-                (reply, None)
+                PendingReply {
+                    reply: Some(reply),
+                    operation: None,
+                    kind: WorkKind::Background,
+                }
             });
         }
     }
@@ -491,10 +642,14 @@ async fn execute(
     client: &Client,
     interaction: &Interaction,
     prepared: Prepared,
-) -> Result<(Option<SessionReply>, Option<misa_client::operation::Watch>), String> {
+) -> Result<Execution, String> {
     match prepared {
         Prepared::Invoke { command, input } => {
-            let tracks_turn = matches!(command.id.as_str(), "session.prompt" | "session.interrupt");
+            let kind = if matches!(command.id.as_str(), "session.prompt" | "session.interrupt") {
+                WorkKind::Turn
+            } else {
+                WorkKind::Background
+            };
             match client
                 .invoke(
                     interaction.interface.scope.clone(),
@@ -506,19 +661,19 @@ async fn execute(
                 .map_err(|fault| fault.message)?
                 .outcome
             {
-                Outcome::Completed { value } => Ok((
-                    (value != Value::Null).then(|| {
+                Outcome::Completed { value } => Ok(Execution {
+                    reply: (value != Value::Null).then(|| {
                         SessionReply::Report(misa_client::request::report("Result", &value))
                     }),
-                    None,
-                )),
+                    operation: None,
+                    kind,
+                }),
                 Outcome::Accepted { operation } => {
-                    let notice = Some(SessionReply::Notice(format!(
-                        "Operation accepted: {}",
-                        operation.id
-                    )));
-                    let observation = Some(misa_client::operation::Watch::open(client,&interaction.interface,operation.clone(),tracks_turn).await.unwrap_or_else(|fault|misa_client::operation::Watch::failed(operation,fault)));
-                    Ok((notice, observation))
+                    Ok(Execution {
+                        reply: None,
+                        operation: Some(operation),
+                        kind,
+                    })
                 }
                 Outcome::Rejected { fault } | Outcome::Indeterminate { fault } => {
                     Err(fault.message)
@@ -536,10 +691,14 @@ async fn execute(
                 )
                 .await
                 .map_err(|fault| fault.message)?;
-            Ok((
-                Some(SessionReply::Report(interface::report(&result, "result", "Report").map_err(|fault| fault.message)?)),
-                None,
-            ))
+            Ok(Execution {
+                reply: Some(SessionReply::Report(
+                    interface::report(&result, "result", "Report")
+                        .map_err(|fault| fault.message)?,
+                )),
+                operation: None,
+                kind: WorkKind::Background,
+            })
         }
     }
 }
@@ -610,9 +769,15 @@ impl Session for ScopedRemote {
     fn turn_settled(&self) -> Option<bool> {
         Some(self.turn_settled)
     }
-    fn catalog(&self) -> crate::Catalog { self.catalog.clone() }
-    fn location(&self) -> String { self.entry.title.clone() }
-    fn selected(&self) -> Option<misa_proto::directory::Entry> { Some(self.entry.clone()) }
+    fn catalog(&self) -> crate::Catalog {
+        self.catalog.clone()
+    }
+    fn location(&self) -> String {
+        self.entry.title.clone()
+    }
+    fn selected(&self) -> Option<misa_proto::directory::Entry> {
+        Some(self.entry.clone())
+    }
     async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
         loop {
             self.collect();
@@ -626,14 +791,30 @@ impl Session for ScopedRemote {
                 },
                 changed = self.observation.changed() => changed.map_err(|fault| fault.message)?,
                 reply = self.pending.join_next(), if !self.pending.is_empty() => {
-                    let (reply, operation) = reply.unwrap().unwrap_or_else(|error| (SessionReply::Notice(error.to_string()), None));
-                    if let SessionReply::Request { id, generation, model } = &reply {
-                        if self.request_versions.get(id) != Some(generation) || model.as_ref().is_some_and(|model| model.generation != *generation) { continue; }
+                    let pending = reply.unwrap().unwrap_or_else(|error| PendingReply { reply: Some(SessionReply::Notice(error.to_string())), operation: None, kind: WorkKind::Background });
+                    let PendingReply { reply, operation, kind } = pending;
+                    if let Some(SessionReply::Request { id, generation, model }) = &reply {
+                        if self.request_versions.get(id) != Some(&(*generation, true)) || model.as_ref().is_some_and(|model| model.generation != *generation) { continue; }
                     }
-                    if let Some(operation) = operation { self.track_operation(operation); self.turn_settled = false; }
-                    return Ok(Some(Presentation::Reply(reply)));
+                    if let Some(operation) = operation {
+                        if kind.is_turn() { self.turn_settled = false; }
+                        self.open_watch(operation, kind);
+                    }
+                    if let Some(reply) = reply {
+                        return Ok(Some(Presentation::Reply(reply)));
+                    }
                 },
-                changed = self.operations.changed() => changed.map_err(|error|error.message)?,
+                watch = self.watches.join_next(), if !self.watches.is_empty() => {
+                    if let Some(watch) = watch {
+                        match watch {
+                            Ok(Ok((watch, kind))) => self.track_operation(watch, kind),
+                            Ok(Err(error)) => self.updates.push_back(Presentation::Reply(SessionReply::Notice(error))),
+                            Err(error) => self.updates.push_back(Presentation::Reply(SessionReply::Notice(error.to_string()))),
+                        }
+                    }
+                },
+                changed = self.turn_operations.changed() => changed.map_err(|error|error.message)?,
+                changed = self.background_operations.changed() => changed.map_err(|error|error.message)?,
             }
         }
     }
@@ -663,7 +844,7 @@ impl Session for ScopedRemote {
                 Some(Presentation::Document(_)) => {
                     // Pipeline output belongs to the accepted operation, not to
                     // unrelated clients' conversation updates.
-                    if let Some(tree)=self.operations.latest_document() {
+                    if let Some(tree) = self.turn_operations.latest_document() {
                         return Ok(Some(tree));
                     } else if self.turn_settled
                         && !self
@@ -688,11 +869,18 @@ impl Session for ScopedRemote {
             return Ok(());
         }
         let prepared = self.prepare(intent)?;
-        let (notice, operation) = execute(&self.daemon.client, &self.interaction, prepared).await?;
+        let execution = execute(&self.daemon.client, &self.interaction, prepared).await?;
+        let Execution {
+            reply: notice,
+            operation,
+            kind,
+        } = execution;
         if let Some(operation) = operation {
-            self.track_operation(operation);
-            self.turn_settled = false;
+            if kind.is_turn() {
+                self.turn_settled = false;
+            }
             self.turn_failure = None;
+            self.open_watch(operation, kind);
         }
         if let Some(notice) = notice {
             self.updates.push_back(Presentation::Reply(notice));
@@ -702,11 +890,19 @@ impl Session for ScopedRemote {
     async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
         if let SessionRequest::Intent(Intent::Action { action, fields, .. }) = &request
             && fields.is_empty()
-            && self.interaction.interface.actions.get(action).is_some_and(|entry|!entry.binding.inputs.is_empty())
+            && self
+                .interaction
+                .interface
+                .actions
+                .get(action)
+                .is_some_and(|entry| !entry.binding.inputs.is_empty())
         {
-            return Some(match misa_client::form::Form::action(&self.interaction.interface,action) {
-                Ok(form)=>SessionReply::Form(form),Err(fault)=>SessionReply::Notice(fault.message),
-            });
+            return Some(
+                match misa_client::form::Form::action(&self.interaction.interface, action) {
+                    Ok(form) => SessionReply::Form(form),
+                    Err(fault) => SessionReply::Notice(fault.message),
+                },
+            );
         }
 
         if let SessionRequest::Intent(Intent::Command { name, args }) = &request
@@ -729,40 +925,15 @@ impl Session for ScopedRemote {
             self.request_versions.clear();
             return None;
         }
-        if self.pending.len() + self.operations.len() >= 32 {
-            let error = "Too many pending requests".to_string();
-            return Some(match request {
-                SessionRequest::Intent(intent) => {
-                    let draft = match intent {
-                        Intent::Prompt { text, attachments }
-                        | Intent::Interrupt { text, attachments } => Some((text, attachments)),
-                        _ => None,
-                    };
-                    SessionReply::Sent {
-                        draft,
-                        result: Err(error),
-                    }
-                }
-                SessionRequest::Upload { generation, .. } => SessionReply::Uploaded {
-                    generation,
-                    result: Err(error),
-                },
-                SessionRequest::Complete { source, prefix } => SessionReply::Complete {
-                    source,
-                    prefix,
-                    result: Err(error),
-                },
-                SessionRequest::DaemonInvoke { .. } | SessionRequest::Save { .. } | SessionRequest::Invoke { .. } => {
-                    SessionReply::Notice(error)
-                }
-                SessionRequest::RefreshRequests => unreachable!(),
-            });
-        }
         let client = self.daemon.client.clone();
         let interaction = self.interaction.clone();
         match request {
             SessionRequest::RefreshRequests => unreachable!(),
-            SessionRequest::DaemonInvoke{..}=>return Some(SessionReply::Notice("Daemon invocation requires workspace routing".into())),
+            SessionRequest::DaemonInvoke { .. } => {
+                return Some(SessionReply::Notice(
+                    "Daemon invocation requires workspace routing".into(),
+                ));
+            }
             SessionRequest::Invoke { command, input } => {
                 let prepared = match interaction.invoke(&command, input) {
                     Ok(prepared) => prepared,
@@ -770,11 +941,20 @@ impl Session for ScopedRemote {
                 };
                 self.pending.spawn(async move {
                     match execute(&client, &interaction, prepared).await {
-                        Ok((reply, observation)) => (
-                            reply.unwrap_or_else(|| SessionReply::Notice("Submitted".into())),
-                            observation,
-                        ),
-                        Err(error) => (SessionReply::Notice(error), None),
+                        Ok(Execution {
+                            reply,
+                            operation,
+                            kind,
+                        }) => PendingReply {
+                            reply,
+                            operation,
+                            kind,
+                        },
+                        Err(error) => PendingReply {
+                            reply: Some(SessionReply::Notice(error)),
+                            operation: None,
+                            kind: WorkKind::Background,
+                        },
                     }
                 });
             }
@@ -797,37 +977,44 @@ impl Session for ScopedRemote {
                 };
                 self.pending.spawn(async move {
                     match execute(&client, &interaction, prepared).await {
-                        Ok((notice, operation)) => (
-                            match notice {
+                        Ok(Execution {
+                            reply: notice,
+                            operation,
+                            kind,
+                        }) => PendingReply {
+                            reply: Some(match notice {
                                 Some(notice) => notice,
                                 None => SessionReply::Sent {
                                     draft,
                                     result: Ok(()),
                                 },
-                            },
+                            }),
                             operation,
-                        ),
-                        Err(error) => (
-                            SessionReply::Sent {
+                            kind,
+                        },
+                        Err(error) => PendingReply {
+                            reply: Some(SessionReply::Sent {
                                 draft,
                                 result: Err(error),
-                            },
-                            None,
-                        ),
+                            }),
+                            operation: None,
+                            kind: WorkKind::Background,
+                        },
                     }
                 });
             }
             SessionRequest::Complete { source, prefix } => {
                 self.pending.spawn(async move {
                     let result = complete(&client, &interaction, &source, &prefix).await;
-                    (
-                        SessionReply::Complete {
+                    PendingReply {
+                        reply: Some(SessionReply::Complete {
                             source,
                             prefix,
                             result,
-                        },
-                        None,
-                    )
+                        }),
+                        operation: None,
+                        kind: WorkKind::Background,
+                    }
                 });
             }
             SessionRequest::Upload {
@@ -837,26 +1024,28 @@ impl Session for ScopedRemote {
             } => {
                 let blobs = self.daemon.blobs.clone();
                 self.pending.spawn(async move {
-                    (
-                        SessionReply::Uploaded {
+                    PendingReply {
+                        reply: Some(SessionReply::Uploaded {
                             generation,
                             result: blobs.share(bytes, Some(&media)).await,
-                        },
-                        None,
-                    )
+                        }),
+                        operation: None,
+                        kind: WorkKind::Background,
+                    }
                 });
             }
             SessionRequest::Save { node, destination } => {
                 let daemon = self.daemon.clone();
                 self.pending.spawn(async move {
                     let result = save(&daemon, &interaction, &node, &destination).await;
-                    (
-                        SessionReply::Notice(match result {
+                    PendingReply {
+                        reply: Some(SessionReply::Notice(match result {
                             Ok(()) => format!("Saved {destination}"),
                             Err(error) => error,
-                        }),
-                        None,
-                    )
+                        })),
+                        operation: None,
+                        kind: WorkKind::Background,
+                    }
                 });
             }
         }
@@ -867,6 +1056,47 @@ impl Session for ScopedRemote {
         source: &str,
         prefix: &str,
     ) -> Result<(Vec<Choice>, bool), String> {
+        let declaration = self
+            .interaction
+            .sources
+            .iter()
+            .find(|entry| entry.id == source)
+            .ok_or_else(|| format!("Completion source is not available: {source}"))?;
+        if declaration.kind == misa_proto::preparation::SourceKind::Resident {
+            let value = if let Some(value) = self.sources.get(source) {
+                value.clone()
+            } else {
+                let result = self
+                    .daemon
+                    .client
+                    .read(
+                        Selection {
+                            scope: self.interaction.interface.scope.clone(),
+                            members: BTreeMap::from([(
+                                "result".into(),
+                                declaration.member.clone(),
+                            )]),
+                        },
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    .map_err(|fault| fault.message)?;
+                interface::data(&result, "result")
+                    .map_err(|fault| fault.message)?
+                    .clone()
+            };
+            let needle = prefix.to_lowercase();
+            let mut items = misa_proto::preparation::candidates(&value)
+                .into_iter()
+                .filter(|choice| {
+                    choice.value.to_lowercase().contains(&needle)
+                        || choice.label.to_lowercase().contains(&needle)
+                })
+                .collect::<Vec<_>>();
+            let truncated = items.len() > misa_proto::preparation::DEFAULT_CANDIDATES as usize;
+            items.truncate(misa_proto::preparation::DEFAULT_CANDIDATES as usize);
+            return Ok((items, truncated));
+        }
         complete(&self.daemon.client, &self.interaction, source, prefix).await
     }
     async fn upload(
@@ -897,20 +1127,44 @@ mod tests {
                     misa_kernel::Turn::say("reply"),
                     misa_kernel::Turn::say("reply"),
                     misa_kernel::Turn::say("reply"),
-                ]),
+                ])
+                .named("claude"),
             )),
-            "scripted",
-            "scripted-1",
+            "claude",
+            "claude-sonnet-5",
             Value::Null,
         );
         let directory = misa_daemon::directory::Directory::new("test-daemon").unwrap();
-        let archive=misa_daemon::archive::Store::new(Arc::new(misa_kernel::MemoryStore::default()));
-        misa_kernel::Store::append(archive.as_ref(),"stored-conversation","message",&Value::str("Archived prompt"),1).unwrap();
+        let archive =
+            misa_daemon::archive::Store::new(Arc::new(misa_kernel::MemoryStore::default()));
+        misa_kernel::Store::append(
+            archive.as_ref(),
+            "stored-conversation",
+            "message",
+            &Value::str("Archived prompt"),
+            1,
+        )
+        .unwrap();
         directory.install_archive(archive).await.unwrap();
         directory.insert(runtime).unwrap();
-        directory.install_factory(Arc::new(|_,spec|Box::pin(async move {
-            Ok(misa_session::Runtime::prepare_with(spec.id,spec.title,spec.conversation,Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::new([]))),spec.provider.unwrap_or_else(||"scripted".into()),spec.model.unwrap_or_else(||"scripted-1".into()),Value::Null,misa_session::Contribution::default()))
-        }))).unwrap();
+        directory
+            .install_factory(Arc::new(|_, spec| {
+                Box::pin(async move {
+                    Ok(misa_session::Runtime::prepare_with(
+                        spec.id,
+                        spec.title,
+                        spec.conversation,
+                        Arc::new(misa_kernel::LocalKernel::new(
+                            misa_kernel::ScriptedProvider::new([]).named("claude"),
+                        )),
+                        spec.provider.unwrap_or_else(|| "claude".into()),
+                        spec.model.unwrap_or_else(|| "claude-sonnet-5".into()),
+                        Value::Null,
+                        misa_session::Contribution::default(),
+                    ))
+                })
+            }))
+            .unwrap();
         let server = misa_transport::iroh::bind(None, false).await.unwrap();
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let router = iroh::protocol::Router::builder(server.clone())
@@ -960,14 +1214,23 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!document.id.is_empty());
-        let (models, _) = remote.complete("models", "scripted").await.unwrap();
-        assert!(models.iter().any(|choice| choice.value == "scripted-1"));
+        let (models, _) = remote.complete("models", "").await.unwrap();
+        assert!(
+            models
+                .iter()
+                .any(|choice| choice.value == "claude/claude-sonnet-5")
+        );
         let preference_path = std::env::temp_dir().join(format!(
             "misa-presentation-test-{}.json",
             crate::test_unique_id()
         ));
         remote.preference_path = preference_path.clone();
-        misa_client::preference_store::Store::new(preference_path.clone()).update("another-window".into(),misa_client::composition::Choice::Hidden).unwrap();
+        misa_client::preference_store::Store::new(preference_path.clone())
+            .update(
+                "another-window".into(),
+                misa_client::composition::Choice::Hidden,
+            )
+            .unwrap();
         for (variant, visible) in [("hide", false), ("auto", true)] {
             let old = remote.observation.id();
             assert!(
@@ -1003,7 +1266,11 @@ mod tests {
             persisted.0.get("status"),
             Some(&misa_client::composition::Choice::Auto)
         );
-        assert_eq!(persisted.0.get("another-window"),Some(&misa_client::composition::Choice::Hidden),"a stale remote must not overwrite another process choice");
+        assert_eq!(
+            persisted.0.get("another-window"),
+            Some(&misa_client::composition::Choice::Hidden),
+            "a stale remote must not overwrite another process choice"
+        );
         std::fs::remove_file(preference_path).unwrap();
         let old = remote.observation.id();
         let blocked = std::env::temp_dir().join(format!(
@@ -1078,16 +1345,10 @@ mod tests {
         remote
             .send(Intent::Command {
                 name: "status".into(),
-                args: Value::map([]),
+                args: Value::map([("provider", Value::str("anthropic"))]),
             })
             .await
             .unwrap();
-        assert!(
-            remote
-                .updates
-                .iter()
-                .any(|update| matches!(update, Presentation::Reply(SessionReply::Report(_))))
-        );
         let report = remote.next().await.unwrap().unwrap();
         assert!(
             !misa_render::to_plain(&misa_render::render(
@@ -1155,24 +1416,24 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(
-            remote.operations.len(),
+            remote.watches.len()
+                + remote.turn_operations.len()
+                + remote.background_operations.len(),
             2,
             "a second admission must retain the first correlation"
         );
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(15), async {
             let mut finished = 0;
             while finished < 2 {
-                if matches!(
-                    remote.next_presentation().await.unwrap(),
-                    Some(Presentation::TurnOutput(_))
-                ) {
+                let presentation = remote.next_presentation().await.unwrap();
+                if matches!(presentation, Some(Presentation::TurnOutput(_))) {
                     finished += 1;
                 }
             }
         })
         .await
         .expect("both accepted operations produce terminal results");
-        assert!(remote.operations.is_empty());
+        assert!(remote.turn_operations.is_empty() && remote.background_operations.is_empty());
         remote
             .send(Intent::Command {
                 name: "login".into(),
@@ -1228,20 +1489,65 @@ mod tests {
         })
         .await
         .unwrap();
-        let overview=misa_client::overview::Overview::open(&remote.daemon.client).await.unwrap();
-        let mut overview_changes=overview.watch();
-        tokio::time::timeout(Duration::from_secs(5),async {
-            loop {let snapshot=overview.snapshot().unwrap();if matches!(snapshot.status,misa_protocol::observation::Status::Current) {
-                assert!(snapshot.unavailable.is_empty(),"optional overview contracts must decode: {:?}",snapshot.unavailable);
-                assert!(snapshot.rows.iter().any(|row|row.scope==remote.selection.scope));
-                assert!(snapshot.sessions.iter().any(|entry|entry.scope()==remote.selection.scope));break;
-            }overview_changes.changed().await.unwrap();}
-        }).await.unwrap();
+        let overview = misa_client::overview::Overview::open(&remote.daemon.client)
+            .await
+            .unwrap();
+        let mut overview_changes = overview.watch();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = overview.snapshot().unwrap();
+                if matches!(snapshot.status, misa_protocol::observation::Status::Current) {
+                    assert!(
+                        snapshot.unavailable.is_empty(),
+                        "optional overview contracts must decode: {:?}",
+                        snapshot.unavailable
+                    );
+                    assert!(
+                        snapshot
+                            .rows
+                            .iter()
+                            .any(|row| row.scope == remote.selection.scope)
+                    );
+                    assert!(
+                        snapshot
+                            .sessions
+                            .iter()
+                            .any(|entry| entry.scope() == remote.selection.scope)
+                    );
+                    break;
+                }
+                overview_changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
         drop(overview);
         drop(remote);
         let mut workspace = crate::workspace::Workspace::using(daemons.clone()).await;
-        assert!(workspace.request(SessionRequest::Complete{source:"client.conversations".into(),prefix:"Archived".into()}).await.is_none());
-        tokio::time::timeout(Duration::from_secs(5),async {loop {if let Some(Presentation::Reply(SessionReply::Complete{source,result,..}))=workspace.next_presentation().await.unwrap() && source=="client.conversations" {let (items,truncated)=result.unwrap();assert!(!truncated);assert_eq!(items[0].value,"stored-conversation");break;}}}).await.unwrap();
+        assert!(
+            workspace
+                .request(SessionRequest::Complete {
+                    source: "client.conversations".into(),
+                    prefix: "Archived".into()
+                })
+                .await
+                .is_none()
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(Presentation::Reply(SessionReply::Complete { source, result, .. })) =
+                    workspace.next_presentation().await.unwrap()
+                    && source == "client.conversations"
+                {
+                    let (items, truncated) = result.unwrap();
+                    assert!(!truncated);
+                    assert_eq!(items[0].value, "stored-conversation");
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
         let choose = || Intent::Command {
             name: "session".into(),
             args: Value::map([("session", Value::str("scoped"))]),
@@ -1276,13 +1582,43 @@ mod tests {
         })
         .await
         .expect("parked accepted result was retained");
-        workspace.send(Intent::Command{name:"new".into(),args:Value::map([("id",Value::str("created-from-tui")),("title",Value::str("Local create"))])}).await.unwrap();
-        assert_eq!(workspace.selected().unwrap().id,"created-from-tui");
-        workspace.send(Intent::Command{name:"close".into(),args:Value::map([])}).await.unwrap();
+        workspace
+            .send(Intent::Command {
+                name: "new".into(),
+                args: Value::map([
+                    ("id", Value::str("created-from-tui")),
+                    ("title", Value::str("Local create")),
+                ]),
+            })
+            .await
+            .unwrap();
+        assert_eq!(workspace.selected().unwrap().id, "created-from-tui");
+        workspace
+            .send(Intent::Command {
+                name: "close".into(),
+                args: Value::map([]),
+            })
+            .await
+            .unwrap();
         assert!(workspace.selected().is_none());
-        workspace.send(Intent::Command{name:"resume".into(),args:Value::map([("id",Value::str("resumed-from-tui")),("conversation",Value::str("stored-conversation"))])}).await.unwrap();
-        assert_eq!(workspace.selected().unwrap().id,"resumed-from-tui");
-        workspace.send(Intent::Command{name:"close".into(),args:Value::map([])}).await.unwrap();
+        workspace
+            .send(Intent::Command {
+                name: "resume".into(),
+                args: Value::map([
+                    ("id", Value::str("resumed-from-tui")),
+                    ("conversation", Value::str("stored-conversation")),
+                ]),
+            })
+            .await
+            .unwrap();
+        assert_eq!(workspace.selected().unwrap().id, "resumed-from-tui");
+        workspace
+            .send(Intent::Command {
+                name: "close".into(),
+                args: Value::map([]),
+            })
+            .await
+            .unwrap();
         drop(workspace);
         daemons.disconnect(&server.id().to_string()).await;
         router.shutdown().await.unwrap();

@@ -1,5 +1,6 @@
 //! Surface-owned request drafts and report visibility.
 use crate::{Key, KeyOut};
+use crate::prefs::DialogSettings;
 use misa_client::request::Model;
 use misa_proto::Node;
 use misa_value::Value;
@@ -8,7 +9,7 @@ use std::collections::BTreeMap;
 pub struct Dialogs {
     requests: BTreeMap<String, (Model, String)>,
     visible: Option<String>,
-    attention: Option<(String,i64)>,
+    attention: Option<(String, i64)>,
     form: Option<(
         misa_client::form::Form,
         BTreeMap<String, String>,
@@ -16,27 +17,42 @@ pub struct Dialogs {
         Option<String>,
     )>,
     report: Option<Node>,
-    form_owner:Option<(String,misa_proto::observation::Scope)>,
+    form_owner: Option<(String, misa_proto::observation::Scope)>,
     generations: BTreeMap<String, i64>,
     request_forms: BTreeMap<String, (BTreeMap<String, String>, usize, Option<String>)>,
 }
 impl Dialogs {
-    pub fn focus_request(&mut self,id:String,generation:i64) {
-        self.form=None; self.report=None;
-        self.attention=Some((id,generation));
+    pub fn focus_request(&mut self, id: String, generation: i64) {
+        self.form = None;
+        self.report = None;
+        self.attention = Some((id, generation));
         self.focus_attention();
     }
     fn focus_attention(&mut self) {
-        if let Some((id,generation))=&self.attention {
-            if let Some((model,_))=self.requests.get(id) {
-                if model.generation==*generation {self.visible=Some(id.clone());}
-                self.attention=None;
+        if let Some((id, generation)) = &self.attention {
+            if let Some((model, _)) = self.requests.get(id) {
+                if model.generation == *generation {
+                    self.visible = Some(id.clone());
+                }
+                self.attention = None;
             }
         }
     }
-    pub fn daemon_form(&mut self,daemon:String,scope:misa_proto::observation::Scope,form:misa_client::form::Form,drafts:BTreeMap<String,String>) {self.form(form);if let Some((_,values,_,_))=&mut self.form{*values=drafts;}self.form_owner=Some((daemon,scope));}
+    pub fn daemon_form(
+        &mut self,
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+        form: misa_client::form::Form,
+        drafts: BTreeMap<String, String>,
+    ) {
+        self.form(form);
+        if let Some((_, values, _, _)) = &mut self.form {
+            *values = drafts;
+        }
+        self.form_owner = Some((daemon, scope));
+    }
     pub fn form(&mut self, form: misa_client::form::Form) {
-        self.form_owner=None;
+        self.form_owner = None;
         self.visible = None;
         self.report = None;
         self.form = Some((form, BTreeMap::new(), 0, None));
@@ -87,6 +103,10 @@ impl Dialogs {
         self.focus_attention();
     }
     pub fn report(&mut self, report: Node) {
+        // Reports are terminal surfaces, not another item in the request queue. A pending
+        // form must not remain in front of the report and consume its Escape indefinitely.
+        self.form = None;
+        self.form_owner = None;
         self.report = Some(report);
         self.visible = None;
     }
@@ -125,21 +145,35 @@ impl Dialogs {
     pub fn focused(&self) -> bool {
         self.visible.is_some() || self.form.is_some()
     }
-    pub fn key(&mut self, key: &Key) -> Option<KeyOut> {
+    /// Reports and focused requests are exclusive layers. A request that is only
+    /// advertised remains part of normal chrome and cannot block the composer.
+    pub fn modal(&self) -> bool {
+        self.report.is_some() || self.focused()
+    }
+    pub fn key(&mut self, key: &Key, settings: &DialogSettings) -> Option<KeyOut> {
         if let Some((form, drafts, index, error)) = &mut self.form {
+            if settings.matches("panel.close", key) {
+                self.form = None;
+                self.form_owner = None;
+                return Some(KeyOut::Local);
+            }
             match key {
-                Key::Escape | Key::Interrupt => {
-                    self.form = None;
-                    return Some(KeyOut::Local);
-                }
                 Key::Quit => return None,
                 Key::Tab => {
                     *index = (*index + 1) % form.fields.len().max(1);
                 }
-                Key::Submit => match form.prepare(drafts) {
+                _ if settings.matches("panel.submit", key) => match form.prepare(drafts) {
                     Ok((command, input)) => {
                         self.form = None;
-                        return Some(match self.form_owner.take(){Some((daemon,scope))=>KeyOut::DaemonInvoke{daemon,scope,command,input},None=>KeyOut::Invoke{command,input}});
+                        return Some(match self.form_owner.take() {
+                            Some((daemon, scope)) => KeyOut::DaemonInvoke {
+                                daemon,
+                                scope,
+                                command,
+                                input,
+                            },
+                            None => KeyOut::Invoke { command, input },
+                        });
                     }
                     Err(fault) => *error = Some(fault.message),
                 },
@@ -159,7 +193,7 @@ impl Dialogs {
         }
 
         if self.report.is_some() {
-            return if matches!(key, Key::Escape) {
+            return if settings.matches("panel.close", key) {
                 self.report = None;
                 Some(KeyOut::Local)
             } else {
@@ -176,20 +210,43 @@ impl Dialogs {
                 .map(|(id, field)| (id.clone(), field.clone()))
                 .collect::<Vec<_>>();
             let (drafts, index, error) = self.request_forms.entry(id.clone()).or_default();
-            let action = match key {
-                Key::Escape => {
-                    self.visible = None;
-                    return Some(KeyOut::Local);
+            if settings.matches("panel.close", key) {
+                if model.actions.iter().any(|action| action.id == "cancel") {
+                    // A cancellable owner request must be cancelled, not merely hidden. Hiding
+                    // an authorization is how an operation becomes a silent pending blocker.
+                    let action = model
+                        .actions
+                        .iter()
+                        .find(|action| action.id == "cancel")
+                        .map(|action| &action.binding);
+                    if let Some(binding) = action {
+                        return match binding.prepare(&BTreeMap::new()) {
+                            Ok(input) => Some(KeyOut::Invoke {
+                                command: binding.command.clone(),
+                                input,
+                            }),
+                            Err(_) => Some(KeyOut::Local),
+                        };
+                    }
                 }
+                self.visible = None;
+                return Some(KeyOut::Local);
+            }
+            if settings.matches("cancel", key)
+                && let Some(action) = model.actions.iter().find(|action| action.id == "cancel")
+            {
+                return match action.binding.prepare(&BTreeMap::new()) {
+                    Ok(input) => Some(KeyOut::Invoke {
+                        command: action.binding.command.clone(),
+                        input,
+                    }),
+                    Err(_) => Some(KeyOut::Local),
+                };
+            }
+            let action = match key {
                 Key::Quit => return None,
                 Key::Tab => {
                     *index = (*index + 1) % fields.len().max(1);
-                    None
-                }
-                Key::Char(ch) => {
-                    if let Some((id, _)) = fields.get(*index) {
-                        drafts.entry(id.clone()).or_default().push(*ch);
-                    }
                     None
                 }
                 Key::Backspace | Key::Delete => {
@@ -198,8 +255,25 @@ impl Dialogs {
                     }
                     None
                 }
-                Key::Submit => Some("resolve"),
-                Key::Interrupt => Some("cancel"),
+                Key::Submit | Key::Interrupt => model
+                    .actions
+                    .iter()
+                    .find(|action| settings.matches(&action.id, key))
+                    .map(|action| action.id.as_str()),
+                Key::Char(ch) => {
+                    if let Some(action) = model
+                        .actions
+                        .iter()
+                        .find(|action| settings.matches(&action.id, key))
+                    {
+                        Some(action.id.as_str())
+                    } else {
+                        if let Some((id, _)) = fields.get(*index) {
+                            drafts.entry(id.clone()).or_default().push(*ch);
+                        }
+                        None
+                    }
+                }
                 _ => None,
             };
             let Some(action) = action else {
@@ -251,34 +325,45 @@ impl Dialogs {
         {
             return None;
         }
+        if settings.matches("panel.close", key) {
+            if let Some(action) = model.actions.iter().find(|action| action.id == "cancel") {
+                let fields = model
+                    .input
+                    .as_ref()
+                    .map(|input| BTreeMap::from([(input.id.clone(), Value::str(draft.clone()))]))
+                    .unwrap_or_default();
+                let input = match action.binding.prepare(&fields) {
+                    Ok(input) => input,
+                    Err(_) => return Some(KeyOut::Local),
+                };
+                draft.clear();
+                return Some(KeyOut::Invoke {
+                    command: action.binding.command.clone(),
+                    input,
+                });
+            }
+            self.visible = None;
+            return Some(KeyOut::Local);
+        }
         let action = match key {
-            Key::Interrupt => Some("cancel"),
-            Key::Escape => {
-                self.visible = None;
-                return Some(KeyOut::Local);
-            }
-            Key::Submit if model.input.is_some() => Some("submit"),
-            Key::Char('y')
-                if model.input.is_none()
-                    && model.actions.iter().any(|action| action.id == "approve") =>
-            {
-                Some("approve")
-            }
-            Key::Char('n')
-                if model.input.is_none()
-                    && model.actions.iter().any(|action| action.id == "deny") =>
-            {
-                Some("deny")
-            }
-            Key::Char('x')
-                if model.input.is_none()
-                    && model.actions.iter().any(|action| action.id == "cancel") =>
-            {
-                Some("cancel")
-            }
-            Key::Char(character) if model.input.is_some() => {
-                draft.push(*character);
-                None
+            Key::Interrupt | Key::Submit => model
+                .actions
+                .iter()
+                .find(|action| settings.matches(&action.id, key))
+                .map(|action| action.id.as_str()),
+            Key::Char(character) => {
+                if let Some(action) = model
+                    .actions
+                    .iter()
+                    .find(|action| settings.matches(&action.id, key))
+                {
+                    Some(action.id.as_str())
+                } else if model.input.is_some() {
+                    draft.push(*character);
+                    None
+                } else {
+                    None
+                }
             }
             Key::Backspace | Key::Delete if model.input.is_some() => {
                 draft.pop();
@@ -308,18 +393,23 @@ impl Dialogs {
             input,
         })
     }
-    pub fn lines(&self, theme: &misa_render::Theme, width: usize) -> Vec<misa_render::Line> {
+    pub fn lines(
+        &self,
+        theme: &misa_render::Theme,
+        width: usize,
+        settings: &DialogSettings,
+    ) -> Vec<misa_render::Line> {
         let mut lines = vec![];
+        let mut title = None;
+        let mut footer_actions = vec![("panel.close", "Close")];
         if let Some((form, drafts, index, error)) = &self.form {
+            title = Some(form.title.clone());
             let line = |text| misa_render::Line {
+                surface: None,
                 indent: 0,
                 node: None,
                 spans: vec![(theme.role("notice"), text)],
             };
-            lines.push(line(format!(
-                "{} · Tab next field · Enter submit · Esc dismiss",
-                form.title
-            )));
             for (i, (id, field)) in form.fields.iter().enumerate() {
                 let hint = if matches!(field.schema, misa_proto::schema::Schema::String) {
                     "text"
@@ -336,38 +426,50 @@ impl Dialogs {
             if let Some(error) = error {
                 lines.push(line(error.clone()));
             }
+            footer_actions = vec![("panel.submit", "Submit"), ("panel.close", "Cancel")];
         }
 
-        if !self.requests.is_empty() {
+        if !self.requests.is_empty() && !self.modal() {
             lines.push(misa_render::Line {
+                surface: None,
                 indent: 0,
                 node: None,
                 spans: vec![(
                     theme.role("notice"),
                     format!(
-                    "{} pending requests · /operations opens · Tab next · Esc hides without cancelling",
+                        "{} pending input requests",
                         self.requests.len()
                     ),
                 )],
             });
         }
         if let Some(report) = &self.report {
+            title = Some(report.label.clone().unwrap_or_else(|| "Report".into()));
             lines.extend(misa_render::render(report, theme, width));
         }
         if let Some((model, draft)) = self.visible.as_ref().and_then(|id| self.requests.get(id)) {
+            title = Some(model.title.clone());
+            let cancellable = model.actions.iter().any(|action| action.id == "cancel");
+            footer_actions = model
+                .actions
+                .iter()
+                .filter(|action| !cancellable || action.id != "cancel")
+                .map(|action| (action.id.as_str(), action.label.as_str()))
+                .collect();
+            footer_actions.push((
+                "panel.close",
+                if cancellable { "Cancel" } else { "Close" },
+            ));
             let line = |text| misa_render::Line {
+                surface: None,
                 indent: 0,
                 node: None,
                 spans: vec![(theme.role("notice"), text)],
             };
-            lines.push(line(model.title.clone()));
             lines.extend(misa_render::render(&model.body, theme, width));
             if let Some(form) = &model.form
                 && let misa_proto::schema::Schema::Record { fields, .. } = &form.input
             {
-                lines.push(line(
-                    "Tab next field · Enter submit · Ctrl-C cancel · Esc hide".into(),
-                ));
                 let state = self.request_forms.get(&model.id);
                 for (index, (id, field)) in fields.iter().enumerate() {
                     let label = form
@@ -396,7 +498,7 @@ impl Dialogs {
             }
             if let Some(input) = &model.input {
                 lines.push(line(format!(
-                    "{}: {} · Enter submits · Ctrl-C cancels",
+                    "{}: {}",
                     input.label,
                     if input.secret {
                         "•".repeat(draft.chars().count())
@@ -404,29 +506,45 @@ impl Dialogs {
                         draft.clone()
                     }
                 )));
-            } else {
-                lines.push(line(
-                    model
-                        .actions
-                        .iter()
-                        .map(|action| {
-                            format!(
-                                "{} {}",
-                                match action.id.as_str() {
-                                    "approve" => "y",
-                                    "deny" => "n",
-                                    "cancel" => "x",
-                                    _ => "",
-                                },
-                                action.label
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                ));
             }
         }
-        lines
+        if !self.modal() {
+            return lines;
+        }
+
+        // Dialogs are an overlay in the reference frame: the transcript remains
+        // the document underneath, while the dialog owns the middle region. The
+        // border is presentation policy, not dialog state, so another client can
+        // render the same request as a native surface without inheriting terminal
+        // bookkeeping.
+        let title = title.unwrap_or_else(|| "Interaction".into());
+        let mut framed = vec![misa_render::Line {
+            surface: theme.surface("dialog"),
+            indent: 0,
+            node: None,
+            spans: vec![
+                (theme.role("dialog.label"), "┌─ ".into()),
+                (theme.role("dialog.title"), title),
+            ],
+        }];
+        for mut line in lines {
+            line.surface = line.surface.or_else(|| theme.surface("dialog"));
+            line.spans
+                .insert(0, (theme.role("dialog.label"), "│ ".into()));
+            framed.push(line);
+        }
+        framed.push(misa_render::Line {
+            surface: theme.surface("dialog"),
+            indent: 0,
+            node: None,
+            spans: crate::buttons::footer(
+                theme,
+                settings,
+                footer_actions,
+            )
+            .spans,
+        });
+        framed
     }
 }
 
@@ -476,16 +594,16 @@ mod tests {
         dialogs.update("custom".into(), 1, Some(model));
         dialogs.open();
         dialogs.paste("bad");
-        assert!(matches!(dialogs.key(&Key::Submit), Some(KeyOut::Local)));
+        assert!(matches!(dialogs.key(&Key::Submit, &DialogSettings::default()), Some(KeyOut::Local)));
         assert_eq!(dialogs.request_forms["custom"].0["count"], "bad");
-        dialogs.key(&Key::Escape);
+        dialogs.key(&Key::Escape, &DialogSettings::default());
         dialogs.open();
         for _ in 0..3 {
-            dialogs.key(&Key::Backspace);
+            dialogs.key(&Key::Backspace, &DialogSettings::default());
         }
         dialogs.paste("7");
         assert!(
-            matches!(dialogs.key(&Key::Submit),Some(KeyOut::Invoke{input,..}) if input.get("value").and_then(|value|value.get("count"))==Some(&Value::Int(7)))
+            matches!(dialogs.key(&Key::Submit, &DialogSettings::default()),Some(KeyOut::Invoke{input,..}) if input.get("value").and_then(|value|value.get("count"))==Some(&Value::Int(7)))
         );
         dialogs.update("custom".into(), 2, None);
         assert!(!dialogs.request_forms.contains_key("custom"));
@@ -513,13 +631,13 @@ mod tests {
             "a server request cannot steal local keyboard focus"
         );
         dialogs.open();
-        dialogs.key(&Key::Char('s'));
-        dialogs.key(&Key::Escape);
+        dialogs.key(&Key::Char('s'), &DialogSettings::default());
+        dialogs.key(&Key::Escape, &DialogSettings::default());
         assert!(dialogs.visible.is_none());
         assert_eq!(dialogs.requests["request"].1, "s");
         dialogs.open();
         let text = dialogs
-            .lines(&misa_render::Theme::plain(), 80)
+            .lines(&misa_render::Theme::plain(), 80, &DialogSettings::default())
             .iter()
             .map(misa_render::Line::text)
             .collect::<Vec<_>>()
@@ -528,7 +646,11 @@ mod tests {
         assert!(!text.contains("Key: s"));
         assert!(dialogs.paste("ecret pasted"));
         assert_eq!(dialogs.requests["request"].1, "secret pasted");
-        let masked = misa_render::to_plain(&dialogs.lines(&misa_render::Theme::plain(), 80));
+        let masked = misa_render::to_plain(&dialogs.lines(
+            &misa_render::Theme::plain(),
+            80,
+            &DialogSettings::default(),
+        ));
         assert!(!masked.contains("secret pasted"));
         dialogs.update("request".into(), 2, None);
         dialogs.update("request".into(), 1, Some(model));
@@ -536,6 +658,63 @@ mod tests {
             dialogs.requests.is_empty(),
             "late private read resurrected a settled request"
         );
+    }
+
+    #[test]
+    fn configured_dialog_action_keys_replace_terminal_defaults() {
+        let model = Model {
+            form: None,
+            id: "approval".into(),
+            generation: 1,
+            title: "Tool permission".into(),
+            body: Node::section("request"),
+            input: None,
+            actions: vec![
+                misa_client::request::Action {
+                    id: "approve".into(),
+                    label: "Allow tool".into(),
+                    binding: misa_proto::invocation::ActionBinding {
+                        command: "input.resolve".into(),
+                        bound: BTreeMap::from([
+                            ("request".into(), Value::str("approval")),
+                            ("generation".into(), Value::Int(1)),
+                            ("approved".into(), Value::Bool(true)),
+                        ]),
+                        inputs: BTreeMap::new(),
+                    },
+                },
+                misa_client::request::Action {
+                    id: "deny".into(),
+                    label: "Deny tool".into(),
+                    binding: misa_proto::invocation::ActionBinding {
+                        command: "input.resolve".into(),
+                        bound: BTreeMap::from([
+                            ("request".into(), Value::str("approval")),
+                            ("generation".into(), Value::Int(1)),
+                            ("approved".into(), Value::Bool(false)),
+                        ]),
+                        inputs: BTreeMap::new(),
+                    },
+                },
+            ],
+        };
+        let mut dialogs = Dialogs::default();
+        dialogs.update("approval".into(), 1, Some(model));
+        dialogs.open();
+        let mut settings = DialogSettings::default();
+        settings.action_keys.insert("approve".into(), "a".into());
+        settings.action_keys.insert("deny".into(), "d".into());
+        let text = misa_render::to_plain(&dialogs.lines(
+            &misa_render::Theme::plain(),
+            80,
+            &settings,
+        ));
+        assert!(text.contains("a Allow tool   d Deny tool"), "{text}");
+        assert!(!text.contains("y Allow tool"), "{text}");
+        assert!(matches!(
+            dialogs.key(&Key::Char('a'), &settings),
+            Some(KeyOut::Invoke { .. })
+        ));
     }
 }
 #[cfg(test)]
@@ -558,7 +737,8 @@ mod action_form_tests {
             commands: BTreeMap::from([(
                 "change".into(),
                 Command {
-                    preparation: Default::default(), id: "change".into(),
+                    preparation: Default::default(),
+                    id: "change".into(),
                     input: Schema::Record {
                         fields: BTreeMap::from([
                             (
@@ -598,23 +778,63 @@ mod action_form_tests {
         };
         let mut dialogs = Dialogs::default();
         dialogs.form(misa_client::form::Form::action(&interface, "edit").unwrap());
-        dialogs.key(&Key::Char('x'));
-        assert!(matches!(dialogs.key(&Key::Submit), Some(KeyOut::Local)));
+        dialogs.key(&Key::Char('x'), &DialogSettings::default());
+        assert!(matches!(dialogs.key(&Key::Submit, &DialogSettings::default()), Some(KeyOut::Local)));
         assert!(dialogs.focused());
-        dialogs.key(&Key::Backspace);
+        dialogs.key(&Key::Backspace, &DialogSettings::default());
         dialogs.paste("3");
-        dialogs.key(&Key::Tab);
+        dialogs.key(&Key::Tab, &DialogSettings::default());
         dialogs.paste("Misa");
-        let Some(KeyOut::Invoke { command, input }) = dialogs.key(&Key::Submit) else {
+        let Some(KeyOut::Invoke { command, input }) = dialogs.key(&Key::Submit, &DialogSettings::default()) else {
             panic!("valid typed form submits")
         };
         assert_eq!(command, "change");
         assert_eq!(input.get("count"), Some(&Value::Int(3)));
         assert_eq!(input.get("name"), Some(&Value::str("Misa")));
         assert!(!dialogs.focused());
-        let scope=interface.scope.clone();
-        dialogs.daemon_form("peer-a".into(),scope.clone(),misa_client::form::Form::command(&interface,"change").unwrap(),BTreeMap::from([("count".into(),"7".into()),("name".into(),"other".into())]));
-        let Some(KeyOut::DaemonInvoke{daemon,scope:submitted,input,..})=dialogs.key(&Key::Submit) else{panic!("qualified daemon form");};
-        assert_eq!(daemon,"peer-a");assert_eq!(submitted,scope);assert_eq!(input.get("count"),Some(&Value::Int(7)));
+        let scope = interface.scope.clone();
+        dialogs.daemon_form(
+            "peer-a".into(),
+            scope.clone(),
+            misa_client::form::Form::command(&interface, "change").unwrap(),
+            BTreeMap::from([
+                ("count".into(), "7".into()),
+                ("name".into(), "other".into()),
+            ]),
+        );
+        let Some(KeyOut::DaemonInvoke {
+            daemon,
+            scope: submitted,
+            input,
+            ..
+        }) = dialogs.key(&Key::Submit, &DialogSettings::default())
+        else {
+            panic!("qualified daemon form");
+        };
+        assert_eq!(daemon, "peer-a");
+        assert_eq!(submitted, scope);
+        assert_eq!(input.get("count"), Some(&Value::Int(7)));
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn escape_closes_a_report() {
+        let mut dialogs = Dialogs::default();
+        dialogs.report(Node::section("report").id("report").label("Status for `provider`"));
+        assert!(dialogs.key(&Key::Escape, &DialogSettings::default()).is_some());
+        assert!(!dialogs.modal());
+
+        let mut dialogs = Dialogs::default();
+        dialogs.report(Node::section("report").id("report"));
+        let mut settings = DialogSettings::default();
+        settings
+            .action_keys
+            .insert("panel.close".into(), "q".into());
+        assert!(dialogs.key(&Key::Char('q'), &settings).is_some());
+        assert!(!dialogs.modal());
     }
 }

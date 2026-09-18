@@ -35,6 +35,379 @@ use serde::{Deserialize, Serialize};
 
 use misa_kit::picker::Frecency;
 
+/// Terminal bindings are named by semantic action. The translator consumes
+/// this table, and the action palette displays the same table, so changing a
+/// binding cannot leave a decorative key reference behind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeymapSettings {
+    pub bindings: BTreeMap<String, Vec<String>>,
+}
+
+impl Default for KeymapSettings {
+    fn default() -> Self {
+        let mut bindings = BTreeMap::new();
+        for (id, keys) in [
+            ("history.search", vec!["ctrl+r"]),
+            ("picker.previous_view", vec!["alt+p"]),
+            ("history.previous", vec!["ctrl+p"]),
+            ("history.next", vec!["ctrl+n", "alt+n"]),
+            ("app.quit", vec!["ctrl+q"]),
+            ("input.interrupt", vec!["ctrl+c"]),
+            ("transcript.verbose", vec!["alt+t"]),
+            ("effort.cycle", vec!["alt+f"]),
+            ("transcript.up", vec!["pageup", "alt+k"]),
+            ("transcript.down", vec!["pagedown", "alt+j"]),
+            ("model.open", vec!["alt+m"]),
+            ("commands.open", vec!["alt+/"]),
+            ("picker.favorite", vec!["alt+v"]),
+            ("picker.slot.1", vec!["alt+1"]),
+            ("picker.slot.2", vec!["alt+2"]),
+            ("picker.slot.3", vec!["alt+3"]),
+            ("picker.slot.4", vec!["alt+4"]),
+            ("picker.slot.5", vec!["alt+5"]),
+            ("picker.slot.6", vec!["alt+6"]),
+            ("picker.slot.7", vec!["alt+7"]),
+            ("picker.slot.8", vec!["alt+8"]),
+            ("picker.slot.9", vec!["alt+9"]),
+            ("queue.edit", vec!["alt+e"]),
+            ("selection.open", vec!["alt+s"]),
+            ("input.eof", vec!["ctrl+d"]),
+            ("input.interrupt_submit", vec!["alt+enter"]),
+            ("input.newline", vec!["shift+enter"]),
+            ("transcript.top", vec!["ctrl+home"]),
+            ("transcript.bottom", vec!["ctrl+end"]),
+            ("actions.open", vec!["f1"]),
+        ] {
+            bindings.insert(id.into(), keys.into_iter().map(str::to_string).collect());
+        }
+        Self { bindings }
+    }
+}
+
+impl KeymapSettings {
+    pub fn keys(&self, id: &str) -> String {
+        self.bindings
+            .get(id)
+            .map(|keys| keys.join(" · "))
+            .unwrap_or_default()
+    }
+
+    pub fn matches(
+        &self,
+        id: &str,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> bool {
+        self.bindings
+            .get(id)
+            .is_some_and(|keys| keys.iter().any(|key| key_matches(key, code, modifiers)))
+    }
+}
+
+fn key_matches(
+    binding: &str,
+    code: crossterm::event::KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut expected = KeyModifiers::empty();
+    let mut base = "";
+    for part in binding.split('+') {
+        match part {
+            "ctrl" => expected |= KeyModifiers::CONTROL,
+            "alt" => expected |= KeyModifiers::ALT,
+            "shift" => expected |= KeyModifiers::SHIFT,
+            value => base = value,
+        }
+    }
+    if modifiers != expected {
+        return false;
+    }
+    match (base, code) {
+        ("enter", KeyCode::Enter)
+        | ("escape", KeyCode::Esc)
+        | ("backspace", KeyCode::Backspace)
+        | ("delete", KeyCode::Delete)
+        | ("tab", KeyCode::Tab)
+        | ("pageup", KeyCode::PageUp)
+        | ("pagedown", KeyCode::PageDown)
+        | ("home", KeyCode::Home)
+        | ("end", KeyCode::End)
+        | ("f1", KeyCode::F(1)) => true,
+        (value, KeyCode::Char(character)) => value == character.to_string(),
+        _ => false,
+    }
+}
+
+/// The terminal's choice widget is a composition of actions, not a string
+/// renderer with a second set of keys hidden in it. Keeping this data in the
+/// client preferences gives the stock terminal the reference defaults while
+/// leaving another frontend or a user configuration free to select its own
+/// vocabulary and geometry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PickerHint {
+    pub id: String,
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub only_with_views: bool,
+    #[serde(default)]
+    pub inline: bool,
+    #[serde(default = "default_true")]
+    pub overlay: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The row grammar is presentation, not picker state. A terminal can use a marker, a
+/// browser can use a selected class, and a compact client can remove the detail separator
+/// without teaching the picker about either surface.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PickerRowSettings {
+    pub selected_marker: String,
+    pub marker: String,
+    pub marker_separator: String,
+    pub detail_separator: String,
+    pub inline_prefix: String,
+}
+
+/// Dialog interaction is a client composition. The request model supplies
+/// semantic actions; this config supplies the terminal vocabulary used to
+/// expose them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DialogSettings {
+    pub action_separator: String,
+    pub action_keys: BTreeMap<String, String>,
+}
+
+impl Default for DialogSettings {
+    fn default() -> Self {
+        Self {
+            // Button references use the same three-space separation as the reference
+            // keybinding renderer; dots belong to facts/details, not affordance groups.
+            action_separator: "   ".into(),
+            action_keys: BTreeMap::from([
+                ("approve".into(), "y".into()),
+                ("deny".into(), "n".into()),
+                ("cancel".into(), "ctrl+c".into()),
+                ("submit".into(), "enter".into()),
+                ("resolve".into(), "enter".into()),
+                // Panels and reports use the same action vocabulary as request dialogs. These
+                // are defaults, not branches in either renderer, so a client can change the
+                // terminal key without leaving a decorative hint behind.
+                ("panel.close".into(), "escape".into()),
+                ("panel.submit".into(), "enter".into()),
+            ]),
+        }
+    }
+}
+
+impl DialogSettings {
+    /// Return the configured key for a semantic dialog action. User settings may be a partial
+    /// map, so built-in actions retain their defaults unless explicitly overridden; renderers
+    /// and input routing therefore cannot disagree merely because an older prefs file omitted a
+    /// newly introduced action.
+    pub fn key(&self, id: &str) -> Option<&str> {
+        self.action_keys
+            .get(id)
+            .map(String::as_str)
+            .or_else(|| default_action_key(id))
+    }
+
+    pub fn matches(&self, id: &str, key: &crate::Key) -> bool {
+        let Some(binding) = self.key(id) else {
+            return false;
+        };
+        match (binding, key) {
+            ("escape", crate::Key::Escape)
+            | ("enter", crate::Key::Submit)
+            | ("ctrl+c", crate::Key::Interrupt)
+            | ("alt+enter", crate::Key::InterruptSubmit)
+            | ("backspace", crate::Key::Backspace)
+            | ("delete", crate::Key::Delete)
+            | ("tab", crate::Key::Tab) => true,
+            (binding, crate::Key::Char(character)) => binding == character.to_string(),
+            _ => false,
+        }
+    }
+}
+
+fn default_action_key(id: &str) -> Option<&'static str> {
+    match id {
+        "approve" => Some("y"),
+        "deny" => Some("n"),
+        "cancel" => Some("ctrl+c"),
+        "submit" | "resolve" => Some("enter"),
+        "panel.close" => Some("escape"),
+        "panel.submit" => Some("enter"),
+        _ => None,
+    }
+}
+
+impl Default for PickerRowSettings {
+    fn default() -> Self {
+        Self {
+            selected_marker: ">".into(),
+            marker: " ".into(),
+            marker_separator: " ".into(),
+            detail_separator: " — ".into(),
+            inline_prefix: "  ".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PickerSettings {
+    pub padding: usize,
+    /// Maximum selected-choice preview lines. The session supplies the facts;
+    /// this is only the terminal's geometry budget.
+    pub preview_lines: usize,
+    pub preview: PickerPreviewSettings,
+    pub preferred_height: usize,
+    pub min_height: usize,
+    pub max_height: usize,
+    pub minimum_panel_width: usize,
+    pub gap: usize,
+    pub hint_separator: String,
+    pub empty_label: String,
+    pub more_label: String,
+    pub overflow_format: String,
+    pub view_titles: BTreeMap<String, String>,
+    /// The views a source offers in an overlay. This is presentation policy:
+    /// the picker knows how to switch views, but not which source deserves
+    /// Browse/Favorites versus All.
+    pub view_sets: BTreeMap<String, Vec<String>>,
+    /// Inline completion may have a different purpose from an explicitly
+    /// opened palette. In particular, `/` completes the command vocabulary;
+    /// it is not the command-management palette.
+    pub inline_view_sets: BTreeMap<String, Vec<String>>,
+    pub hints: Vec<PickerHint>,
+    #[serde(default)]
+    pub row: PickerRowSettings,
+}
+
+/// Vocabulary for projecting model facts into a selected-choice preview. The facts are shared;
+/// these labels are terminal composition data and can be replaced without changing the picker
+/// or the session catalogue.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PickerPreviewSettings {
+    pub context_label: String,
+    pub effort_label: String,
+    pub price_label: String,
+    pub cache_label: String,
+    pub request_label: String,
+    pub unavailable_label: String,
+    pub estimate_note: String,
+    pub peak_label: String,
+}
+
+impl Default for PickerPreviewSettings {
+    fn default() -> Self {
+        Self {
+            context_label: "Context".into(),
+            effort_label: "Effort".into(),
+            price_label: "USD per 1M tokens".into(),
+            cache_label: "Cache".into(),
+            request_label: "Per request".into(),
+            unavailable_label: "Cost: unavailable".into(),
+            estimate_note: "Estimates; reported usage cost takes precedence".into(),
+            peak_label: "Peak".into(),
+        }
+    }
+}
+
+impl Default for PickerSettings {
+    fn default() -> Self {
+        Self {
+            padding: 2,
+            preview_lines: 5,
+            preview: PickerPreviewSettings::default(),
+            preferred_height: 14,
+            min_height: 4,
+            max_height: 18,
+            minimum_panel_width: 28,
+            gap: 2,
+            hint_separator: "   ".into(),
+            empty_label: "no matches".into(),
+            more_label: "more".into(),
+            overflow_format: "{start}–{last} / {total}".into(),
+            view_titles: BTreeMap::from([
+                ("browse".into(), "Browse".into()),
+                ("all".into(), "All".into()),
+                ("favorites".into(), "Favorites".into()),
+                ("recent".into(), "Recent".into()),
+            ]),
+            view_sets: BTreeMap::from([
+                ("commands".into(), vec!["browse".into(), "favorites".into()]),
+                ("models".into(), vec!["browse".into(), "favorites".into()]),
+                ("actions".into(), vec!["browse".into(), "favorites".into()]),
+            ]),
+            inline_view_sets: BTreeMap::from([("commands".into(), vec!["all".into()])]),
+            hints: vec![
+                ("complete", "tab", "complete", false, true),
+                ("previous", "up", "previous", false, false),
+                ("next", "down", "next", false, false),
+                ("accept", "enter", "accept", false, false),
+                ("cancel", "escape", "cancel", false, false),
+                ("cycle", "right", "cycle views", true, true),
+                ("replace_view", "alt+/", "replace view", true, false),
+                ("favorite", "alt+v", "favorite", false, true),
+            ]
+            .into_iter()
+            .map(|(id, key, label, only_with_views, inline)| PickerHint {
+                id: id.into(),
+                key: key.into(),
+                label: label.into(),
+                only_with_views,
+                inline,
+                overlay: true,
+            })
+            .collect(),
+            row: PickerRowSettings::default(),
+        }
+    }
+
+}
+
+impl PickerSettings {
+    pub fn picker_views(
+        &self,
+        source: &str,
+        placement: misa_kit::picker::PickerPlacement,
+    ) -> Vec<misa_kit::picker::PickerView> {
+        let configured = match placement {
+            misa_kit::picker::PickerPlacement::Inline => self
+                .inline_view_sets
+                .get(source)
+                .or_else(|| self.view_sets.get(source)),
+            misa_kit::picker::PickerPlacement::Overlay => self.view_sets.get(source),
+        };
+        let views = configured
+            .into_iter()
+            .flatten()
+            .filter_map(|id| match id.as_str() {
+                "browse" => Some(misa_kit::picker::PickerView::Browse),
+                "all" => Some(misa_kit::picker::PickerView::All),
+                "favorites" => Some(misa_kit::picker::PickerView::Favorites),
+                "recent" => Some(misa_kit::picker::PickerView::Recent),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if views.is_empty() {
+            vec![misa_kit::picker::PickerView::All]
+        } else {
+            views
+        }
+    }
+}
+
 /// A frontend supplies where its memory lives: a file, browser storage, or app data.
 /// The kit neither chooses a path nor performs filesystem or environment access.
 pub trait Storage {
@@ -52,6 +425,12 @@ pub trait Storage {
 #[serde(default)]
 pub struct Prefs {
     pub components: misa_render::components::Settings,
+    #[serde(default)]
+    pub keymap: KeymapSettings,
+    #[serde(default)]
+    pub picker: PickerSettings,
+    #[serde(default)]
+    pub dialogs: DialogSettings,
     /// The theme, by the name a person would say: `dark`, `plain`. A name rather than a
     /// frontend's type, because this crate is below every frontend and a pixel frontend's
     /// theme is not a terminal's.
@@ -62,9 +441,11 @@ pub struct Prefs {
     /// What was in the composer, unsent.
     pub draft: String,
     /// Drafts are qualified by daemon identity and exact session incarnation.
-    pub drafts: BTreeMap<String,String>,
+    pub drafts: BTreeMap<String, String>,
     /// How often each choice was accepted, by the value the picker offered.
     pub frecency: BTreeMap<String, i64>,
+    /// Choices somebody explicitly wants near the top of a picker.
+    pub favorites: std::collections::BTreeSet<String>,
 }
 
 impl Prefs {
@@ -132,6 +513,19 @@ impl Prefs {
     /// The counts, in the shape a picker takes them.
     pub fn frecency(&self) -> Frecency {
         Frecency::from_counts(self.frecency.clone())
+    }
+
+    pub fn favorites(&self) -> impl Iterator<Item = String> + '_ {
+        self.favorites.iter().cloned()
+    }
+
+    pub fn toggle_favorite(&mut self, value: &str) -> bool {
+        if self.favorites.insert(value.to_string()) {
+            true
+        } else {
+            self.favorites.remove(value);
+            false
+        }
     }
 
     /// Take the counts from a picker that has been used.
