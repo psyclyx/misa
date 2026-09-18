@@ -861,7 +861,7 @@ impl App {
             let mut picker =
                 misa_kit::picker::Picker::new("Commands", misa_kit::picker::Accept::Run);
             picker.set_items(
-                self.commands.iter().map(|command| misa_proto::view::Choice { value: command.id.clone(), label: command.label.clone(), detail: Some(command.description.clone()) }).collect(),
+                self.commands.iter().map(|command| misa_proto::view::Choice { value: command.id.clone(), label: command.label.clone(), detail: Some(command.description.clone()), metadata: None }).collect(),
                 false,
             );
             self.picker = Some(picker);

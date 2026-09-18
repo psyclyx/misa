@@ -273,6 +273,7 @@ impl Workspace {
                             .map(|snapshot| snapshot.sessions.len())
                             .unwrap_or(0)
                     )),
+                metadata: None,
                 })
                 .collect(),
             "client.sessions" => self
@@ -289,6 +290,7 @@ impl Workspace {
                             value: entry.id,
                             label: entry.title,
                             detail: None,
+                metadata: None,
                         })
                         .collect()
                 })

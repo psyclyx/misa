@@ -69,6 +69,13 @@ mod tests {
                 ("value", Value::str("claude")),
                 ("label", Value::str("Claude")),
                 ("detail", Value::str("200k context")),
+                (
+                    "metadata",
+                    Value::map([
+                        ("context_window", Value::Int(200000)),
+                        ("efforts", Value::list([Value::str("low")])),
+                    ]),
+                ),
             ]),
             // An item with no value names nothing and is skipped rather than
             // becoming a candidate that cannot be chosen.
@@ -79,6 +86,8 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].value, "claude");
         assert_eq!(decoded[0].detail.as_deref(), Some("200k context"));
+        assert_eq!(decoded[0].metadata.as_ref().unwrap().context_window, Some(200000));
+        assert_eq!(decoded[0].metadata.as_ref().unwrap().efforts, ["low"]);
         assert_eq!(decoded[1].label, "GPT");
         assert!(candidates(&Value::Null).is_empty());
     }

@@ -305,6 +305,51 @@ pub struct Choice {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Facts a client may project into a selected-choice preview. The session owns the facts;
+    /// the client owns wording, ordering, and geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ChoiceMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChoiceMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ChoicePricing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak: Option<ChoicePeak>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChoicePricing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_micros_per_thousand: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_micros_per_thousand: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_micros_per_thousand: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_micros_per_thousand: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_micros: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChoicePeak {
+    pub multiplier_ppm: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weekdays: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<ChoicePeakWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChoicePeakWindow {
+    pub start_hour: i64,
+    pub end_hour: i64,
 }
 
 /// Something the node offers. The client renders an affordance and sends the id
@@ -757,6 +802,7 @@ mod tests {
                             value: "gpt".into(),
                             label: "GPT".into(),
                             detail: Some("a model".into()),
+                            metadata: None,
                         }], selected: Some("gpt".into()) },
                     }],
                 },
