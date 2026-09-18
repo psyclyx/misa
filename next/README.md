@@ -100,8 +100,10 @@ Pure Wayland compositors without data-control require XWayland for clipboard acc
 A device login panel offers **Cancel authorization** to stop polling immediately. Dismissing
 the panel alone leaves the authorization running.
 
-The daemon ships a scripted provider, so the basic agent loop runs without a provider account or
-spend. Provider-specific tests use controlled fixtures; real-endpoint tests exercise transport.
+The daemon defaults to the Claude Code CLI, reusing its local account and model access. The
+scripted provider is fixture-only (`--features misa-daemon/fixtures`) and is not a shipped
+provider choice. Provider-specific tests use controlled fixtures; real-endpoint tests exercise
+transport.
 
 The `misa` binary selects the interactive terminal when stdin and stdout are terminals,
 and plain output for pipes. `--print` (or `-p`) forces plain output. `misa-tui` remains an alias.
@@ -115,7 +117,7 @@ cargo run -p misa-skia -- --view view.json --window --out frame.png
 ```
 
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
-clipboard copy. Ctrl-P opens the declared command picker: type to filter, use arrows to select,
+clipboard copy. Alt-/ opens the declared command picker: type to filter, use arrows to select,
 and press Enter to insert the command into the prompt for editing. Escape closes it. Stable owner
 scenes are retained across updates. The last command saves a snapshot after each window redraw for UI tests.
 

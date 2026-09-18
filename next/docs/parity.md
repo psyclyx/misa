@@ -17,7 +17,7 @@ changed binary or APK.
 | On-demand completion                     | Correlated finite `Read` of a declared query with source/prefix/limit                                         |
 | General installed command forms          | Shared schema preparation and authoritative action bindings                                                   |
 | Private input responses                  | Restricted request projection plus generation-bound response action; generic menus exclude `Request` commands |
-| Picker, editor and local command parsing | `misa-kit::{picker, editor, intent}`; picker filtering remains in the composer                                |
+| Picker, editor and local command parsing | `misa-kit::{picker, editor, intent}`; inline completion and focused overlay share picker semantics            |
 | Semantic formatting                      | Typed facts for money, tokens, percent, ratio, duration and bytes; surface-specific rendering                 |
 | Optional status/plugin views             | Client-selected finite presentation variants and composed observations                                        |
 | Reports                                  | Finite data/document reads displayed and dismissed locally                                                    |
@@ -60,7 +60,7 @@ not an unsolicited broadcast into every client's draft.
 | Provider enumeration                           | Resident provider source, including authorization method                                                          |
 | `/clear`, `/compact`                           | Owner transitions; compaction summarizes and journals guarded history replacement                                 |
 | Create, close and resume                       | Daemon-scoped lifecycle commands; archive discovery works with no open session                                    |
-| `/status`                                      | Finite session facts rendered in a local report                                                                   |
+| `/status`                                      | Provider/account status panel backed by the credential capability                                                 |
 | `/usage`                                       | Finite `usage.presentation` document with typed money/token/quota facts; `usage.report` remains available as data |
 | Usage refresh                                  | Kernel capability with coalescing, stale-response rejection and failure clearing                                  |
 | `/login`, `/logout`                            | Credential operations with private key/device challenges and kernel-owned storage                                 |
@@ -113,7 +113,8 @@ selecting a presentation.
 | Admission                             | Roster/open/allow/pairing policy outside session state; revocation closes access to scoped and blob protocols                     |
 
 Tools include file read/write/list, shell and echo; provider adapters include chat
-completions, Anthropic messages, Responses and controlled scripted fixtures.
+completions, Anthropic messages, the Claude Code CLI handoff, and Responses. Scripted behavior is
+fixture-only and is not part of the shipped daemon provider surface.
 Search adapters and provider usage remain kernel capabilities. A background shell
 command reports through its owned process lifecycle; conversation policy does not
 pretend a returned tool receipt means the process has exited.

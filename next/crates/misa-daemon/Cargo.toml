@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Offline scripted behavior is a fixture capability, not part of the shipped
+# daemon's provider/runtime surface.
+fixtures = []
+
 [dependencies]
 blake3.workspace = true
 serde.workspace = true

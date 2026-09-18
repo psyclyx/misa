@@ -1,7 +1,7 @@
 //! A daemon: a kernel, the sessions composed over it, and an iroh endpoint.
 //!
 //! ```sh
-//! # the scripted provider, in memory, which needs nothing
+//! # the Claude Code CLI provider, with the scripted provider available explicitly for fixtures
 //! misa-daemon --session demo
 //! # a real provider, a durable log, and web search
 //! misa-daemon --data-dir ~/.local/state/misa \
@@ -29,9 +29,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use misa_kernel::{
-    AnthropicMessages, Blobs, Credentials, Daemon, Http, Kernel, LocalKernel, OpenAiChat, OpenAiResponses,
-    Provider, ScriptedProvider, SearchBackend, SearchKind, Turn,
+    AnthropicMessages, Blobs, ClaudeCli, Credentials, Daemon, Http, Kernel, LocalKernel,
+    OpenAiChat, OpenAiResponses, Provider, SearchBackend, SearchKind,
 };
+#[cfg(any(test, feature = "fixtures"))]
+use misa_kernel::{ScriptedProvider, Turn};
 use misa_session::Runtime;
 use misa_value::Value;
 
@@ -45,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .block_on(run())
 }
 
+#[derive(Clone)]
 struct Options {
     session: String,
     sessions: Vec<String>,
@@ -95,12 +98,16 @@ const APIS: &[(&str, &str)] = &[
     ("openai.chat", "openai.chat"),
     ("anthropic", "anthropic.messages"),
     ("anthropic.messages", "anthropic.messages"),
+    ("claude", "claude.cli"),
+    ("claude.cli", "claude.cli"),
     ("openai.responses", "openai.responses"),
 ];
 
 /// The shape a `--api` flag names, or `None` for one this daemon cannot serve.
 fn canonical_api(flag: &str) -> Option<&'static str> {
-    APIS.iter().find(|(spelling, _)| *spelling == flag).map(|(_, shape)| *shape)
+    APIS.iter()
+        .find(|(spelling, _)| *spelling == flag)
+        .map(|(_, shape)| *shape)
 }
 
 fn parse() -> Result<Options, String> {
@@ -114,10 +121,10 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
         sessions: vec![],
         data_dir: None,
         relay: true,
-        provider: "scripted".into(),
+        provider: "claude".into(),
         base_url: None,
         api: "auto".into(),
-        model: "scripted-1".into(),
+        model: "claude-sonnet-5".into(),
         list_providers: false,
         open: false,
         pair: false,
@@ -130,13 +137,23 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
         login: None,
     };
     while let Some(argument) = arguments.next() {
-        let mut next = |name: &str| arguments.next().ok_or_else(|| format!("{name} needs a value"));
+        let mut next = |name: &str| {
+            arguments
+                .next()
+                .ok_or_else(|| format!("{name} needs a value"))
+        };
         match argument.as_str() {
             "--session" | "-s" => {
                 let session = next("--session")?;
-                if session.is_empty() { return Err("Session names must not be empty".into()); }
-                if options.sessions.is_empty() { options.session = session.clone(); }
-                if !options.sessions.contains(&session) { options.sessions.push(session); }
+                if session.is_empty() {
+                    return Err("Session names must not be empty".into());
+                }
+                if options.sessions.is_empty() {
+                    options.session = session.clone();
+                }
+                if !options.sessions.contains(&session) {
+                    options.sessions.push(session);
+                }
             }
             "--data-dir" | "-d" => options.data_dir = Some(PathBuf::from(next("--data-dir")?)),
             "--no-relay" => options.relay = false,
@@ -168,7 +185,11 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
-    if options.search.as_deref().is_some_and(|id| SearchKind::from_id(id).is_none()) {
+    if options
+        .search
+        .as_deref()
+        .is_some_and(|id| SearchKind::from_id(id).is_none())
+    {
         return Err(format!(
             "`{}` is not a search backend; there is brave, tavily, searxng",
             options.search.unwrap_or_default()
@@ -177,7 +198,7 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
     if canonical_api(&options.api).is_none() {
         return Err(format!(
             "`{}` is not an api this daemon speaks; there is auto, openai/openai.chat, \
-             anthropic/anthropic.messages, and openai.responses",
+             anthropic/anthropic.messages, claude/claude.cli, and openai.responses",
             options.api
         ));
     }
@@ -190,7 +211,11 @@ fn parse_from(mut arguments: impl Iterator<Item = String>) -> Result<Options, St
 /// wire shapes and which one a service speaks is a flag — but it gets the oldest spelling of
 /// everything, because that is what a service nobody described here accepts: no reasoning effort,
 /// no thinking back, `max_tokens`.
-fn adapter_for(provider: &str, options: &Options, http: Arc<Http>) -> Result<Arc<dyn Provider>, String> {
+fn adapter_for(
+    provider: &str,
+    options: &Options,
+    http: Arc<Http>,
+) -> Result<Arc<dyn Provider>, String> {
     let preset = misa_kernel::presets::preset(provider);
     if preset.is_none() && options.base_url.is_none() {
         return Err(format!(
@@ -202,11 +227,20 @@ fn adapter_for(provider: &str, options: &Options, http: Arc<Http>) -> Result<Arc
     // `unwrap_or` and not a panic on the impossible arm: `parse` already refused a flag that
     // names no shape, and nothing in this system panics on input.
     let api = match canonical_api(&options.api).unwrap_or("openai.chat") {
-        "auto" => preset.map_or("openai.chat", |preset| preset.api).to_string(),
+        "auto" => preset
+            .map_or("openai.chat", |preset| preset.api)
+            .to_string(),
         shape => shape.to_string(),
     };
     let custom = options.base_url.clone();
     Ok(match api.as_str() {
+        "claude.cli" => {
+            let provider = ClaudeCli::new("claude");
+            match std::env::current_exe() {
+                Ok(path) => provider.with_mcp_command(path.to_string_lossy(), ["mcp"]),
+                Err(_) => provider,
+            }
+        }
         "anthropic.messages" => {
             let mut messages = match preset {
                 Some(preset) => AnthropicMessages::from_preset(preset, http),
@@ -226,7 +260,8 @@ fn adapter_for(provider: &str, options: &Options, http: Arc<Http>) -> Result<Arc
         "openai.responses" => {
             let mut responses = match preset {
                 Some(preset) => OpenAiResponses::from_preset(preset, http),
-                None => OpenAiResponses::new(provider, custom.clone().unwrap_or_default(), http).credentialed(provider),
+                None => OpenAiResponses::new(provider, custom.clone().unwrap_or_default(), http)
+                    .credentialed(provider),
             };
             if let Some(base) = custom {
                 responses = responses.with_base_url(base);
@@ -236,7 +271,8 @@ fn adapter_for(provider: &str, options: &Options, http: Arc<Http>) -> Result<Arc
         _ => {
             let mut chat = match preset {
                 Some(preset) => OpenAiChat::from_preset(preset, http),
-                None => OpenAiChat::new(provider, custom.clone().unwrap_or_default(), http).credentialed(provider),
+                None => OpenAiChat::new(provider, custom.clone().unwrap_or_default(), http)
+                    .credentialed(provider),
             };
             if let Some(base) = custom {
                 chat = chat.with_base_url(base);
@@ -246,7 +282,30 @@ fn adapter_for(provider: &str, options: &Options, http: Arc<Http>) -> Result<Arc
     })
 }
 
+/// Compose every shipped real provider into the daemon. A session chooses the
+/// active provider when a qualified model is selected; keeping the adapters
+/// together is what makes `/login deepseek` useful from the default session.
+fn adapters_for(options: &Options, http: Arc<Http>) -> Result<Vec<Arc<dyn Provider>>, String> {
+    if options.base_url.is_some()
+        || options.api != "auto"
+        || misa_kernel::presets::preset(&options.provider).is_none()
+    {
+        return Ok(vec![adapter_for(&options.provider, options, http)?]);
+    }
+    let mut shipped = options.clone();
+    shipped.api = "auto".into();
+    shipped.base_url = None;
+    misa_kernel::presets::ids()
+        .into_iter()
+        .map(|provider| adapter_for(provider, &shipped, http.clone()))
+        .collect()
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut arguments = std::env::args().skip(1);
+    if arguments.next().as_deref() == Some("mcp") {
+        return run_mcp(arguments).await;
+    }
     let options = parse()?;
     if options.list_providers {
         println!("{}", misa_kernel::presets::describe());
@@ -266,36 +325,52 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Which provider, and — separately — whether the facts are durable. Two questions, because
-    // they are not the same question: a daemon with a data directory and the scripted provider
-    // is a durable session with no account, which is what somebody trying this out has, and a
-    // daemon that needed a credential to answer a script would be a daemon that looked broken
-    // for exactly the reason the scripted provider exists.
+    // Which provider, and — separately — whether the facts are durable. The shipped default is
+    // the Claude Code CLI; the scripted branch remains an explicit offline fixture.
     let mut kernel: Daemon = match options.provider.as_str() {
+        #[cfg(any(test, feature = "fixtures"))]
         "scripted" => LocalKernel::new(ScriptedProvider::new([
-            Turn::call("echo", Value::str("a demonstration"), Turn::say("that is all I have.")),
+            Turn::call(
+                "echo",
+                Value::str("a demonstration"),
+                Turn::say("that is all I have."),
+            ),
             Turn::say("that is all I have."),
             Turn::say("still here."),
         ])),
+        #[cfg(not(any(test, feature = "fixtures")))]
+        "scripted" => {
+            return Err("the scripted provider is available only in fixture builds".into());
+        }
         // A real service, from the table or from a base url. The credential slot is the
         // provider's id: a key for `openai` is stored from a client's login panel, and a
         // subscription like `openai-codex` is authorized by a device flow — started here by
         // the `login` subcommand, or by `/login openai-codex` from any client.
-        provider => LocalKernel::new(adapter_for(provider, &options, http.clone())?)
-            .with_default_provider(provider),
+        provider => {
+            let mut providers = adapters_for(&options, http.clone())?.into_iter();
+            let first = providers.next().ok_or("no providers were composed")?;
+            let mut kernel = LocalKernel::new(first);
+            for provider in providers {
+                kernel = kernel.with_provider(provider);
+            }
+            kernel.with_default_provider(provider)
+        }
     };
     if let Some(data_dir) = &options.data_dir {
         // The durable store, composed in: the same kernel with a different store, a directory
         // for blobs, and a directory for what the shell runs.
         kernel = kernel
-            .with_store(Arc::new(misa_kernel::SqliteStore::open(&data_dir.join("conversations.sqlite3"))?))
+            .with_store(Arc::new(misa_kernel::SqliteStore::open(
+                &data_dir.join("conversations.sqlite3"),
+            )?))
             .with_blobs(Arc::new(Blobs::at(&data_dir.join("blobs"))?))
             .with_shell(data_dir.join("shell"));
     }
     kernel = kernel.with_credentials(credentials.clone());
-    if options.search.is_some() || options.data_dir.is_some() {
-        kernel = kernel.with_http(http.clone());
-    }
+    // HTTP is a provider capability, not a durability option. A daemon started
+    // without a data directory still has to reach DeepSeek and every other API
+    // provider.
+    kernel = kernel.with_http(http.clone());
     if let Some(id) = &options.search {
         let kind = SearchKind::from_id(id).ok_or("unknown search backend")?;
         kernel = kernel.with_search(SearchBackend {
@@ -315,7 +390,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // and not only from the process that produced them.
     let blobs = kernel.blobs().clone();
     let archive = misa_daemon::archive::Store::new(kernel.store().clone());
-    kernel=kernel.with_store(archive.clone());
+    kernel = kernel.with_store(archive.clone());
     let store = kernel.store().clone();
     let kernel: Arc<dyn Kernel> = Arc::new(kernel);
 
@@ -341,11 +416,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         admission
     });
 
-    let identity = options.data_dir.as_ref().map(|dir| misa_transport::identity::load(&dir.join("daemon.identity"))).transpose()?;
+    let identity = options
+        .data_dir
+        .as_ref()
+        .map(|dir| misa_transport::identity::load(&dir.join("daemon.identity")))
+        .transpose()?;
     let endpoint = misa_transport::iroh::bind(identity, options.relay).await?;
 
     let directory = misa_daemon::directory::Directory::fresh().map_err(|fault| fault.message)?;
-    directory.install_archive(archive).await.map_err(|fault|fault.message)?;
+    directory
+        .install_archive(archive)
+        .await
+        .map_err(|fault| fault.message)?;
     {
         let kernel = kernel.clone();
         let provider = options.provider.clone();
@@ -353,44 +435,130 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let paths = options.plugins.clone();
         let approval = options.tool_approval.clone();
         let owner = Arc::downgrade(&directory);
-        directory.install_factory(Arc::new(move |_, spec: misa_daemon::lifecycle::SessionSpec| {
-            let owner = owner.clone();
-            let config = Value::map([("tool_approval", Value::str(&approval)), ("parent_attempt", spec.parent_attempt.as_ref().map(Value::str).unwrap_or(Value::Null))]);
-            let (kernel, store, provider, model, paths) = (kernel.clone(), store.clone(), provider.clone(), model.clone(), paths.clone());
-            Box::pin(async move { tokio::task::spawn_blocking(move || {
-                let conversation = spec.conversation.as_deref().unwrap_or(&spec.id);
-                let exists = !store.load(conversation, 0, 1).map_err(|message| misa_proto::Fault::new("storage", message))?.is_empty();
-                if spec.conversation.is_some() && !exists && !spec.recovering { return Err(misa_proto::Fault::new("missing_conversation", "Stored conversation is unavailable")); }
-                if spec.conversation.is_none() && exists { return Err(misa_proto::Fault::new("existing_conversation", "Use resume for a stored conversation")); }
-                let contribution = plugins(&paths).map_err(|error| misa_proto::Fault::new("composition", error.to_string()))?;
-                let contribution = misa_daemon::delegation::install(contribution, owner);
-                Ok(Runtime::prepare_with(spec.id, spec.title, spec.conversation, kernel,
-                    spec.provider.unwrap_or(provider), spec.model.unwrap_or(model), config, contribution))
-            }).await.map_err(|error| misa_proto::Fault::new("composition", error.to_string()))? })
-        })).map_err(|fault| fault.message)?;
+        directory
+            .install_factory(Arc::new(
+                move |_, spec: misa_daemon::lifecycle::SessionSpec| {
+                    let owner = owner.clone();
+                    let config = Value::map([
+                        ("tool_approval", Value::str(&approval)),
+                        (
+                            "parent_attempt",
+                            spec.parent_attempt
+                                .as_ref()
+                                .map(Value::str)
+                                .unwrap_or(Value::Null),
+                        ),
+                    ]);
+                    let (kernel, store, provider, model, paths) = (
+                        kernel.clone(),
+                        store.clone(),
+                        provider.clone(),
+                        model.clone(),
+                        paths.clone(),
+                    );
+                    Box::pin(async move {
+                        tokio::task::spawn_blocking(move || {
+                            let conversation = spec.conversation.as_deref().unwrap_or(&spec.id);
+                            let exists = !store
+                                .load(conversation, 0, 1)
+                                .map_err(|message| misa_proto::Fault::new("storage", message))?
+                                .is_empty();
+                            if spec.conversation.is_some() && !exists && !spec.recovering {
+                                return Err(misa_proto::Fault::new(
+                                    "missing_conversation",
+                                    "Stored conversation is unavailable",
+                                ));
+                            }
+                            if spec.conversation.is_none() && exists {
+                                return Err(misa_proto::Fault::new(
+                                    "existing_conversation",
+                                    "Use resume for a stored conversation",
+                                ));
+                            }
+                            let contribution = plugins(&paths).map_err(|error| {
+                                misa_proto::Fault::new("composition", error.to_string())
+                            })?;
+                            let contribution =
+                                misa_daemon::delegation::install(contribution, owner);
+                            Ok(Runtime::prepare_with(
+                                spec.id,
+                                spec.title,
+                                spec.conversation,
+                                kernel,
+                                spec.provider.unwrap_or(provider),
+                                spec.model.unwrap_or(model),
+                                config,
+                                contribution,
+                            ))
+                        })
+                        .await
+                        .map_err(|error| misa_proto::Fault::new("composition", error.to_string()))?
+                    })
+                },
+            ))
+            .map_err(|fault| fault.message)?;
     }
     if let Some(data_dir) = &options.data_dir {
-        directory.install_membership(Arc::new(misa_daemon::membership::File::at(data_dir.join("active-sessions.cbor")))).await.map_err(|fault| fault.message)?;
-        directory.install_work_log(data_dir.join("delegated-work.cbor")).await.map_err(|fault|fault.message)?;
+        directory
+            .install_membership(Arc::new(misa_daemon::membership::File::at(
+                data_dir.join("active-sessions.cbor"),
+            )))
+            .await
+            .map_err(|fault| fault.message)?;
+        directory
+            .install_work_log(data_dir.join("delegated-work.cbor"))
+            .await
+            .map_err(|fault| fault.message)?;
     }
-    let host = misa_protocol::invocation::CallContext { principal: endpoint.id().to_string(), connection: 0 };
-    for (id, fault) in directory.restore(&host).await { eprintln!("cannot restore {id}: {}", fault.message); }
-    let names = if options.sessions.is_empty() { vec![options.session.clone()] } else { options.sessions.clone() };
+    let host = misa_protocol::invocation::CallContext {
+        principal: endpoint.id().to_string(),
+        connection: 0,
+    };
+    for (id, fault) in directory.restore(&host).await {
+        eprintln!("cannot restore {id}: {}", fault.message);
+    }
+    let names = if options.sessions.is_empty() {
+        vec![options.session.clone()]
+    } else {
+        options.sessions.clone()
+    };
     for name in &names {
-        if directory.sessions().iter().any(|runtime| runtime.id() == name) { continue; }
-        directory.open(&host, misa_daemon::lifecycle::SessionSpec {
-            id: name.clone(), title: format!("{} ({})", name, options.provider), conversation: Some(name.clone()),
-            provider: Some(options.provider.clone()), model: Some(options.model.clone()), parent_attempt: None, recovering: true,
-        }).await.map_err(|fault| fault.message)?;
+        if directory
+            .sessions()
+            .iter()
+            .any(|runtime| runtime.id() == name)
+        {
+            continue;
+        }
+        directory
+            .open(
+                &host,
+                misa_daemon::lifecycle::SessionSpec {
+                    id: name.clone(),
+                    title: format!("{} ({})", name, options.provider),
+                    conversation: Some(name.clone()),
+                    provider: Some(options.provider.clone()),
+                    model: Some(options.model.clone()),
+                    parent_attempt: None,
+                    recovering: true,
+                },
+            )
+            .await
+            .map_err(|fault| fault.message)?;
     }
 
     // The ticket is printed before anything waits on the network. An endpoint's identity
     // exists as soon as it is bound, and a daemon that says nothing until it has found a
     // relay is a daemon that looks broken on a machine with no route to one — which is
     // exactly the machine somebody runs it on first.
-    for name in &names { println!("{}", misa_transport::iroh::ticket(&endpoint, name)); }
+    for name in &names {
+        println!("{}", misa_transport::iroh::ticket(&endpoint, name));
+    }
     if options.data_dir.is_some() {
-        eprintln!("data in {}", options.data_dir.as_ref().expect("just checked").display());
+        eprintln!(
+            "data in {}",
+            options.data_dir.as_ref().expect("just checked").display()
+        );
     }
     eprintln!(
         "credentials: {}",
@@ -427,7 +595,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(misa_daemon::directory::Routes(directory.clone())),
         admission.clone(),
     );
-    let router = misa_transport::server::serve(endpoint.clone(), Arc::new(blobs::Store(blobs)), admission.clone(), scoped);
+    let router = misa_transport::server::serve(
+        endpoint.clone(),
+        Arc::new(blobs::Store(blobs)),
+        admission.clone(),
+        scoped,
+    );
     #[cfg(unix)]
     let _local = misa_transport::local::advertise(&node, &options.session, admission.clone())?;
     let online = endpoint.clone();
@@ -454,12 +627,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Host the same kernel tools for a CLI-backed provider. Claude owns this child process's
+/// stdio stream; the daemon remains the owner of the regular session transport.
+async fn run_mcp(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let options = parse_from(arguments)?;
+    let shell = options
+        .data_dir
+        .as_deref()
+        .map(|dir| dir.join("shell"))
+        .unwrap_or_else(misa_kernel::tools::default_shell_dir);
+    let (events, _listener) = tokio::sync::mpsc::unbounded_channel();
+    misa_kernel::mcp::serve_stdio(
+        misa_kernel::tools::shipped(&shell, &events),
+        misa_session::catalog::tool_schemas(),
+    )
+    .await
+    .map_err(Into::into)
+}
+
 /// Authorize an account by a device code, and store the token it produces.
 ///
 /// The whole of `misa-daemon login <provider>`. A service that takes a key has no
 /// flow here, and the answer says so — and names the ones that do — rather than
 /// parking a terminal waiting for a code nobody is going to show.
-async fn login(provider: &str, credentials: &Arc<Credentials>) -> Result<(), Box<dyn std::error::Error>> {
+async fn login(
+    provider: &str,
+    credentials: &Arc<Credentials>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(flow) = misa_kernel::presets::oauth(provider) else {
         let with_flows: Vec<&str> = misa_kernel::presets::ids()
             .into_iter()
@@ -497,7 +693,11 @@ async fn login(provider: &str, credentials: &Arc<Credentials>) -> Result<(), Box
     )?;
     eprintln!(
         "stored a token for `{provider}` (account `{}`); it will renew itself from here",
-        if token.account.is_empty() { "unknown" } else { &token.account }
+        if token.account.is_empty() {
+            "unknown"
+        } else {
+            &token.account
+        }
     );
     Ok(())
 }
@@ -516,23 +716,40 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         return Ok(contribution);
     }
     for path in paths {
-        let bytes = std::fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-        let plugin = Arc::new(
-            misa_plugin::Plugin::load(&bytes)
-                .map_err(|fault| format!("{}: {} ({})", path.display(), fault.message, fault.code))?,
-        );
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let plugin =
+            Arc::new(misa_plugin::Plugin::load(&bytes).map_err(|fault| {
+                format!("{}: {} ({})", path.display(), fault.message, fault.code)
+            })?);
         plugin.configure(&[]).map_err(|fault| {
-            format!("`{}` could not be configured: {}", plugin.descriptor().id, fault.message)
+            format!(
+                "`{}` could not be configured: {}",
+                plugin.descriptor().id,
+                fault.message
+            )
         })?;
-        plugin.validate(&misa_session::AcceptedEffects).map_err(|fault| {
-            format!("`{}` is not something this daemon can run: {}", plugin.descriptor().id, fault.message)
-        })?;
+        plugin
+            .validate(&misa_session::AcceptedEffects)
+            .map_err(|fault| {
+                format!(
+                    "`{}` is not something this daemon can run: {}",
+                    plugin.descriptor().id,
+                    fault.message
+                )
+            })?;
 
         let descriptor = plugin.descriptor().clone();
-        plugin.authorize_reads(&descriptor.roots).map_err(|fault| fault.message)?;
+        plugin
+            .authorize_reads(&descriptor.roots)
+            .map_err(|fault| fault.message)?;
         eprintln!(
             "plugin `{}` {}: handling {:?}, answering {:?}, roots {:?}",
-            descriptor.id, descriptor.version, descriptor.events, descriptor.queries, descriptor.roots
+            descriptor.id,
+            descriptor.version,
+            descriptor.events,
+            descriptor.queries,
+            descriptor.roots
         );
         for (kind, handler) in plugin.handlers() {
             contribution = contribution.with_handler(kind, misa_plugin::PLUGIN_PRIORITY, handler);
@@ -545,13 +762,27 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         }
         for command in &descriptor.commands {
             let registration = match &command.request {
-                Some(form) => misa_session::commands::CommandRegistration::input_event(&command.id, command.input.clone(), &command.event, form.clone()).map_err(|fault| fault.message)?,
-                None => misa_session::commands::CommandRegistration::event(&command.id, command.input.clone(), &command.event),
+                Some(form) => misa_session::commands::CommandRegistration::input_event(
+                    &command.id,
+                    command.input.clone(),
+                    &command.event,
+                    form.clone(),
+                )
+                .map_err(|fault| fault.message)?,
+                None => misa_session::commands::CommandRegistration::event(
+                    &command.id,
+                    command.input.clone(),
+                    &command.event,
+                ),
             };
             contribution = contribution.with_command(registration);
         }
-        for binding in &descriptor.bindings { contribution = contribution.with_binding(binding.clone()); }
-        for tool in &descriptor.tools { contribution = contribution.with_tool(tool.clone()); }
+        for binding in &descriptor.bindings {
+            contribution = contribution.with_binding(binding.clone());
+        }
+        for tool in &descriptor.tools {
+            contribution = contribution.with_tool(tool.clone());
+        }
         // Every presentation is selected independently by each client.
         for presentation in &descriptor.presentations {
             contribution = contribution.with_presentation(presentation.clone());
@@ -559,9 +790,14 @@ fn plugins(paths: &[PathBuf]) -> Result<misa_session::Contribution, String> {
         for root in &descriptor.roots {
             // Empty, because what a plugin keeps in its own root is its own business and its
             // first patch is what fills it. A name the session already owns is refused in here.
-            contribution = contribution.with_root(root, Value::map([])).map_err(|fault| {
-                format!("`{}` asked for a state root it may not have: {}", descriptor.id, fault.message)
-            })?;
+            contribution = contribution
+                .with_root(root, Value::map([]))
+                .map_err(|fault| {
+                    format!(
+                        "`{}` asked for a state root it may not have: {}",
+                        descriptor.id, fault.message
+                    )
+                })?;
         }
     }
     Ok(contribution)
@@ -579,7 +815,10 @@ fn show_invitation(admission: &misa_transport::admission::Admission, node: &str,
         .unwrap_or(0);
     let invitation = admission.invite(misa_transport::admission::INVITATION_TTL_MS, now);
     let pairing = misa_proto::Pairing::new(
-        misa_proto::Ticket { node: node.to_string(), session: session.to_string() },
+        misa_proto::Ticket {
+            node: node.to_string(),
+            session: session.to_string(),
+        },
         invitation.code(),
     );
     let text = pairing.to_string();
@@ -611,15 +850,23 @@ fn qr(text: &str) -> Result<String, String> {
 }
 
 /// The daemon's console: one line, one decision.
-async fn console(admission: Arc<misa_transport::admission::Admission>, node: String, session: String) {
+async fn console(
+    admission: Arc<misa_transport::admission::Admission>,
+    node: String,
+    session: String,
+) {
     // Tokio's stdin uses a blocking pool read that runtime shutdown waits for.
     // A dedicated thread does not hold shutdown hostage while waiting for input.
     let (sender, mut lines) = tokio::sync::mpsc::channel(16);
     std::thread::spawn(move || {
         use std::io::BufRead as _;
         for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break; };
-            if sender.blocking_send(line).is_err() { break; }
+            let Ok(line) = line else {
+                break;
+            };
+            if sender.blocking_send(line).is_err() {
+                break;
+            }
         }
     });
     while let Some(line) = lines.recv().await {
@@ -648,7 +895,9 @@ async fn console(admission: Arc<misa_transport::admission::Admission>, node: Str
                 Err(error) => eprintln!("could not forget it: {error}"),
             },
             "admission" => eprintln!("{}", admission.describe()),
-            other => eprintln!("there is no command `{other}`; there is pair, peers, revoke, admission"),
+            other => {
+                eprintln!("there is no command `{other}`; there is pair, peers, revoke, admission")
+            }
         }
     }
 }
@@ -659,7 +908,10 @@ mod tests {
 
     /// A command line, as the argument list `parse` works over.
     fn arguments(line: &str) -> std::vec::IntoIter<String> {
-        line.split_whitespace().map(str::to_string).collect::<Vec<_>>().into_iter()
+        line.split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     #[test]
@@ -668,7 +920,12 @@ mod tests {
         // `--api openai.responses` was refused by a check that named two shapes while
         // `adapter_for` had three, which is a daemon that cannot be pointed at a service it
         // can speak to.
-        for shape in ["openai.chat", "anthropic.messages", "openai.responses"] {
+        for shape in [
+            "openai.chat",
+            "anthropic.messages",
+            "claude.cli",
+            "openai.responses",
+        ] {
             let parsed = parse_from(arguments(&format!(
                 "--provider custom --base-url http://x --api {shape}"
             )))
@@ -683,19 +940,34 @@ mod tests {
 
     #[test]
     fn an_api_this_daemon_cannot_speak_is_refused_by_name() {
-        let error = parse_from(arguments("--api chat")).err().expect("no adapter speaks `chat`");
-        assert!(error.contains("openai.responses"), "the refusal should name the shapes: {error}");
+        let error = parse_from(arguments("--api chat"))
+            .err()
+            .expect("no adapter speaks `chat`");
+        assert!(
+            error.contains("openai.responses"),
+            "the refusal should name the shapes: {error}"
+        );
     }
 
     #[test]
     fn a_plugin_is_a_path_given_once_or_more() {
         // Repeatable because it is a list, and a path because what a daemon runs is a decision
         // somebody makes where the daemon is.
-        let parsed = parse_from(arguments("--plugin a.wasm --plugin b.wasm")).expect("a command line");
-        assert_eq!(parsed.plugins, vec![PathBuf::from("a.wasm"), PathBuf::from("b.wasm")]);
-        assert!(parse_from(arguments("--plugin")).is_err(), "a plugin with no path");
+        let parsed =
+            parse_from(arguments("--plugin a.wasm --plugin b.wasm")).expect("a command line");
+        assert_eq!(
+            parsed.plugins,
+            vec![PathBuf::from("a.wasm"), PathBuf::from("b.wasm")]
+        );
+        assert!(
+            parse_from(arguments("--plugin")).is_err(),
+            "a plugin with no path"
+        );
         let none = parse_from(arguments("--session demo")).expect("a command line");
-        assert!(none.plugins.is_empty(), "a daemon with no plugins runs none");
+        assert!(
+            none.plugins.is_empty(),
+            "a daemon with no plugins runs none"
+        );
     }
 
     #[test]
@@ -705,7 +977,10 @@ mod tests {
         // panel, which is the whole reason there is no `--token`.
         let parsed = parse_from(arguments("login openai-codex")).expect("a login");
         assert_eq!(parsed.login.as_deref(), Some("openai-codex"));
-        assert!(parse_from(arguments("login")).is_err(), "a login with nothing to authorize");
+        assert!(
+            parse_from(arguments("login")).is_err(),
+            "a login with nothing to authorize"
+        );
     }
 }
 
