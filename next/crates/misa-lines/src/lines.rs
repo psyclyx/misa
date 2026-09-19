@@ -60,6 +60,141 @@ impl Line {
     }
 }
 
+/// A block's leading cells: the rail, quote marker, or list marker that sits
+/// before every row of the block's content.
+///
+/// The first row and the remaining rows can differ — a list writes its marker
+/// once and aligns wrapped text under the marker's text — which is why a prefix
+/// is a pair rather than a single string. Prefix cells live in `Line::spans`,
+/// never in `Line::indent`, so a parent prefix always lands to the left of a
+/// child's and nesting composes in ancestor order.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Prefix {
+    first: Vec<(Style, String)>,
+    rest: Vec<(Style, String)>,
+}
+
+impl Prefix {
+    fn none() -> Prefix {
+        Prefix::default()
+    }
+
+    fn uniform(cells: Vec<(Style, String)>) -> Prefix {
+        Prefix {
+            rest: cells.clone(),
+            first: cells,
+        }
+    }
+
+    fn first_rest(first: Vec<(Style, String)>, rest: Vec<(Style, String)>) -> Prefix {
+        Prefix { first, rest }
+    }
+
+    /// The cells before a row. The first and rest variants have equal width, so
+    /// wrapped content stays aligned under the opening row.
+    fn cells(&self, first: bool) -> &[(Style, String)] {
+        if first { &self.first } else { &self.rest }
+    }
+
+    fn width(&self) -> usize {
+        cells_width(&self.rest).max(cells_width(&self.first))
+    }
+}
+
+fn cells_width(cells: &[(Style, String)]) -> usize {
+    cells.iter().map(|(_, text)| width(text)).sum()
+}
+
+/// Blank cells a block adds inside its own extent.
+///
+/// Vertical padding is blank rows above and below the content that carry the
+/// block's prefix and surface, so a railed block reads as one extent with air
+/// around its text. Horizontal padding is the cell between the prefix and the
+/// content (left) and the cell reserved before the block's right edge (right).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Padding {
+    top: u8,
+    right: u8,
+    bottom: u8,
+    left: u8,
+}
+
+impl Padding {
+    const NONE: Padding = Padding {
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+    };
+    /// A railed message: a blank row above and below, a cell between the rail
+    /// and the text, and a cell reserved before the terminal edge. The rail
+    /// glyph's own trailing gap is folded into `left`, so text never touches
+    /// the bar and the block never touches the edge.
+    const MESSAGE: Padding = Padding {
+        top: 1,
+        right: 1,
+        bottom: 1,
+        left: 1,
+    };
+}
+
+/// Cells a block leaves on each side, outside its prefix and surface.
+///
+/// A nested block uses a margin to read as subordinate to the block that owns
+/// it: its content is indented from the parent's prefix and kept off the edge.
+/// A block whose own prefix already provides its left breathing room (a quote's
+/// marker, a list's marker) uses [`Margin::MARKED`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Margin {
+    left: u8,
+    right: u8,
+}
+
+impl Margin {
+    const NONE: Margin = Margin { left: 0, right: 0 };
+    /// A nested code or table: one cell on each side from the parent content.
+    const NESTED: Margin = Margin { left: 1, right: 1 };
+    /// A block whose own marker (a quote's bar, a list's bullet) already gives
+    /// it a left edge still keeps a cell before the right edge.
+    const MARKED: Margin = Margin { left: 0, right: 1 };
+}
+
+/// A block's prefix plus its padding and margin.
+///
+/// `horizontal` is the room the chrome takes from a row, so the block can lay
+/// its content out against the columns that remain and the caller can reserve
+/// exactly those cells before composing the prefix in.
+#[derive(Clone, Debug, Default)]
+struct Chrome {
+    prefix: Prefix,
+    padding: Padding,
+    margin: Margin,
+    /// A railed block does not stack its rail on a nested block that already
+    /// draws the same rail; the inner block's own rail wins, as the previous
+    /// system's tool calls and thinking blocks require.
+    rail: bool,
+}
+
+impl Chrome {
+    fn nested(prefix: Prefix) -> Chrome {
+        Chrome {
+            prefix,
+            margin: Margin::NESTED,
+            ..Chrome::default()
+        }
+    }
+
+    /// Cells reserved before a row's content: the margins, the prefix, and the
+    /// horizontal padding.
+    fn horizontal(&self) -> usize {
+        self.margin.left as usize
+            + self.prefix.width()
+            + self.padding.left as usize
+            + self.padding.right as usize
+            + self.margin.right as usize
+    }
+}
+
 /// Render a tree to lines at a given width.
 pub fn render(node: &Node, theme: &Theme, columns: usize) -> Vec<Line> {
     let mut out = render_block(node, theme, columns, 0);
@@ -72,9 +207,7 @@ pub fn render(node: &Node, theme: &Theme, columns: usize) -> Vec<Line> {
 /// Render one retained layout owner, preserving boundary blank lines and depth.
 /// The caller trims only the end of the complete document.
 pub fn render_block(node: &Node, theme: &Theme, columns: usize, depth: usize) -> Vec<Line> {
-    let mut out = Vec::new();
-    Renderer { theme, columns }.node(node, depth, 0, &mut out);
-    out
+    Renderer { theme, columns }.node(node, depth, 0)
 }
 
 /// The text of rendered lines, without styles. For a pipe or a test.
@@ -103,21 +236,21 @@ impl<'a> Renderer<'a> {
         )
     }
 
+    /// Render a node's children as one run of blocks, with the gap a message
+    /// puts between its paragraphs.
     fn children(&self, node: &Node, depth: usize, inset: usize) -> Vec<Line> {
         let spaced = Self::spaces_between_children(&node.role);
         let mut out = Vec::new();
         for child in &node.children {
-            let mut lines = Vec::new();
-            self.node(child, depth, inset, &mut lines);
+            let lines = self.node(child, depth, inset);
             if lines.is_empty() {
                 continue;
             }
             if spaced && !out.is_empty() {
-                // A gap between two blocks of one message belongs to that message:
-                // it carries the message's surface so a railed block does not come
-                // apart into fragments. The owning section adds the rail itself.
-                // The prefix cells the ancestors will prepend stay an inset, not
-                // spaces, so the gap is widened with the rest of the block.
+                // A gap between two blocks of one message belongs to that
+                // message: it carries the message's surface so a railed block
+                // does not come apart into fragments. Its cells stay an inset,
+                // not indentation, so the parent prefix still goes in front.
                 out.push(Line {
                     indent: (depth as u8).saturating_mul(2),
                     surface: self.theme.surface(&node.role),
@@ -129,87 +262,60 @@ impl<'a> Renderer<'a> {
         out
     }
 
-    fn node(&self, node: &Node, depth: usize, inset: usize, out: &mut Vec<Line>) {
+    /// Render one node into a block of rows that already carry its own prefix,
+    /// padding, and margin.
+    fn node(&self, node: &Node, depth: usize, inset: usize) -> Vec<Line> {
         if let Some(lines) = crate::components::render_default(node, self.theme, self.columns) {
-            out.extend(lines);
-            return;
+            return lines;
         }
         let indent = (depth as u8).saturating_mul(2);
         let style = self.theme.role(&node.role);
         match &node.kind {
             Kind::Section => {
-                // A node whose role names a rail is drawn with one. The rail is a
-                // prefix span and its two cells are an *inset*, not indentation:
-                // that is what lets a quote, a list marker or a nested rail sit at
-                // the same column and compose in the order the ancestors add them.
+                // A node whose role names a rail is drawn with one. The rail is
+                // a prefix span and its cells are part of the block's chrome,
+                // which is what lets a quote, a list marker or a nested rail sit
+                // after it and compose in the order the ancestors add them.
                 if let Some((glyph, rail_style)) = self.theme.rail(&node.role) {
-                    let surface = self.theme.surface(&node.role);
-                    let rail_width = width(&glyph);
-                    let inner = inset + rail_width;
-
-                    let mut content: Vec<Line> = Vec::new();
-                    if let Some(label) = &node.label {
-                        let label = if node.role == "tool.call" {
-                            self.tool_title(node)
-                        } else {
-                            label.clone()
-                        };
-                        content.push(Line::simple(indent, style, label, Some(&node.id)));
-                    }
-                    content.extend(self.children(node, depth, inner));
-                    self.state_mark(node, indent, &mut content);
-                    // An empty railed block says nothing, so it earns no padding.
-                    if content.is_empty() {
-                        return;
-                    }
-
-                    // The rail and surface continue through a row above and below.
-                    out.push(rail_pad(indent, &glyph, rail_style, surface, node));
-                    for mut line in content {
-                        rail_line(&mut line, &glyph, rail_style, surface);
-                        out.push(line);
-                    }
-                    out.push(rail_pad(indent, &glyph, rail_style, surface, node));
-                    // And the block is separated from what follows by a plain
-                    // blank, in addition to the padding that closes its rail.
-                    out.push(Line::default());
-                    return;
+                    return self.railed(node, depth, inset, indent, style, &glyph, rail_style);
                 }
+                let mut content = Vec::new();
                 if node.role == "session" {
                     // The root is a document boundary. The terminal supplies the
                     // application header; rendering the session id here duplicates
                     // that chrome as transcript content.
                     for child in &node.children {
-                        self.node(child, depth, inset, out);
+                        content.extend(self.node(child, depth, inset));
                     }
                 } else if let Some(label) = &node.label {
-                    out.push(Line::simple(
+                    content.push(Line::simple(
                         indent,
                         style.bold(),
                         label.clone(),
                         Some(&node.id),
                     ));
                     for child in &node.children {
-                        self.node(child, depth, inset, out);
+                        content.extend(self.node(child, depth, inset));
                     }
                 } else {
-                    out.extend(self.children(node, depth, inset));
+                    content = self.children(node, depth, inset);
                 }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut content);
+                content
             }
             Kind::Text { spans } => {
                 if node.role == "tool.call" {
-                    out.push(Line::simple(
+                    return vec![Line::simple(
                         indent,
                         style,
                         self.tool_title(node),
                         Some(&node.id),
-                    ));
-                    return;
+                    )];
                 }
                 let budget = self.budget(indent, inset);
+                let mut content = Vec::new();
                 for line in wrap_spans(spans, budget) {
-                    out.push(Line {
+                    content.push(Line {
                         indent,
                         spans: line
                             .iter()
@@ -219,7 +325,8 @@ impl<'a> Renderer<'a> {
                         node: Some(node.id.clone()),
                     });
                 }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut content);
+                content
             }
             Kind::Heading { level, spans } => {
                 // A heading is structure, so the linear medium makes it visible even
@@ -234,8 +341,9 @@ impl<'a> Renderer<'a> {
                     &format!("markdown.heading.{level}"),
                 );
                 let budget = self.budget(indent, inset);
+                let mut content = Vec::new();
                 for line in wrap_spans(spans, budget) {
-                    out.push(Line {
+                    content.push(Line {
                         indent,
                         spans: line
                             .iter()
@@ -245,111 +353,47 @@ impl<'a> Renderer<'a> {
                         node: Some(node.id.clone()),
                     });
                 }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut content);
+                content
             }
             Kind::Quote => {
                 // The marker is the medium's, not the theme's: a quote has to read as a
                 // quote in a theme that named nothing at all. A theme can still colour it
                 // through the `quote` modifier or the node's own `…quote.marker` role.
+                // The marker's cells are the block's prefix, so a quote inside a rail
+                // lands at the rail's column instead of being pushed right by an indent.
                 let marker = self.merged(style, &node.role, "marker", "quote");
-                // The marker's two cells are an inset for the children, and the
-                // marker itself is a span, so a quote inside a rail lands at the
-                // rail's column instead of being pushed right by an indent.
-                let inner = inset + width("▏ ");
-                let mut rendered = Vec::new();
+                let chrome = Chrome {
+                    prefix: Prefix::uniform(vec![(marker, "▏ ".to_string())]),
+                    padding: Padding::NONE,
+                    margin: Margin::MARKED,
+                    rail: false,
+                };
+                let inner = inset + chrome.horizontal();
+                let mut content = Vec::new();
                 for child in &node.children {
-                    self.node(child, depth, inner, &mut rendered);
+                    content.extend(self.node(child, depth, inner));
                 }
-                for mut line in rendered {
-                    line.spans.insert(0, (marker, "▏ ".to_string()));
-                    out.push(line);
-                }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut content);
+                self.frame(&chrome, indent, None, &node.id, content)
             }
             Kind::Rule => {
-                let width = self.budget(indent, inset).min(60).max(1);
+                let width = self.budget(indent, inset).max(1);
                 let rule = self.merged(style, &node.role, "rule", "markdown.rule");
-                out.push(Line::simple(
+                vec![Line::simple(
                     indent,
                     rule,
                     "─".repeat(width),
                     Some(&node.id),
-                ));
+                )]
             }
-            Kind::Code { lang, text } => {
-                // A diff is code whose meaning is *per line*, and the session says so —
-                // by naming a role that ends in `.diff`, or, for a body a model fenced,
-                // by the language it was fenced with. Nothing here guesses from the
-                // text: a block of code that happens to contain a `+` is still code.
-                let diff = is_diff(&node.role, lang.as_deref());
-                if let Some(lang) = lang
-                    && !diff
-                {
-                    let label = self.merged(style, &node.role, "label", "markdown.code.label");
-                    out.push(Line::simple(
-                        indent,
-                        label,
-                        format!("{lang}"),
-                        Some(&node.id),
-                    ));
-                }
-                // Highlighting is the client's. The session sent the code and its
-                // authored fence label; the grammar, the parse and the classes are
-                // ours. A diff classifies its own lines instead.
-                let captures = if diff {
-                    Vec::new()
-                } else {
-                    lang.as_deref()
-                        .map(|language| misa_syntax::captures(language, text))
-                        .unwrap_or_default()
-                };
-                let source: Vec<&str> = text.split('\n').collect();
-                // A prose code block carries a numbered gutter, as the previous
-                // markdown renderer did; a tool's own code view keeps its shape.
-                let numbers = numbered_code(&node.role).then(|| code_numbers(&source, diff));
-                let number_width = numbers
-                    .as_ref()
-                    .and_then(|numbers| numbers.iter().flatten().map(String::len).max())
-                    .unwrap_or(0);
-                let budget = self.budget(indent, inset);
-                let gutter = number_width > 0 && budget > number_width + 4;
-                let gutter_style = self.merged(style, &node.role, "border", "markdown.code.border");
-                let body = if gutter {
-                    budget - number_width - 2
-                } else {
-                    budget
-                };
-                for (index, raw) in source.iter().enumerate() {
-                    let value = clip(raw, body);
-                    let line_style = if diff {
-                        self.diff_style(style, &node.role, raw)
-                    } else {
-                        style
-                    };
-                    let mut spans = Vec::new();
-                    if gutter {
-                        let number = numbers
-                            .as_ref()
-                            .and_then(|numbers| numbers.get(index))
-                            .and_then(Option::as_deref)
-                            .unwrap_or("");
-                        spans.push((gutter_style, format!("{number:>number_width$}  ")));
-                    }
-                    spans.extend(self.code_spans(text, index, raw, &value, &captures, line_style));
-                    out.push(Line {
-                        indent,
-                        spans,
-                        surface: self.theme.surface(&node.role),
-                        node: Some(node.id.clone()),
-                    });
-                }
-                self.state_mark(node, indent, out);
-            }
+            Kind::Code { lang, text } => self.code(node, inset, indent, style, lang, text),
             Kind::List {
                 ordered,
                 items,
                 markers,
             } => {
+                let mut out = Vec::new();
                 for (index, item) in items.iter().enumerate() {
                     // A task item carries its state, so the client draws the ballot
                     // box rather than re-reading a glyph out of the text.
@@ -359,33 +403,41 @@ impl<'a> Renderer<'a> {
                         None if *ordered => format!("{}. ", index + 1),
                         None => "• ".to_string(),
                     };
-                    // The marker is a prefix span, so its cells are the item's
-                    // inset. A wrapped continuation aligns under the text by
-                    // taking the marker's width as plain indentation instead.
-                    let marker_width = width(&marker);
-                    let inner = inset + marker_width;
-                    let mut rendered = Vec::new();
-                    for child in item {
-                        self.node(child, depth, inner, &mut rendered);
-                    }
-                    if rendered.is_empty() {
-                        continue;
-                    }
                     let marker_style =
                         self.merged(style, &node.role, "marker", "markdown.list.marker");
-                    let mut first = rendered.remove(0);
-                    first.spans.insert(0, (marker_style, marker));
-                    out.push(first);
-                    for mut line in rendered {
-                        line.indent = line.indent.saturating_add(marker_width as u8).min(u8::MAX);
-                        out.push(line);
+                    // The marker is a prefix for the whole item: its cells are the
+                    // item's inset, the first row carries the marker, and wrapped
+                    // rows carry spaces wide enough to align under its text.
+                    let marker_width = width(&marker);
+                    let prefix = Prefix::first_rest(
+                        vec![(marker_style, marker)],
+                        vec![(marker_style, " ".repeat(marker_width))],
+                    );
+                    let chrome = Chrome {
+                        prefix,
+                        padding: Padding::NONE,
+                        margin: Margin::MARKED,
+                        rail: false,
+                    };
+                    let inner = inset + chrome.horizontal();
+                    let mut content = Vec::new();
+                    for child in item {
+                        content.extend(self.node(child, depth, inner));
                     }
+                    if content.is_empty() {
+                        continue;
+                    }
+                    out.extend(self.frame(&chrome, indent, None, &node.id, content));
                 }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut out);
+                out
             }
             Kind::Table { head, rows } => {
-                self.table(head, rows, node, indent, inset, style, out);
-                self.state_mark(node, indent, out);
+                let chrome = Chrome::nested(Prefix::none());
+                let inner = inset + chrome.horizontal();
+                let mut content = self.table(head, rows, node, indent, inner, style);
+                self.state_mark(node, indent, &mut content);
+                self.frame(&chrome, indent, None, &node.id, content)
             }
             Kind::Fields { fields } => {
                 let label_width = fields
@@ -394,9 +446,10 @@ impl<'a> Renderer<'a> {
                     .max()
                     .unwrap_or(0)
                     .min(self.budget(indent, inset) / 2);
+                let mut content = Vec::new();
                 for field in fields {
                     let label = pad(&clip(&field.label, label_width), label_width);
-                    out.push(Line::simple(
+                    content.push(Line::simple(
                         indent,
                         style.dim(),
                         format!("{label}  "),
@@ -409,7 +462,7 @@ impl<'a> Renderer<'a> {
                         &field.value
                     };
                     for line in wrap_spans(&[Span::plain(value)], budget) {
-                        out.push(Line {
+                        content.push(Line {
                             indent: indent + 2,
                             spans: line.iter().map(|span| (style, span.text.clone())).collect(),
                             surface: None,
@@ -417,25 +470,27 @@ impl<'a> Renderer<'a> {
                         });
                     }
                 }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut content);
+                content
             }
             Kind::Collapsible { summary } => {
+                let mut content = Vec::new();
                 if node.role == "tool.call" {
-                    out.push(Line::simple(
+                    content.push(Line::simple(
                         indent,
                         style,
                         self.tool_title(node),
                         Some(&node.id),
                     ));
                     for child in &node.children {
-                        self.node(child, depth + 1, inset, out);
+                        content.extend(self.node(child, depth + 1, inset));
                     }
-                    self.state_mark(node, indent, out);
-                    return;
+                    self.state_mark(node, indent, &mut content);
+                    return content;
                 }
                 let budget = self.budget(indent, inset);
                 for line in wrap_spans(summary, budget) {
-                    out.push(Line {
+                    content.push(Line {
                         indent,
                         spans: line
                             .iter()
@@ -447,9 +502,10 @@ impl<'a> Renderer<'a> {
                 }
                 // Interactive clients resolve their own expansion before rendering.
                 for child in &node.children {
-                    self.node(child, depth + 1, inset, out);
+                    content.extend(self.node(child, depth + 1, inset));
                 }
-                self.state_mark(node, indent, out);
+                self.state_mark(node, indent, &mut content);
+                content
             }
             Kind::Image {
                 alt,
@@ -462,20 +518,20 @@ impl<'a> Renderer<'a> {
                 } else {
                     format!("[image: {alt}]")
                 };
-                out.push(Line::simple(indent, style.dim(), label, Some(&node.id)));
+                vec![Line::simple(indent, style.dim(), label, Some(&node.id))]
             }
             Kind::Fact { value } => {
                 // The one place a number becomes words, and it is the client that
                 // does it: the session said what the number *is* by naming the role.
-                out.push(Line::simple(
+                vec![Line::simple(
                     indent,
                     style,
                     misa_render::fact::format(&node.role, value),
                     Some(&node.id),
-                ));
+                )]
             }
             Kind::Status { text } => {
-                out.push(Line::simple(indent, style, text.clone(), Some(&node.id)));
+                vec![Line::simple(indent, style, text.clone(), Some(&node.id))]
             }
             Kind::Meter { label, value, max } => {
                 let budget = self.budget(indent, inset);
@@ -487,13 +543,254 @@ impl<'a> Renderer<'a> {
                 };
                 let filled = (ratio * bar_width as f64).round() as usize;
                 let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(bar_width - filled));
-                out.push(Line::simple(
+                vec![Line::simple(
                     indent,
                     style,
                     format!("{label} {bar} {value}/{max}"),
                     Some(&node.id),
-                ));
+                )]
             }
+        }
+    }
+
+    /// Render a railed section: its label and children behind the rail, with a
+    /// blank row above and below that carries the rail and the surface.
+    fn railed(
+        &self,
+        node: &Node,
+        depth: usize,
+        inset: usize,
+        indent: u8,
+        style: Style,
+        glyph: &str,
+        rail_style: Style,
+    ) -> Vec<Line> {
+        let surface = self.theme.surface(&node.role);
+        // The theme's rail glyph carries the gap between the bar and the text as
+        // a trailing space. That gap is the block's left padding, not part of the
+        // glyph, so the chrome is one data-driven `Padding` with all four sides.
+        let (bar, gap) = split_rail(glyph);
+        let chrome = Chrome {
+            prefix: Prefix::uniform(vec![(rail_style, bar.to_string())]),
+            padding: Padding {
+                left: gap,
+                ..Padding::MESSAGE
+            },
+            margin: Margin::NONE,
+            rail: true,
+        };
+        let inner = inset + chrome.horizontal();
+        let mut content = Vec::new();
+        if let Some(label) = &node.label {
+            let label = if node.role == "tool.call" {
+                self.tool_title(node)
+            } else {
+                label.clone()
+            };
+            content.push(Line::simple(indent, style, label, Some(&node.id)));
+        }
+        content.extend(self.children(node, depth, inner));
+        self.state_mark(node, indent, &mut content);
+        // An empty railed block says nothing, so it earns no padding.
+        if content.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = self.frame(&chrome, indent, surface, &node.id, content);
+        // And the block is separated from what follows by a plain blank, in
+        // addition to the padding that closes its rail.
+        lines.push(Line::default());
+        lines
+    }
+
+    /// Render a code block: a demoted language marker on a thin rail, a numbered
+    /// gutter with a thin rail between the numbers and the body, and the body.
+    fn code(
+        &self,
+        node: &Node,
+        inset: usize,
+        indent: u8,
+        style: Style,
+        lang: &Option<String>,
+        text: &str,
+    ) -> Vec<Line> {
+        // A diff is code whose meaning is *per line*, and the session says so —
+        // by naming a role that ends in `.diff`, or, for a body a model fenced,
+        // by the language it was fenced with. Nothing here guesses from the
+        // text: a block of code that happens to contain a `+` is still code.
+        let diff = is_diff(&node.role, lang.as_deref());
+        let chrome = Chrome::nested(Prefix::none());
+        let surface = self.theme.surface(&node.role);
+        let border_style = self.merged(style, &node.role, "border", "markdown.code.border");
+        // The label keeps the role's colour but loses its bold: it is a marker,
+        // not a banner.
+        let mut label_style = self.merged(style, &node.role, "label", "markdown.code.label");
+        label_style.bold = false;
+        label_style.dim = true;
+        // Highlighting is the client's. The session sent the code and its
+        // authored fence label; the grammar, the parse and the classes are
+        // ours. A diff classifies its own lines instead.
+        let captures = if diff {
+            Vec::new()
+        } else {
+            lang.as_deref()
+                .map(|language| misa_syntax::captures(language, text))
+                .unwrap_or_default()
+        };
+        let source: Vec<&str> = text.split('\n').collect();
+        // A prose code block carries a numbered gutter, as the previous
+        // markdown renderer did; a tool's own code view keeps its shape.
+        let numbers = numbered_code(&node.role).then(|| code_numbers(&source, diff));
+        let number_width = numbers
+            .as_ref()
+            .and_then(|numbers| numbers.iter().flatten().map(String::len).max())
+            .unwrap_or(0);
+        let available = self.budget(indent, inset + chrome.horizontal());
+        // A gutter is the number, a space, the rail, and a space: `1 │ `.
+        let gutter_width = number_width + 3;
+        let gutter = number_width > 0 && available > gutter_width + 1;
+        let body_width = if gutter {
+            available - gutter_width
+        } else {
+            available
+        };
+        let mut content = Vec::new();
+        if let Some(lang) = lang
+            && !diff
+        {
+            content.push(Line {
+                indent,
+                spans: vec![
+                    (border_style, "▏ ".to_string()),
+                    (label_style, lang.clone()),
+                ],
+                surface,
+                node: Some(node.id.clone()),
+            });
+        }
+        for (index, raw) in source.iter().enumerate() {
+            let value = clip(raw, body_width);
+            let line_style = if diff {
+                self.diff_style(style, &node.role, raw)
+            } else {
+                style
+            };
+            let mut spans = Vec::new();
+            if gutter {
+                let number = numbers
+                    .as_ref()
+                    .and_then(|numbers| numbers.get(index))
+                    .and_then(Option::as_deref)
+                    .unwrap_or("");
+                spans.push((border_style, format!("{number:>number_width$} ")));
+                spans.push((border_style, "│ ".to_string()));
+            }
+            spans.extend(self.code_spans(text, index, raw, &value, &captures, line_style));
+            content.push(Line {
+                indent,
+                spans,
+                surface,
+                node: Some(node.id.clone()),
+            });
+        }
+        self.state_mark(node, indent, &mut content);
+        self.frame(&chrome, indent, surface, &node.id, content)
+    }
+
+    /// Compose a block: put its chrome in front of rows that were laid out with
+    /// `chrome.horizontal()` columns reserved, and add the blank padding rows
+    /// that carry the prefix and surface.
+    ///
+    /// A parent gets a child's rows already prefixed, so a parent only prepends
+    /// its own prefix. A child can never land after its parent's rail.
+    fn frame(
+        &self,
+        chrome: &Chrome,
+        indent: u8,
+        surface: Option<Style>,
+        node: &str,
+        content: Vec<Line>,
+    ) -> Vec<Line> {
+        if content.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(
+            content.len() + chrome.padding.top as usize + chrome.padding.bottom as usize,
+        );
+        for _ in 0..chrome.padding.top {
+            out.push(self.pad_row(chrome, indent, surface, node));
+        }
+        for (index, mut line) in content.into_iter().enumerate() {
+            self.prefix_line(&mut line, chrome, index == 0);
+            line.surface = line.surface.or(surface);
+            out.push(line);
+        }
+        for _ in 0..chrome.padding.bottom {
+            out.push(self.pad_row(chrome, indent, surface, node));
+        }
+        out
+    }
+
+    /// A blank row inside a block: its prefix and surface continue with no
+    /// content of their own.
+    fn pad_row(&self, chrome: &Chrome, indent: u8, surface: Option<Style>, node: &str) -> Line {
+        let mut spans = Vec::new();
+        if chrome.margin.left > 0 {
+            spans.push((Style::PLAIN, " ".repeat(chrome.margin.left as usize)));
+        }
+        spans.extend_from_slice(&chrome.prefix.rest);
+        self.gap_into(&mut spans, chrome);
+        Line {
+            indent,
+            spans,
+            surface,
+            node: Some(node.to_string()),
+        }
+    }
+
+    /// Put a block's chrome in front of one content row.
+    ///
+    /// A railed block leaves a nested block's own rail alone when it is already
+    /// at the front, and a bare blank line stays outside the rail; a blank that
+    /// already carries the block's surface is an interior gap and stays inside.
+    fn prefix_line(&self, line: &mut Line, chrome: &Chrome, first: bool) {
+        if chrome.rail {
+            // The parent's opening marker is the prefix's first cell with its
+            // left padding folded in, which is what a nested rail writes.
+            let bar =
+                chrome.prefix.first.first().map(|(_, text)| {
+                    format!("{}{}", text, " ".repeat(chrome.padding.left as usize))
+                });
+            let railed = bar.as_deref().is_some_and(|bar| {
+                !bar.is_empty() && line.spans.first().is_some_and(|(_, text)| text == bar)
+            });
+            if line.is_blank() {
+                if !line.surface.is_some() || railed {
+                    return;
+                }
+            } else if railed {
+                return;
+            }
+        }
+        let mut front = Vec::new();
+        if chrome.margin.left > 0 {
+            front.push((Style::PLAIN, " ".repeat(chrome.margin.left as usize)));
+        }
+        front.extend(chrome.prefix.cells(first).iter().cloned());
+        self.gap_into(&mut front, chrome);
+        front.extend(std::mem::take(&mut line.spans));
+        line.spans = front;
+    }
+
+    /// Fold the left padding into the last prefix cell so the bar and its gap
+    /// are one run, as the theme's glyph read before the split.
+    fn gap_into(&self, cells: &mut Vec<(Style, String)>, chrome: &Chrome) {
+        if chrome.padding.left == 0 {
+            return;
+        }
+        let gap = " ".repeat(chrome.padding.left as usize);
+        match cells.last_mut() {
+            Some((_, text)) => text.push_str(&gap),
+            None => cells.push((Style::PLAIN, gap)),
         }
     }
 
@@ -609,12 +906,12 @@ impl<'a> Renderer<'a> {
         indent: u8,
         inset: usize,
         style: Style,
-        out: &mut Vec<Line>,
-    ) {
+    ) -> Vec<Line> {
         let role = &node.role;
         let columns = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+        let mut out = Vec::new();
         if columns == 0 {
-            return;
+            return out;
         }
         let text_of = |cells: &[Span]| {
             cells
@@ -652,7 +949,7 @@ impl<'a> Renderer<'a> {
                     }
                 }
             }
-            return;
+            return out;
         }
         let mut widths = vec![1usize; columns];
         for row in std::iter::once(head).chain(rows.iter().map(Vec::as_slice)) {
@@ -690,6 +987,7 @@ impl<'a> Renderer<'a> {
                 node: Some(node.id.clone()),
             });
         }
+        out
     }
 
     /// The style for one line of a diff, by what the line starts with.
@@ -737,6 +1035,15 @@ impl<'a> Renderer<'a> {
     fn budget(&self, indent: u8, inset: usize) -> usize {
         self.columns.saturating_sub(indent as usize + inset).max(1)
     }
+}
+
+/// Split a theme rail glyph into the bar and the gap it draws after it. The gap
+/// becomes the block's left padding rather than part of the glyph, so the same
+/// space is not counted twice and the chrome keeps all four sides.
+fn split_rail(glyph: &str) -> (&str, u8) {
+    let bar = glyph.trim_end_matches(' ');
+    let gap = width(glyph).saturating_sub(width(bar)) as u8;
+    (bar, gap)
 }
 
 /// Whether a code node's body is a diff.
@@ -863,41 +1170,6 @@ fn allocate_columns(widths: &mut [usize], available: usize) {
     }
 }
 
-/// A padding row inside a railed block: the rail and the surface continue with
-/// no content of their own, so the block reads as one extent.
-fn rail_pad(
-    indent: u8,
-    glyph: &str,
-    rail_style: Style,
-    surface: Option<Style>,
-    node: &Node,
-) -> Line {
-    Line {
-        indent,
-        spans: vec![(rail_style, glyph.to_string())],
-        surface,
-        node: Some(node.id.clone()),
-    }
-}
-
-/// Put a block's rail at the front of one of its lines.
-///
-/// A nested block that already begins with the same glyph keeps its own rail:
-/// the parent's must not stack on top of a tool call or an opened thinking
-/// block. A blank line that already carries the block's surface is an interior
-/// gap and stays inside the rail; a bare blank stays outside it.
-fn rail_line(line: &mut Line, glyph: &str, rail_style: Style, surface: Option<Style>) {
-    let railed = line.spans.first().is_some_and(|(_, text)| text == glyph);
-    if line.is_blank() {
-        if line.surface.is_some() && !railed {
-            line.spans.insert(0, (rail_style, glyph.to_string()));
-        }
-    } else if !railed {
-        line.spans.insert(0, (rail_style, glyph.to_string()));
-    }
-    line.surface = line.surface.or(surface);
-}
-
 fn state_word(state: State) -> &'static str {
     match state {
         State::Pending => "waiting",
@@ -931,7 +1203,6 @@ pub fn value_text(value: &Value) -> String {
         other => format!("{other}"),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,11 +1277,17 @@ mod tests {
             },
         );
         let lines = render(&node, &Theme::dark(), 6);
-        assert_eq!(lines[0].text(), "rust");
+        assert_eq!(lines[0].text(), " ▏ rust");
         let body = &lines[1];
         assert!(width(&body.text()) <= 6);
         // The client parsed the block and coloured `let` as a keyword.
-        assert_eq!(body.spans[0].0, Theme::dark().token("keyword"));
+        assert!(
+            body.spans
+                .iter()
+                .any(|(style, _)| *style == Theme::dark().token("keyword")),
+            "{:?}",
+            body.spans
+        );
     }
 
     #[test]
@@ -1025,8 +1302,8 @@ mod tests {
         for line in &lines {
             assert!(width(&line.text()) <= 16, "{:?} is too wide", line.text());
         }
-        assert!(lines[0].text().starts_with("first"));
-        assert!(lines[1].text().starts_with("one"));
+        assert!(lines[0].text().trim_start().starts_with("first"));
+        assert!(lines[1].text().trim_start().starts_with("one"));
     }
 
     #[test]
@@ -1036,11 +1313,16 @@ mod tests {
         let node = Node::new("table", Kind::Table { head, rows }).id("t");
         let lines = render(&node, &theme(), 10);
         assert!(
-            lines[0].text().starts_with("first: one"),
+            lines[0].text().trim_start().starts_with("first"),
             "{:?}",
             lines[0].text()
         );
-        assert!(lines.iter().any(|line| line.text().starts_with("second:")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text().trim_start().starts_with("second:"))
+        );
+        assert!(lines.iter().any(|line| line.text().trim() == "one"));
         assert!(lines.iter().any(|line| line.text().trim() == "two"));
     }
 
@@ -1279,20 +1561,21 @@ mod tests {
         // No `diff` banner: the body already says what it is, line by line.
         assert_eq!(lines.len(), 4, "{:?}", to_plain(&lines));
         // A numbered gutter precedes each line; the diff style is the run after it.
-        assert_eq!(lines[0].spans[0].0, theme.role("markdown.code.border"));
-        assert_eq!(lines[0].spans[1].0, theme.role("diff.hunk"));
-        assert_eq!(lines[1].spans[1].0, theme.role("diff.removed"));
-        assert_eq!(lines[2].spans[1].0, theme.role("diff.added"));
+        // The leading run is the block's left margin.
+        assert_eq!(lines[0].spans[1].0, theme.role("markdown.code.border"));
+        assert_eq!(lines[0].spans[3].0, theme.role("diff.hunk"));
+        assert_eq!(lines[1].spans[3].0, theme.role("diff.removed"));
+        assert_eq!(lines[2].spans[3].0, theme.role("diff.added"));
         // Context keeps the node's own style, so a diff still reads like a tool result.
         assert_eq!(
-            lines[3].spans[1].0,
+            lines[3].spans[3].0,
             theme.role("message.assistant.markdown.diff")
         );
         // The gutter numbers the old file for removals and the new one otherwise,
         // and says nothing for the hunk header.
         assert_eq!(
             to_plain(&lines),
-            "   @@ -1 +1 @@\n1  -old line\n1  +new line\n2   context\n"
+            "   │ @@ -1 +1 @@\n 1 │ -old line\n 1 │ +new line\n 2 │  context\n"
         );
     }
 
@@ -1308,11 +1591,11 @@ mod tests {
             )
         };
         let lines = render(&code("message.assistant.markdown.code"), &Theme::dark(), 20);
-        assert_eq!(lines[0].text(), "1  one");
-        assert_eq!(lines[1].text(), "2  two");
+        assert_eq!(lines[0].text(), " 1 │ one");
+        assert_eq!(lines[1].text(), " 2 │ two");
         let lines = render(&code("tool.result"), &Theme::dark(), 20);
-        assert_eq!(lines[0].text(), "one");
-        assert_eq!(lines[1].text(), "two");
+        assert_eq!(lines[0].text(), " one");
+        assert_eq!(lines[1].text(), " two");
     }
 
     #[test]
@@ -1327,11 +1610,11 @@ mod tests {
         // A theme that says something narrower wins over the generic role.
         let theme = Theme::dark().with_role("tool.result.diff.added", Style::rgb(1, 2, 3).bold());
         let line = &render(&node, &theme, 40)[0];
-        assert_eq!(line.spans[0].0.fg, Color::Rgb(1, 2, 3));
-        assert!(line.spans[0].0.bold);
+        assert_eq!(line.spans[1].0.fg, Color::Rgb(1, 2, 3));
+        assert!(line.spans[1].0.bold);
         // And the generic role is used when it has not.
         let line = &render(&node, &Theme::dark(), 40)[0];
-        assert_eq!(line.spans[0].0, Theme::dark().role("diff.added"));
+        assert_eq!(line.spans[1].0, Theme::dark().role("diff.added"));
     }
 
     #[test]
@@ -1345,13 +1628,14 @@ mod tests {
         );
         let theme = Theme::dark();
         let lines = render(&node, &theme, 40);
-        assert_eq!(
-            lines[0].text(),
-            "rust",
-            "the language banner is gone from a code block"
+        // The demoted label sits on a thin rail, not a bold banner.
+        assert_eq!(lines[0].text(), " ▏ rust");
+        assert!(
+            !lines[0].spans[2].0.bold,
+            "the language label is still bold"
         );
         assert_eq!(
-            lines[1].spans[0].0,
+            lines[1].spans[1].0,
             theme.role("markdown.code.border"),
             "a markdown code block carries a numbered gutter"
         );
@@ -1500,5 +1784,159 @@ mod tests {
             .find(|line| line.text().contains("deep"))
             .expect("the doubly quoted body");
         assert_eq!(body.text(), "┃ ▏ ▏ deep");
+    }
+
+    #[test]
+    fn a_list_in_a_rail_keeps_the_rail_first_and_aligns_the_wrap() {
+        // The item wraps, so the marker row and its continuation are both
+        // visible; the rail must stay leftmost on each.
+        let item = vec![Node::text(
+            "message.user.markdown.paragraph",
+            [Span::plain("item wrapped")],
+        )];
+        let list = Node::new(
+            "message.user.markdown.list",
+            Kind::List {
+                ordered: false,
+                items: vec![item],
+                markers: Vec::new(),
+            },
+        )
+        .id("l");
+        let node = Node::section("message.user").id("m1").child(list);
+        let rows: Vec<String> = render(&node, &Theme::dark(), 13)
+            .iter()
+            .map(Line::text)
+            .collect();
+        assert!(rows.iter().any(|row| row == "┃ • item"), "{rows:?}");
+        assert!(rows.iter().any(|row| row == "┃   wrapped"), "{rows:?}");
+        // The wrapped row aligns under the marker's text, and the rail is never
+        // placed after the list's indent or marker.
+        for row in rows.iter().filter(|row| !row.trim().eq("┃")) {
+            assert!(row.starts_with("┃ "), "rail is not first: {row:?}");
+            assert!(!row.starts_with("  ┃"), "rail after the indent: {row:?}");
+        }
+    }
+
+    #[test]
+    fn nested_lists_compose_their_markers_in_ancestor_order() {
+        let inner = Node::new(
+            "message.user.markdown.list",
+            Kind::List {
+                ordered: false,
+                items: vec![vec![Node::text("x", [Span::plain("deep")])]],
+                markers: Vec::new(),
+            },
+        )
+        .id("inner");
+        let outer = Node::new(
+            "message.user.markdown.list",
+            Kind::List {
+                ordered: false,
+                items: vec![vec![Node::text("x", [Span::plain("outer")]), inner]],
+                markers: Vec::new(),
+            },
+        )
+        .id("outer");
+        let node = Node::section("message.user").id("m1").child(outer);
+        let rows: Vec<String> = render(&node, &Theme::dark(), 40)
+            .iter()
+            .map(Line::text)
+            .collect();
+        assert!(rows.iter().any(|row| row == "┃ • outer"), "{rows:?}");
+        assert!(rows.iter().any(|row| row == "┃   • deep"), "{rows:?}");
+        // The nested row carries the rail, then the outer item's alignment, then
+        // the inner marker: prefixes compose in ancestor order.
+        let nested = rows.iter().find(|row| row.contains("deep")).unwrap();
+        assert!(nested.starts_with("┃   •"), "{nested:?}");
+    }
+
+    #[test]
+    fn a_message_block_pads_above_and_below_and_clears_its_rail() {
+        let node = Node::section("message.user").id("m1").child(
+            Node::text("message.user.markdown.paragraph", [Span::plain("hello")]).id("m1.body"),
+        );
+        let lines = render_block(&node, &Theme::dark(), 80, 0);
+        let surface = Theme::dark().surface("message.user");
+        // A padding row above and below carries the rail and the surface but no
+        // content of its own.
+        for pad in [&lines[0], &lines[2]] {
+            assert_eq!(pad.text(), "┃ ");
+            assert_eq!(pad.surface, surface);
+            assert!(pad.is_blank() || pad.spans.iter().all(|(_, text)| text.trim() == "┃"));
+        }
+        // The text does not begin against the bar: the rail's gap comes first.
+        let body = &lines[1];
+        assert_eq!(body.text(), "┃ hello");
+        assert!(
+            body.spans[0].1.starts_with("┃ "),
+            "text touches the rail: {:?}",
+            body.spans[0]
+        );
+    }
+
+    #[test]
+    fn a_rule_spans_the_width_left_after_its_indent_and_inset() {
+        let node = Node::new("message.assistant.markdown.rule", Kind::Rule);
+        let line = &render(&node, &Theme::dark(), 80)[0];
+        assert_eq!(line.text().chars().filter(|ch| *ch == '─').count(), 80);
+
+        let nested = Node::section("message.user")
+            .id("m1")
+            .child(Node::new("message.user.markdown.rule", Kind::Rule));
+        let line = render(&nested, &Theme::dark(), 80)
+            .into_iter()
+            .find(|line| line.text().contains('─'))
+            .expect("the nested rule");
+        // The rail, its gap, and the reserved right cell are three inset cells.
+        assert_eq!(line.text().chars().filter(|ch| *ch == '─').count(), 77);
+        assert!(line.text().starts_with("┃ "), "{:?}", line.text());
+    }
+
+    #[test]
+    fn a_code_block_demotes_its_language_label_and_rails_its_gutter() {
+        let node = Node::new(
+            "message.assistant.markdown.code",
+            Kind::Code {
+                lang: Some("rust".into()),
+                text: "let x = 1;".into(),
+            },
+        );
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 40);
+        // The label is a dim marker on a thin rail, not a bold banner.
+        let label = &lines[0];
+        assert!(label.text().starts_with(" ▏ rust"), "{:?}", label.text());
+        let label_span = label.spans.last().expect("the language label");
+        assert_eq!(label_span.1, "rust");
+        assert!(
+            label_span.0.dim && !label_span.0.bold,
+            "the label is still prominent: {:?}",
+            label_span.0
+        );
+        // The numbered gutter is separated from the body by a thin vertical rail.
+        let body = &lines[1];
+        let rail = body
+            .spans
+            .iter()
+            .position(|(_, text)| text == "│ ")
+            .expect("a gutter rail");
+        let number = body
+            .spans
+            .iter()
+            .position(|(_, text)| text.trim() == "1")
+            .expect("a gutter number");
+        assert!(
+            number < rail,
+            "the rail does not follow the number: {body:?}"
+        );
+        // A body token is coloured and undimmed, so the label is not the most
+        // prominent run on the block.
+        let keyword = body
+            .spans
+            .iter()
+            .find(|(_, text)| text == "let")
+            .expect("the keyword");
+        assert!(!keyword.0.dim, "the keyword is dim: {keyword:?}");
     }
 }
