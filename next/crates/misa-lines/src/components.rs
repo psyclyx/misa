@@ -1,7 +1,8 @@
 //! Client component implementations and their independently configurable selection.
 //! The semantic tree supplies facts; no component knows the agent's database.
-use crate::{Line, Theme};
+use crate::Line;
 use misa_proto::view::{Kind, Node};
+use misa_render::Theme;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -33,6 +34,10 @@ pub struct Selection {
     pub icon: Option<String>,
     #[serde(default)]
     pub hint: Option<String>,
+    /// The animation a client may advance for this indicator, by registry id.
+    /// A frame is appearance, so the session never names one.
+    #[serde(default)]
+    pub animation: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -48,7 +53,7 @@ pub struct Context<'a> {
     pub theme: &'a Theme,
     pub columns: usize,
     pub settings: &'a Settings,
-    pub values: &'a crate::fact::Registry,
+    pub values: &'a misa_render::fact::Registry,
 }
 pub type Render = Arc<dyn Fn(&Node, &Context<'_>) -> Result<Vec<Line>, String> + Send + Sync>;
 #[derive(Clone)]
@@ -106,7 +111,7 @@ impl Registry {
                 surface: None,
                 spans: vec![(
                     context.theme.role("error"),
-                    crate::clip(&format!("{}: {reason}", node.role), context.columns),
+                    misa_render::clip(&format!("{}: {reason}", node.role), context.columns),
                 )],
             }]
         }))
@@ -166,7 +171,7 @@ pub fn render_default(node: &Node, theme: &Theme, columns: usize) -> Option<Vec<
             theme,
             columns,
             settings: &Settings::default(),
-            values: &crate::fact::Registry::default(),
+            values: misa_render::fact::stock(),
         },
     )
 }
@@ -205,8 +210,20 @@ pub fn default_indicators() -> Vec<Selection> {
         representation,
         icon: icon.map(str::to_string),
         hint: hint.map(str::to_string),
+        animation: (id == "activity").then(|| "pulse".to_string()),
     })
     .collect()
+}
+
+/// The animation selected for an indicator id, if any. The client advances the
+/// frame against its own clock; this only says which sequence to use.
+pub fn animation_for(settings: &Settings, id: &str) -> Option<String> {
+    let defaults = default_indicators();
+    let selection = settings.indicators.as_ref().unwrap_or(&defaults);
+    selection
+        .iter()
+        .find(|selection| selection.id == id)
+        .and_then(|selection| selection.animation.clone())
 }
 
 /// Preserve configured order, dropping complete low-priority indicators to fit.
@@ -214,7 +231,7 @@ pub fn selected<'a>(
     model: &'a Node,
     settings: &Settings,
     columns: usize,
-    values: &crate::fact::Registry,
+    values: &misa_render::fact::Registry,
 ) -> Vec<(&'a Node, Selection, String)> {
     let defaults = default_indicators();
     let selection = settings.indicators.as_ref().unwrap_or(&defaults);
@@ -231,7 +248,7 @@ pub fn selected<'a>(
         .collect();
     while items
         .iter()
-        .map(|(_, _, text)| crate::width(text))
+        .map(|(_, _, text)| misa_render::width(text))
         .sum::<usize>()
         + items.len().saturating_sub(1) * 2
         > columns
@@ -251,20 +268,24 @@ pub fn selected<'a>(
     items
 }
 
-fn indicator_text(node: &Node, selection: &Selection, values: &crate::fact::Registry) -> String {
+fn indicator_text(
+    node: &Node,
+    selection: &Selection,
+    values: &misa_render::fact::Registry,
+) -> String {
     indicator_spans(node, selection, values, &Theme::plain())
         .into_iter()
         .map(|(_, text)| text)
         .collect()
 }
 
-fn indicator_value(node: &Node, values: &crate::fact::Registry) -> String {
+fn indicator_value(node: &Node, values: &misa_render::fact::Registry) -> String {
     match &node.kind {
         Kind::Fact { value } => values.format(&node.role, value),
         Kind::Meter { value, max, .. } => format!(
             "{}/{}",
-            crate::fact::count(Some(*value as i64), ""),
-            crate::fact::count(Some(*max as i64), "")
+            misa_render::fact::count(Some(*value as i64), ""),
+            misa_render::fact::count(Some(*max as i64), "")
         ),
         Kind::Status { text } => text.clone(),
         Kind::Text { spans } => spans.iter().map(|span| span.text.as_str()).collect(),
@@ -299,9 +320,9 @@ fn key_hint(hint: &str) -> String {
 fn indicator_spans(
     node: &Node,
     selection: &Selection,
-    values: &crate::fact::Registry,
+    values: &misa_render::fact::Registry,
     theme: &Theme,
-) -> Vec<(crate::Style, String)> {
+) -> Vec<(misa_render::Style, String)> {
     let value = indicator_value(node, values);
     let label = match selection.representation {
         Representation::Value => None,
@@ -366,7 +387,7 @@ fn group_footer(node: &Node, context: &Context<'_>) -> Result<Vec<Line>, String>
         }
     }
     let width = context.columns.max(1);
-    let used = crate::width(&text);
+    let used = misa_render::width(&text);
     if used < width {
         text.push(' ');
         text.push_str(&"─".repeat(width.saturating_sub(used + 1)));
@@ -377,7 +398,7 @@ fn group_footer(node: &Node, context: &Context<'_>) -> Result<Vec<Line>, String>
         surface: None,
         spans: vec![(
             context.theme.role("message.group.footer"),
-            crate::clip(&text, width),
+            misa_render::clip(&text, width),
         )],
     }])
 }
@@ -436,7 +457,7 @@ fn queue(node: &Node, context: &Context<'_>) -> Result<Vec<Line>, String> {
                 surface: None,
                 spans: vec![(
                     context.theme.role("dim"),
-                    crate::clip(&text.replace('\n', " ↵ "), context.columns),
+                    misa_render::clip(&text.replace('\n', " ↵ "), context.columns),
                 )],
             });
         }
@@ -466,7 +487,7 @@ mod tests {
             item("solar", 12),
             item("spare", 2),
         ]);
-        let mut values = crate::fact::Registry::default();
+        let mut values = misa_render::fact::Registry::default();
         values
             .register(
                 "value.watts",
@@ -481,6 +502,7 @@ mod tests {
                     representation: Representation::Value,
                     icon: None,
                     hint: None,
+                    animation: None,
                 },
                 Selection {
                     id: "battery".into(),
@@ -488,6 +510,7 @@ mod tests {
                     representation: Representation::LabelValue,
                     icon: None,
                     hint: None,
+                    animation: None,
                 },
             ]),
             ..Settings::default()
@@ -552,7 +575,7 @@ mod tests {
                 &Node::section("status.indicators"),
                 &Context {
                     settings: &settings,
-                    values: &crate::fact::Registry::default(),
+                    values: &misa_render::fact::Registry::default(),
                     theme: &Theme::plain(),
                     columns: 80,
                 },

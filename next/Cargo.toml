@@ -14,6 +14,9 @@ misa-proto = { path = "crates/misa-proto" }
 misa-value = { path = "crates/misa-value" }
 misa-reframe = { path = "crates/misa-reframe" }
 misa-render = { path = "crates/misa-render" }
+misa-lines = { path = "crates/misa-lines" }
+misa-syntax = { path = "crates/misa-syntax" }
+misa-markdown = { path = "crates/misa-markdown" }
 misa-kernel = { path = "crates/misa-kernel" }
 misa-session = { path = "crates/misa-session" }
 misa-protocol = { path = "crates/misa-protocol" }
@@ -41,10 +44,9 @@ tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
+unicode-segmentation = "1"
 blake3 = "1"
 base64 = "0.22"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.dev]
 incremental = true

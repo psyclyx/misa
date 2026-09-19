@@ -1348,7 +1348,7 @@ mod tests {
             .unwrap();
         let report = remote.next().await.unwrap().unwrap();
         assert!(
-            !misa_render::to_plain(&misa_render::render(
+            !misa_lines::to_plain(&misa_lines::render(
                 &report,
                 &misa_render::Theme::plain(),
                 100,
@@ -1367,7 +1367,7 @@ mod tests {
             loop {
                 let tree = remote.next().await.unwrap().unwrap();
                 if remote.turn_settled() == Some(true) {
-                    break misa_render::to_plain(&misa_render::render(
+                    break misa_lines::to_plain(&misa_lines::render(
                         &tree,
                         &misa_render::Theme::plain(),
                         100,

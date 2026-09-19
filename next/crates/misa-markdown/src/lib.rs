@@ -8,10 +8,10 @@
 //! # What is parsed
 //!
 //! Block level: ATX headings, fenced code, bullet and ordered lists (nested), block
-//! quotations, thematic breaks, and paragraphs. Inline: strong, emphasis,
-//! strikethrough, inline code, and links. A table is left as prose — the vocabulary
-//! has [`Kind::Table`], but a pipe table in a chat message is rare enough that
-//! guessing wrong is worse than not guessing.
+//! quotations, thematic breaks, pipe tables, and paragraphs. Inline: strong,
+//! emphasis, strikethrough, inline code, and links. A pipe table is recognised only
+//! when its separator row is unambiguous, because a lone `|` in prose is not a
+//! table.
 //!
 //! # What it does not decide
 //!
@@ -43,8 +43,60 @@ use misa_proto::view::{Kind, Node, Span, SpanKind};
 /// The result is empty when the text has nothing in it, and every node it does return
 /// passes [`misa_proto::view::validate`].
 pub fn blocks(prefix: &str, text: &str) -> Vec<Node> {
+    parse_lines(prefix, text).0
+}
+
+/// Parse `text` into blocks, and each block's byte start in `text`.
+fn parse_lines(prefix: &str, text: &str) -> (Vec<Node>, Vec<usize>) {
     let lines: Vec<&str> = text.split('\n').collect();
-    Parser { prefix }.blocks(&lines)
+    Parser { prefix }.blocks_tracked(&lines)
+}
+
+/// A parsed Markdown document, kept so a later, longer text can reuse its prefix.
+#[derive(Clone, Debug)]
+pub struct Document {
+    /// The blocks of the parsed text.
+    pub blocks: Vec<Node>,
+    /// The exact text these blocks were parsed from.
+    pub source: String,
+    /// Byte start of each block within `source`, parallel to `blocks`.
+    starts: Vec<usize>,
+}
+
+/// Parse a message body, reusing the unchanged prefix of `previous`.
+///
+/// When `text` is `previous.source` with something appended (or is unchanged),
+/// every block but the last two can be kept: an append can close a partial fence,
+/// turn a partial table separator into a table, or add a line to a paragraph, but
+/// it cannot reach back past two complete blocks. The suffix is reparsed from the
+/// first dropped block's start offset, so the result is identical to a from-scratch
+/// parse.
+pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Document {
+    let mut blocks: Vec<Node> = Vec::new();
+    let mut starts: Vec<usize> = Vec::new();
+    let mut from = 0;
+    if let Some(previous) = previous {
+        if text == previous.source {
+            return previous.clone();
+        }
+        if text.starts_with(&previous.source) {
+            // Keep all but the last two blocks; `retained` is the index of the first
+            // block that must be reparsed, and where it starts is where the suffix
+            // begins. An empty `previous` reparses from the top.
+            let retained = previous.blocks.len().saturating_sub(2);
+            blocks.extend(previous.blocks[..retained].iter().cloned());
+            starts.extend(previous.starts[..retained].iter().copied());
+            from = previous.starts.get(retained).copied().unwrap_or(0);
+        }
+    }
+    let (suffix, suffix_starts) = parse_lines(prefix, &text[from..]);
+    blocks.extend(suffix);
+    starts.extend(suffix_starts.into_iter().map(|offset| from + offset));
+    Document {
+        blocks,
+        source: text.to_string(),
+        starts,
+    }
 }
 
 /// Parse one run of text into inline spans, without any block structure.
@@ -75,6 +127,17 @@ pub fn inline(text: &str) -> Vec<Span> {
         {
             flush(&mut out, &mut plain);
             out.push(Span::code(inner));
+            index = next;
+            continue;
+        }
+        if (rest.starts_with("***") || rest.starts_with("___"))
+            && let Some((inner, next)) = delimited(text, index, &rest[..3])
+        {
+            flush(&mut out, &mut plain);
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::StrongEmphasis,
+            });
             index = next;
             continue;
         }
@@ -140,43 +203,71 @@ impl Parser<'_> {
     }
 
     fn blocks(&self, lines: &[&str]) -> Vec<Node> {
+        self.blocks_tracked(lines).0
+    }
+
+    /// Parse blocks and record each one's byte start within `lines`.
+    ///
+    /// The bytes are counted as if `lines` were `'\n'`-joined, so an offset is a
+    /// valid position in the text a caller split. The incremental entry point uses
+    /// them to find where the retained prefix ends.
+    fn blocks_tracked(&self, lines: &[&str]) -> (Vec<Node>, Vec<usize>) {
+        let mut line_starts = Vec::with_capacity(lines.len());
+        let mut offset = 0;
+        for line in lines {
+            line_starts.push(offset);
+            offset += line.len() + 1;
+        }
         let mut out = Vec::new();
+        let mut starts = Vec::new();
         let mut index = 0;
         while index < lines.len() {
             let line = lines[index];
             if line.trim().is_empty() {
                 index += 1;
-            } else if let Some(lang) = fence(line) {
-                let (node, next) = self.code(lines, index, lang);
-                out.push(node);
-                index = next;
-            } else if let Some((level, body)) = heading(line) {
-                out.push(Node::new(
-                    self.role("heading"),
-                    Kind::Heading {
-                        level,
-                        spans: inline(body),
-                    },
-                ));
-                index += 1;
-            } else if is_rule(line) {
-                out.push(Node::new(self.role("rule"), Kind::Rule));
-                index += 1;
-            } else if quote_line(line).is_some() {
-                let (node, next) = self.quote(lines, index);
-                out.push(node);
-                index = next;
-            } else if list_marker(line).is_some() {
-                let (node, next) = self.list(lines, index);
-                out.push(node);
-                index = next;
-            } else {
-                let (node, next) = self.paragraph(lines, index);
-                out.push(node);
-                index = next;
+                continue;
             }
+            let start = line_starts[index];
+            let (node, next) = if let Some(lang) = fence(line) {
+                self.code(lines, index, lang)
+            } else if let Some((level, body)) = heading(line) {
+                (
+                    Node::new(
+                        self.role("heading"),
+                        Kind::Heading {
+                            level,
+                            spans: inline(body),
+                        },
+                    ),
+                    index + 1,
+                )
+            } else if let Some((level, body)) = setext(lines, index) {
+                (
+                    Node::new(
+                        self.role("heading"),
+                        Kind::Heading {
+                            level,
+                            spans: inline(body),
+                        },
+                    ),
+                    index + 2,
+                )
+            } else if is_rule(line) {
+                (Node::new(self.role("rule"), Kind::Rule), index + 1)
+            } else if is_table(lines, index) {
+                self.table(lines, index)
+            } else if quote_line(line).is_some() {
+                self.quote(lines, index)
+            } else if list_marker(line).is_some() {
+                self.list(lines, index)
+            } else {
+                self.paragraph(lines, index)
+            };
+            out.push(node);
+            starts.push(start);
+            index = next;
         }
-        out
+        (out, starts)
     }
 
     fn code(&self, lines: &[&str], start: usize, lang: Option<String>) -> (Node, usize) {
@@ -195,19 +286,12 @@ impl Parser<'_> {
         // A fence that says `diff` is a diff, and the role is how that reaches a frontend:
         // the block is still `Kind::Code`, because a diff *is* code — what it needs is to be
         // laid out line by line, and the role is what says so.
-        let shape = match lang.as_deref() {
-            Some(lang) if lang.eq_ignore_ascii_case("diff") => "diff",
-            _ => "code",
-        };
+        let diff = lang
+            .as_deref()
+            .is_some_and(|lang| lang.eq_ignore_ascii_case("diff"));
+        let shape = if diff { "diff" } else { "code" };
         (
-            Node::new(
-                self.role(shape),
-                Kind::Code {
-                    lang,
-                    text,
-                    captures: Vec::new(),
-                },
-            ),
+            Node::new(self.role(shape), Kind::Code { lang, text }),
             index,
         )
     }
@@ -233,6 +317,7 @@ impl Parser<'_> {
     fn list(&self, lines: &[&str], start: usize) -> (Node, usize) {
         let ordered = list_marker(lines[start]).expect("called on a marker").0;
         let mut items: Vec<Vec<Node>> = Vec::new();
+        let mut markers: Vec<Option<bool>> = Vec::new();
         let mut index = start;
         while index < lines.len() {
             let Some((item_ordered, first, column)) = list_marker(lines[index]) else {
@@ -243,7 +328,11 @@ impl Parser<'_> {
             if item_ordered != ordered {
                 break;
             }
-            let mut body = vec![first.to_string()];
+            // A task marker is list-item metadata, not text. It is kept beside the
+            // item so a client draws the right box rather than parsing a glyph.
+            let (checked, content) = task_marker(first);
+            markers.push(checked);
+            let mut body = vec![content.to_string()];
             index += 1;
             while index < lines.len() {
                 let line = lines[index];
@@ -271,7 +360,18 @@ impl Parser<'_> {
             items.push(self.blocks(&borrowed));
         }
         (
-            Node::new(self.role("list"), Kind::List { ordered, items }),
+            Node::new(
+                self.role("list"),
+                Kind::List {
+                    ordered,
+                    items,
+                    markers: if markers.iter().any(Option::is_some) {
+                        markers
+                    } else {
+                        Vec::new()
+                    },
+                },
+            ),
             index,
         )
     }
@@ -281,7 +381,9 @@ impl Parser<'_> {
         let mut index = start;
         while index < lines.len() {
             let line = lines[index];
-            if line.trim().is_empty() || (index > start && is_block_start(line)) {
+            if line.trim().is_empty()
+                || (index > start && (is_block_start(line) || is_table(lines, index)))
+            {
                 break;
             }
             if !body.is_empty() {
@@ -291,6 +393,37 @@ impl Parser<'_> {
             index += 1;
         }
         (Node::text(self.role("paragraph"), inline(&body)), index)
+    }
+
+    /// A pipe table: a header row, a separator row, then body rows.
+    ///
+    /// Alignment markers are parsed only to validate them; the semantic tree does
+    /// not carry a column alignment, so a client decides how to line a cell up.
+    fn table(&self, lines: &[&str], start: usize) -> (Node, usize) {
+        let columns = split_table_row(lines[start]).len();
+        let head = split_table_row(lines[start])
+            .into_iter()
+            .map(|cell| inline(&cell))
+            .collect();
+        let mut rows = Vec::new();
+        let mut index = start + 2;
+        while index < lines.len() {
+            let line = lines[index];
+            if line.trim().is_empty() || !line.contains('|') {
+                break;
+            }
+            let mut cells = split_table_row(line);
+            cells.truncate(columns);
+            while cells.len() < columns {
+                cells.push(String::new());
+            }
+            rows.push(cells.iter().map(|cell| inline(cell)).collect());
+            index += 1;
+        }
+        (
+            Node::new(self.role("table"), Kind::Table { head, rows }),
+            index,
+        )
     }
 }
 
@@ -308,6 +441,62 @@ fn fence(line: &str) -> Option<Option<String>> {
     let rest = line.trim_start().strip_prefix("```")?;
     let lang = rest.trim();
     Some((!lang.is_empty()).then(|| lang.to_string()))
+}
+
+/// A table separator row: every cell is dashes with optional alignment colons.
+fn is_table_separator(line: &str) -> bool {
+    let cells = split_table_row(line);
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let dashes = cell.trim().trim_matches(':');
+            !dashes.is_empty() && dashes.chars().all(|ch| ch == '-')
+        })
+}
+
+/// Whether a header row and separator row begin a pipe table.
+fn is_table(lines: &[&str], index: usize) -> bool {
+    let Some(header) = lines.get(index) else {
+        return false;
+    };
+    let Some(separator) = lines.get(index + 1) else {
+        return false;
+    };
+    header.contains('|') && is_table_separator(separator)
+}
+
+/// Split a pipe-table row into trimmed cells, without the outer pipes.
+fn split_table_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    trimmed
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+/// A setext heading: a line of text underlined by `===` or `---`.
+///
+/// Only a single line is taken, which is what a person writes; a multi-line
+/// paragraph before an underline stays a paragraph followed by a rule.
+fn setext<'a>(lines: &'a [&'a str], index: usize) -> Option<(u8, &'a str)> {
+    let text = lines.get(index)?;
+    let underline = lines.get(index + 1)?;
+    if text.trim().is_empty() || is_block_start(text) {
+        return None;
+    }
+    let marker = underline.trim();
+    if marker.is_empty() {
+        return None;
+    }
+    let level = if marker.chars().all(|ch| ch == '=') {
+        1
+    } else if marker.chars().all(|ch| ch == '-') {
+        2
+    } else {
+        return None;
+    };
+    Some((level, text.trim()))
 }
 
 /// An ATX heading's level and its text.
@@ -341,6 +530,17 @@ fn is_rule(line: &str) -> bool {
 fn quote_line(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix('>')?;
     Some(rest.strip_prefix(' ').unwrap_or(rest))
+}
+
+/// A list item's leading task box: `[ ]`, `[x]`, `[X]`, or any single character
+/// inside the brackets. Returns the state and the text after the box.
+fn task_marker(text: &str) -> (Option<bool>, &str) {
+    let trimmed = text.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 4 && bytes[0] == b'[' && bytes[2] == b']' && bytes[3] == b' ' {
+        return (Some(bytes[1] != b' '), &trimmed[4..]);
+    }
+    (None, text)
 }
 
 /// A list item's line: whether it is ordered, its text, and the column its content
@@ -477,6 +677,10 @@ mod tests {
         nodes.iter().map(|node| node.role.as_str()).collect()
     }
 
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|span| span.text.as_str()).collect()
+    }
+
     #[test]
     fn a_plain_paragraph_is_one_text_node() {
         let out = parse("hello there");
@@ -559,17 +763,37 @@ mod tests {
     fn bullets_and_numbers_become_a_list() {
         let bullets = parse("- one\n- two");
         assert!(
-            matches!(&bullets[0].kind, Kind::List { ordered: false, items } if items.len() == 2)
+            matches!(&bullets[0].kind, Kind::List { ordered: false, items, .. } if items.len() == 2)
         );
         let numbers = parse("1. one\n2. two");
         assert!(
-            matches!(&numbers[0].kind, Kind::List { ordered: true, items } if items.len() == 2)
+            matches!(&numbers[0].kind, Kind::List { ordered: true, items, .. } if items.len() == 2)
         );
         assert_eq!(
             parse("1. one\n2) two\n- three").len(),
             2,
             "a style change starts a new list"
         );
+    }
+
+    #[test]
+    fn a_task_list_carries_its_box_state_beside_the_item() {
+        let out = parse("- [ ] todo\n- [x] done\n- [X] also");
+        match &out[0].kind {
+            Kind::List { markers, items, .. } => {
+                assert_eq!(markers, &vec![Some(false), Some(true), Some(true)]);
+                match &items[0][0].kind {
+                    Kind::Text { spans } => assert_eq!(text_of(spans), "todo"),
+                    other => panic!("expected text, got {other:?}"),
+                }
+            }
+            other => panic!("expected a list, got {other:?}"),
+        }
+        // A list without a box has no marker field at all.
+        match &parse("- one\n- two")[0].kind {
+            Kind::List { markers, .. } => assert!(markers.is_empty()),
+            other => panic!("expected a list, got {other:?}"),
+        }
     }
 
     #[test]
@@ -598,10 +822,63 @@ mod tests {
     }
 
     #[test]
+    fn a_setext_underline_makes_a_heading() {
+        let out = parse("Title\n=====\n\nSub\n---");
+        assert!(
+            matches!(&out[0].kind, Kind::Heading { level: 1, .. }),
+            "{:?}",
+            out[0].kind
+        );
+        assert!(
+            matches!(&out[1].kind, Kind::Heading { level: 2, .. }),
+            "{:?}",
+            out[1].kind
+        );
+        // A lone rule is still a rule, and a rule after prose is not a heading
+        // when the prose was already consumed as a paragraph.
+        assert!(matches!(&parse("---")[0].kind, Kind::Rule));
+    }
+
+    #[test]
     fn a_rule_is_a_rule_and_not_a_list() {
         assert!(matches!(&parse("---")[0].kind, Kind::Rule));
         assert!(matches!(&parse("***")[0].kind, Kind::Rule));
         assert!(!matches!(&parse("- item")[0].kind, Kind::Rule));
+    }
+
+    #[test]
+    fn a_pipe_table_becomes_a_table_node() {
+        let out = parse("| a | b |\n| --- | --- |\n| one | two |\n| three | four |");
+        assert_eq!(roles(&out), vec!["message.assistant.markdown.table"]);
+        match &out[0].kind {
+            Kind::Table { head, rows } => {
+                assert_eq!(head.len(), 2);
+                assert_eq!(rows.len(), 2);
+                assert_eq!(text_of(&head[0]), "a");
+                assert_eq!(text_of(&rows[1][1]), "four");
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
+        validate(&Node::section("root").children(out)).unwrap();
+    }
+
+    #[test]
+    fn a_line_that_only_looks_like_a_table_stays_prose() {
+        assert!(matches!(&parse("a | b")[0].kind, Kind::Text { .. }));
+        assert!(!matches!(&parse("--- | ---")[0].kind, Kind::Table { .. }));
+    }
+
+    #[test]
+    fn a_table_supports_alignment_markers_and_ragged_rows() {
+        let out = parse("| a | b |\n|:--|--:|\n| one |");
+        match &out[0].kind {
+            Kind::Table { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].len(), 2, "a short row is padded to the header");
+                assert_eq!(text_of(&rows[0][1]), "");
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
     }
 
     #[test]
@@ -616,6 +893,15 @@ mod tests {
             kinds.iter().any(
                 |kind| matches!(kind, SpanKind::Link { href } if href == "https://example.com")
             )
+        );
+        // `***x***` is one strong-emphasis run, not strong around a stray `*`.
+        let strong = inline("***x***");
+        assert_eq!(
+            strong,
+            vec![Span {
+                text: "x".into(),
+                kind: SpanKind::StrongEmphasis,
+            }]
         );
     }
 
@@ -660,6 +946,137 @@ mod tests {
                     child.role
                 );
             }
+        }
+    }
+
+    /// Parse `text` incrementally and assert it matches a from-scratch parse, that
+    /// it kept the whole source, and that each block is still a valid view on its
+    /// own.
+    fn assert_incremental(text: &str, previous: &Document) -> Document {
+        let next = document("message.assistant", text, Some(previous));
+        let full = document("message.assistant", text, None);
+        assert_eq!(
+            next.blocks, full.blocks,
+            "incremental diverged for {text:?}"
+        );
+        assert_eq!(next.source, text);
+        for node in &next.blocks {
+            validate(&Node::section("message.assistant").child(node.clone()))
+                .expect("an incrementally parsed node is a valid view");
+        }
+        next
+    }
+
+    #[test]
+    fn a_document_from_scratch_is_a_plain_parse() {
+        let text = "# Title\n\ntext\n\n- one\n- two";
+        assert_eq!(
+            document("message.assistant", text, None).blocks,
+            blocks("message.assistant", text)
+        );
+    }
+
+    #[test]
+    fn an_unchanged_document_reuses_its_parse() {
+        let text = "hello\n\n> quote";
+        let first = document("message.assistant", text, None);
+        let second = document("message.assistant", text, Some(&first));
+        assert_eq!(second.blocks, first.blocks);
+        assert_eq!(second.source, text);
+    }
+
+    #[test]
+    fn a_previous_that_is_not_a_prefix_falls_back_to_a_full_parse() {
+        let previous = document("message.assistant", "one\n\ntwo", None);
+        assert_incremental("something else\n\nentirely", &previous);
+    }
+
+    #[test]
+    fn appending_agrees_with_a_full_parse_at_every_line() {
+        // Every prefix of this text is fed through `document`, so the changes a
+        // single append can cause all occur: a paragraph gains a line, a lone pipe
+        // row becomes a table when its separator arrives, an unterminated fence
+        // closes.
+        let text = concat!(
+            "alpha\n",
+            "\n",
+            "beta\n",
+            "\n",
+            "| head | head |\n",
+            "| --- | --- |\n",
+            "| one | two |\n",
+            "\n",
+            "```rust\n",
+            "let x = 1;\n",
+            "```\n",
+            "\n",
+            "tail line\n",
+            "tail continued\n",
+        );
+        let mut previous: Option<Document> = None;
+        let mut built = String::new();
+        for line in text.split_inclusive('\n') {
+            built.push_str(line);
+            let next = match previous.as_ref() {
+                Some(previous) => assert_incremental(&built, previous),
+                None => document("message.assistant", &built, None),
+            };
+            previous = Some(next);
+        }
+        assert_eq!(built, text);
+    }
+
+    #[test]
+    fn a_changed_tail_is_reparsed_while_the_prefix_is_kept() {
+        // A document long enough that the retained-prefix path (all but the last two
+        // blocks) runs, not a from-scratch parse, and whose appends each change a
+        // different shape.
+        let base = concat!(
+            "# Title\n",
+            "\n",
+            "intro\n",
+            "\n",
+            "- one\n",
+            "- two\n",
+            "\n",
+            "> quoted\n",
+            "\n",
+            "| head | head |\n",
+            "| --- | --- |\n",
+            "| one | two |\n",
+            "\n",
+            "```rust\n",
+            "let x = 1;\n",
+        );
+        let previous = document("message.assistant", base, None);
+        // Closing the fence changes the last block.
+        let closed = assert_incremental(&format!("{base}```\n"), &previous);
+        assert!(matches!(
+            closed.blocks.last().map(|node| &node.kind),
+            Some(Kind::Code { .. })
+        ));
+        // A table separator completes a table that was a paragraph a moment ago.
+        let partial = document(
+            "message.assistant",
+            "| head | head |\n| --- | --- |\n| one | two |",
+            None,
+        );
+        let table = assert_incremental(
+            "| head | head |\n| --- | --- |\n| one | two |\n| three | four |",
+            &partial,
+        );
+        match &table.blocks[0].kind {
+            Kind::Table { rows, .. } => assert_eq!(rows.len(), 2),
+            other => panic!("expected a table, got {other:?}"),
+        }
+        // A paragraph gains a line.
+        let paragraph = assert_incremental(
+            "p1\np2\np3\np4",
+            &document("message.assistant", "p1\np2\np3", None),
+        );
+        match &paragraph.blocks[0].kind {
+            Kind::Text { spans } => assert_eq!(text_of(spans), "p1\np2\np3\np4"),
+            other => panic!("expected text, got {other:?}"),
         }
     }
 }

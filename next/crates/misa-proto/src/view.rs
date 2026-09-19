@@ -165,22 +165,25 @@ pub enum Kind {
     Quote,
     /// A thematic break: a horizontal rule between blocks.
     Rule,
-    /// A code block with its language, its text, and derived syntax captures.
+    /// A code block with its language and its text.
     ///
-    /// Captures are computed once, session-side, because a grammar and a parser
-    /// are expensive and versioned. A client maps a capture name to whatever it
-    /// has; an unknown name is plain text.
+    /// The language is the fence's own label, when the author wrote one. How the
+    /// block is then highlighted is the client's; the tree carries no capture.
     Code {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lang: Option<String>,
         text: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        captures: Vec<Capture>,
     },
     /// A bullet or numbered list. Each item is a list of nodes.
+    ///
+    /// `markers` is parallel to `items` and only used for task lists: `None` is an
+    /// ordinary item, `Some(true)` a checked box and `Some(false)` an empty one. It
+    /// is empty when the list is not a task list, and old data decodes without it.
     List {
         ordered: bool,
         items: Vec<Vec<Node>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        markers: Vec<Option<bool>>,
     },
     /// A table. Header cells and body cells are inline content.
     Table {
@@ -232,15 +235,13 @@ pub enum SpanKind {
     #[default]
     Plain,
     Strong,
+    /// `***strong emphasis***`: both, in one span so a client marks it once.
+    StrongEmphasis,
     Emphasis,
     Strikethrough,
     Code,
     Link {
         href: String,
-    },
-    /// A syntax capture name from [`Capture::token`], as in `keyword`.
-    Token {
-        name: String,
     },
 }
 
@@ -279,21 +280,6 @@ impl Span {
             kind: SpanKind::Link { href: href.into() },
         }
     }
-
-    pub fn token(text: impl Into<String>, name: impl Into<String>) -> Span {
-        Span {
-            text: text.into(),
-            kind: SpanKind::Token { name: name.into() },
-        }
-    }
-}
-
-/// A byte range of a [`Kind::Code`] node's text and the capture covering it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Capture {
-    pub start: u32,
-    pub end: u32,
-    pub token: String,
 }
 
 /// A named field, the whole of the dialog vocabulary.
@@ -518,43 +504,13 @@ fn validate_at(
             }
             check_spans(spans, path)?;
         }
-        Kind::Code { text, captures, .. } => {
+        Kind::Code { text, .. } => {
             check_text(text, path)?;
-            let mut last_end = 0u32;
-            for capture in captures {
-                if capture.token.is_empty() {
-                    return Err(fault(path, "has a capture with no token"));
-                }
-                if capture.start >= capture.end {
-                    return Err(fault(
-                        path,
-                        format!("has an empty capture at {}", capture.start),
-                    ));
-                }
-                if capture.end as usize > text.len() {
-                    return Err(fault(
-                        path,
-                        format!("capture ends past the text at {}", capture.end),
-                    ));
-                }
-                if capture.start < last_end {
-                    return Err(fault(path, "has overlapping or unordered captures"));
-                }
-                if !text.is_char_boundary(capture.start as usize)
-                    || !text.is_char_boundary(capture.end as usize)
-                {
-                    return Err(fault(
-                        path,
-                        format!(
-                            "capture at {} is not on a character boundary",
-                            capture.start
-                        ),
-                    ));
-                }
-                last_end = capture.end;
-            }
         }
-        Kind::List { items, .. } => {
+        Kind::List { items, markers, .. } => {
+            if !markers.is_empty() && markers.len() != items.len() {
+                return Err(fault(path, "has a marker for every item or none at all"));
+            }
             for (index, item) in items.iter().enumerate() {
                 for (position, child) in item.iter().enumerate() {
                     validate_at(
@@ -648,11 +604,6 @@ fn check_spans(spans: &[Span], path: &str) -> Result<(), ViewFault> {
                 return Err(fault(path, "has a link containing a control character"));
             }
         }
-        if let SpanKind::Token { name } = &span.kind
-            && name.is_empty()
-        {
-            return Err(fault(path, "has a span with an empty capture name"));
-        }
     }
     Ok(())
 }
@@ -727,7 +678,6 @@ mod tests {
                     Kind::Code {
                         lang: None,
                         text: "hmm".into(),
-                        captures: vec![],
                     },
                 )),
             )
@@ -774,57 +724,6 @@ mod tests {
         // A tab is not: an indent is the client's decision.
         let bad = Node::text("a", [Span::plain("did\tshift")]);
         assert!(validate(&bad).is_err());
-    }
-
-    #[test]
-    fn captures_must_be_ordered_non_empty_and_in_range() {
-        let code = |captures| {
-            Node::new(
-                "c",
-                Kind::Code {
-                    lang: Some("rust".into()),
-                    text: "let x".into(),
-                    captures,
-                },
-            )
-        };
-        validate(&code(vec![Capture {
-            start: 0,
-            end: 3,
-            token: "keyword".into(),
-        }]))
-        .unwrap();
-        assert!(
-            validate(&code(vec![Capture {
-                start: 2,
-                end: 2,
-                token: "k".into()
-            }]))
-            .is_err()
-        );
-        assert!(
-            validate(&code(vec![Capture {
-                start: 0,
-                end: 99,
-                token: "k".into()
-            }]))
-            .is_err()
-        );
-        assert!(
-            validate(&code(vec![
-                Capture {
-                    start: 4,
-                    end: 5,
-                    token: "a".into()
-                },
-                Capture {
-                    start: 0,
-                    end: 3,
-                    token: "b".into()
-                },
-            ]))
-            .is_err()
-        );
     }
 
     #[test]
@@ -919,11 +818,6 @@ mod tests {
                 Kind::Code {
                     lang: Some("rust".into()),
                     text: "let x = 1;".into(),
-                    captures: vec![Capture {
-                        start: 0,
-                        end: 3,
-                        token: "keyword".into(),
-                    }],
                 },
             ),
             Node::new(
@@ -931,6 +825,7 @@ mod tests {
                 Kind::List {
                     ordered: true,
                     items: vec![vec![Node::text("item", [Span::plain("one")])]],
+                    markers: Vec::new(),
                 },
             ),
             Node::new(
@@ -1051,5 +946,22 @@ mod tests {
             matches!(back.kind, Kind::Meter { ref label, .. } if label == "Spend"),
             "the meter's own label went missing"
         );
+    }
+
+    #[test]
+    fn list_markers_must_match_items() {
+        let list = |markers| {
+            Node::new(
+                "a.list",
+                Kind::List {
+                    ordered: false,
+                    items: vec![vec![Node::text("i", [Span::plain("x")])]],
+                    markers,
+                },
+            )
+        };
+        assert!(validate(&list(Vec::new())).is_ok());
+        assert!(validate(&list(vec![Some(true)])).is_ok());
+        assert!(validate(&list(vec![Some(true), Some(false)])).is_err());
     }
 }

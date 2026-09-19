@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+misa-lines.workspace = true
 iroh.workspace = true
 misa-daemon = { path = "../misa-daemon" }
 misa-session.workspace = true

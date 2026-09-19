@@ -225,6 +225,8 @@ nav[aria-label="Display"] {
 a { color: var(--accent); }
 
 .label { margin-right: 0.4em; color: var(--fg-muted); }
+li.task { list-style: none; }
+li.task .task-mark { margin-right: 0.4em; }
 .n-message\.group\.header, .n-message\.group\.footer { color: var(--fg-muted); font-size: 0.8rem; }
 
 body { overflow-wrap: anywhere; }

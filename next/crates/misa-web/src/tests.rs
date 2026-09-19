@@ -1,5 +1,5 @@
 use super::*;
-use misa_proto::view::{Action, BlobRef, Capture, Field};
+use misa_proto::view::{Action, BlobRef, Field};
 
 async fn invoke(runtime: &Runtime, command: &str, input: Value) -> misa_proto::invocation::Outcome {
     use misa_protocol::invocation::{CallContext, Dispatcher};
@@ -183,7 +183,7 @@ async fn usage_presentation_is_a_typed_finite_document() {
     let tree = document.tree;
     misa_proto::view::validate(&tree).unwrap();
     let html = render_main(&tree);
-    let terminal = misa_render::to_plain(&misa_render::render(
+    let terminal = misa_lines::to_plain(&misa_lines::render(
         &tree,
         &misa_render::Theme::plain(),
         100,
@@ -244,11 +244,6 @@ fn view() -> Node {
                 Kind::Code {
                     lang: Some("rust".into()),
                     text: "let x = 1;".into(),
-                    captures: vec![Capture {
-                        start: 0,
-                        end: 3,
-                        token: "keyword".into(),
-                    }],
                 },
             )),
         )
@@ -260,6 +255,7 @@ fn view() -> Node {
                     vec![Node::text("x", [Span::plain("first")])],
                     vec![Node::text("x", [Span::plain("second")])],
                 ],
+                markers: Vec::new(),
             },
         ))
         .child(composer())
@@ -427,13 +423,12 @@ fn a_collapsible_is_a_details_element_because_html_already_has_one() {
 }
 
 #[test]
-fn a_capture_becomes_a_token_element_and_no_highlighting_is_computed_here() {
+fn a_code_block_carries_its_text_and_language_and_no_highlighting() {
     let html = render_main(&view());
-    assert!(
-        html.contains("<span data-token=\"keyword\">let</span>"),
-        "{html}"
-    );
-    assert!(html.contains("= 1;"), "{html}");
+    assert!(html.contains("data-lang=\"rust\""), "{html}");
+    assert!(html.contains("let x = 1;"), "{html}");
+    // Highlighting is the browser's; the session sent no capture.
+    assert!(!html.contains("data-token"), "{html}");
 }
 
 #[test]
@@ -667,6 +662,7 @@ fn document_namespaces_do_not_rewrite_command_targets() {
                 Kind::List {
                     ordered: false,
                     items: vec![vec![Node::text("item", [Span::plain("Pet")]).id("item")]],
+                    markers: Vec::new(),
                 },
             )
             .id("list"),
@@ -794,4 +790,44 @@ fn a_heading_picks_its_level_and_a_quote_becomes_a_blockquote() {
         "{html}"
     );
     assert!(!html.contains("</hr>"), "{html}");
+}
+
+#[test]
+fn a_link_closes_as_an_anchor_and_a_combined_mark_nests() {
+    let node = Node::text(
+        "message.assistant",
+        [
+            Span::link("docs", "https://example.com"),
+            Span::plain(" "),
+            Span {
+                text: "x".into(),
+                kind: misa_proto::view::SpanKind::StrongEmphasis,
+            },
+        ],
+    );
+    let html = render_scoped(&node, "");
+    assert!(
+        html.contains("<a href=\"https://example.com\">docs</a>"),
+        "{html}"
+    );
+    assert!(html.contains("<strong><em>x</em></strong>"), "{html}");
+}
+
+#[test]
+fn a_task_list_renders_its_ballot_box() {
+    let node = Node::new(
+        "items",
+        Kind::List {
+            ordered: false,
+            items: vec![
+                vec![Node::text("item", [Span::plain("todo")])],
+                vec![Node::text("item", [Span::plain("done")])],
+            ],
+            markers: vec![Some(false), Some(true)],
+        },
+    );
+    let html = render_scoped(&node, "");
+    assert!(html.contains("class=\"task\""), "{html}");
+    assert!(html.contains("☐"), "{html}");
+    assert!(html.contains("☑"), "{html}");
 }

@@ -423,17 +423,22 @@ pub trait Storage {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
-    pub components: misa_render::components::Settings,
+    pub components: misa_lines::components::Settings,
     #[serde(default)]
     pub keymap: KeymapSettings,
     #[serde(default)]
     pub picker: PickerSettings,
     #[serde(default)]
     pub dialogs: DialogSettings,
-    /// The theme, by the name a person would say: `dark`, `plain`. A name rather than a
-    /// frontend's type, because this crate is below every frontend and a pixel frontend's
-    /// theme is not a terminal's.
+    /// The theme, by the name a person would say: `dark`, `light`, `plain`. A name rather
+    /// than a frontend's type, because this crate is below every frontend and a pixel
+    /// frontend's theme is not a terminal's.
     pub theme: String,
+    /// Client-owned attribute patches over the selected theme. The previous system
+    /// kept palette and style overrides in configuration; here they are what this
+    /// client remembers, so another terminal's preferences do not change this one.
+    #[serde(default)]
+    pub theme_overrides: misa_render::ThemeOverrides,
     /// The nodes somebody opened, by the id the session gave them. `*` means all of them,
     /// which is what a key that toggles "every tool call" writes.
     pub opened: Vec<String>,

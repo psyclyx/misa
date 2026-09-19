@@ -1175,7 +1175,7 @@ mod overview_tests {
         };
         let text = overview_rows("daemon-a", &snapshot)
             .iter()
-            .flat_map(|node| misa_render::render(node, &misa_render::Theme::plain(), 200))
+            .flat_map(|node| misa_lines::render(node, &misa_render::Theme::plain(), 200))
             .map(|line| line.text())
             .collect::<Vec<_>>()
             .join("\n");

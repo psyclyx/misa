@@ -63,25 +63,34 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
         // this match, as a void element, so nothing goes inside it here.
         Kind::Quote => {}
         Kind::Rule => {}
-        Kind::Code {
-            lang,
-            text,
-            captures,
-        } => {
+        Kind::Code { lang, text } => {
             out.push_str("<pre><code");
             if let Some(lang) = lang {
                 out.push_str(&format!(" data-lang=\"{}\"", escape(lang)));
             }
             out.push('>');
-            code(text, captures, out);
+            // The browser highlights itself; this only carries the authored text and
+            // the fence label the author wrote.
+            out.push_str(&escape(text));
             out.push_str("</code></pre>");
         }
-        Kind::List { items, .. } => {
+        Kind::List { items, markers, .. } => {
             // Each item is its own `<li>`; a nested list inside one is the child
-            // nodes of that item, which the loop below emits.
+            // nodes of that item, which the loop below emits. A task box replaces
+            // the CSS marker, so the state survives to the browser.
             let mut items_out = String::new();
-            for item in items {
-                items_out.push_str("<li>");
+            for (index, item) in items.iter().enumerate() {
+                match markers.get(index).copied().flatten() {
+                    Some(checked) => {
+                        items_out.push_str("<li class=\"task\">");
+                        items_out.push_str(if checked {
+                            "<span class=\"task-mark\">☑</span>"
+                        } else {
+                            "<span class=\"task-mark\">☐</span>"
+                        });
+                    }
+                    None => items_out.push_str("<li>"),
+                }
                 for child in item {
                     render_node(child, prefix, &mut items_out);
                 }
@@ -265,63 +274,41 @@ fn element_for(node: &Node) -> String {
 
 fn inline(spans: &[Span], out: &mut String) {
     for span in spans {
+        let (open, close) = span_tags(&span.kind);
         if span.text.contains('\n') {
             // A newline inside a run is a paragraph the session chose; the browser
             // is told with elements rather than with `white-space`.
             let mut first = true;
             for part in span.text.split('\n') {
                 if !first {
-                    out.push_str(&format!("</{}>", span_element(&span.kind)));
-                    out.push_str(&format!("<{}>", span_element(&span.kind)));
+                    out.push_str(&format!("</{close}>"));
+                    out.push_str(&format!("<{open}>"));
                 }
                 first = false;
                 out.push_str(&escape(part));
             }
             continue;
         }
-        let element = span_element(&span.kind);
-        out.push_str(&format!("<{element}>"));
+        out.push_str(&format!("<{open}>"));
         out.push_str(&escape(&span.text));
-        out.push_str(&format!("</{element}>"));
+        out.push_str(&format!("</{close}>"));
     }
 }
 
-fn span_element(kind: &SpanKind) -> String {
-    match kind {
-        SpanKind::Plain => "span".into(),
-        SpanKind::Strong => "strong".into(),
-        SpanKind::Emphasis => "em".into(),
-        SpanKind::Strikethrough => "del".into(),
-        SpanKind::Code => "code".into(),
-        SpanKind::Link { href } => format!("a href=\"{}\"", escape(href)),
-        SpanKind::Token { name } => format!("span data-token=\"{}\"", escape(name)),
-    }
-}
-
-/// A code block, with its captures as `<span data-token>`.
+/// The opening tag content and the closing tag name for a span.
 ///
-/// No highlighting is computed here: the session did that, and this maps a capture
-/// name to a class. A grammar that knows more than the stylesheet does is not an
-/// error, it is plain text.
-fn code(text: &str, captures: &[misa_proto::view::Capture], out: &mut String) {
-    if captures.is_empty() {
-        out.push_str(&escape(text));
-        return;
+/// Returned separately because an attribute-bearing tag (`a href=…`) closes as
+/// just `a`, and a combined mark nests.
+fn span_tags(kind: &SpanKind) -> (String, String) {
+    match kind {
+        SpanKind::Plain => ("span".into(), "span".into()),
+        SpanKind::Strong => ("strong".into(), "strong".into()),
+        SpanKind::StrongEmphasis => ("strong><em".into(), "em></strong".into()),
+        SpanKind::Emphasis => ("em".into(), "em".into()),
+        SpanKind::Strikethrough => ("del".into(), "del".into()),
+        SpanKind::Code => ("code".into(), "code".into()),
+        SpanKind::Link { href } => (format!("a href=\"{}\"", escape(href)), "a".into()),
     }
-    let mut cursor = 0usize;
-    for capture in captures {
-        let start = capture.start as usize;
-        let end = capture.end as usize;
-        if start < cursor || end > text.len() {
-            continue;
-        }
-        out.push_str(&escape(&text[cursor..start]));
-        out.push_str(&format!("<span data-token=\"{}\">", escape(&capture.token)));
-        out.push_str(&escape(&text[start..end]));
-        out.push_str("</span>");
-        cursor = end;
-    }
-    out.push_str(&escape(&text[cursor..]));
 }
 
 fn state_word(state: NodeState) -> &'static str {

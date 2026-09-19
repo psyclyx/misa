@@ -14,6 +14,7 @@ misa-client.workspace = true
 misa-protocol.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
+misa-syntax.workspace = true
 misa-value.workspace = true
 serde_json.workspace = true
 skia-safe.workspace = true

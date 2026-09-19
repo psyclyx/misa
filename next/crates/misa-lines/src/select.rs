@@ -444,7 +444,7 @@ fn prev_word(text: &str, index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Style;
+    use misa_render::Style;
 
     /// Three rows, two of them from one node, which is the shape a transcript has.
     fn body() -> Body {

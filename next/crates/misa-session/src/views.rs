@@ -645,11 +645,7 @@ pub(crate) fn call_node(message: &str, call: &Value, position: usize) -> Node {
                 } else {
                     "tool.result.error.diff"
                 },
-                Kind::Code {
-                    lang: None,
-                    text,
-                    captures: Vec::new(),
-                },
+                Kind::Code { lang: None, text },
             )
         } else {
             Node::text(
@@ -1001,7 +997,7 @@ pub(crate) fn cancel(db: &Value) -> Option<Node> {
 /// every frontend agrees on what a quote is. The first text block keeps `{id}.text`;
 /// in-flight content with that identity lives in the separate stream channel.
 fn body(prefix: &str, id: &str, text: &str) -> Vec<Node> {
-    let mut blocks = crate::markdown::blocks(prefix, text);
+    let mut blocks = misa_markdown::blocks(prefix, text);
     if blocks.is_empty() {
         // An empty settled body still has a semantic line.
         blocks.push(Node::text(format!("{prefix}.text"), Vec::new()));

@@ -398,13 +398,13 @@ impl Dialogs {
         theme: &misa_render::Theme,
         width: usize,
         settings: &DialogSettings,
-    ) -> Vec<misa_render::Line> {
+    ) -> Vec<misa_lines::Line> {
         let mut lines = vec![];
         let mut title = None;
         let mut footer_actions = vec![("panel.close", "Close")];
         if let Some((form, drafts, index, error)) = &self.form {
             title = Some(form.title.clone());
-            let line = |text| misa_render::Line {
+            let line = |text| misa_lines::Line {
                 surface: None,
                 indent: 0,
                 node: None,
@@ -430,7 +430,7 @@ impl Dialogs {
         }
 
         if !self.requests.is_empty() && !self.modal() {
-            lines.push(misa_render::Line {
+            lines.push(misa_lines::Line {
                 surface: None,
                 indent: 0,
                 node: None,
@@ -442,7 +442,7 @@ impl Dialogs {
         }
         if let Some(report) = &self.report {
             title = Some(report.label.clone().unwrap_or_else(|| "Report".into()));
-            lines.extend(misa_render::render(report, theme, width));
+            lines.extend(misa_lines::render(report, theme, width));
         }
         if let Some((model, draft)) = self.visible.as_ref().and_then(|id| self.requests.get(id)) {
             title = Some(model.title.clone());
@@ -454,13 +454,13 @@ impl Dialogs {
                 .map(|action| (action.id.as_str(), action.label.as_str()))
                 .collect();
             footer_actions.push(("panel.close", if cancellable { "Cancel" } else { "Close" }));
-            let line = |text| misa_render::Line {
+            let line = |text| misa_lines::Line {
                 surface: None,
                 indent: 0,
                 node: None,
                 spans: vec![(theme.role("notice"), text)],
             };
-            lines.extend(misa_render::render(&model.body, theme, width));
+            lines.extend(misa_lines::render(&model.body, theme, width));
             if let Some(form) = &model.form
                 && let misa_proto::schema::Schema::Record { fields, .. } = &form.input
             {
@@ -512,7 +512,7 @@ impl Dialogs {
         // render the same request as a native surface without inheriting terminal
         // bookkeeping.
         let title = title.unwrap_or_else(|| "Interaction".into());
-        let mut framed = vec![misa_render::Line {
+        let mut framed = vec![misa_lines::Line {
             surface: theme.surface("dialog"),
             indent: 0,
             node: None,
@@ -527,7 +527,7 @@ impl Dialogs {
                 .insert(0, (theme.role("dialog.label"), "│ ".into()));
             framed.push(line);
         }
-        framed.push(misa_render::Line {
+        framed.push(misa_lines::Line {
             surface: theme.surface("dialog"),
             indent: 0,
             node: None,
@@ -631,14 +631,14 @@ mod tests {
         let text = dialogs
             .lines(&misa_render::Theme::plain(), 80, &DialogSettings::default())
             .iter()
-            .map(misa_render::Line::text)
+            .map(misa_lines::Line::text)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains('•'));
         assert!(!text.contains("Key: s"));
         assert!(dialogs.paste("ecret pasted"));
         assert_eq!(dialogs.requests["request"].1, "secret pasted");
-        let masked = misa_render::to_plain(&dialogs.lines(
+        let masked = misa_lines::to_plain(&dialogs.lines(
             &misa_render::Theme::plain(),
             80,
             &DialogSettings::default(),
@@ -697,7 +697,7 @@ mod tests {
         settings.action_keys.insert("approve".into(), "a".into());
         settings.action_keys.insert("deny".into(), "d".into());
         let text =
-            misa_render::to_plain(&dialogs.lines(&misa_render::Theme::plain(), 80, &settings));
+            misa_lines::to_plain(&dialogs.lines(&misa_render::Theme::plain(), 80, &settings));
         assert!(text.contains("a Allow tool   d Deny tool"), "{text}");
         assert!(!text.contains("y Allow tool"), "{text}");
         assert!(matches!(

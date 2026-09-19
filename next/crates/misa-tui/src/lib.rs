@@ -46,10 +46,11 @@ use misa_kit::intent::Intent;
 use misa_kit::intent::Source;
 use misa_kit::picker::{Accept, Effect as PickerEffect, Picker};
 use misa_kit::{editor as ed, intent as line};
+use misa_lines::Line;
+use misa_lines::select;
 use misa_proto::preparation::SourceKind;
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
-use misa_render::select;
-use misa_render::{Line, Theme};
+use misa_render::{Theme, ThemeOverrides};
 
 /// One action this program can take on its own display.
 ///
@@ -67,6 +68,7 @@ pub enum Action {
     OpenModel,
     OpenActionPalette,
     ThemeDark,
+    ThemeLight,
     ThemePlain,
     OpenCommands,
     OpenSelection,
@@ -85,6 +87,9 @@ impl Action {
         Action::ScrollBottom,
         Action::OpenModel,
         Action::OpenActionPalette,
+        Action::ThemeDark,
+        Action::ThemeLight,
+        Action::ThemePlain,
         Action::OpenCommands,
         Action::OpenSelection,
         Action::Compact,
@@ -102,6 +107,7 @@ impl Action {
             Action::OpenModel => "model.open",
             Action::OpenActionPalette => "actions.open",
             Action::ThemeDark => "theme.dark",
+            Action::ThemeLight => "theme.light",
             Action::ThemePlain => "theme.plain",
             Action::OpenCommands => "commands.open",
             Action::OpenSelection => "selection.open",
@@ -122,6 +128,7 @@ impl Action {
             Action::OpenModel => "Choose active model",
             Action::OpenActionPalette => "Open action palette / key reference",
             Action::ThemeDark => "Use the dark theme",
+            Action::ThemeLight => "Use the light theme",
             Action::ThemePlain => "Use no colour",
             Action::OpenCommands => "Open session commands",
             Action::OpenSelection => "Navigate transcript",
@@ -202,10 +209,20 @@ struct HistorySearch {
     before: usize,
 }
 
+/// The named theme with the client's overrides applied.
+fn theme_named(name: &str, overrides: &ThemeOverrides) -> Theme {
+    let base = match name {
+        "plain" => Theme::plain(),
+        "light" => Theme::light(),
+        _ => Theme::dark(),
+    };
+    base.overlay(overrides)
+}
+
 pub struct Screen {
     pub dialogs: dialogs::Dialogs,
     pub local_presentation: presentation::Local,
-    pub components: misa_render::components::Registry,
+    pub components: misa_lines::components::Registry,
     pub values: misa_render::fact::Registry,
     operator: Option<char>,
     history_search: Option<HistorySearch>,
@@ -242,6 +259,9 @@ pub struct Screen {
     /// Whether the viewport follows new output. Scrolling away stops it, which is
     /// what lets somebody read while a model is still writing.
     pub follow: bool,
+    /// A monotonic count of explicit scroll commands, so the retained viewport can
+    /// tell a reader's scroll from a layout shift under the same row number.
+    pub scroll_intent: u64,
     pub width: u16,
     pub height: u16,
 }
@@ -273,6 +293,7 @@ impl Screen {
             resident_requests: Default::default(),
             scroll: 0,
             follow: true,
+            scroll_intent: 0,
             width,
             height,
         }
@@ -294,10 +315,7 @@ impl Screen {
     /// that wrote there would be a test that depends on the machine it ran on.
     pub fn remembering(prefs: Prefs, path: PathBuf) -> Screen {
         let mut screen = Screen::new(100, 40);
-        screen.theme = match prefs.theme.as_str() {
-            "plain" => Theme::plain(),
-            _ => Theme::dark(),
-        };
+        screen.theme = theme_named(&prefs.theme, &prefs.theme_overrides);
         screen.editor.set_text(prefs.draft.clone());
         screen.saved_prefs = prefs.clone();
         screen.prefs = prefs;
@@ -498,7 +516,7 @@ impl Screen {
     /// The rendered body a selection moves over. Nothing here reaches a session.
     fn body(&self, view: &Node) -> select::Body {
         let resolved = self.resolve(view);
-        select::Body::of(&misa_render::render(
+        select::Body::of(&misa_lines::render(
             &resolved,
             &self.theme,
             self.width as usize,
@@ -1496,22 +1514,30 @@ impl Screen {
             Action::ScrollTop => {
                 self.follow = false;
                 self.scroll = 0;
+                self.scroll_intent = self.scroll_intent.wrapping_add(1);
                 KeyOut::Local
             }
             Action::ScrollBottom => {
                 self.follow = true;
+                self.scroll_intent = self.scroll_intent.wrapping_add(1);
                 KeyOut::Local
             }
             Action::OpenModel => self.open_model_picker(),
             Action::OpenActionPalette => self.open_action_palette(),
             Action::ThemeDark => {
-                self.theme = Theme::dark();
+                self.theme = theme_named("dark", &self.prefs.theme_overrides);
                 self.prefs.theme = "dark".into();
                 self.save();
                 KeyOut::Local
             }
+            Action::ThemeLight => {
+                self.theme = theme_named("light", &self.prefs.theme_overrides);
+                self.prefs.theme = "light".into();
+                self.save();
+                KeyOut::Local
+            }
             Action::ThemePlain => {
-                self.theme = Theme::plain();
+                self.theme = theme_named("plain", &self.prefs.theme_overrides);
                 self.prefs.theme = "plain".into();
                 self.save();
                 KeyOut::Local
@@ -1571,6 +1597,7 @@ impl Screen {
         let next = self.scroll as isize + delta;
         self.scroll = next.max(0) as usize;
         self.follow = false;
+        self.scroll_intent = self.scroll_intent.wrapping_add(1);
     }
 
     /// Apply the client's own decisions to the tree the session sent.
@@ -1815,18 +1842,16 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
             .and_then(|choice| choice.detail.as_deref())
             .is_some_and(|detail| !detail.is_empty());
     let view_count = picker.views().len().max(1);
-    let column_count = (1..=view_count.min(3))
-        .rev()
-        .find(|count| {
-            content_width
-                >= count * settings.minimum_panel_width + count.saturating_sub(1) * settings.gap
-        })
-        .unwrap_or(1);
-    let panel_width = content_width
-        .saturating_sub((column_count - 1) * settings.gap)
-        .checked_div(column_count)
-        .unwrap_or(1)
-        .max(1);
+    // The previous system's `layout.columns`: as many panels as fit, with the
+    // remainder shared by the leading ones. The last cell of an odd split is not
+    // dropped.
+    let widths = misa_render::columns(
+        content_width,
+        settings.minimum_panel_width,
+        view_count.min(3).max(1),
+        settings.gap,
+    );
+    let column_count = widths.len();
     let fixed = 1 + selected_preview.len() + usize::from(selected_detail) + column_count + 1;
     let height = settings
         .preferred_height
@@ -1840,7 +1865,8 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         .skip(first_view)
         .take(column_count)
         .enumerate()
-        .map(|(_, view)| {
+        .map(|(panel, view)| {
+            let panel_width = widths[panel];
             let choices = picker.matches_for(*view);
             let active_view = *view == picker.view();
             let selected = if active_view {
@@ -1961,7 +1987,7 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         } else {
             "choice.view"
         });
-        heading_spans.push((style, misa_render::pad(title, panel_width)));
+        heading_spans.push((style, misa_render::pad(title, widths[panel])));
         if panel + 1 < panels.len() {
             heading_spans.push((theme.role("plain"), " ".repeat(settings.gap)));
         }
@@ -1983,7 +2009,7 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
             if let Some(panel_line) = rows.get(row) {
                 spans.extend(panel_line.iter().cloned());
             } else {
-                spans.push((theme.role("plain"), " ".repeat(panel_width)));
+                spans.push((theme.role("plain"), " ".repeat(widths[panel])));
             }
             if panel + 1 < panels.len() {
                 spans.push((theme.role("plain"), " ".repeat(settings.gap)));
@@ -2652,7 +2678,7 @@ mod tests {
     }
 
     fn text_of(screen: &Screen, view: &Node) -> String {
-        misa_render::to_plain(&draw(screen, view))
+        misa_lines::to_plain(&draw(screen, view))
     }
 
     /// A view with a panel in it, the shape the session opens for `/login`.
@@ -3222,10 +3248,38 @@ mod tests {
     }
 
     #[test]
+    fn a_client_override_reaches_the_theme_it_draws_with() {
+        let path = memory("theme-override");
+        let mut prefs = Prefs::default();
+        prefs.theme_overrides.roles.insert(
+            "error".into(),
+            misa_render::StylePatch {
+                fg: Some(misa_render::Color::Rgb(1, 2, 3)),
+                ..misa_render::StylePatch::default()
+            },
+        );
+        let screen = Screen::remembering(prefs, path.clone());
+        assert_eq!(
+            screen.theme.role("error").fg,
+            misa_render::Color::Rgb(1, 2, 3)
+        );
+        // Switching the base theme keeps the override.
+        let mut screen = screen;
+        screen.key(Key::Action(Action::ThemeLight));
+        assert_eq!(
+            screen.theme.role("error").fg,
+            misa_render::Color::Rgb(1, 2, 3)
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
+    }
+
+    #[test]
     fn the_theme_is_the_clients_and_switching_it_touches_nothing_else() {
         let mut screen = screen();
         screen.key(Key::Action(Action::ThemePlain));
         assert_eq!(screen.theme.name, "plain");
+        screen.key(Key::Action(Action::ThemeLight));
+        assert_eq!(screen.theme.name, "light");
         screen.key(Key::Action(Action::ThemeDark));
         assert_eq!(screen.theme.name, "dark");
     }

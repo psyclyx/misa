@@ -160,6 +160,7 @@ async fn drive_with_clipboard(
     let driver = requests_loop(session, requests, updates);
     tokio::pin!(driver);
     let mut output = crate::output::Output::default();
+    let animations = misa_render::animations::Registry::stock();
     let mut animation = tokio::time::interval(Duration::from_millis(90));
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frame = 0usize;
@@ -181,18 +182,25 @@ async fn drive_with_clipboard(
         }
         let rendered =
             retained.frame_with(screen, staging.as_deref(), &extra_document, &extra_footer);
+        // The viewport resolved a physical first row from the semantic anchor; keep
+        // `scroll` at that row so the next reader delta is relative to what was shown.
+        screen.scroll = retained.resolved_scroll();
         let mut lines = rendered.lines;
         if retained.has_turn() {
-            const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
-            // Activity owns the working animation. The transient turn action is
-            // an interrupt affordance; prepending a second spinner to it made
-            // the status bar drift away from the reference and duplicated state.
+            // Activity owns the working animation. The frames are registered data;
+            // the client only supplies the tick.
             if let Some(line) = lines
                 .iter_mut()
                 .find(|line| line.node.as_deref() == Some("indicators"))
             {
-                if let Some((_, text)) = line.spans.iter_mut().find(|(_, text)| text == "●") {
-                    text.replace_range(.."●".len(), FRAMES[frame % FRAMES.len()]);
+                let selected =
+                    misa_lines::components::animation_for(&screen.prefs.components, "activity")
+                        .as_deref()
+                        .and_then(|id| animations.frame(id, true, frame as u64));
+                if let Some(selected) = selected
+                    && let Some((_, text)) = line.spans.iter_mut().find(|(_, text)| text == "●")
+                {
+                    *text = selected.to_string();
                 }
             }
         }
@@ -1252,7 +1260,7 @@ mod scope_tests {
         screen
             .dialogs
             .key(&crate::Key::Char('t'), &screen.prefs.dialogs);
-        let text = misa_render::to_plain(&screen.dialogs.lines(
+        let text = misa_lines::to_plain(&screen.dialogs.lines(
             &screen.theme,
             80,
             &screen.prefs.dialogs,

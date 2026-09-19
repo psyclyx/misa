@@ -1,28 +1,22 @@
-//! Presentation for the linear frontends: text measurement, a role-addressed
-//! theme, and a renderer from the semantic tree to styled lines.
+//! Shared presentation primitives for clients.
 //!
-//! This crate sits on the client's side of the boundary and is the *only* place
-//! the three shipped frontends share presentation code. It exists because two of
-//! them are linear — a terminal and a plain pipe — and both need the same
-//! wrapping, the same theme lookup, and the same decision about what a table
-//! looks like when it is 80 columns wide.
+//! Medium-agnostic: text measurement, a role-addressed theme, typed-value
+//! formatting, and animation frame data. Every shipped frontend may use these,
+//! and none of them decides what a medium looks like.
 //!
-//! A pixel frontend does not use [`lines`]. It uses [`text`] for metrics and
-//! [`theme`] for colour, and maps the same tree to a scene of its own. That split
-//! is why this crate is not called a renderer: what it owns is presentation
-//! *policy* for a medium, and the frontends own the painting.
+//! The *linear* renderer — the semantic tree as styled lines — is `misa-lines`,
+//! used by the terminal and pipe clients. A pixel or browser client uses [`text`]
+//! for metrics and [`theme`] for colour and maps the tree to a scene of its own; a
+//! client that wants syntax colouring uses `misa-syntax` on that side too.
 //!
 //! Nothing here knows about sessions, the wire, or the agent. It is a function of
 //! `(tree, theme, width)`.
 
-pub mod components;
+pub mod animations;
 pub mod fact;
-pub mod lines;
 pub mod text;
 pub mod theme;
 
-pub use lines::{Line, render, to_plain};
-pub use text::{clip, pad, width, wrap_spans, wrap_styled};
-pub use theme::{Color, Style, Theme};
-
-pub mod select;
+pub use animations::{Animation, Registry as Animations};
+pub use text::{clip, columns, pad, width, wrap_spans, wrap_styled};
+pub use theme::{Color, Palette, Style, StylePatch, Theme, ThemeOverrides};

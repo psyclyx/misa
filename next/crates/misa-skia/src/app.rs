@@ -4,7 +4,7 @@ use crate::{Layout, Op, Scene};
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
-use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
+use misa_proto::view::{ActionOn, FieldKind, Kind, Node, Span};
 #[cfg(test)]
 use misa_render::Color;
 use misa_render::{Style, Theme};
@@ -152,11 +152,14 @@ pub struct App {
     report: Option<Report>,
     selection: Option<((usize, usize), (usize, usize))>,
     rows: Vec<TextRow>,
+    prefixes: Vec<(Style, String)>,
     replace_selection: bool,
     scroll: f32,
     follow: bool,
     content_height: f32,
     viewport_height: f32,
+    /// Advances once per painted frame, so a client-side animation has a clock.
+    pub tick: u64,
 }
 struct Report {
     title: String,
@@ -223,11 +226,13 @@ impl App {
             report: None,
             selection: None,
             rows: vec![],
+            prefixes: vec![],
             replace_selection: false,
             scroll: 0.0,
             follow: true,
             content_height: 0.0,
             viewport_height: 600.0,
+            tick: 0,
         };
         app.set_view(view);
         app
@@ -240,6 +245,12 @@ impl App {
     }
     fn colors(&self) -> crate::appearance::Palette {
         crate::appearance::Palette::new(self.light)
+    }
+
+    /// Whether the active document is doing something that should keep animating:
+    /// a running turn, which is what the activity indicator speaks for.
+    pub fn animating(&self) -> bool {
+        self.tree.contains("turn")
     }
     pub fn report(&mut self, title: String, value: Value) {
         let mut entries = Vec::new();
@@ -1075,6 +1086,7 @@ impl App {
             .join("\n")
     }
     pub fn frame(&mut self, width: u32, height: u32) -> Scene {
+        self.tick = self.tick.wrapping_add(1);
         if self.cache_width != width {
             self.cache.clear();
             self.cache_width = width;
@@ -1376,6 +1388,13 @@ impl App {
         });
     }
     fn row(&mut self, scene: &mut Scene, x: f32, y: f32, spans: Vec<(Style, String)>) {
+        let spans = if self.prefixes.is_empty() {
+            spans
+        } else {
+            let mut prefixed = self.prefixes.clone();
+            prefixed.extend(spans);
+            prefixed
+        };
         let plain = spans
             .iter()
             .map(|(_, text)| text.as_str())
@@ -1395,6 +1414,210 @@ impl App {
         });
         self.rows.push(TextRow { x, y, text: plain });
     }
+
+    /// Wrap semantic spans to a column budget and place each line.
+    #[allow(clippy::too_many_arguments)]
+    fn wrapped(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: &mut f32,
+        columns: usize,
+        spans: &[Span],
+        base: Style,
+        theme: &Theme,
+    ) {
+        for line in misa_render::wrap_spans(spans, columns) {
+            let runs = line
+                .iter()
+                .map(|span| (crate::span_style(theme, span, base), span.text.clone()))
+                .collect();
+            self.row(scene, x, *y, runs);
+            *y += 21.0;
+        }
+    }
+
+    /// Render a code block, highlighting it from the client's own grammar.
+    #[allow(clippy::too_many_arguments)]
+    fn code_block(
+        &mut self,
+        node: &Node,
+        lang: Option<&str>,
+        text: &str,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let base = theme.role(&node.role);
+        let columns = (width / 8.4).floor().max(1.0) as usize;
+        let diff = crate::is_diff(&node.role, lang);
+        if let Some(lang) = lang
+            && !diff
+        {
+            self.row(
+                scene,
+                x,
+                *y,
+                vec![(theme.role("markdown.code.label"), lang.to_string())],
+            );
+            *y += 21.0;
+        }
+        let captures = if diff {
+            Vec::new()
+        } else {
+            lang.map(|language| misa_syntax::captures(language, text))
+                .unwrap_or_default()
+        };
+        for (index, raw) in text.split('\n').enumerate() {
+            let clipped = misa_render::clip(raw, columns);
+            let line_style = if diff {
+                crate::diff_style(theme, base, &node.role, raw)
+            } else {
+                base
+            };
+            let runs = crate::code_runs(text, index, &clipped, &captures, line_style, theme);
+            self.row(scene, x, *y, runs);
+            *y += 21.0;
+        }
+    }
+
+    /// The status bar: one row of selected indicator facts.
+    #[allow(clippy::too_many_arguments)]
+    fn indicators(
+        &mut self,
+        node: &Node,
+        x: f32,
+        y: &mut f32,
+        _width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let mut spans: Vec<(Style, String)> = Vec::new();
+        for child in &node.children {
+            if !child.role.starts_with("indicator.") {
+                continue;
+            }
+            if !spans.is_empty() {
+                spans.push((theme.role("status.separator"), "  ".into()));
+            }
+            // The activity indicator is the client's animation: while a turn is
+            // running it shows a moving frame instead of the word for the state.
+            if child.role == "indicator.activity" {
+                let value = indicator_value(child);
+                if value != "ready"
+                    && let Some(frame) =
+                        misa_render::animations::Registry::stock().frame("pulse", true, self.tick)
+                {
+                    spans.push((theme.role("indicator.activity"), frame.to_string()));
+                    continue;
+                }
+            }
+            if let Some(label) = child.label.as_deref().filter(|label| !label.is_empty()) {
+                spans.push((theme.role("label"), label.to_string()));
+                spans.push((theme.role("plain"), " ".into()));
+            }
+            spans.push((theme.role("value"), indicator_value(child)));
+        }
+        if !spans.is_empty() {
+            self.row(scene, x, *y, spans);
+            *y += 21.0;
+        }
+    }
+
+    /// The transcript boundary: a rule and the child facts beside it.
+    #[allow(clippy::too_many_arguments)]
+    fn group_footer(
+        &mut self,
+        node: &Node,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let style = theme.role("message.group.footer");
+        scene.ops.push(Op::Rect {
+            x,
+            y: *y,
+            width: width.max(1.0),
+            height: 1.0,
+            style,
+        });
+        *y += 4.0;
+        let mut text = String::new();
+        for child in &node.children {
+            let value = match &child.kind {
+                Kind::Fact { value } => misa_render::fact::format(&child.role, value),
+                Kind::Text { spans } => spans.iter().map(|span| span.text.as_str()).collect(),
+                _ => String::new(),
+            };
+            if !value.is_empty() {
+                if !text.is_empty() {
+                    text.push_str("  ");
+                }
+                text.push_str(&value);
+            }
+        }
+        self.row(scene, x, *y, vec![(style, text)]);
+        *y += 21.0;
+    }
+
+    /// The pending-prompt dock: a heading and one row per queued prompt.
+    #[allow(clippy::too_many_arguments)]
+    fn queue(
+        &mut self,
+        node: &Node,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let count = node
+            .children
+            .iter()
+            .find(|child| child.role == "queue.count")
+            .and_then(|child| match &child.kind {
+                Kind::Fact { value } => value.as_i64(),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                node.children
+                    .iter()
+                    .filter(|child| child.role == "queue.item")
+                    .count() as i64
+            });
+        self.row(
+            scene,
+            x,
+            *y,
+            vec![(theme.role("label"), format!("Queued ({count})"))],
+        );
+        *y += 21.0;
+        let columns = (width / 8.4).floor().max(1.0) as usize;
+        for child in node
+            .children
+            .iter()
+            .filter(|child| child.role == "queue.item")
+        {
+            if let Kind::Text { spans } = &child.kind {
+                let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+                self.row(
+                    scene,
+                    x,
+                    *y,
+                    vec![(
+                        theme.role("dim"),
+                        misa_render::clip(&text.replace('\n', " ↵ "), columns),
+                    )],
+                );
+                *y += 21.0;
+            }
+        }
+    }
+
     fn node_uncached(
         &mut self,
         node: &Node,
@@ -1404,21 +1627,17 @@ impl App {
         theme: &Theme,
         scene: &mut Scene,
     ) {
-        if misa_render::components::render_default(node, theme, (width / 8.4).max(1.0) as usize)
-            .is_some()
-        {
+        if matches!(
+            node.role.as_str(),
+            "status.indicators" | "message.group.footer" | "queue"
+        ) {
             // Indexed nodes contain no children. A registered composite owns its
             // subtree, so materialize that subtree only when its cache is dirty.
             let model = self.tree.subtree(&node.id).unwrap_or_else(|| node.clone());
-            let lines = misa_render::components::render_default(
-                &model,
-                theme,
-                (width / 8.4).max(1.0) as usize,
-            )
-            .expect("same registered role");
-            for line in lines {
-                self.row(scene, x, *y, line.spans);
-                *y += 21.0;
+            match node.role.as_str() {
+                "status.indicators" => self.indicators(&model, x, y, width, theme, scene),
+                "message.group.footer" => self.group_footer(&model, x, y, width, theme, scene),
+                _ => self.queue(&model, x, y, width, theme, scene),
             }
             return;
         }
@@ -1426,11 +1645,17 @@ impl App {
         {
             self.rendered_nodes += 1;
         }
+        // A railed block is a card: remember where its ops begin so the surface and
+        // the full-height rail can be painted behind them once its extent is known.
+        let card = theme
+            .rail(&node.role)
+            .map(|(_, rail_style)| (scene.ops.len(), *y, rail_style));
         if let Some(label) = &node.label {
             self.row(scene, x, *y, vec![(theme.role(&node.role), label.clone())]);
             *y += 25.0;
         }
         let mut children = true;
+        let mut quote_prefix = false;
         match &node.kind {
             Kind::Section => {}
             Kind::Collapsible { summary } => {
@@ -1553,15 +1778,21 @@ impl App {
                     .max(1);
                 let cell_width = width / columns as f32;
                 for (index, row) in std::iter::once(head).chain(rows.iter()).enumerate() {
-                    let cells: Vec<_> = row
+                    let columns = ((cell_width - 10.0) / 8.4).floor().max(1.0) as usize;
+                    let base = theme.role("table.cell");
+                    let cells: Vec<Vec<Vec<(Style, String)>>> = row
                         .iter()
                         .map(|cell| {
-                            let leaf = Node::text("table.cell", cell.clone());
-                            misa_render::render(
-                                &leaf,
-                                theme,
-                                ((cell_width - 10.0) / 8.4).max(1.0) as usize,
-                            )
+                            misa_render::wrap_spans(cell, columns)
+                                .into_iter()
+                                .map(|line| {
+                                    line.into_iter()
+                                        .map(|span| {
+                                            (crate::span_style(theme, &span, base), span.text)
+                                        })
+                                        .collect::<Vec<(Style, String)>>()
+                                })
+                                .collect::<Vec<Vec<(Style, String)>>>()
                         })
                         .collect();
                     let lines = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
@@ -1583,14 +1814,18 @@ impl App {
                                 scene,
                                 x + column as f32 * cell_width + 5.0,
                                 *y + 4.0 + line as f32 * 21.0,
-                                content.spans,
+                                content,
                             );
                         }
                     }
                     *y += height + 2.0;
                 }
             }
-            Kind::List { ordered, items } => {
+            Kind::List {
+                ordered,
+                items,
+                markers,
+            } => {
                 for (index, item) in items.iter().enumerate() {
                     self.row(
                         scene,
@@ -1598,10 +1833,11 @@ impl App {
                         *y,
                         vec![(
                             theme.role(&node.role),
-                            if *ordered {
-                                format!("{}.", index + 1)
-                            } else {
-                                "•".into()
+                            match markers.get(index).copied().flatten() {
+                                Some(true) => "☑".into(),
+                                Some(false) => "☐".into(),
+                                None if *ordered => format!("{}.", index + 1),
+                                None => "•".into(),
                             },
                         )],
                     );
@@ -1646,17 +1882,52 @@ impl App {
                 self.row(scene, x, *y, vec![(theme.role(&node.role), alt.clone())]);
                 *y += 25.0;
             }
-            _ => {
-                let mut leaf = node.clone();
-                leaf.children.clear();
-                leaf.actions.clear();
-                leaf.label = None;
-                for line in
-                    misa_render::render(&leaf, theme, (width / 8.4).floor().max(1.0) as usize)
-                {
-                    self.row(scene, x + line.indent as f32 * 8.4, *y, line.spans);
-                    *y += 21.0;
+            Kind::Text { spans } => {
+                let base = theme.role(&node.role);
+                let columns = (width / 8.4).floor().max(1.0) as usize;
+                self.wrapped(scene, x, y, columns, spans, base, theme);
+            }
+            Kind::Heading { level, spans } => {
+                let mut base = theme.role(&node.role).bold();
+                if *level == 1 {
+                    base = base.underline();
                 }
+                let columns = (width / 8.4).floor().max(1.0) as usize;
+                self.wrapped(scene, x, y, columns, spans, base, theme);
+            }
+            Kind::Quote => {
+                self.prefixes
+                    .push((theme.role(&node.role).dim(), "▏ ".to_string()));
+                quote_prefix = true;
+            }
+            Kind::Rule => {
+                let columns = (width / 8.4).floor().max(1.0) as usize;
+                self.row(
+                    scene,
+                    x,
+                    *y,
+                    vec![(theme.role(&node.role), "─".repeat(columns))],
+                );
+                *y += 21.0;
+            }
+            Kind::Code { lang, text } => {
+                self.code_block(node, lang.as_deref(), text, x, y, width, theme, scene);
+            }
+            Kind::Fact { value } => {
+                self.row(
+                    scene,
+                    x,
+                    *y,
+                    vec![(
+                        theme.role(&node.role),
+                        misa_render::fact::format(&node.role, value),
+                    )],
+                );
+                *y += 21.0;
+            }
+            Kind::Status { text } => {
+                self.row(scene, x, *y, vec![(theme.role(&node.role), text.clone())]);
+                *y += 21.0;
             }
         }
         if children {
@@ -1676,6 +1947,9 @@ impl App {
                 }
             }
         }
+        if quote_prefix {
+            self.prefixes.pop();
+        }
         for action in &node.actions {
             self.box_control(
                 scene,
@@ -1692,8 +1966,61 @@ impl App {
             *y += 39.0;
         }
         *y += 5.0;
+        if let Some((start, first, rail_style)) = card {
+            let last = *y - 5.0;
+            if last > first {
+                let height = last - first;
+                let mut at = start;
+                if let Some(surface) = theme.surface(&node.role)
+                    && surface.bg != misa_render::Color::Default
+                {
+                    scene.ops.insert(
+                        at,
+                        Op::Rect {
+                            x: x - 6.0,
+                            y: first - 4.0,
+                            width: (width + 12.0).min((scene.width - x + 6.0).max(1.0)),
+                            height: height + 8.0,
+                            style: Style::fg(surface.bg),
+                        },
+                    );
+                    at += 1;
+                }
+                scene.ops.insert(
+                    at,
+                    Op::Rect {
+                        x: x - 4.0,
+                        y: first,
+                        width: 2.0,
+                        height,
+                        style: rail_style,
+                    },
+                );
+            }
+        }
     }
 }
+/// The text of an indicator fact, recursing through wrapper sections.
+fn indicator_value(node: &Node) -> String {
+    match &node.kind {
+        Kind::Fact { value } => misa_render::fact::format(&node.role, value),
+        Kind::Meter { value, max, .. } => format!(
+            "{}/{}",
+            misa_render::fact::count(Some(*value as i64), ""),
+            misa_render::fact::count(Some(*max as i64), "")
+        ),
+        Kind::Status { text } => text.clone(),
+        Kind::Text { spans } => spans.iter().map(|span| span.text.as_str()).collect(),
+        _ => node
+            .children
+            .iter()
+            .map(indicator_value)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
 fn image_hashes(node: &Node, hashes: &mut BTreeSet<String>) {
     if let Kind::Image { blob, .. } = &node.kind {
         hashes.insert(blob.hash.clone());
@@ -1719,6 +2046,14 @@ fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_running_turn_keeps_the_window_animating() {
+        let mut app = App::new(Node::section("session"));
+        assert!(!app.animating(), "an idle view animates nothing");
+        app.set_view(Node::section("session").child(Node::section("turn").id("turn")));
+        assert!(app.animating(), "a running turn stops animating");
+    }
+
     #[test]
     fn changing_local_theme_preserves_drafts_and_rebuilds_cached_colors() {
         let mut app = App::new(form("panel.input", FieldKind::Inline));
@@ -1820,6 +2155,58 @@ mod tests {
             |op| matches!(op, Op::Text { text, .. } if text.contains("changed/model"))
         ));
     }
+    #[test]
+    fn status_footer_and_queue_components_render_natively() {
+        let view = Node::section("session").id("session").children([
+            Node::section("status.indicators").id("status").child(
+                Node::section("indicator.model")
+                    .id("model")
+                    .label("model")
+                    .child(
+                        Node::new(
+                            "value.text",
+                            Kind::Fact {
+                                value: Value::str("claude"),
+                            },
+                        )
+                        .id("model.value"),
+                    ),
+            ),
+            Node::section("message.group.footer")
+                .id("footer")
+                .child(Node::text("value.text", [Span::plain("12k tok")]).id("footer.tokens")),
+            Node::section("queue").id("queue").children([
+                Node::new(
+                    "queue.count",
+                    Kind::Fact {
+                        value: Value::Int(2),
+                    },
+                )
+                .id("queue.count"),
+                Node::text("queue.item", [Span::plain("first")]).id("queue.item.1"),
+                Node::text("queue.item", [Span::plain("second")]).id("queue.item.2"),
+            ]),
+        ]);
+        let mut app = App::new(view);
+        let scene = app.frame(900, 400);
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text { text, .. } if text == "claude")
+        ));
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text { text, .. } if text == "12k tok")
+        ));
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text { text, .. } if text == "Queued (2)")
+        ));
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Text { text, .. } if text == "first")
+        ));
+    }
+
     fn form(id: &str, kind: FieldKind) -> Node {
         Node::new(
             "panel",

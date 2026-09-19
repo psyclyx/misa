@@ -58,8 +58,6 @@ pub mod contribution;
 pub mod indicators;
 mod journal;
 mod kernel_queue;
-/// Markdown, parsed once so that no frontend has to.
-pub mod markdown;
 mod protocol;
 mod publication;
 mod reports;
@@ -1208,7 +1206,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn transcript(runtime: &Runtime) -> String {
-        misa_render::to_plain(&misa_render::render(
+        misa_lines::to_plain(&misa_lines::render(
             &view(runtime),
             &misa_render::Theme::plain(),
             100,
@@ -2088,7 +2086,7 @@ mod contribution_tests {
                 let mut tree = Node::section("test.widget").id("widget");
                 tree.label = Some(format!(
                     "{} bytes of state",
-                    misa_render::to_plain(&[]).len()
+                    misa_lines::to_plain(&[]).len()
                 ));
                 tree.children.push(
                     Node::new(
@@ -2431,7 +2429,7 @@ mod contribution_tests {
         // And a client can see the turn the shipped loop ran, which is what says the two
         // registrations live in one loop rather than two.
         let text = match runtime.read(&Query::new(misa_proto::VIEW_QUERY)).unwrap() {
-            Reading::View(node) => misa_render::to_plain(&misa_render::render(
+            Reading::View(node) => misa_lines::to_plain(&misa_lines::render(
                 &node,
                 &misa_render::Theme::plain(),
                 100,

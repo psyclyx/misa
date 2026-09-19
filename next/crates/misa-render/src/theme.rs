@@ -14,8 +14,10 @@
 use std::collections::BTreeMap;
 
 use misa_proto::view::State;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Color {
     /// Whatever the medium's default is.
     Default,
@@ -24,7 +26,8 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Style {
     pub fg: Color,
     pub bg: Color,
@@ -110,6 +113,76 @@ impl Style {
     }
 }
 
+/// An attribute patch over a resolved style.
+///
+/// [`Style::over`] is a merge, so it can add an attribute but not remove one. A
+/// theme override has to be able to say `bold: false`, which is what the previous
+/// system's `config.styles` did, so this carries `Option`s: a field that is set
+/// replaces the base's field whatever its value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StylePatch {
+    pub fg: Option<Color>,
+    pub bg: Option<Color>,
+    pub bold: Option<bool>,
+    pub dim: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+}
+
+impl StylePatch {
+    pub fn apply(self, base: Style) -> Style {
+        Style {
+            fg: self.fg.unwrap_or(base.fg),
+            bg: self.bg.unwrap_or(base.bg),
+            bold: self.bold.unwrap_or(base.bold),
+            dim: self.dim.unwrap_or(base.dim),
+            italic: self.italic.unwrap_or(base.italic),
+            underline: self.underline.unwrap_or(base.underline),
+            strikethrough: self.strikethrough.unwrap_or(base.strikethrough),
+        }
+    }
+}
+
+/// Client-owned attribute patches over the selected theme.
+///
+/// This is the rewrite's form of the previous system's `config.styles`/`config.palette`:
+/// presentation overrides that never reach a session. A name that the theme does
+/// not define is applied anyway, so a client can prepare a role a plugin has not
+/// emitted yet; a name that is never used costs nothing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeOverrides {
+    /// Named-colour patches, applied by rebuilding the theme before the role
+    /// patches below, so `accent` recolours every role that references it.
+    pub palette: BTreeMap<String, Color>,
+    pub roles: BTreeMap<String, StylePatch>,
+    pub tokens: BTreeMap<String, StylePatch>,
+    pub states: BTreeMap<String, StylePatch>,
+}
+
+impl ThemeOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.palette.is_empty()
+            && self.roles.is_empty()
+            && self.tokens.is_empty()
+            && self.states.is_empty()
+    }
+}
+
+/// A state's name, which is how an override reaches one.
+fn state_from_name(name: &str) -> Option<State> {
+    match name {
+        "pending" => Some(State::Pending),
+        "streaming" => Some(State::Streaming),
+        "done" => Some(State::Done),
+        "failed" => Some(State::Failed),
+        "cancelled" => Some(State::Cancelled),
+        _ => None,
+    }
+}
+
 fn hex(value: u32) -> Color {
     Color::Rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
@@ -122,6 +195,150 @@ pub struct Theme {
     tokens: BTreeMap<String, Style>,
     states: BTreeMap<State, Style>,
     default: Style,
+    /// The named colours this theme was built from, so a palette override can
+    /// rebuild it without every role restating its own colour.
+    palette: Palette,
+}
+
+/// The named colours a theme is built from.
+///
+/// This is the rewrite's form of the previous system's `theme.palette`: a role
+/// references a name, and overriding the name recolours every role that uses it.
+/// The names are semantic rather than literal, so a theme author says `accent`
+/// rather than a hex value a second time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Palette {
+    pub text: Color,
+    pub muted: Color,
+    pub accent: Color,
+    pub user: Color,
+    pub assistant: Color,
+    pub thinking: Color,
+    pub tool: Color,
+    pub error: Color,
+    pub success: Color,
+    pub property: Color,
+    #[serde(rename = "type")]
+    pub type_color: Color,
+    pub keyword: Color,
+    pub string: Color,
+    pub number: Color,
+    pub function: Color,
+    pub constant: Color,
+    pub escape: Color,
+    pub selection: Color,
+    pub user_surface: Color,
+    pub assistant_surface: Color,
+    pub thinking_surface: Color,
+    pub tool_surface: Color,
+    pub error_surface: Color,
+    pub dialog_surface: Color,
+    pub code_surface: Color,
+}
+
+impl Palette {
+    pub fn dark() -> Palette {
+        Palette {
+            text: Color::Default,
+            muted: hex(0x84919c),
+            accent: hex(0x81bdb5),
+            user: hex(0x93b99a),
+            assistant: hex(0x8dafd2),
+            thinking: hex(0xb8a1c9),
+            tool: hex(0xc9b07f),
+            error: hex(0xde9397),
+            success: hex(0x97c49e),
+            property: hex(0x9dbfb5),
+            type_color: hex(0xd0bb86),
+            keyword: hex(0x86bfc4),
+            string: hex(0xa7c799),
+            number: hex(0xc2a2c9),
+            function: hex(0x96b5da),
+            constant: hex(0xb4a4da),
+            escape: hex(0xd5b783),
+            selection: hex(0x3b5260),
+            user_surface: hex(0x1d2824),
+            assistant_surface: hex(0x1e252f),
+            thinking_surface: hex(0x282330),
+            tool_surface: hex(0x2b2820),
+            error_surface: hex(0x322329),
+            dialog_surface: hex(0x242b33),
+            code_surface: hex(0x151b23),
+        }
+    }
+
+    /// The previous system's light reference, as an explicit palette rather than
+    /// dark colours with their foregrounds dimmed.
+    pub fn light() -> Palette {
+        Palette {
+            text: Color::Default,
+            muted: hex(0x68757f),
+            accent: hex(0x267c83),
+            user: hex(0x448565),
+            assistant: hex(0x527caf),
+            thinking: hex(0x8967a3),
+            tool: hex(0x9a7638),
+            error: hex(0xb24e59),
+            success: hex(0x347552),
+            property: hex(0x428486),
+            type_color: hex(0x936e31),
+            keyword: hex(0x287d89),
+            string: hex(0x407b55),
+            number: hex(0x986386),
+            function: hex(0x427ab0),
+            constant: hex(0x8866a4),
+            escape: hex(0x9c752f),
+            selection: hex(0xcddfe3),
+            user_surface: hex(0xeef5f0),
+            assistant_surface: hex(0xeef2f8),
+            thinking_surface: hex(0xf4eff7),
+            tool_surface: hex(0xf7f3e9),
+            error_surface: hex(0xfaeef0),
+            dialog_surface: hex(0xeef2f4),
+            code_surface: hex(0xe2e8ef),
+        }
+    }
+
+    /// Patch a named colour. An unknown name is ignored, so a palette written
+    /// for a later theme still loads.
+    pub fn set(&mut self, name: &str, color: Color) {
+        let slot = match name {
+            "text" => &mut self.text,
+            "muted" => &mut self.muted,
+            "accent" => &mut self.accent,
+            "user" => &mut self.user,
+            "assistant" => &mut self.assistant,
+            "thinking" => &mut self.thinking,
+            "tool" => &mut self.tool,
+            "error" => &mut self.error,
+            "success" => &mut self.success,
+            "property" => &mut self.property,
+            "type" => &mut self.type_color,
+            "keyword" => &mut self.keyword,
+            "string" => &mut self.string,
+            "number" => &mut self.number,
+            "function" => &mut self.function,
+            "constant" => &mut self.constant,
+            "escape" => &mut self.escape,
+            "selection" => &mut self.selection,
+            "user_surface" => &mut self.user_surface,
+            "assistant_surface" => &mut self.assistant_surface,
+            "thinking_surface" => &mut self.thinking_surface,
+            "tool_surface" => &mut self.tool_surface,
+            "error_surface" => &mut self.error_surface,
+            "dialog_surface" => &mut self.dialog_surface,
+            "code_surface" => &mut self.code_surface,
+            _ => return,
+        };
+        *slot = color;
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Palette::dark()
+    }
 }
 
 impl Theme {
@@ -132,141 +349,196 @@ impl Theme {
     /// shipped session emits and lets everything else fall back through its
     /// prefix.
     pub fn dark() -> Theme {
+        let mut theme = Theme::from_palette(Palette::dark());
+        theme.name = "dark".into();
+        theme
+    }
+
+    /// Build a theme from a palette. Every role references a named colour, so a
+    /// palette patch recolours a whole family at once.
+    pub fn from_palette(palette: Palette) -> Theme {
         let mut roles = BTreeMap::new();
         let mut set = |role: &str, style: Style| {
             roles.insert(role.to_string(), style);
         };
         set("", Style::PLAIN);
-        set("header.title", Style::fg(hex(0x81bdb5)).bold());
-        set("header.detail", Style::fg(hex(0x84919c)).dim());
-        set("session.header", Style::fg(hex(0x84919c)));
-        set("session.title", Style::fg(hex(0x81bdb5)).bold());
+        set("header.title", Style::fg(palette.accent).bold());
+        set("header.detail", Style::fg(palette.muted).dim());
+        set("session.header", Style::fg(palette.muted));
+        set("session.title", Style::fg(palette.accent).bold());
         // Message bodies use the text surface; only their rails carry the role
         // colour. This is the reference's distinction between readable prose
         // and the small marker that identifies its speaker.
         set("message.user", Style::PLAIN);
-        set("surface.user", Style::PLAIN.on(hex(0x1d2824)));
-        set("message.user.rail", Style::fg(hex(0x93b99a)));
+        set("surface.user", Style::PLAIN.on(palette.user_surface));
+        set("message.user.rail", Style::fg(palette.user));
         set("message.assistant", Style::PLAIN);
-        set("surface.assistant", Style::PLAIN.on(hex(0x1e252f)));
-        set("message.assistant.rail", Style::fg(hex(0x8dafd2)));
+        set(
+            "surface.assistant",
+            Style::PLAIN.on(palette.assistant_surface),
+        );
+        set("message.assistant.rail", Style::fg(palette.assistant));
         set("message.thinking", Style::PLAIN.dim());
-        set("surface.thinking", Style::PLAIN.on(hex(0x282330)));
-        set("message.thinking.rail", Style::fg(hex(0xb8a1c9)));
+        set(
+            "surface.thinking",
+            Style::PLAIN.on(palette.thinking_surface),
+        );
+        set("message.thinking.rail", Style::fg(palette.thinking));
         // A model reasoning aloud: present, readable, and clearly not the answer.
         set("message.assistant.thinking", Style::PLAIN.dim());
-        set("message.assistant.thinking.rail", Style::fg(hex(0xb8a1c9)));
+        set(
+            "message.assistant.thinking.rail",
+            Style::fg(palette.thinking),
+        );
         // What the session told the model on its own: a background command finishing is the
         // only thing that speaks this way, and it should read as a footnote rather than prose.
-        set("message.system", Style::fg(hex(0x84919c)).dim());
+        set("message.system", Style::fg(palette.muted).dim());
         set("user", Style::PLAIN);
         set("text", Style::PLAIN);
         set("dim", Style::PLAIN.dim());
         set("tool.call", Style::PLAIN);
-        set("surface.tool", Style::PLAIN.on(hex(0x2b2820)));
-        set("tool.call.rail", Style::fg(hex(0xc9b07f)));
+        set("surface.tool", Style::PLAIN.on(palette.tool_surface));
+        set("tool.call.rail", Style::fg(palette.tool));
         set("tool.result", Style::PLAIN);
-        set("tool.result.rail", Style::fg(hex(0xc9b07f)));
-        set("notice", Style::fg(hex(0x84919c)));
-        set("error", Style::fg(hex(0xde9397)));
-        set("surface.error", Style::PLAIN.on(hex(0x322329)));
-        set("error.rail", Style::fg(hex(0xde9397)));
-        set("status", Style::fg(hex(0x84919c)).dim());
+        set("tool.result.rail", Style::fg(palette.tool));
+        set("notice", Style::fg(palette.muted));
+        set("error", Style::fg(palette.error));
+        set("surface.error", Style::PLAIN.on(palette.error_surface));
+        set("error.rail", Style::fg(palette.error));
+        set("status", Style::fg(palette.muted).dim());
         set("composer", Style::PLAIN);
-        set("mode.insert", Style::fg(hex(0x81bdb5)).bold());
-        set("mode.normal", Style::fg(hex(0x81bdb5)).bold());
-        set("mode.visual", Style::fg(hex(0x81bdb5)).bold());
-        set("palette.title", Style::fg(hex(0x81bdb5)).bold());
+        set("mode.insert", Style::fg(palette.accent).bold());
+        set("mode.normal", Style::fg(palette.accent).bold());
+        set("mode.visual", Style::fg(palette.accent).bold());
+        set("palette.title", Style::fg(palette.accent).bold());
         set(
             "palette.item.selected",
-            Style::PLAIN.on(hex(0x3b5260)).bold(),
+            Style::PLAIN.on(palette.selection).bold(),
         );
         set("palette.item", Style::PLAIN);
         set("palette.hint", Style::PLAIN.dim());
         // Names used by the old component vocabulary. Keeping these as theme
         // roles lets the terminal renderer use the same semantic styles as a
         // windowed client without copying a second palette into the picker.
-        set("choice.prompt", Style::fg(hex(0x81bdb5)));
+        set("choice.prompt", Style::fg(palette.accent));
         set("choice.query", Style::PLAIN);
         set("choice.row", Style::PLAIN);
-        set("choice.row.active", Style::fg(hex(0x81bdb5)));
-        set("choice.row.selected", Style::PLAIN.on(hex(0x3b5260)).bold());
+        set("choice.row.active", Style::fg(palette.accent));
+        set(
+            "choice.row.selected",
+            Style::PLAIN.on(palette.selection).bold(),
+        );
         set("choice.hint", Style::PLAIN.dim());
         set("choice.view", Style::PLAIN.bold());
-        set("choice.view.active", Style::fg(hex(0x81bdb5)).bold());
+        set("choice.view.active", Style::fg(palette.accent).bold());
         set("choice.empty", Style::PLAIN.dim());
         set("label", Style::PLAIN.dim());
         set("value", Style::PLAIN);
-        set("keybinding", Style::fg(hex(0x81bdb5)).dim());
-        set("pending", Style::fg(hex(0x81bdb5)).dim());
+        set("keybinding", Style::fg(palette.accent).dim());
+        set("pending", Style::fg(palette.accent).dim());
         set("plain", Style::PLAIN);
-        set("value.context", Style::fg(hex(0x9dbfb5)));
-        set("value.money", Style::fg(hex(0xd0bb86)));
-        set("turn", Style::fg(hex(0x81bdb5)));
-        set("indicator", Style::fg(hex(0x84919c)));
-        set("indicator.activity", Style::fg(hex(0x81bdb5)));
-        set("indicator.model", Style::fg(hex(0x8dafd2)));
-        set("indicator.context", Style::fg(hex(0x9dbfb5)));
-        set("status.separator", Style::fg(hex(0x84919c)));
+        set("value.context", Style::fg(palette.property));
+        set("value.money", Style::fg(palette.type_color));
+        set("turn", Style::fg(palette.accent));
+        set("indicator", Style::fg(palette.muted));
+        set("indicator.activity", Style::fg(palette.accent));
+        set("indicator.model", Style::fg(palette.assistant));
+        set("indicator.context", Style::fg(palette.property));
+        set("status.separator", Style::fg(palette.muted));
         set("message.group.footer", Style::PLAIN.dim());
-        set("dialog", Style::fg(hex(0x84919c)));
-        set("dialog.label", Style::fg(hex(0x84919c)).dim());
+        set("dialog", Style::fg(palette.muted));
+        set("dialog.label", Style::fg(palette.muted).dim());
         set("dialog.message", Style::PLAIN);
         set("dialog.hint", Style::PLAIN.dim());
         set("dialog.value", Style::PLAIN);
-        set("dialog.title", Style::fg(hex(0x81bdb5)).bold());
-        set("surface.dialog", Style::PLAIN.on(hex(0x242b33)));
-        set("surface.code", Style::PLAIN.on(hex(0x151b23)));
+        set("dialog.title", Style::fg(palette.accent).bold());
+        set("surface.dialog", Style::PLAIN.on(palette.dialog_surface));
+        set("surface.code", Style::PLAIN.on(palette.code_surface));
         // A reader's selection. A background rather than a foreground, because it has
         // to sit over whatever the role underneath already decided.
-        set("selection", Style::PLAIN.on(hex(0x3b5260)));
+        set("selection", Style::PLAIN.on(palette.selection));
         // A diff. Named per line rather than once, because what changed is the whole point
         // of looking at one: an added line, a removed one, the hunk header, and the file
         // headers that say what the hunks are hunks of. A body is a diff because the
         // session said so — a role that ends in `.diff`, or a fence that said `diff` — so
         // nothing here has to guess.
-        set("diff", Style::fg(hex(0x84919c)));
-        set("diff.add", Style::fg(hex(0x97c49e)));
-        set("diff.remove", Style::fg(hex(0xde9397)));
-        set("diff.hunk", Style::fg(hex(0x86bfc4)).dim());
-        set("diff.header", Style::fg(hex(0x84919c)).bold());
-        set("diff.meta", Style::fg(hex(0x84919c)).dim());
-        set("value.money", Style::fg(hex(0xd0bb86)));
-        set("value.count", Style::fg(hex(0x84919c)));
+        set("diff", Style::fg(palette.muted));
+        set("diff.added", Style::fg(palette.success));
+        set("diff.removed", Style::fg(palette.error));
+        set("diff.hunk", Style::fg(palette.keyword).dim());
+        set("diff.header", Style::fg(palette.muted).bold());
+        set("diff.meta", Style::fg(palette.muted).dim());
+        set("value.money", Style::fg(palette.type_color));
+        set("value.count", Style::fg(palette.muted));
+        // Global semantic modifiers. The role vocabulary is a tree, so a renderer
+        // overlays one of these on whatever role a node already resolved to: that is
+        // how emphasis and links stay themable without every node inventing a
+        // compound role of its own.
+        set("bold", Style::PLAIN.bold());
+        set("italic", Style::PLAIN.italic());
+        set("underline", Style::PLAIN.underline());
+        set(
+            "strikethrough",
+            Style {
+                strikethrough: true,
+                ..Style::PLAIN
+            },
+        );
+        set("code", Style::fg(palette.property));
+        set("link", Style::fg(palette.accent).underline());
+        set("quote", Style::PLAIN.dim());
+        // Markdown vocabulary. The parser emits prefixed roles
+        // (`message.assistant.markdown.heading`), so a theme names these globals
+        // once and every message's markdown follows; naming the fully qualified
+        // role instead overrides one place without touching the rest.
+        set("markdown.heading.1", Style::PLAIN.bold().underline());
+        set("markdown.heading.2", Style::PLAIN.bold());
+        set("markdown.heading.3", Style::PLAIN.bold().italic());
+        set("markdown.heading.4", Style::PLAIN.italic());
+        set("markdown.heading.5", Style::PLAIN.underline());
+        set("markdown.heading.6", Style::PLAIN.dim());
+        set("markdown.list.marker", Style::PLAIN.bold());
+        set("markdown.rule", Style::PLAIN.dim());
+        set("markdown.table.border", Style::PLAIN.dim());
+        set("markdown.table.header", Style::PLAIN.bold());
+        set("markdown.code.label", Style::PLAIN.bold());
+        set("markdown.code.border", Style::PLAIN.dim());
+        set("choice.preview", Style::PLAIN.dim());
 
         let mut tokens = BTreeMap::new();
         let mut token = |name: &str, style: Style| {
             tokens.insert(name.to_string(), style);
         };
-        token("comment", Style::fg(hex(0x84919c)).italic());
-        token("string", Style::fg(hex(0xa7c799)));
-        token("number", Style::fg(hex(0xc2a2c9)));
-        token("keyword", Style::fg(hex(0x86bfc4)));
-        token("type", Style::fg(hex(0xd0bb86)));
-        token("function", Style::fg(hex(0x96b5da)));
-        token("constant", Style::fg(hex(0xb4a4da)));
-        token("variable", Style::fg(hex(0x84919c)));
-        token("property", Style::fg(hex(0x9dbfb5)));
-        token("tag", Style::fg(hex(0xde9397)));
-        token("attribute", Style::fg(hex(0xd0bb86)));
-        token("operator", Style::fg(hex(0x86bfc4)));
-        token("punctuation", Style::fg(hex(0x84919c)));
-        token("escape", Style::fg(hex(0xd5b783)));
-        token("embedded", Style::fg(hex(0x84919c)));
+        token("comment", Style::fg(palette.muted).italic());
+        token("string", Style::fg(palette.string));
+        token("number", Style::fg(palette.number));
+        token("keyword", Style::fg(palette.keyword));
+        token("type", Style::fg(palette.type_color));
+        token("function", Style::fg(palette.function));
+        token("constant", Style::fg(palette.constant));
+        token("variable", Style::fg(palette.muted));
+        token("property", Style::fg(palette.property));
+        token("tag", Style::fg(palette.error));
+        token("attribute", Style::fg(palette.type_color));
+        token("operator", Style::fg(palette.keyword));
+        token("punctuation", Style::fg(palette.muted));
+        token("escape", Style::fg(palette.escape));
+        token("embedded", Style::fg(palette.muted));
 
         let mut states = BTreeMap::new();
-        states.insert(State::Pending, Style::fg(hex(0x81bdb5)).dim());
-        states.insert(State::Streaming, Style::fg(hex(0x97c49e)));
-        states.insert(State::Done, Style::fg(hex(0x84919c)));
-        states.insert(State::Failed, Style::fg(hex(0xde9397)));
-        states.insert(State::Cancelled, Style::fg(hex(0x84919c)).dim());
+        states.insert(State::Pending, Style::fg(palette.accent).dim());
+        states.insert(State::Streaming, Style::fg(palette.success));
+        states.insert(State::Done, Style::fg(palette.muted));
+        states.insert(State::Failed, Style::fg(palette.error));
+        states.insert(State::Cancelled, Style::fg(palette.muted).dim());
 
         Theme {
-            name: "dark".into(),
+            name: "custom".into(),
             roles,
             tokens,
             states,
             default: Style::PLAIN,
+            palette,
         }
     }
 
@@ -279,42 +551,15 @@ impl Theme {
             tokens: BTreeMap::new(),
             states: BTreeMap::new(),
             default: Style::PLAIN,
+            palette: Palette::dark(),
         }
     }
 
-    /// The same semantic accents, with darker foregrounds for light surfaces.
+    /// The previous system's light reference, with explicit light colours rather
+    /// than dark ones with their foregrounds dimmed.
     pub fn light() -> Theme {
-        let mut theme = Self::dark();
+        let mut theme = Self::from_palette(Palette::light());
         theme.name = "light".into();
-        for style in theme
-            .roles
-            .values_mut()
-            .chain(theme.tokens.values_mut())
-            .chain(theme.states.values_mut())
-            .chain(std::iter::once(&mut theme.default))
-        {
-            style.fg = match style.fg {
-                Color::Default => Color::Rgb(28, 32, 40),
-                Color::Rgb(r, g, b) => Color::Rgb(r / 2, g / 2, b / 2),
-                value => value,
-            };
-        }
-        // The light reference is not merely dark colours with their foregrounds
-        // dimmed: its message/dialog/code surfaces are deliberately paper-like.
-        for (role, color) in [
-            ("surface.user", (238, 245, 240)),
-            ("surface.assistant", (238, 242, 248)),
-            ("surface.thinking", (244, 239, 247)),
-            ("surface.tool", (247, 243, 233)),
-            ("surface.error", (250, 238, 240)),
-            ("surface.dialog", (238, 242, 244)),
-            ("surface.code", (226, 232, 239)),
-            ("selection", (205, 223, 227)),
-        ] {
-            if let Some(style) = theme.roles.get_mut(role) {
-                style.bg = Color::Rgb(color.0, color.1, color.2);
-            }
-        }
         theme
     }
 
@@ -326,6 +571,53 @@ impl Theme {
     pub fn with_token(mut self, name: &str, style: Style) -> Theme {
         self.tokens.insert(name.to_string(), style);
         self
+    }
+
+    /// Apply client-owned attribute patches, returning a new theme.
+    ///
+    /// This is the previous system's `styles.normalize` override half, adapted to
+    /// the role model: a patch is applied to the exact name it addresses, and a
+    /// missing name is created from the default rather than refused. The base theme
+    /// is untouched, so a client may hold several overlays over one palette.
+    pub fn overlay(mut self, overrides: &ThemeOverrides) -> Theme {
+        // A palette patch rebuilds every role from the named colours, then the
+        // explicit role patches below win over what the rebuild produced. Plain has
+        // no roles to rebuild; a palette patch there is a no-op.
+        if !overrides.palette.is_empty() && !self.roles.is_empty() {
+            let mut palette = self.palette;
+            for (name, color) in &overrides.palette {
+                palette.set(name, *color);
+            }
+            let name = self.name.clone();
+            self = Theme::from_palette(palette);
+            self.name = name;
+        }
+        for (role, patch) in &overrides.roles {
+            let base = self.roles.get(role).copied().unwrap_or(self.default);
+            self.roles.insert(role.clone(), patch.apply(base));
+        }
+        for (name, patch) in &overrides.tokens {
+            let base = self.tokens.get(name).copied().unwrap_or(self.default);
+            self.tokens.insert(name.clone(), patch.apply(base));
+        }
+        for (name, patch) in &overrides.states {
+            if let Some(state) = state_from_name(name) {
+                let base = self.states.get(&state).copied().unwrap_or(self.default);
+                self.states.insert(state, patch.apply(base));
+            }
+        }
+        self
+    }
+
+    /// The ordered merge the previous system called `compose`: later names win.
+    ///
+    /// The renderer already overlays one node-specific role on one global role;
+    /// this is for a component that wants to say a whole chain, such as the tool
+    /// role and a markdown heading level at once.
+    pub fn compose(&self, names: &[&str]) -> Style {
+        names
+            .iter()
+            .fold(Style::PLAIN, |style, name| style.over(self.role(name)))
     }
 
     /// Resolve a role, longest matching dotted prefix first.
@@ -355,8 +647,25 @@ impl Theme {
 
     /// Resolve a syntax capture name. An unknown name is plain text, because a
     /// grammar may know more than a theme does.
+    ///
+    /// Both the bare capture name (`keyword`) and the previous system's namespaced
+    /// spelling (`syntax.keyword`) resolve, so a theme written for either vocabulary
+    /// colours the same capture.
     pub fn token(&self, name: &str) -> Style {
-        self.tokens.get(name).copied().unwrap_or(self.default)
+        if let Some(style) = self.tokens.get(name) {
+            return *style;
+        }
+        if let Some(rest) = name.strip_prefix("syntax.") {
+            if let Some(style) = self.tokens.get(rest) {
+                return *style;
+            }
+        } else {
+            let prefixed = format!("syntax.{name}");
+            if let Some(style) = self.tokens.get(&prefixed) {
+                return *style;
+            }
+        }
+        self.default
     }
 
     /// The style for a node's state marker. `None` when the state has no marker.
@@ -475,6 +784,104 @@ mod tests {
         let theme = Theme::dark();
         assert!(theme.rail("message.user").is_some());
         assert!(theme.rail("plugin.unknown").is_none());
+    }
+
+    #[test]
+    fn a_palette_override_recolours_every_role_that_uses_it() {
+        let overrides = ThemeOverrides {
+            palette: BTreeMap::from([("accent".to_string(), Color::Rgb(1, 2, 3))]),
+            ..ThemeOverrides::default()
+        };
+        let theme = Theme::dark().overlay(&overrides);
+        assert_eq!(theme.role("header.title").fg, Color::Rgb(1, 2, 3));
+        assert_eq!(theme.role("choice.prompt").fg, Color::Rgb(1, 2, 3));
+        // A role-specific patch still wins over the palette rebuild.
+        let overrides = ThemeOverrides {
+            palette: BTreeMap::from([("accent".to_string(), Color::Rgb(1, 2, 3))]),
+            roles: BTreeMap::from([(
+                "choice.prompt".to_string(),
+                StylePatch {
+                    fg: Some(Color::Indexed(7)),
+                    ..StylePatch::default()
+                },
+            )]),
+            ..ThemeOverrides::default()
+        };
+        let theme = Theme::dark().overlay(&overrides);
+        assert_eq!(theme.role("choice.prompt").fg, Color::Indexed(7));
+        assert_eq!(theme.role("header.title").fg, Color::Rgb(1, 2, 3));
+        // The palette survives onto the result, so a second overlay can build on it.
+        assert_eq!(theme.palette.accent, Color::Rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn the_light_palette_is_explicit_rather_than_a_dimmed_dark() {
+        let light = Theme::light();
+        assert_eq!(light.role("error").fg, Color::Rgb(0xb2, 0x4e, 0x59));
+        assert_eq!(light.role("header.title").fg, Color::Rgb(0x26, 0x7c, 0x83));
+        assert_eq!(
+            light.surface("message.user").unwrap().bg,
+            Color::Rgb(0xee, 0xf5, 0xf0)
+        );
+    }
+
+    #[test]
+    fn an_override_patches_attributes_and_can_clear_them() {
+        let base = Theme::dark().with_role("error", Style::rgb(1, 2, 3).bold());
+        let overrides = ThemeOverrides {
+            roles: BTreeMap::from([(
+                "error".to_string(),
+                StylePatch {
+                    fg: Some(Color::Indexed(9)),
+                    bold: Some(false),
+                    ..StylePatch::default()
+                },
+            )]),
+            ..ThemeOverrides::default()
+        };
+        let theme = base.overlay(&overrides);
+        assert_eq!(theme.role("error").fg, Color::Indexed(9));
+        assert!(
+            !theme.role("error").bold,
+            "an override can clear an attribute"
+        );
+        // The base theme is untouched, so one overlay does not leak into another.
+        assert_eq!(theme.role("message.user"), Style::PLAIN);
+    }
+
+    #[test]
+    fn an_override_can_create_a_role_and_an_unknown_state_is_ignored() {
+        let overrides = ThemeOverrides {
+            roles: BTreeMap::from([(
+                "plugin.handoff".to_string(),
+                StylePatch {
+                    italic: Some(true),
+                    ..StylePatch::default()
+                },
+            )]),
+            states: BTreeMap::from([(
+                "nonsense".to_string(),
+                StylePatch {
+                    bold: Some(true),
+                    ..StylePatch::default()
+                },
+            )]),
+            ..ThemeOverrides::default()
+        };
+        let theme = Theme::dark().overlay(&overrides);
+        assert!(theme.role("plugin.handoff").italic);
+        assert_eq!(
+            theme.state(Some(State::Failed)),
+            Theme::dark().state(Some(State::Failed))
+        );
+    }
+
+    #[test]
+    fn compose_merges_named_roles_in_order() {
+        let theme = Theme::dark();
+        let composed = theme.compose(&["message.assistant", "markdown.heading.2"]);
+        assert!(composed.bold, "the heading level's bold survived the merge");
+        assert!(theme.compose(&[]).eq(&Style::PLAIN));
     }
 
     #[test]

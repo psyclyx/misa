@@ -1,10 +1,11 @@
 //! Retained line owners. Canonical operations format only their affected owner;
 //! stream appends visit appended characters, then the visible viewport.
 use crate::Screen;
+use misa_lines::Line;
 use misa_proto::Node;
 use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, Kind};
-use misa_render::{Line, Style};
+use misa_render::{Style, Theme};
 use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,11 +27,9 @@ struct Owner {
 struct Live {
     stream: Stream,
     lines: Vec<Line>,
-    /// The byte offset in `stream.text` where the unterminated segment begins,
-    /// and the rows already laid out for everything before it. A newline is a
-    /// hard break, so only this final segment ever needs re-laying as it grows.
-    segment_start: usize,
-    committed_rows: usize,
+    /// The parsed markdown of the in-flight text, reused block by block as the
+    /// stream grows, so streaming renders through the same path as a settled body.
+    document: Option<misa_markdown::Document>,
     last_nonblank: usize,
     /// Some(limit) while a collapsed thinking stream follows its own tail: the
     /// reader is watching the current reasoning, not the beginning of a summary
@@ -119,6 +118,18 @@ impl Rows {
         (index, row.saturating_sub(sum), steps)
     }
 }
+/// A semantic position, independent of the physical row it currently occupies.
+///
+/// The previous system anchored the viewport to a source node and a character
+/// offset; the rewrite's rendered lines only carry the node id, so the anchor is
+/// the node under the top row and its ordinal among the consecutive rows that
+/// share it. That is enough to hold a reader's place while earlier content grows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Anchor {
+    node: Option<String>,
+    offset: usize,
+}
+
 pub struct Retained {
     tree: IndexedTree,
     owners: HashMap<String, Owner>,
@@ -135,7 +146,24 @@ pub struct Retained {
     width: u16,
     theme: String,
     opened: Vec<String>,
-    components: misa_render::components::Settings,
+    components: misa_lines::components::Settings,
+    /// The semantic row the reader scrolled to, when not following.
+    anchor: Option<Anchor>,
+    /// The layout generation `anchor_row` was resolved against, so an ordinary
+    /// repaint does not re-walk the document.
+    anchor_epoch: u64,
+    /// The resolved first row for the current anchor and layout.
+    anchor_row: usize,
+    /// The last `Screen::scroll_intent` this viewport resolved.
+    last_intent: u64,
+    /// The selection head the viewport last revealed, so a movement scrolls the
+    /// caret into view once rather than fighting a reader who scrolled away.
+    revealed_head: Option<crate::select::Spot>,
+    /// Bumped whenever retained lengths change.
+    layout_epoch: u64,
+    /// The first row the last frame resolved to; the event loop writes it back to
+    /// `Screen::scroll` so the next delta is relative to what was shown.
+    resolved_scroll: usize,
     pub work: Work,
 }
 impl Retained {
@@ -159,6 +187,13 @@ impl Retained {
             theme: screen.theme.name.clone(),
             opened: screen.prefs.opened.clone(),
             components: screen.prefs.components.clone(),
+            anchor: None,
+            anchor_epoch: 0,
+            anchor_row: 0,
+            last_intent: 0,
+            revealed_head: None,
+            layout_epoch: 0,
+            resolved_scroll: 0,
             work: Work::default(),
         };
         out.order = out.build(view, 0, 0, screen);
@@ -231,7 +266,7 @@ impl Retained {
         screen: &Screen,
     ) -> Vec<String> {
         let id = node.id.clone();
-        let context = misa_render::components::Context {
+        let context = misa_lines::components::Context {
             theme: &screen.theme,
             columns: screen.width as usize,
             settings: &screen.prefs.components,
@@ -243,7 +278,7 @@ impl Retained {
         let footer = screen
             .components
             .placement(&node.role, &screen.prefs.components)
-            == misa_render::components::Placement::Footer;
+            == misa_lines::components::Placement::Footer;
         // A section is a structural layout boundary. A message or collapsible,
         // however, is a complete semantic unit: keeping its children together
         // is what lets the shared renderer apply its rail, markdown wrapping,
@@ -276,7 +311,7 @@ impl Retained {
         }
         let child_depth = depth + usize::from(screen.theme.rail(&node.role).is_some());
         let lines = component.unwrap_or_else(|| {
-            misa_render::lines::render_block(&resolved, &screen.theme, screen.width as usize, depth)
+            misa_lines::render_block(&resolved, &screen.theme, screen.width as usize, depth)
         });
         self.owners.insert(
             id.clone(),
@@ -450,12 +485,117 @@ impl Retained {
             }
         }
         self.rows = Rows::new(&self.lengths);
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
     }
     fn lines(&self, segment: &Segment) -> &[Line] {
         match segment {
             Segment::Owner(id) => &self.owners[id].lines,
             Segment::Live(id) => &self.live[id].lines,
         }
+    }
+
+    /// The line at a physical row, or `None` for a row outside the document.
+    fn row_line(&self, row: usize) -> Option<&Line> {
+        let (index, offset, _) = self.rows.locate(row);
+        if index >= self.segments.len() {
+            return None;
+        }
+        self.lines(&self.segments[index])[..self.lengths[index]].get(offset)
+    }
+
+    /// The anchor for a row: the node it belongs to and how many rows above it in
+    /// the same node's run precede it. This is the rewrite's `line-anchor`.
+    fn anchor_at(&self, row: usize) -> Anchor {
+        let node = self.row_line(row).and_then(|line| line.node.clone());
+        let mut offset = 0;
+        if node.is_some() {
+            let mut previous = row;
+            while previous > 0 {
+                previous -= 1;
+                if self.row_line(previous).and_then(|line| line.node.as_ref()) != node.as_ref() {
+                    break;
+                }
+                offset += 1;
+            }
+        }
+        Anchor { node, offset }
+    }
+
+    /// The row an anchor currently occupies, preferring the same run offset. This
+    /// is the rewrite's `anchored-row`: it looks for the node without assuming the
+    /// physical row survived an update above it.
+    fn anchored_row(&self, anchor: &Anchor) -> Option<usize> {
+        let want = anchor.node.as_ref()?;
+        let mut row = 0;
+        for (index, segment) in self.segments.iter().enumerate() {
+            for line in &self.lines(segment)[..self.lengths[index]] {
+                if line.node.as_deref() == Some(want.as_str()) {
+                    return Some(row + anchor.offset);
+                }
+                row += 1;
+            }
+        }
+        None
+    }
+
+    /// Resolve the first row of the viewport.
+    ///
+    /// Following owns the tail. A reader's scroll owns a physical row until the
+    /// layout changes under it; then the anchor decides where they stay. A plain
+    /// repaint with no structural change reuses the previous resolution, so
+    /// anchoring never walks the document on the animation tick.
+    fn viewport_start(&mut self, screen: &Screen, room: usize) -> usize {
+        let total = self.rows.total();
+        if screen.follow {
+            self.anchor = None;
+            self.last_intent = screen.scroll_intent;
+            self.anchor_row = total.saturating_sub(room);
+            self.anchor_epoch = self.layout_epoch;
+            self.resolved_scroll = self.anchor_row;
+            return self.anchor_row;
+        }
+        let bottom = total.saturating_sub(1);
+        let intent = screen.scroll.min(bottom);
+        let user_scrolled = self.last_intent != screen.scroll_intent;
+        if user_scrolled || self.anchor.is_none() {
+            self.last_intent = screen.scroll_intent;
+            self.anchor = Some(self.anchor_at(intent));
+            self.anchor_row = intent;
+            self.anchor_epoch = self.layout_epoch;
+        } else if self.anchor_epoch != self.layout_epoch {
+            self.anchor_row = self
+                .anchor
+                .as_ref()
+                .and_then(|anchor| self.anchored_row(anchor))
+                .unwrap_or(intent);
+            self.anchor_epoch = self.layout_epoch;
+        }
+        // Reveal the focused selection once per movement. This is the previous
+        // system's selection reveal: navigating the document brings the caret into
+        // view, and a reader who then scrolls away is not fought on every repaint.
+        if let Some(selection) = &screen.selection {
+            let head = selection.head();
+            if self.revealed_head != Some(head) {
+                self.revealed_head = Some(head);
+                if head.row < self.anchor_row {
+                    self.anchor_row = head.row;
+                } else if head.row >= self.anchor_row.saturating_add(room) {
+                    self.anchor_row = head.row.saturating_add(1).saturating_sub(room);
+                }
+                self.anchor = Some(self.anchor_at(self.anchor_row));
+                self.anchor_epoch = self.layout_epoch;
+            }
+        } else {
+            self.revealed_head = None;
+        }
+        self.resolved_scroll = self.anchor_row.min(bottom);
+        self.resolved_scroll
+    }
+
+    /// The first row the last frame used, for the event loop to write back into
+    /// `Screen::scroll` so scroll deltas are relative to the resolved position.
+    pub fn resolved_scroll(&self) -> usize {
+        self.resolved_scroll
     }
     fn current(&mut self, stream: Stream, screen: &Screen) {
         let id = stream.id.clone();
@@ -467,8 +607,7 @@ impl Retained {
                 ..stream.clone()
             },
             lines: vec![],
-            segment_start: 0,
-            committed_rows: 0,
+            document: None,
             last_nonblank: 0,
             tail,
         };
@@ -538,6 +677,7 @@ impl Retained {
                                     self.work.index_steps +=
                                         self.rows.change(index, self.lengths[index], new);
                                     self.lengths[index] = new;
+                                    self.layout_epoch = self.layout_epoch.wrapping_add(1);
                                 }
                             }
                         }
@@ -687,12 +827,7 @@ impl Retained {
             let overlay = crate::chrome::physical(overlay, screen.width as usize);
             let overlay_len = overlay.len().min(available);
             let room = available.saturating_sub(overlay_len);
-            let total = self.rows.total();
-            let start = if screen.follow {
-                total.saturating_sub(room)
-            } else {
-                screen.scroll.min(total.saturating_sub(1))
-            };
+            let start = self.viewport_start(screen, room);
             let (mut segment, mut offset, steps) = self.rows.locate(start);
             self.work.index_steps += steps;
             let mut middle = Vec::new();
@@ -751,12 +886,7 @@ impl Retained {
             let available = (screen.height as usize).saturating_sub(top.len() + status.len());
             let picker_len = picker.len().min(available);
             let room = available.saturating_sub(picker_len);
-            let total = self.rows.total();
-            let start = if screen.follow {
-                total.saturating_sub(room)
-            } else {
-                screen.scroll.min(total.saturating_sub(1))
-            };
+            let start = self.viewport_start(screen, room);
             let (mut segment, mut offset, steps) = self.rows.locate(start);
             self.work.index_steps += steps;
             let mut lines = Vec::new();
@@ -852,12 +982,7 @@ impl Retained {
         let room = remaining.saturating_sub(completion_count);
         let extra_document = &extra_document[..extra_document.len().min(room)];
         let room = room.saturating_sub(extra_document.len());
-        let total = self.rows.total();
-        let start = if screen.follow {
-            total.saturating_sub(room)
-        } else {
-            screen.scroll.min(total.saturating_sub(1))
-        };
+        let start = self.viewport_start(screen, room);
         let (mut segment, mut offset, steps) = self.rows.locate(start);
         self.work.index_steps += steps;
         let mut lines = vec![];
@@ -960,33 +1085,42 @@ impl Live {
             // A collapsed thinking stream is a window onto its own tail: only the
             // last few rows are derived, from a bounded suffix.
             Some(limit) => self.tail_rows(&paint, limit),
-            // Everything else is laid out word-aware in full, but only its final
-            // hard-broken segment is re-laid as it grows.
-            None => self.rewrap(&paint),
+            // Everything else is parsed as markdown and rendered through the same
+            // renderer a settled body uses, with the parser reusing unchanged blocks.
+            None => self.markdown(&paint, &screen.theme),
         }
     }
 
-    /// Lay out the whole stream word-aware, re-wrapping only its final segment.
-    fn rewrap(&mut self, paint: &Paint) {
+    /// Parse the in-flight text as markdown and lay it out, reusing the previous
+    /// parse's blocks where it can.
+    fn markdown(&mut self, paint: &Paint, theme: &Theme) {
         let text = std::mem::take(&mut self.stream.text);
         let id = self.stream.id.clone();
-        self.lines.truncate(self.committed_rows);
-        while let Some(newline) = text[self.segment_start..].find('\n') {
-            let segment = &text[self.segment_start..self.segment_start + newline];
-            wrap_into(&mut self.lines, segment, paint, &id);
-            self.segment_start += newline + 1;
+        let document = misa_markdown::document(&self.stream.role, &text, self.document.as_ref());
+        let changed = self
+            .document
+            .as_ref()
+            .is_none_or(|previous| previous.source != document.source);
+        if changed {
+            self.lines.clear();
+            for block in &document.blocks {
+                for mut line in misa_lines::render_block(block, theme, paint.width, 0) {
+                    line.node = Some(id.clone());
+                    if let Some((glyph, rail_style)) = &paint.rail {
+                        line.spans.insert(0, (*rail_style, glyph.clone()));
+                    }
+                    line.surface = line.surface.or(paint.surface);
+                    self.lines.push(line);
+                }
+            }
+            self.last_nonblank = self
+                .lines
+                .iter()
+                .rposition(|line| !line.is_blank())
+                .map_or(0, |index| index + 1);
         }
-        self.committed_rows = self.lines.len();
-        let current = &text[self.segment_start..];
-        if !current.is_empty() {
-            wrap_into(&mut self.lines, current, paint, &id);
-        }
+        self.document = Some(document);
         self.stream.text = text;
-        self.last_nonblank = self
-            .lines
-            .iter()
-            .rposition(|line| !line.is_blank())
-            .map_or(0, |index| index + 1);
     }
 
     /// Re-derive the last `limit` rows of the stream from a bounded suffix.
@@ -1111,13 +1245,123 @@ mod tests {
     fn oracle(retained: &Retained, screen: &Screen) {
         assert_eq!(
             all(retained),
-            misa_render::render(
+            misa_lines::render(
                 &screen.resolve(&retained.tree.snapshot()),
                 &screen.theme,
                 screen.width as usize
             )
         );
     }
+    #[test]
+    fn a_scrolled_viewport_keeps_its_node_when_content_arrives_above() {
+        use misa_proto::sync::ViewOp;
+        let mut screen = Screen::new(40, 12);
+        let document = |count: usize| {
+            let mut root = Node::section("session").id("session");
+            for index in 0..count {
+                root.children
+                    .push(text(&format!("t{index}"), &format!("line {index}")));
+            }
+            root
+        };
+        let mut retained = Retained::new(document(12), &screen);
+        screen.follow = false;
+        screen.scroll = 3;
+        screen.scroll_intent = 1;
+        let start = retained.viewport_start(&screen, 5);
+        assert_eq!(start, 3);
+        assert_eq!(
+            retained
+                .row_line(start)
+                .and_then(|line| line.node.as_deref()),
+            Some("t3")
+        );
+        // A line arrives above the reader. The physical row shifts; the anchor does
+        // not, so the frame starts at the same node it did before.
+        retained
+            .op(
+                &ViewOp::Insert {
+                    parent: "session".into(),
+                    before: Some("t0".into()),
+                    node: text("new", "line new"),
+                },
+                &screen,
+            )
+            .unwrap();
+        retained.reindex();
+        let after = retained.viewport_start(&screen, 5);
+        assert_eq!(after, 4, "the anchor moved down with its node");
+        assert_eq!(
+            retained
+                .row_line(after)
+                .and_then(|line| line.node.as_deref()),
+            Some("t3")
+        );
+    }
+
+    #[test]
+    fn a_plain_repaint_does_not_rewalk_the_document_and_a_user_scroll_reanchors() {
+        let mut screen = Screen::new(40, 12);
+        let mut retained = Retained::new(document(6), &screen);
+        screen.follow = false;
+        screen.scroll = 2;
+        screen.scroll_intent = 1;
+        let first = retained.viewport_start(&screen, 3);
+        assert_eq!(first, 2);
+        // No new intent and no layout change: the resolution is reused.
+        retained.work = Work::default();
+        let again = retained.viewport_start(&screen, 3);
+        assert_eq!(again, 2);
+        assert_eq!(retained.work, Work::default());
+        // A reader delta re-anchors against the row they asked for.
+        screen.scroll = 4;
+        screen.scroll_intent = 2;
+        let scrolled = retained.viewport_start(&screen, 3);
+        assert_eq!(scrolled, 4);
+        assert_eq!(
+            retained
+                .row_line(scrolled)
+                .and_then(|line| line.node.as_deref()),
+            Some("msg3.body")
+        );
+    }
+
+    #[test]
+    fn moving_the_selection_reveals_it_once_without_fighting_a_later_scroll() {
+        let mut screen = Screen::new(40, 12);
+        let mut retained = Retained::new(document(20), &screen);
+        screen.follow = false;
+        screen.scroll = 0;
+        screen.scroll_intent = 1;
+        assert_eq!(retained.viewport_start(&screen, 4), 0);
+        // The caret moves below the viewport; the frame scrolls it into view.
+        screen.selection = Some(crate::select::Selection::caret(crate::select::Spot::new(
+            10, 0,
+        )));
+        assert_eq!(retained.viewport_start(&screen, 4), 7);
+        // The same selection on the next repaint does not move the viewport again.
+        assert_eq!(retained.viewport_start(&screen, 4), 7);
+        // A reader's scroll is respected; the unchanged caret does not pull back.
+        screen.scroll = 2;
+        screen.scroll_intent = 2;
+        assert_eq!(retained.viewport_start(&screen, 4), 2);
+        // Moving the caret again reveals the new position.
+        screen.selection = Some(crate::select::Selection::caret(crate::select::Spot::new(
+            2, 0,
+        )));
+        assert_eq!(retained.viewport_start(&screen, 4), 2);
+    }
+
+    #[test]
+    fn following_tracks_the_tail_and_ignores_the_anchor() {
+        let screen = Screen::new(40, 12);
+        let mut retained = Retained::new(document(6), &screen);
+        let total = retained.rows.total();
+        assert!(screen.follow);
+        assert_eq!(retained.viewport_start(&screen, 3), total.saturating_sub(3));
+        assert!(retained.anchor.is_none());
+    }
+
     #[test]
     fn shared_document_updates_keep_token_work_incremental_and_settle_atomically() {
         use misa_client::document::Update;
@@ -1245,7 +1489,7 @@ mod tests {
         );
         assert_eq!(
             lines,
-            misa_render::render(&screen.resolve(&view), &screen.theme, screen.width as usize)
+            misa_lines::render(&screen.resolve(&view), &screen.theme, screen.width as usize)
         );
     }
 
@@ -1299,6 +1543,42 @@ mod tests {
         let thinking = rows.iter().position(|row| row.contains("reason")).unwrap();
         let answer = rows.iter().position(|row| row.contains("answer")).unwrap();
         assert!(thinking < answer, "{rows:?}");
+    }
+
+    #[test]
+    fn a_streamed_answer_renders_markdown_not_plain_text() {
+        let screen = Screen::new(60, 20);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.text".into(),
+                role: "message.assistant".into(),
+                text: "a **bold** word\n\n```rust\nlet x = 1;\n```".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        let lines = all(&retained);
+        let rows: Vec<String> = lines.iter().map(Line::text).collect();
+        // The bold run is styled, not shown as `**bold**`.
+        assert!(
+            lines.iter().any(|line| line
+                .spans
+                .iter()
+                .any(|(style, text)| style.bold && text.trim() == "bold")),
+            "{:?}",
+            lines
+                .iter()
+                .flat_map(|line| line
+                    .spans
+                    .iter()
+                    .map(|(style, text)| (format!("{style:?}"), text.clone())))
+                .collect::<Vec<_>>()
+        );
+        assert!(!rows.iter().any(|row| row.contains("**")), "{rows:?}");
+        // The fence is a code block, with its language label and body.
+        assert!(rows.iter().any(|row| row.contains("rust")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("let x")), "{rows:?}");
     }
 
     #[test]
@@ -1428,10 +1708,11 @@ mod tests {
         let retained = Retained::new(view, &screen);
         let lines = all(&retained);
         let rows: Vec<String> = lines.iter().map(Line::text).collect();
-        assert_eq!(rows, vec!["┃ one", "┃ two"]);
+        // The assistant's padding, then the thinking block's own padding and body.
+        assert_eq!(rows, vec!["┃ ", "┃ ", "┃ one", "┃ two", "┃ ", "", "┃ "]);
         // The rail is the thinking block's own, not the assistant's stacked on it.
         assert_eq!(
-            lines[0].spans[0].0,
+            lines[1].spans[0].0,
             screen.theme.role("message.assistant.thinking.rail")
         );
     }
@@ -1456,7 +1737,7 @@ mod tests {
         );
         let retained = Retained::new(view, &screen);
         let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
-        assert_eq!(rows, vec!["┃ ◇ echo"]);
+        assert_eq!(rows, vec!["┃ ", "┃ ◇ echo", "┃ "]);
     }
 
     #[test]
@@ -1487,10 +1768,20 @@ mod tests {
         let rows = lines.iter().map(Line::text).collect::<Vec<_>>();
         assert_eq!(
             rows,
-            vec!["┃ thinking · one", "┃ two", "┃ three", "┃ … 3 lines hidden",]
+            vec![
+                "┃ ",
+                "┃ ",
+                "┃ thinking · one",
+                "┃ two",
+                "┃ three",
+                "┃ … 3 lines hidden",
+                "┃ ",
+                "",
+                "┃ ",
+            ]
         );
         assert_eq!(
-            lines[0].spans[0].0,
+            lines[1].spans[0].0,
             screen.theme.role("message.assistant.thinking.rail")
         );
     }
@@ -1592,8 +1883,7 @@ mod tests {
                     // a baseline. Count its actual recursive resolve visits.
                     let legacy = retained.interaction();
                     crate::RESOLVE_VISITS.with(|visits| visits.set(0));
-                    baseline_output
-                        .push_str(&misa_render::to_plain(&crate::draw(&screen, &legacy)));
+                    baseline_output.push_str(&misa_lines::to_plain(&crate::draw(&screen, &legacy)));
                     baseline_visits += crate::RESOLVE_VISITS.with(|visits| visits.get());
                 }
                 assert_eq!(
@@ -1720,7 +2010,7 @@ mod review_tests {
         retained.reindex();
         screen.prefs.open_all();
         retained.local(&screen);
-        let expected = misa_render::render(
+        let expected = misa_lines::render(
             &screen.resolve(&retained.tree.snapshot()),
             &screen.theme,
             40,

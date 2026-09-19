@@ -1,6 +1,6 @@
 //! Physical terminal rows, including the local editor and its cursor.
 use crate::Screen;
-use misa_render::Line;
+use misa_lines::Line;
 pub struct Frame {
     pub lines: Vec<Line>,
     pub cursor_row: usize,

@@ -9,7 +9,9 @@ The design, with its invariants and its open questions, is
 [`docs/architecture.md`](docs/architecture.md). Read that first; this file is how
 to run it. The work that is left, and the order it is in, is
 [`docs/refactor-plan.md`](docs/refactor-plan.md); [`docs/parity.md`](docs/parity.md) records what of
-the previous system is already built.
+the previous system is already built, and
+[`docs/plugin-parity.md`](docs/plugin-parity.md) maps its plugin owners to
+their rewrite counterparts.
 
 ## The shape
 

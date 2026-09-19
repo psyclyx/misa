@@ -394,7 +394,7 @@ async fn a_plugin_presentation_is_selected_and_placed_by_a_client() {
     assert_eq!(root.actions[0].label.as_deref(), Some("Refresh"));
 
     // The plugin receives only its declared read data independently of the client.
-    let text = misa_render::to_plain(&misa_render::render(
+    let text = misa_lines::to_plain(&misa_lines::render(
         &node,
         &misa_render::Theme::plain(),
         100,
@@ -480,7 +480,7 @@ async fn a_plugin_that_runs_away_is_stopped_by_its_budget_and_the_session_still_
     let node = view(&runtime);
     misa_proto::view::validate(&node).expect("a tree a client may be sent");
 
-    let text = misa_render::to_plain(&misa_render::render(
+    let text = misa_lines::to_plain(&misa_lines::render(
         &node,
         &misa_render::Theme::plain(),
         100,
@@ -504,7 +504,7 @@ async fn a_plugin_that_refuses_to_present_is_a_sentence_too() {
         .1 = Value::map([("refuse", Value::Bool(true))]);
     let (runtime, _kernel) = session(contribution);
     let node = view(&runtime);
-    let text = misa_render::to_plain(&misa_render::render(
+    let text = misa_lines::to_plain(&misa_lines::render(
         &node,
         &misa_render::Theme::plain(),
         100,
@@ -848,7 +848,7 @@ async fn pet_command_and_model_tool_share_state_while_presentations_are_local_ch
         panic!()
     };
     assert!(
-        misa_render::to_plain(&misa_render::render(
+        misa_lines::to_plain(&misa_lines::render(
             &document.tree,
             &misa_render::Theme::plain(),
             80

@@ -22,6 +22,24 @@ pub fn clip(text: &str, columns: usize) -> String {
     split_at_width(text, columns).0
 }
 
+/// Allocate column widths within `total` cells.
+///
+/// As many columns as fit at `minimum` wide, no more than `maximum`, separated by
+/// `gap`. Any remainder goes to the leading columns, so a split of an odd number of
+/// cells never drops one. This is the previous system's `layout.columns`.
+pub fn columns(total: usize, minimum: usize, maximum: usize, gap: usize) -> Vec<usize> {
+    let total = total.max(1);
+    let minimum = minimum.max(1);
+    let maximum = maximum.max(1);
+    let count = maximum.min((total + gap) / (minimum + gap)).max(1);
+    let usable = total.saturating_sub(gap * (count - 1)).max(count);
+    let base = usable / count;
+    let extra = usable % count;
+    (0..count)
+        .map(|index| base + usize::from(index < extra))
+        .collect()
+}
+
 /// Pad text on the right to exactly `columns`, clipping when it is longer.
 pub fn pad(text: &str, columns: usize) -> String {
     let mut out = clip(text, columns);
@@ -316,6 +334,16 @@ mod tests {
     fn pad_fills_and_clips() {
         assert_eq!(pad("ab", 5), "ab   ");
         assert_eq!(pad("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn columns_fit_as_many_as_possible_and_share_the_remainder() {
+        assert_eq!(columns(100, 28, 3, 2), vec![32, 32, 32]);
+        assert_eq!(columns(80, 28, 3, 2), vec![39, 39]);
+        assert_eq!(columns(20, 28, 3, 2), vec![20]);
+        // An odd remainder goes to the leading column, never dropped.
+        assert_eq!(columns(100, 10, 3, 3), vec![32, 31, 31]);
+        assert!(columns(1, 1, 4, 0).len() <= 4);
     }
 
     #[test]

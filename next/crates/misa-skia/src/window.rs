@@ -470,6 +470,19 @@ impl ApplicationHandler<Update> for Host {
             _ => {}
         }
     }
+
+    /// Keep a running activity indicator moving. When nothing is animating, wait
+    /// for an event rather than polling; when something is, wake on a frame clock.
+    fn about_to_wait(&mut self, events: &ActiveEventLoop) {
+        if self.app.animating() {
+            events.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(160),
+            ));
+            self.redraw();
+        } else {
+            events.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        }
+    }
 }
 
 fn apply_update(

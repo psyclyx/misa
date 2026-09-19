@@ -28,6 +28,7 @@ misa-session.workspace = true
 # frontend, and a test that asserts on it is asserting on the thing itself rather than on a
 # second rendering of it that could disagree.
 misa-render.workspace = true
+misa-lines.workspace = true
 # A session is a runtime: starting one spawns the tasks that carry kernel reports back.
 tokio.workspace = true
 

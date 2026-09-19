@@ -13,17 +13,14 @@
 //! a raised panel. It is testable with no window and no GPU, which is why the scene
 //! and the raster are both built and tested by default.
 //!
-//! # Known limitation, stated rather than implied
-//!
-//! The scene's *text flow* is still the linear renderer's: it wraps to a column
-//! count and stacks runs. A pixel frontend that wants proportional type, reflow, or
-//! a non-linear layout (a rail that spans a message, a code block that scrolls
-//! sideways) needs a layout of its own, and that is the next piece of work here. The
-//! mapping from role to appearance, and the fact that no session is involved in it,
-//! already hold.
+//! Text flow wraps to a column count and stacks runs, which is a deliberate first
+//! slice: a rail is a drawn bar, a code block is highlighted from the client's own
+//! grammar, and nothing below a role becomes a terminal cell. A later slice can
+//! give the scene proportional type and reflow.
 
-use misa_proto::view::Node;
-use misa_render::{Line, Style, Theme};
+use misa_proto::view::{Kind, Node, Span, SpanKind};
+use misa_render::text::{clip, wrap_spans};
+use misa_render::{Color, Style, Theme};
 
 /// One thing to draw.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,57 +90,404 @@ impl Default for Layout {
 
 /// Build a scene from a view tree.
 ///
-/// The one decision this makes that the terminal renderer does not: a node with a
-/// rail gets a *drawn bar* beside it rather than a glyph, because a pixel frontend
-/// can do that and the rail is what makes a message's extent visible.
+/// Two decisions this makes that the terminal renderer does not: a message
+/// becomes a *card* whose surface spans the whole block rather than each row, and
+/// its rail is one full-height bar rather than a segment per line. Both are things
+/// a pixel medium can do and a cell grid cannot.
 pub fn scene(view: &Node, theme: &Theme, columns: usize, rows: usize, layout: Layout) -> Scene {
-    let lines = misa_render::render(view, theme, columns);
-    let mut scene = Scene {
-        width: layout.margin * 2.0 + columns as f32 * layout.advance,
-        height: layout.margin * 2.0 + rows as f32 * layout.line_height,
+    let mut builder = Builder {
+        theme,
+        layout,
+        columns,
+        rows,
+        row: 0,
+        prefixes: Vec::new(),
         ops: Vec::new(),
     };
-    for (index, line) in lines.iter().take(rows).enumerate() {
-        let y = layout.margin + index as f32 * layout.line_height;
-        rail(line, theme, &mut scene, layout, y);
-        let mut x = layout.margin + line.indent as f32 * layout.advance;
-        for (style, text) in &line.spans {
+    builder.node(view, 0);
+    Scene {
+        width: layout.margin * 2.0 + columns as f32 * layout.advance,
+        height: layout.margin * 2.0 + rows as f32 * layout.line_height,
+        ops: builder.ops,
+    }
+}
+
+/// Map one semantic run onto the resolved style for its kind, over a base style.
+pub(crate) fn span_style(theme: &Theme, span: &Span, base: Style) -> Style {
+    match &span.kind {
+        SpanKind::Plain => base,
+        SpanKind::Strong => base.over(theme.role("bold")),
+        SpanKind::StrongEmphasis => base.over(theme.role("bold")).over(theme.role("italic")),
+        SpanKind::Emphasis => base.over(theme.role("italic")),
+        SpanKind::Strikethrough => base.over(theme.role("strikethrough")),
+        SpanKind::Code => base.over(theme.role("code")),
+        SpanKind::Link { .. } => base.over(theme.role("link")).underline(),
+    }
+}
+
+/// Whether a code node's body is a diff.
+///
+/// Two ways for a session to say so, and neither of them looks at the body: a role
+/// that ends in `.diff`, or a fence a model wrote with `diff`.
+pub(crate) fn is_diff(role: &str, lang: Option<&str>) -> bool {
+    role.ends_with(".diff") || lang.is_some_and(|lang| lang.eq_ignore_ascii_case("diff"))
+}
+
+/// What a line of a unified diff is, named the way a theme names a role.
+fn diff_suffix(raw: &str) -> Option<&'static str> {
+    Some(match raw {
+        line if line.starts_with("+++ ") || line.starts_with("--- ") => "header",
+        line if line.starts_with("@@") => "hunk",
+        line if line.starts_with("diff ") || line.starts_with("index ") => "meta",
+        line if line.starts_with("\\ No newline") => "meta",
+        line if line.starts_with('+') => "added",
+        line if line.starts_with('-') => "removed",
+        _ => return None,
+    })
+}
+
+/// The style for one line of a diff, by what the line starts with.
+pub(crate) fn diff_style(theme: &Theme, base: Style, role: &str, raw: &str) -> Style {
+    let Some(suffix) = diff_suffix(raw) else {
+        return base;
+    };
+    let specific = format!("{role}.{suffix}");
+    if theme.names(&specific) {
+        base.over(theme.role(&specific))
+    } else {
+        base.over(theme.role(&format!("diff.{suffix}")))
+    }
+}
+
+/// Split one clipped code line by the captures that cover it.
+pub(crate) fn code_runs(
+    whole: &str,
+    line_index: usize,
+    clipped: &str,
+    captures: &[misa_syntax::Capture],
+    base: Style,
+    theme: &Theme,
+) -> Vec<(Style, String)> {
+    if captures.is_empty() {
+        return vec![(base, clipped.to_string())];
+    }
+    // Byte offset of this line inside the whole text.
+    let mut offset = 0usize;
+    for (index, line) in whole.split('\n').enumerate() {
+        if index == line_index {
+            break;
+        }
+        offset += line.len() + 1;
+    }
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < clipped.len() {
+        let absolute = offset + cursor;
+        let capture = captures
+            .iter()
+            .find(|capture| capture.start as usize <= absolute && absolute < capture.end as usize);
+        let mut end = clipped.len();
+        if let Some(capture) = capture {
+            end = ((capture.end as usize).saturating_sub(offset)).min(clipped.len());
+        } else if let Some(next) = captures
+            .iter()
+            .filter(|capture| capture.start as usize > absolute)
+            .min_by_key(|capture| capture.start)
+        {
+            end = ((next.start as usize).saturating_sub(offset)).min(clipped.len());
+        }
+        let end = end.max(cursor + 1).min(clipped.len());
+        let end = floor_char_boundary(clipped, end);
+        let style = capture
+            .map(|capture| theme.token(&capture.token))
+            .unwrap_or(base);
+        spans.push((style, clipped[cursor..end].to_string()));
+        cursor = end;
+    }
+    if spans.is_empty() {
+        spans.push((base, String::new()));
+    }
+    spans
+}
+
+fn floor_char_boundary(text: &str, mut index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// A native scene walker over the semantic tree.
+///
+/// It is deliberately linear like the terminal's flow, but every decision is the
+/// pixel medium's: a rail is a bar, a rule is a rectangle, and a code block is
+/// highlighted here rather than by the session.
+struct Builder<'a> {
+    theme: &'a Theme,
+    layout: Layout,
+    columns: usize,
+    rows: usize,
+    row: usize,
+    prefixes: Vec<(Style, String)>,
+    ops: Vec<Op>,
+}
+
+impl Builder<'_> {
+    fn y(&self, row: usize) -> f32 {
+        self.layout.margin + row as f32 * self.layout.line_height
+    }
+
+    fn budget(&self, indent: usize) -> usize {
+        self.columns.saturating_sub(indent).max(1)
+    }
+
+    /// Emit one wrapped visual row and advance the cursor. Content past the
+    /// caller's row budget advances the cursor but draws nothing.
+    fn line(&mut self, indent: usize, runs: Vec<(Style, String)>) {
+        let row = self.row;
+        self.row += 1;
+        if row >= self.rows {
+            return;
+        }
+        let mut all = self.prefixes.clone();
+        all.extend(runs);
+        let y = self.y(row);
+        let mut x = self.layout.margin + indent as f32 * self.layout.advance;
+        for (style, text) in all {
             if !text.is_empty() {
-                scene.ops.push(Op::Text {
+                self.ops.push(Op::Text {
                     x,
                     y,
-                    size: layout.font_size,
-                    style: *style,
+                    size: self.layout.font_size,
+                    style,
                     text: text.clone(),
                 });
             }
-            x += misa_render::width(text) as f32 * layout.advance;
+            x += misa_render::width(&text) as f32 * self.layout.advance;
         }
     }
-    scene
-}
 
-/// A rail is drawn, not typed.
-fn rail(line: &Line, theme: &Theme, scene: &mut Scene, layout: Layout, y: f32) {
-    let Some(node) = &line.node else {
-        return;
-    };
-    // The role is not on the line, so the rail is derived from the node id's prefix
-    // when the caller set one. A frontend that wants a rail per role would carry the
-    // role on the line; the linear renderer drops it because a terminal draws the
-    // glyph instead.
-    let role = node.rsplit_once('.').map(|(head, _)| head).unwrap_or(node);
-    let Some((_, style)) = theme.rail(role) else {
-        return;
-    };
-    let x = layout.margin + line.indent as f32 * layout.advance - layout.advance;
-    scene.ops.push(Op::Rect {
-        x,
-        y,
-        width: 2.0,
-        height: layout.line_height - 4.0,
-        style,
-    });
+    fn rect(&mut self, indent: usize, height: f32, style: Style) {
+        let row = self.row;
+        self.row += 1;
+        if row >= self.rows {
+            return;
+        }
+        self.ops.push(Op::Rect {
+            x: self.layout.margin + indent as f32 * self.layout.advance,
+            y: self.y(row),
+            width: self.budget(indent) as f32 * self.layout.advance,
+            height,
+            style,
+        });
+    }
+
+    fn spans(&mut self, indent: usize, spans: &[Span], base: Style) {
+        let budget = self.budget(indent);
+        for line in wrap_spans(spans, budget) {
+            let runs = line
+                .iter()
+                .map(|span| (span_style(self.theme, span, base), span.text.clone()))
+                .collect();
+            self.line(indent, runs);
+        }
+    }
+
+    fn children(&mut self, node: &Node, indent: usize) {
+        for child in &node.children {
+            self.node(child, indent);
+        }
+    }
+
+    fn section(&mut self, node: &Node, indent: usize, base: Style) {
+        if let Some((_glyph, rail_style)) = self.theme.rail(&node.role) {
+            // Render the block first, then insert its chrome behind the runs at the
+            // point they begin. Inserting rather than appending is what turns a run
+            // into a card: paint order is op order.
+            let start = self.ops.len();
+            let first = self.row;
+            if let Some(label) = &node.label {
+                self.line(indent, vec![(base, label.clone())]);
+            }
+            self.children(node, indent + 2);
+            let last = self.row.min(self.rows);
+            if last > first {
+                let height = (last - first) as f32 * self.layout.line_height;
+                let mut at = start;
+                // The card: the whole block shares one surface, not each row.
+                if let Some(surface) = self.theme.surface(&node.role)
+                    && surface.bg != Color::Default
+                {
+                    self.ops.insert(
+                        at,
+                        Op::Rect {
+                            x: self.layout.margin * 0.5,
+                            y: self.y(first),
+                            width: self.columns as f32 * self.layout.advance,
+                            height,
+                            style: Style::fg(surface.bg),
+                        },
+                    );
+                    at += 1;
+                }
+                // The rail: one bar beside the whole block.
+                self.ops.insert(
+                    at,
+                    Op::Rect {
+                        x: self.layout.margin + indent as f32 * self.layout.advance,
+                        y: self.y(first),
+                        width: 2.0,
+                        height: height - 4.0,
+                        style: rail_style,
+                    },
+                );
+            }
+        } else if node.role == "session" {
+            self.children(node, indent);
+        } else if let Some(label) = &node.label {
+            self.line(indent, vec![(base.bold(), label.clone())]);
+            self.children(node, indent);
+        } else {
+            self.children(node, indent);
+        }
+    }
+
+    fn code(&mut self, node: &Node, lang: Option<&str>, text: &str, indent: usize, base: Style) {
+        let diff = is_diff(&node.role, lang);
+        if let Some(lang) = lang
+            && !diff
+        {
+            self.line(
+                indent,
+                vec![(self.theme.role("markdown.code.label"), lang.to_string())],
+            );
+        }
+        let captures = if diff {
+            Vec::new()
+        } else {
+            lang.map(|language| misa_syntax::captures(language, text))
+                .unwrap_or_default()
+        };
+        let budget = self.budget(indent);
+        for (index, raw) in text.split('\n').enumerate() {
+            let clipped = clip(raw, budget);
+            let line_style = if diff {
+                diff_style(self.theme, base, &node.role, raw)
+            } else {
+                base
+            };
+            let runs = code_runs(text, index, &clipped, &captures, line_style, self.theme);
+            self.line(indent, runs);
+        }
+    }
+
+    fn list(
+        &mut self,
+        ordered: &bool,
+        items: &[Vec<Node>],
+        markers: &[Option<bool>],
+        indent: usize,
+        base: Style,
+    ) {
+        for (index, item) in items.iter().enumerate() {
+            let marker = match markers.get(index).copied().flatten() {
+                Some(true) => "☑".to_string(),
+                Some(false) => "☐".to_string(),
+                None if *ordered => format!("{}.", index + 1),
+                None => "•".to_string(),
+            };
+            self.line(indent, vec![(base, marker)]);
+            for child in item {
+                self.node(child, indent + 2);
+            }
+        }
+    }
+
+    fn table(&mut self, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], indent: usize, base: Style) {
+        for row in std::iter::once(head).chain(rows.iter().map(Vec::as_slice)) {
+            let mut spans: Vec<Span> = Vec::new();
+            for (index, cell) in row.iter().enumerate() {
+                if index > 0 {
+                    spans.push(Span::plain("  "));
+                }
+                spans.extend(cell.iter().cloned());
+            }
+            self.spans(indent, &spans, base);
+        }
+    }
+
+    fn fields(&mut self, fields: &[misa_proto::view::Field], indent: usize, base: Style) {
+        for field in fields {
+            self.line(indent, vec![(base.dim(), field.label.clone())]);
+            let value = if field.secret {
+                "••••".to_string()
+            } else {
+                field.value.clone()
+            };
+            self.spans(indent + 2, &[Span::plain(value)], base);
+        }
+    }
+
+    fn node(&mut self, node: &Node, indent: usize) {
+        let base = self.theme.role(&node.role);
+        match &node.kind {
+            Kind::Section => self.section(node, indent, base),
+            Kind::Text { spans } => self.spans(indent, spans, base),
+            Kind::Heading { level, spans } => {
+                // A heading is structure, so the medium makes it visible even when a
+                // theme says nothing: level one is underlined as well as bold.
+                let mut base = base.bold();
+                if *level == 1 {
+                    base = base.underline();
+                }
+                self.spans(indent, spans, base);
+            }
+            Kind::Quote => {
+                self.prefixes.push((base.dim(), "▏ ".to_string()));
+                self.children(node, indent);
+                self.prefixes.pop();
+            }
+            Kind::Rule => self.rect(indent, 2.0, base),
+            Kind::Code { lang, text } => self.code(node, lang.as_deref(), text, indent, base),
+            Kind::Fact { value } => {
+                self.line(
+                    indent,
+                    vec![(base, misa_render::fact::format(&node.role, value))],
+                );
+            }
+            Kind::Status { text } => self.line(indent, vec![(base, text.clone())]),
+            Kind::List {
+                ordered,
+                items,
+                markers,
+            } => self.list(ordered, items, markers, indent, base),
+            Kind::Table { head, rows } => self.table(head, rows, indent, base),
+            Kind::Fields { fields } => self.fields(fields, indent, base),
+            Kind::Collapsible { summary } => {
+                self.spans(indent, summary, base);
+                self.children(node, indent);
+            }
+            Kind::Image {
+                blob,
+                alt,
+                width,
+                height,
+            } => {
+                let label = if alt.is_empty() {
+                    format!("[{width}×{height} image {}]", clip(&blob.hash, 8))
+                } else {
+                    format!("[image: {alt}]")
+                };
+                self.line(indent, vec![(base.dim(), label)]);
+            }
+            Kind::Meter { label, value, max } => {
+                self.line(indent, vec![(base, format!("{label} {value}/{max}"))]);
+            }
+        }
+    }
 }
 
 /// The scene as a PNG.
@@ -288,20 +632,16 @@ mod tests {
         Node::section("session")
             .id("session")
             .child(
-                Node::text("message.user", [Span::plain("a question")])
+                Node::section("message.user")
                     .id("msg.1")
-                    .state(State::Done),
+                    .state(State::Done)
+                    .child(Node::text("message.user", [Span::plain("a question")])),
             )
             .child(Node::new(
                 "tool.result",
                 Kind::Code {
                     lang: Some("rust".into()),
                     text: "let x = 1;".into(),
-                    captures: vec![misa_proto::view::Capture {
-                        start: 0,
-                        end: 3,
-                        token: "keyword".into(),
-                    }],
                 },
             ))
     }
@@ -340,6 +680,44 @@ mod tests {
                 .iter()
                 .any(|op| matches!(op, Op::Text { style, .. } if *style == keyword)),
             "no run carried the keyword colour"
+        );
+    }
+
+    #[test]
+    fn a_quote_rule_meter_and_fact_render_natively() {
+        let view = Node::section("session")
+            .child(
+                Node::new("markdown.quote", Kind::Quote)
+                    .child(Node::text("quote.body", [Span::plain("quoted")])),
+            )
+            .child(Node::new("markdown.rule", Kind::Rule))
+            .child(Node::new(
+                "value.meter",
+                Kind::Meter {
+                    label: "budget".into(),
+                    value: 2.0,
+                    max: 4.0,
+                },
+            ))
+            .child(Node::new(
+                "value.tokens",
+                Kind::Fact {
+                    value: misa_value::Value::Int(12_400),
+                },
+            ));
+        let scene = scene(&view, &Theme::dark(), 40, 10, Layout::default());
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::Text { text, .. } if text.contains("quoted")))
+        );
+        assert!(scene.ops.iter().any(|op| matches!(op, Op::Rect { .. })));
+        assert!(
+            scene
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::Text { text, .. } if text.contains("12k")))
         );
     }
 
@@ -394,6 +772,30 @@ mod tests {
             op,
             Op::Text { style, .. } if style.fg == misa_render::Color::Rgb(255, 0, 0)
         )));
+    }
+
+    #[test]
+    fn a_message_becomes_a_card_with_one_full_height_rail() {
+        let theme = Theme::dark();
+        let scene = scene_of(&theme);
+        let surface = theme.surface("message.user").expect("a user surface");
+        let card = scene
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::Rect { style, .. } if style.fg == surface.bg))
+            .expect("no message card background");
+        let rail = scene
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::Rect { width, .. } if *width == 2.0))
+            .expect("no rail");
+        let text = scene
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::Text { text, .. } if text == "a question"))
+            .expect("no message text");
+        // The chrome is painted under the runs: card, then rail, then text.
+        assert!(card < rail && rail < text, "{card} {rail} {text}");
     }
 
     #[test]

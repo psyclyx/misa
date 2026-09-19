@@ -78,7 +78,7 @@ pub async fn run(
                 let Some(view) = view? else { return Ok(()); };
                 ready = true;
                 settled = settled_messages(&view);
-                let text = misa_render::to_plain(&misa_render::render(&view, &misa_render::Theme::plain(), 100));
+                let text = misa_lines::to_plain(&misa_lines::render(&view, &misa_render::Theme::plain(), 100));
                 if text != printed {
                     // Append-only renderings need only their new suffix. Structural changes
                     // still print the replacement until the transport carries view patches.

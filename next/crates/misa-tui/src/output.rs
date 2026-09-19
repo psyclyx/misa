@@ -1,5 +1,5 @@
 //! Retained terminal rows: unchanged rows produce no terminal bytes.
-use misa_render::Line;
+use misa_lines::Line;
 use std::io::Write;
 
 #[derive(Default)]
