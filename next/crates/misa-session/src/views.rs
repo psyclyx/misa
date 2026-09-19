@@ -386,9 +386,10 @@ pub(crate) fn transcript(db: &Value) -> Node {
     let mut group: Option<Node> = None;
     let mut attempt: Option<Value> = None;
     for message in messages.iter() {
-        let Some(child) = message_node(message) else {
+        let nodes = message_nodes(message);
+        if nodes.is_empty() {
             continue;
-        };
+        }
         if text_at(message, "role") == "user" || group.is_none() {
             if let Some(previous) = group.take() {
                 node.children.push(finish_group(previous, attempt.take()));
@@ -406,7 +407,7 @@ pub(crate) fn transcript(db: &Value) -> Node {
             .as_mut()
             .expect("a message has a group")
             .children
-            .push(child);
+            .extend(nodes);
     }
     if let Some(group) = group {
         node.children.push(finish_group(group, attempt));
@@ -420,6 +421,29 @@ pub(crate) fn transcript(db: &Value) -> Node {
         ));
     }
     node
+}
+
+/// Every block a message contributes, in order: the message itself, then its
+/// tool calls as siblings rather than children.
+///
+/// A tool call nested under the assistant message would inherit the message's
+/// rail and padding instead of standing as the separate block it is.
+pub(crate) fn message_nodes(message: &Value) -> Vec<Node> {
+    let mut nodes = Vec::new();
+    let Some(node) = message_node(message) else {
+        return nodes;
+    };
+    let id = format!(
+        "msg.{}",
+        message.get("seq").and_then(Value::as_i64).unwrap_or(0)
+    );
+    nodes.push(node);
+    if text_at(message, "role") == "assistant" {
+        for (position, call) in calls(message).into_iter().enumerate() {
+            nodes.push(call_node(&id, &call, position));
+        }
+    }
+    nodes
 }
 
 /// A message group's footer is shared semantic accounting, not an operation log.
@@ -576,9 +600,6 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
             // client can grow an answer in place.
             node.children
                 .extend(body("message.assistant", &id, text_at(message, "text")));
-            for (position, call) in calls(message).into_iter().enumerate() {
-                node.children.push(call_node(&id, &call, position));
-            }
             Some(node)
         }
         _ => None,
@@ -1298,7 +1319,7 @@ mod tests {
         let ids: Vec<Option<&str>> = group
             .children
             .iter()
-            .filter(|child| child.id.starts_with("msg."))
+            .filter(|child| child.role.starts_with("message.") && child.id.starts_with("msg."))
             .map(|child| Some(child.id.as_str()))
             .collect();
         assert_eq!(ids, vec![Some("msg.1"), Some("msg.2")]);

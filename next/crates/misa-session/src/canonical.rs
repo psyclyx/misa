@@ -167,9 +167,10 @@ impl Canonical {
     }
 
     fn append_message(&mut self, message: &Value, out: &mut Vec<ViewOp>) {
-        let Some(node) = views::message_node(message) else {
+        let nodes = views::message_nodes(message);
+        if nodes.is_empty() {
             return;
-        };
+        }
         self.work.content_builds += 1;
         if self.tree.contains("transcript.transcript.empty.0") {
             self.emit(
@@ -182,7 +183,8 @@ impl Canonical {
         if message.get("role").and_then(Value::as_str) == Some("user") || self.groups.is_empty() {
             let seq = message.get("seq").and_then(Value::as_i64).unwrap_or(0);
             let id = format!("group.{seq}");
-            let group = Node::section("message.group").id(&id).child(node);
+            let mut group = Node::section("message.group").id(&id);
+            group.children.extend(nodes);
             self.emit(
                 ViewOp::Insert {
                     parent: "transcript".into(),
@@ -198,14 +200,16 @@ impl Canonical {
             let (id, count) = (id.clone(), *count);
             let footer = format!("{id}.footer");
             let before = self.tree.contains(&footer).then_some(footer);
-            self.emit(
-                ViewOp::Insert {
-                    parent: id.clone(),
-                    before,
-                    node,
-                },
-                out,
-            );
+            for node in nodes {
+                self.emit(
+                    ViewOp::Insert {
+                        parent: id.clone(),
+                        before: before.clone(),
+                        node,
+                    },
+                    out,
+                );
+            }
             if message.get("role").and_then(Value::as_str) == Some("assistant")
                 && let Some(attempt) = message.get("attempt")
             {
