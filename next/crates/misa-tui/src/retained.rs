@@ -30,6 +30,10 @@ struct Live {
     /// The parsed markdown of the in-flight text, reused block by block as the
     /// stream grows, so streaming renders through the same path as a settled body.
     document: Option<misa_markdown::Document>,
+    /// Each block's laid-out lines, so only the blocks an append changed are
+    /// rendered again. Invalidated by a width change.
+    rendered: Vec<(misa_proto::Node, Vec<Line>)>,
+    rendered_width: usize,
     last_nonblank: usize,
     /// Some(limit) while a collapsed thinking stream follows its own tail: the
     /// reader is watching the current reasoning, not the beginning of a summary
@@ -608,6 +612,8 @@ impl Retained {
             },
             lines: vec![],
             document: None,
+            rendered: vec![],
+            rendered_width: 0,
             last_nonblank: 0,
             tail,
         };
@@ -1102,17 +1108,36 @@ impl Live {
             .as_ref()
             .is_none_or(|previous| previous.source != document.source);
         if changed {
-            self.lines.clear();
-            for block in &document.blocks {
-                for mut line in misa_lines::render_block(block, theme, paint.width, 0) {
-                    line.node = Some(id.clone());
-                    if let Some((glyph, rail_style)) = &paint.rail {
-                        line.spans.insert(0, (*rail_style, glyph.clone()));
-                    }
-                    line.surface = line.surface.or(paint.surface);
-                    self.lines.push(line);
+            let width = paint.width;
+            let reuse = self.rendered_width == width;
+            let mut rendered = Vec::with_capacity(document.blocks.len());
+            for (index, block) in document.blocks.iter().enumerate() {
+                if let Some((node, lines)) = self.rendered.get(index)
+                    && reuse
+                    && node == block
+                {
+                    rendered.push((node.clone(), lines.clone()));
+                    continue;
                 }
+                let lines = misa_lines::render_block(block, theme, width, 0)
+                    .into_iter()
+                    .map(|mut line| {
+                        line.node = Some(id.clone());
+                        if let Some((glyph, rail_style)) = &paint.rail {
+                            line.spans.insert(0, (*rail_style, glyph.clone()));
+                        }
+                        line.surface = line.surface.or(paint.surface);
+                        line
+                    })
+                    .collect();
+                rendered.push((block.clone(), lines));
             }
+            self.lines = rendered
+                .iter()
+                .flat_map(|(_, lines)| lines.iter().cloned())
+                .collect();
+            self.rendered = rendered;
+            self.rendered_width = width;
             self.last_nonblank = self
                 .lines
                 .iter()
