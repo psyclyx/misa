@@ -43,13 +43,13 @@ use misa_proto::view::{Kind, Node, Span, SpanKind};
 /// The result is empty when the text has nothing in it, and every node it does return
 /// passes [`misa_proto::view::validate`].
 pub fn blocks(prefix: &str, text: &str) -> Vec<Node> {
-    parse_lines(prefix, text).0
+    parse_lines(prefix, text, false).0
 }
 
 /// Parse `text` into blocks, and each block's byte start in `text`.
-fn parse_lines(prefix: &str, text: &str) -> (Vec<Node>, Vec<usize>) {
+fn parse_lines(prefix: &str, text: &str, partial: bool) -> (Vec<Node>, Vec<usize>) {
     let lines: Vec<&str> = text.split('\n').collect();
-    Parser { prefix }.blocks_tracked(&lines)
+    Parser { prefix, partial }.blocks_tracked(&lines)
 }
 
 /// A parsed Markdown document, kept so a later, longer text can reuse its prefix.
@@ -89,7 +89,7 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
             from = previous.starts.get(retained).copied().unwrap_or(0);
         }
     }
-    let (suffix, suffix_starts) = parse_lines(prefix, &text[from..]);
+    let (suffix, suffix_starts) = parse_lines(prefix, &text[from..], true);
     blocks.extend(suffix);
     starts.extend(suffix_starts.into_iter().map(|offset| from + offset));
     Document {
@@ -104,6 +104,13 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
 /// Public because a producer that already knows its blocks — a tool result, a panel's
 /// field — may want the inline rules without the block ones.
 pub fn inline(text: &str) -> Vec<Span> {
+    inline_inner(text, false)
+}
+
+/// Parse inline runs, treating an unclosed opener as if it closed at the end of
+/// the text. Only the streaming path sets `partial`; a settled body requires its
+/// closers and keeps an unclosed marker literal.
+fn inline_inner(text: &str, partial: bool) -> Vec<Span> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut index = 0;
@@ -183,6 +190,15 @@ pub fn inline(text: &str) -> Vec<Span> {
             continue;
         }
 
+        if partial && let Some((inner, kind)) = presumptive(rest) {
+            flush(&mut out, &mut plain);
+            out.push(Span {
+                text: inner.to_string(),
+                kind,
+            });
+            break;
+        }
+
         push(&mut plain, ch);
         index += ch.len_utf8();
     }
@@ -193,13 +209,53 @@ pub fn inline(text: &str) -> Vec<Span> {
     out
 }
 
+/// An opener at the start of `rest` that has no closer, and the run it styles.
+///
+/// A single `*`/`_` only counts when it is followed by non-whitespace, so a stray
+/// bullet or underscore in prose is not turned italic mid-stream.
+fn presumptive(rest: &str) -> Option<(&str, SpanKind)> {
+    for (delimiter, kind) in [
+        ("***", SpanKind::StrongEmphasis),
+        ("___", SpanKind::StrongEmphasis),
+        ("**", SpanKind::Strong),
+        ("__", SpanKind::Strong),
+        ("~~", SpanKind::Strikethrough),
+    ] {
+        if let Some(inner) = rest.strip_prefix(delimiter)
+            && !inner.is_empty()
+        {
+            return Some((inner, kind));
+        }
+    }
+    let ch = rest.chars().next()?;
+    let inner = &rest[ch.len_utf8()..];
+    if (ch == '*' || ch == '_') && !inner.starts_with(char::is_whitespace) && !inner.is_empty() {
+        return Some((inner, SpanKind::Emphasis));
+    }
+    if ch == '`' {
+        let ticks = rest.len() - rest.trim_start_matches('`').len();
+        let inner = &rest[ticks..];
+        if !inner.is_empty() {
+            return Some((inner, SpanKind::Code));
+        }
+    }
+    None
+}
+
 struct Parser<'a> {
     prefix: &'a str,
+    /// Streaming parse: an unclosed opener styles the rest of the text.
+    partial: bool,
 }
 
 impl Parser<'_> {
     fn role(&self, shape: &str) -> String {
         format!("{}.markdown.{shape}", self.prefix)
+    }
+
+    /// Parse inline runs for this document's mode (settled or streaming).
+    fn inline(&self, text: &str) -> Vec<Span> {
+        inline_inner(text, self.partial)
     }
 
     fn blocks(&self, lines: &[&str]) -> Vec<Node> {
@@ -236,7 +292,7 @@ impl Parser<'_> {
                         self.role("heading"),
                         Kind::Heading {
                             level,
-                            spans: inline(body),
+                            spans: self.inline(body),
                         },
                     ),
                     index + 1,
@@ -247,7 +303,7 @@ impl Parser<'_> {
                         self.role("heading"),
                         Kind::Heading {
                             level,
-                            spans: inline(body),
+                            spans: self.inline(body),
                         },
                     ),
                     index + 2,
@@ -392,7 +448,10 @@ impl Parser<'_> {
             body.push_str(line.trim_end());
             index += 1;
         }
-        (Node::text(self.role("paragraph"), inline(&body)), index)
+        (
+            Node::text(self.role("paragraph"), self.inline(&body)),
+            index,
+        )
     }
 
     /// A pipe table: a header row, a separator row, then body rows.
@@ -403,7 +462,7 @@ impl Parser<'_> {
         let columns = split_table_row(lines[start]).len();
         let head = split_table_row(lines[start])
             .into_iter()
-            .map(|cell| inline(&cell))
+            .map(|cell| self.inline(&cell))
             .collect();
         let mut rows = Vec::new();
         let mut index = start + 2;
@@ -417,7 +476,7 @@ impl Parser<'_> {
             while cells.len() < columns {
                 cells.push(String::new());
             }
-            rows.push(cells.iter().map(|cell| inline(cell)).collect());
+            rows.push(cells.iter().map(|cell| self.inline(cell)).collect());
             index += 1;
         }
         (
@@ -906,9 +965,51 @@ mod tests {
     }
 
     #[test]
-    fn an_unclosed_marker_stays_literal() {
-        // Which is what a half-typed `**` looks like mid-stream.
+    fn an_unclosed_marker_stays_literal_in_settled_text() {
+        // A settled body requires its closers; only the streaming parse presumes.
         assert_eq!(inline("a **b"), vec![Span::plain("a **b")]);
+    }
+
+    #[test]
+    fn a_streaming_parse_styles_an_unclosed_span_and_a_settled_one_does_not() {
+        let paragraph = |document: &Document| {
+            document
+                .blocks
+                .iter()
+                .find_map(|node| match &node.kind {
+                    Kind::Text { spans } => Some(spans.clone()),
+                    _ => None,
+                })
+                .expect("a paragraph")
+        };
+        let streaming = document("message.assistant", "a **bold", None);
+        let spans = paragraph(&streaming);
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.kind == SpanKind::Strong && span.text == "bold"),
+            "{spans:?}"
+        );
+        assert!(
+            !spans.iter().any(|span| span.text.contains("**")),
+            "{spans:?}"
+        );
+        // A code span is presumptive too.
+        let code = document("message.assistant", "a `let", None);
+        assert!(
+            paragraph(&code)
+                .iter()
+                .any(|span| span.kind == SpanKind::Code && span.text == "let"),
+            "{:?}",
+            paragraph(&code)
+        );
+        // The settled parse keeps the marker literal.
+        let settled = blocks("message.assistant", "a **bold");
+        assert!(
+            matches!(&settled[0].kind, Kind::Text { spans } if spans == &vec![Span::plain("a **bold")]),
+            "{:?}",
+            settled[0].kind
+        );
     }
 
     #[test]
