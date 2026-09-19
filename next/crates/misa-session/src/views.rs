@@ -563,10 +563,7 @@ pub(crate) fn message_node(message: &Value) -> Option<Node> {
                     Node::new(
                         "message.assistant.thinking",
                         Kind::Collapsible {
-                            summary: vec![
-                                Span::strong("thinking".to_string()),
-                                Span::plain(format!(" · {}", preview(&thinking))),
-                            ],
+                            summary: thinking_summary(&thinking),
                         },
                     )
                     .id(format!("{id}.thinking"))
@@ -1069,21 +1066,35 @@ fn clip(text: &str, limit: usize) -> String {
     format!("{}…", &text[..end])
 }
 
-/// The first line of a block of thinking, clipped, for a summary somebody skims.
+/// The short form of a thinking block: its opening lines and how many remain.
 ///
-/// A summary that is the whole first line is a summary of nothing; one that is one line of a
-/// page is a summary of the page. Eighty characters is about what fits beside a role in a
-/// terminal and in a browser.
-fn preview(text: &str) -> String {
-    let first = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    match first.char_indices().nth(80) {
-        Some((end, _)) => format!("{}…", &first[..end]),
-        None => first.to_string(),
+/// One line of a long block tells the reader nothing about how much more there is. A
+/// bounded preview plus an explicit count makes the disclosure worth opening, while the
+/// client still decides whether to show this short form or the whole body.
+fn thinking_summary(text: &str) -> Vec<Span> {
+    const PREVIEW_LINES: usize = 3;
+    let mut spans = vec![Span::strong("thinking".to_string())];
+    // One pass, and no Vec of every line: a settled block can be thousands of lines
+    // long, and this runs whenever the message that owns it is rebuilt.
+    let mut total = 0usize;
+    for line in text.lines() {
+        if total < PREVIEW_LINES {
+            let separator = if total == 0 { " · " } else { "\n" };
+            spans.push(Span::plain(format!("{separator}{}", line.trim_end())));
+        }
+        total += 1;
     }
+    if total == 0 {
+        spans.push(Span::plain(""));
+    }
+    let hidden = total.saturating_sub(PREVIEW_LINES);
+    if hidden > 0 {
+        spans.push(Span::plain(format!(
+            "\n… {hidden} {} hidden",
+            if hidden == 1 { "line" } else { "lines" }
+        )));
+    }
+    spans
 }
 
 /// An image reference and its alternative text, independent of the client.
@@ -1260,6 +1271,19 @@ mod tests {
                 ]),
             ),
         ])
+    }
+
+    #[test]
+    fn a_thinking_summary_previews_a_few_lines_and_counts_the_rest() {
+        let text = super::thinking_summary("one\ntwo\nthree\nfour\nfive");
+        let rendered: String = text.iter().map(|span| span.text.as_str()).collect();
+        assert_eq!(rendered, "thinking · one\ntwo\nthree\n… 2 lines hidden");
+        // A block short enough to read in full is not told that anything is hidden.
+        let rendered: String = super::thinking_summary("one\ntwo")
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect();
+        assert_eq!(rendered, "thinking · one\ntwo");
     }
 
     #[test]

@@ -50,8 +50,11 @@ pub fn wrap_spans(spans: &[Span], columns: usize) -> Vec<Vec<Span>> {
         return vec![spans.to_vec()];
     }
     let mut out = Lines::new(columns);
+    // Whitespace at the end of one run separates it from the first word of the
+    // next; that boundary is data, not padding, so it is carried across runs.
+    let mut space = false;
     for span in spans {
-        for piece in split_pieces(&span.text) {
+        for piece in split_pieces(&span.text, &mut space) {
             match piece {
                 Piece::Break => out.break_line(),
                 Piece::Word { text, space_before } => out.word(&text, space_before, &span.kind),
@@ -132,30 +135,34 @@ enum Piece {
 }
 
 /// Split a run into words, remembering which had whitespace before them.
-fn split_pieces(text: &str) -> Vec<Piece> {
+///
+/// `space` is threaded in and out so that a run boundary is not a word boundary:
+/// `hello *world*` keeps the space between its plain and emphasised runs, and
+/// `a**b**` does not gain one.
+fn split_pieces(text: &str, space: &mut bool) -> Vec<Piece> {
     let mut out = Vec::new();
-    let mut at_start = true;
     for (index, segment) in text.split('\n').enumerate() {
         if index > 0 {
             out.push(Piece::Break);
         }
         let mut rest = segment;
-        let mut space = !at_start;
         while !rest.is_empty() {
             let trimmed = rest.trim_start_matches(char::is_whitespace);
             if trimmed.len() != rest.len() {
-                space = true;
+                *space = true;
                 rest = trimmed;
             }
             if rest.is_empty() {
                 break;
             }
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            out.push(Piece::Word { text: rest[..end].to_string(), space_before: space });
+            out.push(Piece::Word {
+                text: rest[..end].to_string(),
+                space_before: *space,
+            });
+            *space = false;
             rest = &rest[end..];
-            space = true;
         }
-        at_start = false;
     }
     out
 }
@@ -339,6 +346,30 @@ mod tests {
                 assert_eq!(span.kind, SpanKind::Strong);
             }
         }
+    }
+
+    #[test]
+    fn whitespace_between_styled_runs_is_not_lost() {
+        // A space that ends a plain run belongs between it and the next run.
+        let lines = wrap_spans(
+            &[
+                plain("hello "),
+                Span { text: "world".into(), kind: SpanKind::Emphasis },
+                plain(" again"),
+            ],
+            80,
+        );
+        assert_eq!(text_of(&lines), vec!["hello world again"]);
+        // And a run that does not end in whitespace stays glued to the next.
+        let lines = wrap_spans(
+            &[
+                plain("a"),
+                Span { text: "b".into(), kind: SpanKind::Strong },
+                plain("c"),
+            ],
+            80,
+        );
+        assert_eq!(text_of(&lines), vec!["abc"]);
     }
 
     #[test]

@@ -113,7 +113,14 @@ impl<'a> Renderer<'a> {
                 continue;
             }
             if spaced && !out.is_empty() {
-                out.push(Line::default());
+                // A gap between two blocks of one message belongs to that message:
+                // it carries the message's surface so a railed block does not come
+                // apart into fragments. The owning section adds the rail itself.
+                out.push(Line {
+                    indent: (depth as u8).saturating_mul(2),
+                    surface: self.theme.surface(&node.role),
+                    ..Line::default()
+                });
             }
             out.extend(lines);
         }
@@ -143,15 +150,26 @@ impl<'a> Renderer<'a> {
                     }
                     let children = self.children(node, depth + 1);
                     for mut line in children {
-                        if line.is_blank() {
-                            out.push(line);
-                            continue;
-                        }
                         // The child was measured with the rail's two-cell inset. Put
                         // the rail back at the owner's column and preserve any deeper
                         // indentation below it.
                         line.indent = line.indent.saturating_sub(2);
-                        line.spans.insert(0, (rail_style, glyph.clone()));
+                        // A nested node with its own rail keeps it: the parent's rail
+                        // must not stack on top of a tool call or an opened thinking
+                        // block. The nested rail is already at this column.
+                        let railed = line.spans.first().is_some_and(|(_, text)| text == &glyph);
+                        if line.is_blank() {
+                            // Only a gap that already carries the block's surface is
+                            // interior; a bare blank stays outside the rail.
+                            if line.surface.is_some() && !railed {
+                                line.spans.insert(0, (rail_style, glyph.clone()));
+                            }
+                            out.push(line);
+                            continue;
+                        }
+                        if !railed {
+                            line.spans.insert(0, (rail_style, glyph.clone()));
+                        }
                         line.surface = line.surface.or_else(|| self.theme.surface(&node.role));
                         out.push(line);
                     }
@@ -712,6 +730,19 @@ mod tests {
             "a railed message did not draw its rail: {:?}",
             body.text()
         );
+    }
+
+    #[test]
+    fn a_blank_between_paragraphs_stays_inside_the_messages_rail() {
+        let node = Node::section("message.assistant").id("m1").children([
+            Node::text("message.assistant.markdown.paragraph", [Span::plain("one")]),
+            Node::text("message.assistant.markdown.paragraph", [Span::plain("two")]),
+        ]);
+        let lines = render(&node, &Theme::dark(), 80);
+        let rows: Vec<String> = lines.iter().map(Line::text).collect();
+        assert_eq!(rows, vec!["┃ one", "┃ ", "┃ two"]);
+        // The gap carries the message surface, so the block is visually continuous.
+        assert!(lines[1].surface.is_some());
     }
 
     #[test]

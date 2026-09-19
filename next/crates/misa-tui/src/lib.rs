@@ -1594,6 +1594,16 @@ impl Screen {
             let open = self.prefs.is_open(&node.id);
             if open {
                 node.kind = Kind::Section;
+            } else if node.label.is_none() && self.theme.rail(&node.role).is_some() {
+                // A label-less short form whose role names a rail stays a railed block
+                // when it closes. Losing the rail would flatten a thinking block into
+                // ordinary assistant prose, which is exactly what identifies it. A
+                // labelled disclosure (a tool call) is rendered by its own title.
+                node.children = vec![
+                    Node::text(format!("{}.summary", node.role), summary.clone())
+                        .id(format!("{}.summary", node.id)),
+                ];
+                node.kind = Kind::Section;
             } else {
                 node.kind = Kind::Text {
                     spans: summary.clone(),

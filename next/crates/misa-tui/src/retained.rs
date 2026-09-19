@@ -4,7 +4,7 @@ use crate::Screen;
 use misa_proto::Node;
 use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, Kind};
-use misa_render::Line;
+use misa_render::{Line, Style};
 use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,14 +26,48 @@ struct Owner {
 struct Live {
     stream: Stream,
     lines: Vec<Line>,
-    column: usize,
+    /// The byte offset in `stream.text` where the unterminated segment begins,
+    /// and the rows already laid out for everything before it. A newline is a
+    /// hard break, so only this final segment ever needs re-laying as it grows.
+    segment_start: usize,
+    committed_rows: usize,
     last_nonblank: usize,
+    /// Some(limit) while a collapsed thinking stream follows its own tail: the
+    /// reader is watching the current reasoning, not the beginning of a summary
+    /// that has not been written yet. An opened stream keeps every line.
+    tail: Option<usize>,
 }
+
+/// How many trailing lines of a collapsed thinking stream stay visible while it
+/// grows. The settled block replaces them with its head preview.
+const THINKING_TAIL_LINES: usize = 3;
+
+/// Whether a stream role belongs to the model reasoning rather than to its answer.
+fn thinking_stream(role: &str) -> bool {
+    role.starts_with("message.assistant.thinking") || role.starts_with("message.thinking")
+}
+
 #[derive(Clone)]
 enum Segment {
     Owner(String),
     Live(String),
 }
+
+/// The order two live streams of one pending message render in.
+///
+/// A message has a thinking stream and a text stream, and the answer must not
+/// appear above the reasoning that produced it. The suffix decides that, not the
+/// stream id's alphabetical order (`text` sorts before `thinking`).
+fn stream_order(id: &str) -> (String, u8) {
+    let (owner, suffix) = id.rsplit_once('.').unwrap_or((id, ""));
+    let rank = match suffix {
+        "thinking" => 0,
+        "text" => 1,
+        _ => 2,
+    };
+    (owner.to_string(), rank)
+}
+
 /// Prefix sums support viewport lookup and stream growth in logarithmic work.
 #[derive(Default)]
 struct Rows {
@@ -135,7 +169,7 @@ impl Retained {
         let mut tree = self.tree.snapshot();
         let mut overlay = Node::section("streams").id("streams");
         let mut streams: Vec<_> = self.live.values().collect();
-        streams.sort_by_key(|live| &live.stream.id);
+        streams.sort_by_key(|live| stream_order(&live.stream.id));
         for live in streams {
             let stream = &live.stream;
             if self.tree.contains(
@@ -379,7 +413,7 @@ impl Retained {
             })
             .cloned()
             .collect();
-        streams.sort();
+        streams.sort_by_key(|id| stream_order(id));
         for i in 0..=self.order.len() {
             if i == insert {
                 for id in &streams {
@@ -425,14 +459,18 @@ impl Retained {
     }
     fn current(&mut self, stream: Stream, screen: &Screen) {
         let id = stream.id.clone();
+        let tail = (thinking_stream(&stream.role) && !screen.prefs.is_open(&id))
+            .then_some(THINKING_TAIL_LINES);
         let mut live = Live {
             stream: Stream {
                 text: String::new(),
                 ..stream.clone()
             },
             lines: vec![],
-            column: 0,
+            segment_start: 0,
+            committed_rows: 0,
             last_nonblank: 0,
+            tail,
         };
         live.append(&stream.text, screen);
         self.live.insert(id, live);
@@ -875,41 +913,119 @@ impl Retained {
         }
     }
 }
+
+/// Resolved presentation of one live stream at the current terminal width.
+struct Paint {
+    style: Style,
+    rail: Option<(String, Style)>,
+    surface: Option<Style>,
+    width: usize,
+}
+
+impl Paint {
+    fn of(screen: &Screen, role: &str) -> Self {
+        let rail = screen.theme.rail(role);
+        let inset = rail
+            .as_ref()
+            .map_or(0, |(glyph, _)| misa_render::width(glyph));
+        Self {
+            surface: screen.theme.surface(role),
+            style: screen.theme.role(role),
+            rail,
+            width: (screen.width as usize).saturating_sub(inset).max(1),
+        }
+    }
+}
+
+/// Append the word-aware rows of one segment, railed and surfaced like the block
+/// the stream will settle into.
+fn wrap_into(lines: &mut Vec<Line>, text: &str, paint: &Paint, id: &str) {
+    let spans = [misa_proto::view::Span::plain(text)];
+    for row in misa_render::wrap_spans(&spans, paint.width) {
+        let mut rendered = Vec::new();
+        if let Some((glyph, rail_style)) = &paint.rail {
+            rendered.push((*rail_style, glyph.clone()));
+        }
+        rendered.extend(row.into_iter().map(|span| (paint.style, span.text)));
+        lines.push(Line {
+            surface: paint.surface,
+            indent: 0,
+            node: Some(id.to_string()),
+            spans: rendered,
+        });
+    }
+}
+
 impl Live {
     fn append(&mut self, text: &str, screen: &Screen) {
-        let width = (screen.width as usize).max(1);
-        let style = screen.theme.role(&self.stream.role);
-        for character in text.chars() {
-            let cells = misa_render::width(&character.to_string());
-            if self.lines.is_empty()
-                || character != '\n' && self.column + cells > width && self.column > 0
-            {
-                self.lines.push(Line {
-                    surface: None,
-                    indent: 0,
-                    node: Some(self.stream.id.clone()),
-                    spans: vec![(style, String::new())],
-                });
-                self.column = 0;
-            }
-            if character == '\n' {
-                self.lines.push(Line {
-                    surface: None,
-                    indent: 0,
-                    node: Some(self.stream.id.clone()),
-                    spans: vec![(style, String::new())],
-                });
-                self.column = 0;
-            } else {
-                self.lines.last_mut().unwrap().spans[0].1.push(character);
-                self.column += cells;
-                if !character.is_whitespace() {
-                    self.last_nonblank = self.lines.len();
-                }
-            }
-        }
         self.stream.text.push_str(text);
+        let paint = Paint::of(screen, &self.stream.role);
+        match self.tail {
+            // A collapsed thinking stream is a window onto its own tail: only the
+            // last few rows are derived, from a bounded suffix.
+            Some(limit) => self.tail_rows(&paint, limit),
+            // Everything else is laid out word-aware in full, but only its final
+            // hard-broken segment is re-laid as it grows.
+            None => self.rewrap(&paint),
+        }
     }
+
+    /// Lay out the whole stream word-aware, re-wrapping only its final segment.
+    fn rewrap(&mut self, paint: &Paint) {
+        let text = std::mem::take(&mut self.stream.text);
+        let id = self.stream.id.clone();
+        self.lines.truncate(self.committed_rows);
+        while let Some(newline) = text[self.segment_start..].find('\n') {
+            let segment = &text[self.segment_start..self.segment_start + newline];
+            wrap_into(&mut self.lines, segment, paint, &id);
+            self.segment_start += newline + 1;
+        }
+        self.committed_rows = self.lines.len();
+        let current = &text[self.segment_start..];
+        if !current.is_empty() {
+            wrap_into(&mut self.lines, current, paint, &id);
+        }
+        self.stream.text = text;
+        self.last_nonblank = self
+            .lines
+            .iter()
+            .rposition(|line| !line.is_blank())
+            .map_or(0, |index| index + 1);
+    }
+
+    /// Re-derive the last `limit` rows of the stream from a bounded suffix.
+    fn tail_rows(&mut self, paint: &Paint, limit: usize) {
+        if self.stream.text.is_empty() {
+            self.lines.clear();
+            self.last_nonblank = 0;
+            return;
+        }
+        // A suffix of (limit + 1) * width columns cannot wrap to fewer than
+        // limit + 1 rows, so its last `limit` rows are the stream's true tail.
+        let suffix = suffix_of_width(&self.stream.text, (limit + 1) * paint.width);
+        let mut lines = Vec::new();
+        wrap_into(&mut lines, suffix, paint, &self.stream.id);
+        if lines.len() > limit {
+            lines.drain(..lines.len() - limit);
+        }
+        self.last_nonblank = lines.len();
+        self.lines = lines;
+    }
+}
+
+/// The longest suffix of `text` no wider than `max_width` display columns.
+fn suffix_of_width(text: &str, max_width: usize) -> &str {
+    let mut used = 0usize;
+    let mut start = text.len();
+    for (index, character) in text.char_indices().rev() {
+        let cells = misa_render::width(&character.to_string());
+        if used + cells > max_width {
+            break;
+        }
+        used += cells;
+        start = index;
+    }
+    &text[start..]
 }
 
 #[cfg(test)]
@@ -1136,6 +1252,255 @@ mod tests {
             misa_render::render(&screen.resolve(&view), &screen.theme, screen.width as usize)
         );
     }
+
+    #[test]
+    fn a_live_stream_is_drawn_as_the_block_it_will_settle_into() {
+        let screen = Screen::new(40, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.thinking".into(),
+                role: "message.assistant.thinking".into(),
+                text: "pondering".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        let lines = all(&retained);
+        let body = lines
+            .iter()
+            .find(|line| line.text().contains("pondering"))
+            .expect("the streamed body");
+        assert!(body.text().starts_with("┃ "), "{:?}", body.text());
+        assert_eq!(body.surface, screen.theme.surface("message.assistant.thinking"));
+    }
+
+    #[test]
+    fn a_pending_messages_thinking_stream_renders_before_its_text() {
+        let screen = Screen::new(40, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.text".into(),
+                role: "message.assistant".into(),
+                text: "answer".into(),
+            },
+            &screen,
+        );
+        retained.current(
+            Stream {
+                id: "msg1.thinking".into(),
+                role: "message.assistant.thinking".into(),
+                text: "reason".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
+        let thinking = rows.iter().position(|row| row.contains("reason")).unwrap();
+        let answer = rows.iter().position(|row| row.contains("answer")).unwrap();
+        assert!(thinking < answer, "{rows:?}");
+    }
+
+    #[test]
+    fn an_incrementally_streamed_answer_rewraps_only_its_last_segment() {
+        let screen = Screen::new(20, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.body".into(),
+                role: "message.assistant".into(),
+                text: String::new(),
+            },
+            &screen,
+        );
+        let live = retained.live.get_mut("msg1.body").unwrap();
+        for delta in ["alpha ", "beta\n", "gamma ", "delta"] {
+            live.append(delta, &screen);
+        }
+        assert_eq!(
+            live.lines.iter().map(Line::text).collect::<Vec<_>>(),
+            vec!["┃ alpha beta", "┃ gamma delta"]
+        );
+    }
+
+    #[test]
+    fn a_collapsed_thinking_stream_follows_its_tail() {
+        let screen = Screen::new(40, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.thinking".into(),
+                role: "message.assistant.thinking".into(),
+                text: "one\ntwo\nthree\nfour\nfive".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
+        assert_eq!(rows, vec!["┃ three", "┃ four", "┃ five"]);
+    }
+
+    #[test]
+    fn resizing_a_tailed_thinking_stream_reflows_and_keeps_the_tail() {
+        let mut screen = Screen::new(40, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.thinking".into(),
+                role: "message.assistant.thinking".into(),
+                text: "alpha alpha\nalpha beta\nalpha gamma".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        assert_eq!(
+            all(&retained).iter().map(Line::text).collect::<Vec<_>>(),
+            vec!["┃ alpha alpha", "┃ alpha beta", "┃ alpha gamma"]
+        );
+        // A narrower terminal rewraps the buffered text, word-aware, and re-applies
+        // the tail, so the visible window is still the most recent reasoning.
+        screen.width = 10;
+        retained.local(&screen);
+        assert_eq!(
+            all(&retained).iter().map(Line::text).collect::<Vec<_>>(),
+            vec!["┃ beta", "┃ alpha", "┃ gamma"]
+        );
+    }
+
+    #[test]
+    fn a_collapsed_thinking_tail_wraps_at_word_boundaries() {
+        let screen = Screen::new(10, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.thinking".into(),
+                role: "message.assistant.thinking".into(),
+                text: "alpha gamma".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        assert_eq!(
+            all(&retained).iter().map(Line::text).collect::<Vec<_>>(),
+            vec!["┃ alpha", "┃ gamma"]
+        );
+    }
+
+    #[test]
+    fn an_opened_thinking_stream_keeps_every_line() {
+        let mut screen = Screen::new(40, 12);
+        screen.prefs.opened = vec!["msg1.thinking".into()];
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "msg1.thinking".into(),
+                role: "message.assistant.thinking".into(),
+                text: "one\ntwo\nthree\nfour\nfive".into(),
+            },
+            &screen,
+        );
+        retained.reindex();
+        let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
+        assert_eq!(
+            rows,
+            vec!["┃ one", "┃ two", "┃ three", "┃ four", "┃ five"]
+        );
+    }
+
+    #[test]
+    fn an_opened_thinking_block_keeps_one_rail_not_the_parents() {
+        let mut screen = Screen::new(60, 16);
+        screen.prefs.opened = vec!["msg.1.thinking".into()];
+        let view = Node::section("session").id("session").child(
+            Node::section("transcript").id("transcript").child(
+                Node::section("message.assistant").id("msg.1").child(
+                    Node::new(
+                        "message.assistant.thinking",
+                        Kind::Collapsible {
+                            summary: vec![Span::strong("thinking")],
+                        },
+                    )
+                    .id("msg.1.thinking")
+                    .child(Node::text(
+                        "message.assistant.thinking.text",
+                        [Span::plain("one\ntwo")],
+                    )),
+                ),
+            ),
+        );
+        let retained = Retained::new(view, &screen);
+        let lines = all(&retained);
+        let rows: Vec<String> = lines.iter().map(Line::text).collect();
+        assert_eq!(rows, vec!["┃ one", "┃ two"]);
+        // The rail is the thinking block's own, not the assistant's stacked on it.
+        assert_eq!(lines[0].spans[0].0, screen.theme.role("message.assistant.thinking.rail"));
+    }
+
+    #[test]
+    fn a_closed_tool_call_shows_one_name_under_its_own_rail() {
+        let screen = Screen::new(60, 16);
+        let view = Node::section("session").id("session").child(
+            Node::section("transcript").id("transcript").child(
+                Node::section("message.assistant").id("msg.1").child(
+                    Node::new(
+                        "tool.call",
+                        Kind::Collapsible {
+                            summary: vec![Span::strong("echo"), Span::plain(" ")],
+                        },
+                    )
+                    .id("msg.1.call.1")
+                    .label("echo")
+                    .child(Node::text("tool.call.args", [Span::plain("hi")])),
+                ),
+            ),
+        );
+        let retained = Retained::new(view, &screen);
+        let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
+        assert_eq!(rows, vec!["┃ ◇ echo"]);
+    }
+
+    #[test]
+    fn a_closed_thinking_block_previews_a_few_lines_under_the_rail() {
+        let screen = Screen::new(60, 16);
+        let view = Node::section("session").id("session").child(
+            Node::section("transcript").id("transcript").child(
+                Node::section("message.assistant").id("msg.1").child(
+                    Node::new(
+                        "message.assistant.thinking",
+                        Kind::Collapsible {
+                            summary: vec![
+                                Span::strong("thinking"),
+                                Span::plain(" · one\ntwo\nthree\n… 3 lines hidden"),
+                            ],
+                        },
+                    )
+                    .id("msg.1.thinking")
+                    .child(Node::text(
+                        "message.assistant.thinking.text",
+                        [Span::plain("one\ntwo\nthree\nfour\nfive\nsix")],
+                    )),
+                ),
+            ),
+        );
+        let retained = Retained::new(view, &screen);
+        let lines = all(&retained);
+        let rows = lines.iter().map(Line::text).collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                "┃ thinking · one",
+                "┃ two",
+                "┃ three",
+                "┃ … 3 lines hidden",
+            ]
+        );
+        assert_eq!(
+            lines[0].spans[0].0,
+            screen.theme.role("message.assistant.thinking.rail")
+        );
+    }
+
     #[test]
     fn a_canonical_panel_is_exclusive_and_does_not_become_transcript_content() {
         let screen = Screen::new(40, 12);
@@ -1276,7 +1641,7 @@ mod review_tests {
     use crate::{Key, KeyOut};
     use misa_proto::view::Span;
     #[test]
-    fn live_selection_copies_the_displayed_character_wrapped_row() {
+    fn live_selection_copies_the_displayed_wrapped_row() {
         let mut screen = Screen::new(10, 12);
         let mut retained = Retained::new(Node::section("session").id("session"), &screen);
         retained.current(
@@ -1288,13 +1653,14 @@ mod review_tests {
             &screen,
         );
         retained.reindex();
+        // A live row wraps at the word, exactly as the settled block will.
         assert_eq!(
             retained.live["msg1.body"]
                 .lines
                 .iter()
                 .map(Line::text)
                 .collect::<Vec<_>>(),
-            ["hello worl", "d"]
+            ["hello", "world"]
         );
         screen.key(Key::Escape);
         assert_eq!(
@@ -1304,7 +1670,7 @@ mod review_tests {
         retained.selection_key(&mut screen, &Key::Motion(crate::ed::Motion::LineEnd));
         assert_eq!(
             retained.selection_key(&mut screen, &Key::Char('y')),
-            Some(KeyOut::Copy("d".into()))
+            Some(KeyOut::Copy("world".into()))
         );
     }
     #[test]
